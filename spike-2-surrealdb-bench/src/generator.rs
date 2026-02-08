@@ -111,8 +111,8 @@ impl DataGenerator {
         let mut thread_ids = Vec::new();
 
         for thread in threads {
-            let created: Vec<Thread> = db.create("thread").content(thread).await?;
-            if let Some(t) = created.first() {
+            let created: Option<Thread> = db.create("thread").content(thread).await?;
+            if let Some(t) = created {
                 if let Some(id) = &t.id {
                     thread_ids.push(id.to_string());
                 }
@@ -130,13 +130,11 @@ impl DataGenerator {
     ) -> anyhow::Result<Vec<String>> {
         let mut doc_ids = Vec::new();
 
-        for chunk in documents.chunks(batch_size) {
-            for doc in chunk {
-                let created: Vec<Document> = db.create("document").content(doc).await?;
-                if let Some(d) = created.first() {
-                    if let Some(id) = &d.id {
-                        doc_ids.push(id.to_string());
-                    }
+        for doc in documents {
+            let created: Option<Document> = db.create("document").content(doc).await?;
+            if let Some(d) = created {
+                if let Some(id) = &d.id {
+                    doc_ids.push(id.to_string());
                 }
             }
         }

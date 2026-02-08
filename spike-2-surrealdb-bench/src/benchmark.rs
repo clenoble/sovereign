@@ -115,17 +115,19 @@ impl Benchmark {
             return Ok(0.0);
         }
 
-        let doc_id = &doc_ids[doc_ids.len() / 2]; // Pick middle document
+        let doc_id_str = &doc_ids[doc_ids.len() / 2]; // Pick middle document
+        // Parse "document:xyz" into ("document", "xyz") for single-record select
+        let (table, id) = doc_id_str.split_once(':').unwrap();
 
         // Warmup
-        let _: Option<Document> = self.db.select(doc_id).await?;
+        let _: Option<Document> = self.db.select((table, id)).await?;
 
         // Benchmark (average of 100 runs)
         let iterations = 100;
         let start = Instant::now();
 
         for _ in 0..iterations {
-            let _: Option<Document> = self.db.select(doc_id).await?;
+            let _: Option<Document> = self.db.select((table, id)).await?;
         }
 
         let elapsed = start.elapsed();

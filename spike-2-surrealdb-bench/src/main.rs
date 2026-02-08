@@ -13,7 +13,7 @@ mod benchmark;
 mod generator;
 mod schema;
 
-use benchmark::{Benchmark, BenchmarkResults};
+use benchmark::Benchmark;
 use generator::DataGenerator;
 use surrealdb::engine::local::{Db, Mem, RocksDb};
 use surrealdb::Surreal;
@@ -113,6 +113,11 @@ async fn run_benchmark_common(db: Surreal<Db>) -> anyhow::Result<()> {
 
     println!("✓ Created {} relationships", rel_count);
     println!("  Time: {:.2} s\n", rel_elapsed.as_secs_f64());
+
+    // ── Phase 3b: Create indexes ─────────────────────────────────────────────
+    println!("📊 Phase 3b: Creating indexes...");
+    db.query("DEFINE INDEX idx_thread_id ON document FIELDS thread_id").await?;
+    println!("✓ Created index on document.thread_id\n");
 
     // ── Phase 4: Run performance benchmarks ──────────────────────────────────
     println!("📊 Phase 4: Running performance benchmarks...");
