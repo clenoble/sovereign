@@ -1,0 +1,1658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sovereign OS — Wireframes</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,700&family=JetBrains+Mono:wght@300;400;500&display=swap');
+
+  :root {
+    --bg: #0e0e10;
+    --surface: #1a1a1f;
+    --surface-2: #24242b;
+    --border: #2e2e38;
+    --text: #e8e6e3;
+    --text-muted: #9e9ba3;
+    --text-dim: #838090;
+    --owned-bg: #1b2a3a;
+    --owned-border: #5a9fd4;
+    --external-bg: #3a2020;
+    --external-border: #e07c6a;
+    --accent: #6ba3d6;
+    --accent-glow: rgba(107, 163, 214, 0.15);
+    --milestone: #d4a853;
+    --link-line: #4a4860;
+    --taskbar-bg: #141418;
+    --bubble-bg: #2a2a35;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    overflow-x: hidden;
+  }
+
+  /* ---- NAV ---- */
+  .wireframe-nav {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    background: var(--taskbar-bg);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 0;
+    height: 52px;
+    padding: 0 24px;
+  }
+
+  .wireframe-nav .logo {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 500;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin-right: 32px;
+    white-space: nowrap;
+  }
+
+  .wireframe-nav button {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    font-weight: 400;
+    padding: 16px 18px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .wireframe-nav button:hover { color: var(--text); }
+  .wireframe-nav button.active {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+    font-weight: 500;
+  }
+
+  /* ---- VIEWS ---- */
+  .view {
+    display: none;
+    padding-top: 52px;
+    min-height: 100vh;
+  }
+  .view.active { display: block; }
+
+  .view-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    padding: 24px 32px 8px;
+  }
+
+  .view-title {
+    font-size: 22px;
+    font-weight: 300;
+    padding: 0 32px 4px;
+    color: var(--text);
+  }
+
+  .view-desc {
+    font-size: 13px;
+    color: var(--text-muted);
+    padding: 0 32px 24px;
+    max-width: 640px;
+    line-height: 1.6;
+  }
+
+  /* ---- SCREEN FRAME ---- */
+  .screen-frame {
+    margin: 0 32px 32px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--bg);
+    position: relative;
+  }
+
+  .screen-frame .monitor-bezel {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .monitor-bezel .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--border);
+  }
+
+  .screen-content {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16/9;
+    overflow: hidden;
+    background: var(--bg);
+  }
+
+  /* ---- LEGEND ---- */
+  .legend {
+    display: flex;
+    gap: 24px;
+    padding: 0 32px 24px;
+    flex-wrap: wrap;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .legend-swatch {
+    width: 24px;
+    height: 16px;
+    border-radius: 3px;
+  }
+
+  .legend-swatch.owned {
+    background: var(--owned-bg);
+    border: 1.5px solid var(--owned-border);
+  }
+
+  .legend-swatch.external {
+    background: var(--external-bg);
+    border: 1.5px solid var(--external-border);
+    transform: skewX(-12deg);
+  }
+
+  .legend-swatch.milestone {
+    background: var(--milestone);
+    width: 3px;
+    height: 16px;
+    border-radius: 1px;
+  }
+
+  .legend-swatch.link {
+    background: none;
+    border-top: 1.5px dashed var(--link-line);
+    height: 0;
+    width: 24px;
+    margin-top: 8px;
+  }
+
+  .legend-swatch.bubble {
+    background: var(--bubble-bg);
+    border-radius: 50%;
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid var(--accent);
+  }
+
+  /* ====================== */
+  /* VIEW 1: HOMEBASE       */
+  /* ====================== */
+
+  .homebase-canvas {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at 60% 50%, #14141a 0%, var(--bg) 100%);
+  }
+
+  /* Timeline ruler */
+  .timeline-ruler {
+    position: absolute;
+    top: 20px;
+    left: 0;
+    right: 0;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    padding: 0 24px;
+  }
+
+  .timeline-ruler .line {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(to right, var(--border), var(--text-dim) 85%, transparent);
+  }
+
+  .timeline-ruler .tick {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--text-dim);
+    position: absolute;
+  }
+
+  .timeline-ruler .now-marker {
+    position: absolute;
+    right: 15%;
+    top: 0;
+    width: 2px;
+    height: 100%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+  }
+
+  .timeline-ruler .now-label {
+    position: absolute;
+    right: calc(15% - 16px);
+    top: -14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+  }
+
+  /* Fading past hints */
+  .past-hints {
+    position: absolute;
+    top: 80px;
+    left: 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    opacity: 0.35;
+  }
+
+  .past-hint-card {
+    background: var(--owned-bg);
+    border: 1px solid var(--owned-border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    width: 160px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .past-hint-card .hint-type {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--owned-border);
+    margin-bottom: 4px;
+  }
+
+  .past-hint-card.faded { opacity: 0.4; transform: translateX(-10px); }
+
+  /* Taskbar */
+  .taskbar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 52px;
+    background: var(--taskbar-bg);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 12px;
+  }
+
+  .taskbar-item {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 11px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+  }
+
+  .taskbar-item .icon {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    background: var(--owned-border);
+    opacity: 0.6;
+  }
+
+  .taskbar-item.active {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  .taskbar-divider {
+    width: 1px;
+    height: 24px;
+    background: var(--border);
+  }
+
+  .taskbar-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .taskbar-btn {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  /* Center hint */
+  .homebase-center {
+    position: absolute;
+    top: 50%;
+    right: 15%;
+    transform: translate(50%, -50%);
+    text-align: center;
+  }
+
+  .homebase-center .greeting {
+    font-size: 20px;
+    font-weight: 300;
+    color: var(--text);
+    opacity: 0.5;
+    margin-bottom: 8px;
+  }
+
+  .homebase-center .sub {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* AI Bubble */
+  .ai-bubble {
+    position: absolute;
+    bottom: 70px;
+    right: 24px;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: var(--bubble-bg);
+    border: 1.5px solid var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 20px var(--accent-glow);
+    cursor: pointer;
+  }
+
+  .ai-bubble-inner {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    opacity: 0.7;
+  }
+
+  /* ====================== */
+  /* VIEW 2: ZOOMED OUT     */
+  /* ====================== */
+
+  .canvas-zoomed {
+    position: absolute;
+    inset: 0;
+    background: var(--bg);
+    overflow: hidden;
+  }
+
+  /* Timeline axis */
+  .timeline-axis {
+    position: absolute;
+    top: 16px;
+    left: 0;
+    right: 0;
+    height: 28px;
+    display: flex;
+    align-items: flex-end;
+    padding: 0 16px;
+    gap: 0;
+  }
+
+  .timeline-month {
+    flex: 1;
+    text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    color: var(--text-dim);
+    letter-spacing: 0.05em;
+    border-left: 1px solid var(--border);
+    padding-bottom: 4px;
+  }
+
+  .timeline-month:last-child { border-right: 1px solid var(--border); }
+
+  .milestone-marker {
+    position: absolute;
+    top: 44px;
+    width: 2px;
+    height: calc(100% - 96px);
+    background: var(--milestone);
+    opacity: 0.3;
+  }
+
+  .milestone-label {
+    position: absolute;
+    top: 36px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 7px;
+    color: var(--milestone);
+    white-space: nowrap;
+    transform: translateX(-50%);
+  }
+
+  /* Thread rows */
+  .thread-row {
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    height: 80px;
+    display: flex;
+    align-items: center;
+  }
+
+  .thread-label {
+    position: absolute;
+    left: 0;
+    font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+    writing-mode: horizontal-tb;
+    white-space: nowrap;
+    width: 80px;
+  }
+
+  .thread-content {
+    position: absolute;
+    left: 88px;
+    right: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+  }
+
+  /* Owned cards (rectangle) */
+  .node-card {
+    position: absolute;
+    background: var(--owned-bg);
+    border: 1px solid var(--owned-border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 8px;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .node-card .node-type {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 6px;
+    color: var(--owned-border);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 2px;
+  }
+
+  /* External cards (parallelogram) */
+  .node-external {
+    position: absolute;
+    background: var(--external-bg);
+    border: 1px solid var(--external-border);
+    padding: 6px 12px;
+    font-size: 8px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    transform: skewX(-12deg);
+  }
+
+  .node-external > * {
+    transform: skewX(12deg);
+    display: block;
+  }
+
+  .node-external .node-type {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 6px;
+    color: var(--external-border);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 2px;
+  }
+
+  /* Dense blob */
+  .density-blob {
+    position: absolute;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--owned-bg) 20%, transparent 70%);
+    border: 1px solid rgba(58, 107, 159, 0.2);
+  }
+
+  /* Soft branch link */
+  .soft-link {
+    position: absolute;
+    border: none;
+    border-top: 1.5px dashed var(--link-line);
+    height: 0;
+    transform-origin: left;
+  }
+
+  .soft-link-vertical {
+    position: absolute;
+    border: none;
+    border-left: 1.5px dashed var(--link-line);
+    width: 0;
+  }
+
+  /* ====================== */
+  /* VIEW 3: DOC OPEN       */
+  /* ====================== */
+
+  .doc-canvas {
+    position: absolute;
+    inset: 0;
+    background: var(--bg);
+  }
+
+  .doc-bg-hint {
+    position: absolute;
+    inset: 0;
+    opacity: 0.15;
+    background:
+      linear-gradient(to right, var(--owned-bg) 0%, transparent 40%),
+      linear-gradient(to bottom, transparent 40%, var(--owned-bg) 100%);
+  }
+
+  .floating-window {
+    position: absolute;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+
+  .window-titlebar {
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: move;
+  }
+
+  .window-titlebar .title {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .window-titlebar .sovereignty-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 7px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+
+  .sovereignty-badge.owned {
+    background: var(--owned-bg);
+    color: var(--owned-border);
+    border: 1px solid var(--owned-border);
+  }
+
+  .sovereignty-badge.external {
+    background: var(--external-bg);
+    color: var(--external-border);
+    border: 1px solid var(--external-border);
+    transform: skewX(-8deg);
+  }
+
+  .window-dots {
+    display: flex;
+    gap: 5px;
+  }
+
+  .window-dots span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+  }
+
+  .window-body {
+    padding: 16px;
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.7;
+  }
+
+  .window-body .doc-line {
+    height: 6px;
+    background: var(--surface-2);
+    border-radius: 3px;
+    margin-bottom: 8px;
+  }
+
+  .window-body .doc-line.short { width: 60%; }
+  .window-body .doc-line.medium { width: 80%; }
+  .window-body .doc-line.long { width: 95%; }
+  .window-body .doc-line.heading {
+    height: 10px;
+    width: 40%;
+    background: var(--border);
+    margin-bottom: 12px;
+  }
+
+  /* Skill hint */
+  .skill-hint {
+    position: absolute;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 5px 12px;
+    font-size: 9px;
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    opacity: 0.7;
+  }
+
+  .skill-hint .skill-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  /* ====================== */
+  /* VIEW 4: SEARCH/FILTER  */
+  /* ====================== */
+
+  .search-canvas {
+    position: absolute;
+    inset: 0;
+    background: var(--bg);
+  }
+
+  .search-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(10, 10, 12, 0.85);
+    backdrop-filter: blur(8px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 60px;
+  }
+
+  .search-box {
+    width: 520px;
+    max-width: 80%;
+    background: var(--surface);
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .search-box .search-icon {
+    font-size: 16px;
+    color: var(--text-dim);
+  }
+
+  .search-box .search-input {
+    font-size: 15px;
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    flex: 1;
+  }
+
+  .search-box .search-input::placeholder { color: var(--text-dim); }
+
+  .search-box .timebox {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--accent);
+    background: var(--accent-glow);
+    border: 1px solid rgba(107, 163, 214, 0.3);
+    border-radius: 6px;
+    padding: 4px 10px;
+  }
+
+  /* Filter chips */
+  .filter-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  .filter-chip {
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 6px 14px;
+    letter-spacing: 0.03em;
+  }
+
+  .filter-chip.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-glow);
+  }
+
+  /* Search results */
+  .search-results {
+    margin-top: 24px;
+    width: 520px;
+    max-width: 80%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .search-result-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .search-result-item .result-shape {
+    width: 28px;
+    height: 20px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  .result-shape.owned {
+    background: var(--owned-bg);
+    border: 1px solid var(--owned-border);
+  }
+
+  .result-shape.external {
+    background: var(--external-bg);
+    border: 1px solid var(--external-border);
+    transform: skewX(-12deg);
+  }
+
+  .search-result-item .result-info {
+    flex: 1;
+  }
+
+  .result-info .result-title {
+    font-size: 12px;
+    color: var(--text);
+    margin-bottom: 2px;
+  }
+
+  .result-info .result-meta {
+    font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-muted);
+  }
+
+  .result-date {
+    font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-muted);
+  }
+
+  /* ====================== */
+  /* VIEW 5: TASKBAR DETAIL */
+  /* ====================== */
+
+  .taskbar-detail-canvas {
+    position: absolute;
+    inset: 0;
+    background: var(--bg);
+    display: flex;
+    align-items: flex-end;
+  }
+
+  .taskbar-detail {
+    width: 100%;
+    background: var(--taskbar-bg);
+    border-top: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .tb-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .tb-section-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 7px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-muted);
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+  }
+
+  .tb-card {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    min-width: 120px;
+  }
+
+  .tb-card .tb-card-title {
+    font-size: 10px;
+    color: var(--text);
+    margin-bottom: 3px;
+    white-space: nowrap;
+  }
+
+  .tb-card .tb-card-meta {
+    font-size: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-muted);
+  }
+
+  .tb-card.pinned {
+    border-color: var(--accent);
+    box-shadow: 0 0 8px var(--accent-glow);
+  }
+
+  .tb-card.pinned .tb-pin {
+    font-size: 8px;
+    color: var(--accent);
+    margin-left: 6px;
+  }
+
+  .tb-spacer { flex: 1; }
+
+  .tb-action-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  .tb-action-btn.mic {
+    border-color: rgba(107, 163, 214, 0.4);
+    color: var(--accent);
+  }
+
+  .tb-minimap-toggle {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    color: var(--text-dim);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    letter-spacing: 0.06em;
+  }
+
+  /* Expanded AI bubble */
+  .ai-bubble-expanded {
+    position: absolute;
+    bottom: 66px;
+    right: 20px;
+    width: 280px;
+    background: var(--surface);
+    border: 1.5px solid var(--accent);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 8px 40px rgba(107, 163, 214, 0.15);
+  }
+
+  .ai-bubble-header {
+    padding: 10px 14px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .ai-bubble-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .ai-bubble-title {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text);
+  }
+
+  .ai-bubble-body {
+    padding: 12px 14px;
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.6;
+  }
+
+  .ai-bubble-input {
+    border-top: 1px solid var(--border);
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .ai-bubble-input-field {
+    flex: 1;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  .ai-input-mic {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1px solid rgba(107, 163, 214, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    color: var(--accent);
+  }
+
+  /* ---- ANNOTATIONS ---- */
+  .annotation {
+    position: absolute;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--accent);
+    pointer-events: none;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .annotation .ann-line {
+    width: 24px;
+    height: 1px;
+    background: var(--accent);
+    margin-top: 5px;
+    flex-shrink: 0;
+  }
+
+  .annotation .ann-text {
+    line-height: 1.4;
+    max-width: 160px;
+  }
+
+  /* Minimap overlay */
+  .minimap {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 120px;
+    height: 68px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    opacity: 0.85;
+  }
+
+  .minimap-viewport {
+    position: absolute;
+    border: 1.5px solid var(--accent);
+    border-radius: 2px;
+    background: rgba(107, 163, 214, 0.08);
+  }
+
+  .minimap-dot {
+    position: absolute;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--text-dim);
+  }
+
+  /* Ingest animation hint */
+  .ingest-demo {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .ingest-arrow {
+    font-size: 16px;
+    color: var(--accent);
+    animation: pulse-arrow 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse-arrow {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+
+  .morph-before {
+    background: var(--external-bg);
+    border: 1.5px solid var(--external-border);
+    padding: 6px 14px;
+    font-size: 9px;
+    color: var(--text-muted);
+    transform: skewX(-12deg);
+  }
+
+  .morph-before > span { transform: skewX(12deg); display: block; }
+
+  .morph-after {
+    background: var(--owned-bg);
+    border: 1.5px solid var(--owned-border);
+    border-radius: 4px;
+    padding: 6px 14px;
+    font-size: 9px;
+    color: var(--text-muted);
+  }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="wireframe-nav">
+  <div class="logo">SOVEREIGN OS</div>
+  <button class="active" onclick="showView('homebase')">Homebase</button>
+  <button onclick="showView('zoomed')">Zoomed Out</button>
+  <button onclick="showView('docopen')">Document Open</button>
+  <button onclick="showView('search')">Search & Filter</button>
+  <button onclick="showView('taskbar-view')">Taskbar Detail</button>
+</nav>
+
+<!-- =============================== -->
+<!-- VIEW 1: HOMEBASE                -->
+<!-- =============================== -->
+<div class="view active" id="view-homebase">
+  <div class="view-label">Wireframe 01</div>
+  <div class="view-title">Homebase — Present Moment</div>
+  <div class="view-desc">The default view. A clean canvas anchored at "now" on the timeline. Subtle fading hints of recent activity appear on the left. The taskbar is always visible at the bottom. The AI bubble rests in the corner.</div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch owned"></div>Owned content (rectangle)</div>
+    <div class="legend-item"><div class="legend-swatch external"></div>External content (parallelogram)</div>
+    <div class="legend-item"><div class="legend-swatch bubble"></div>AI Orchestrator bubble</div>
+  </div>
+
+  <div class="screen-frame">
+    <div class="monitor-bezel"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+    <div class="screen-content">
+      <div class="homebase-canvas">
+        <!-- Timeline ruler -->
+        <div class="timeline-ruler">
+          <div class="line"></div>
+          <span class="tick" style="left: 10%">Jan 26</span>
+          <span class="tick" style="left: 28%">Mar</span>
+          <span class="tick" style="left: 46%">May</span>
+          <span class="tick" style="left: 64%">Jul</span>
+          <span class="tick" style="left: 78%">Sep</span>
+          <div class="now-marker"></div>
+          <span class="now-label">NOW</span>
+        </div>
+
+        <!-- Past hints (fading) -->
+        <div class="past-hints">
+          <div class="past-hint-card">
+            <div class="hint-type">Thread</div>
+            Project Sovereign
+          </div>
+          <div class="past-hint-card faded">
+            <div class="hint-type">Document</div>
+            UI Spec v3.md
+          </div>
+          <div class="past-hint-card faded" style="opacity: 0.2; transform: translateX(-20px)">
+            <div class="hint-type">Contact</div>
+            Alex — review call
+          </div>
+        </div>
+
+        <!-- Center -->
+        <div class="homebase-center">
+          <div class="greeting">Good morning</div>
+          <div class="sub">scroll · search · speak</div>
+        </div>
+
+        <!-- AI Bubble -->
+        <div class="ai-bubble">
+          <div class="ai-bubble-inner"></div>
+        </div>
+
+        <!-- Taskbar -->
+        <div class="taskbar">
+          <div class="taskbar-item active">
+            <div class="icon"></div>
+            Project Sovereign
+          </div>
+          <div class="taskbar-item">
+            <div class="icon" style="background: var(--text-dim)"></div>
+            UI Spec v3.md
+          </div>
+          <div class="taskbar-divider"></div>
+          <div class="taskbar-item">
+            <div class="icon" style="background: var(--milestone); opacity: 0.5"></div>
+            Alex
+          </div>
+          <div class="taskbar-right">
+            <div class="taskbar-btn">🎤</div>
+            <div class="taskbar-btn">⌂</div>
+          </div>
+        </div>
+
+        <!-- Annotations -->
+        <div class="annotation" style="top: 14px; right: 8%; flex-direction: row-reverse;">
+          <div class="ann-text">NOW marker — always visible on timeline</div>
+          <div class="ann-line"></div>
+        </div>
+        <div class="annotation" style="top: 72px; left: 200px;">
+          <div class="ann-line"></div>
+          <div class="ann-text">Recent activity fades into the past (left)</div>
+        </div>
+        <div class="annotation" style="bottom: 64px; right: 80px; flex-direction: row-reverse;">
+          <div class="ann-text">AI Orchestrator — tap to expand</div>
+          <div class="ann-line"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- VIEW 2: ZOOMED OUT CANVAS       -->
+<!-- =============================== -->
+<div class="view" id="view-zoomed">
+  <div class="view-label">Wireframe 02</div>
+  <div class="view-title">Zoomed-Out Canvas — Timeline & Threads</div>
+  <div class="view-desc">Scrolling out reveals the full canvas: horizontal timeline with milestone markers, vertical thread rows with cards (sparse) and density blobs (dense). Dashed lines show soft links between related threads. External content appears as parallelograms.</div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch owned"></div>Owned (rectangle)</div>
+    <div class="legend-item"><div class="legend-swatch external"></div>External (parallelogram)</div>
+    <div class="legend-item"><div class="legend-swatch milestone"></div>Milestone marker</div>
+    <div class="legend-item"><div class="legend-swatch link"></div>Soft branch link</div>
+  </div>
+
+  <div class="screen-frame">
+    <div class="monitor-bezel"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+    <div class="screen-content">
+      <div class="canvas-zoomed">
+
+        <!-- Timeline axis -->
+        <div class="timeline-axis">
+          <div class="timeline-month">JAN</div>
+          <div class="timeline-month">FEB</div>
+          <div class="timeline-month">MAR</div>
+          <div class="timeline-month">APR</div>
+          <div class="timeline-month">MAY</div>
+          <div class="timeline-month">JUN</div>
+          <div class="timeline-month">JUL</div>
+          <div class="timeline-month">AUG</div>
+          <div class="timeline-month">SEP</div>
+          <div class="timeline-month">OCT</div>
+          <div class="timeline-month">NOV</div>
+          <div class="timeline-month">DEC</div>
+        </div>
+
+        <!-- Milestones -->
+        <div class="milestone-marker" style="left: 22%"></div>
+        <div class="milestone-label" style="left: 22%">v1 spec</div>
+        <div class="milestone-marker" style="left: 56%"></div>
+        <div class="milestone-label" style="left: 56%">prototype</div>
+        <div class="milestone-marker" style="left: 82%"></div>
+        <div class="milestone-label" style="left: 82%">beta</div>
+
+        <!-- Thread 1: Project Sovereign -->
+        <div class="thread-row" style="top: 60px;">
+          <div class="thread-label">Project Sovereign</div>
+          <div class="thread-content">
+            <div class="node-card" style="left: 5%">
+              <div class="node-type">doc</div>
+              Vision.md
+            </div>
+            <div class="node-card" style="left: 18%">
+              <div class="node-type">doc</div>
+              Requirements
+            </div>
+            <div class="node-card" style="left: 32%">
+              <div class="node-type">thread</div>
+              UI Brainstorm
+            </div>
+            <!-- Dense area -->
+            <div class="density-blob" style="left: 42%; width: 80px; height: 50px; top: 15px;"></div>
+            <div class="node-card" style="left: 62%">
+              <div class="node-type">doc</div>
+              Wireframes
+            </div>
+            <div class="node-card" style="left: 78%">
+              <div class="node-type">doc</div>
+              Tech Spec
+            </div>
+          </div>
+        </div>
+
+        <!-- Thread 2: Research -->
+        <div class="thread-row" style="top: 155px;">
+          <div class="thread-label">Research</div>
+          <div class="thread-content">
+            <div class="node-external" style="left: 8%">
+              <span class="node-type">web</span>
+              <span>P2P Storage paper</span>
+            </div>
+            <div class="node-external" style="left: 25%">
+              <span class="node-type">web</span>
+              <span>Shamir's SSS</span>
+            </div>
+            <div class="node-card" style="left: 40%">
+              <div class="node-type">note</div>
+              Comparison notes
+            </div>
+            <div class="density-blob" style="left: 55%; width: 100px; height: 40px; top: 20px;"></div>
+            <div class="node-external" style="left: 75%">
+              <span class="node-type">web</span>
+              <span>Graph DB bench</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Thread 3: Contacts -->
+        <div class="thread-row" style="top: 250px;">
+          <div class="thread-label">Contacts</div>
+          <div class="thread-content">
+            <div class="node-card" style="left: 12%">
+              <div class="node-type">call</div>
+              Alex — kickoff
+            </div>
+            <div class="node-card" style="left: 38%">
+              <div class="node-type">msg</div>
+              Dev team sync
+            </div>
+            <div class="node-card" style="left: 60%">
+              <div class="node-type">call</div>
+              Alex — review
+            </div>
+            <div class="node-card" style="left: 80%">
+              <div class="node-type">msg</div>
+              Beta testers
+            </div>
+          </div>
+        </div>
+
+        <!-- Soft branch links (dashed) -->
+        <svg style="position:absolute;inset:0;pointer-events:none;width:100%;height:100%">
+          <!-- Link: Project Sovereign UI Brainstorm → Research Comparison notes -->
+          <line x1="38%" y1="100px" x2="44%" y2="170px" stroke="#4a4860" stroke-width="1.5" stroke-dasharray="4 3" />
+          <!-- Link: Research → Contacts dev sync -->
+          <line x1="44%" y1="195px" x2="42%" y2="270px" stroke="#4a4860" stroke-width="1.5" stroke-dasharray="4 3" />
+          <!-- Link: Project Sovereign wireframes → Contacts Alex review -->
+          <line x1="66%" y1="100px" x2="64%" y2="270px" stroke="#4a4860" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.5" />
+        </svg>
+
+        <!-- Minimap -->
+        <div class="minimap">
+          <div class="minimap-viewport" style="top: 15%; left: 20%; width: 30%; height: 50%"></div>
+          <div class="minimap-dot" style="top: 25%; left: 30%"></div>
+          <div class="minimap-dot" style="top: 40%; left: 45%"></div>
+          <div class="minimap-dot" style="top: 55%; left: 60%"></div>
+          <div class="minimap-dot" style="top: 35%; left: 70%"></div>
+          <div class="minimap-dot" style="top: 50%; left: 80%"></div>
+        </div>
+
+        <!-- Taskbar -->
+        <div class="taskbar">
+          <div class="taskbar-item">
+            <div class="icon"></div>
+            Project Sovereign
+          </div>
+          <div class="taskbar-item">
+            <div class="icon" style="background: var(--text-dim)"></div>
+            Wireframes
+          </div>
+          <div class="taskbar-divider"></div>
+          <div class="taskbar-item">
+            <div class="icon" style="background: var(--milestone); opacity: 0.5"></div>
+            Alex
+          </div>
+          <div class="taskbar-right">
+            <div class="taskbar-btn">🎤</div>
+            <div class="taskbar-btn">⌂</div>
+          </div>
+        </div>
+
+        <!-- Annotations -->
+        <div class="annotation" style="top: 36px; left: 22.5%;">
+          <div class="ann-line"></div>
+          <div class="ann-text">Milestone markers span full height</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- VIEW 3: DOCUMENT OPEN           -->
+<!-- =============================== -->
+<div class="view" id="view-docopen">
+  <div class="view-label">Wireframe 03</div>
+  <div class="view-title">Document Open — Floating Windows</div>
+  <div class="view-desc">Documents open as free-floating, resizable windows layered on top of the canvas. Each window shows a sovereignty badge (owned vs external shape). The AI bubble can suggest relevant Skills. Background canvas remains partially visible.</div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch owned"></div>Owned document window</div>
+    <div class="legend-item"><div class="legend-swatch external"></div>External document window</div>
+    <div class="legend-item"><div class="legend-swatch bubble"></div>AI with Skill suggestion</div>
+  </div>
+
+  <div class="screen-frame">
+    <div class="monitor-bezel"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+    <div class="screen-content">
+      <div class="doc-canvas">
+        <div class="doc-bg-hint"></div>
+
+        <!-- Faint canvas threads behind -->
+        <svg style="position:absolute;inset:0;pointer-events:none;width:100%;height:100%;opacity:0.12">
+          <line x1="0" y1="35%" x2="100%" y2="35%" stroke="#3a6b9f" stroke-width="1" />
+          <line x1="0" y1="55%" x2="100%" y2="55%" stroke="#3a6b9f" stroke-width="1" />
+          <line x1="0" y1="75%" x2="100%" y2="75%" stroke="#3a6b9f" stroke-width="1" />
+          <rect x="5%" y="30%" width="6%" height="4%" rx="2" fill="#1b2a3a" stroke="#3a6b9f" stroke-width="0.5" />
+          <rect x="15%" y="30%" width="6%" height="4%" rx="2" fill="#1b2a3a" stroke="#3a6b9f" stroke-width="0.5" />
+          <rect x="25%" y="50%" width="6%" height="4%" rx="2" fill="#1b2a3a" stroke="#3a6b9f" stroke-width="0.5" />
+        </svg>
+
+        <!-- Main owned doc window -->
+        <div class="floating-window" style="top: 8%; left: 8%; width: 50%; height: 70%;">
+          <div class="window-titlebar">
+            <div class="title">
+              UI Spec v3.md
+              <span class="sovereignty-badge owned">OWNED</span>
+            </div>
+            <div class="window-dots"><span></span><span></span><span></span></div>
+          </div>
+          <div class="window-body">
+            <div class="doc-line heading"></div>
+            <div class="doc-line long"></div>
+            <div class="doc-line long"></div>
+            <div class="doc-line medium"></div>
+            <div class="doc-line short"></div>
+            <div class="doc-line long" style="margin-top: 16px"></div>
+            <div class="doc-line long"></div>
+            <div class="doc-line medium"></div>
+            <div class="doc-line heading" style="margin-top: 16px; width: 30%"></div>
+            <div class="doc-line long"></div>
+            <div class="doc-line long"></div>
+            <div class="doc-line short"></div>
+            <div class="doc-line medium"></div>
+          </div>
+        </div>
+
+        <!-- External doc window (overlapping) -->
+        <div class="floating-window" style="top: 20%; left: 52%; width: 38%; height: 50%;">
+          <div class="window-titlebar">
+            <div class="title">
+              Graph DB Benchmark
+              <span class="sovereignty-badge external">EXTERNAL</span>
+            </div>
+            <div class="window-dots"><span></span><span></span><span></span></div>
+          </div>
+          <div class="window-body">
+            <div class="doc-line heading" style="width: 50%"></div>
+            <div class="doc-line long"></div>
+            <div class="doc-line medium"></div>
+            <div class="doc-line long"></div>
+            <div class="doc-line short"></div>
+            <div class="doc-line medium" style="margin-top: 12px"></div>
+            <div class="doc-line long"></div>
+          </div>
+        </div>
+
+        <!-- Ingest animation hint -->
+        <div class="ingest-demo" style="top: 76%; left: 55%;">
+          <div class="morph-before"><span>Web article</span></div>
+          <div class="ingest-arrow">→</div>
+          <div class="morph-after">Owned copy</div>
+          <div style="font-size: 8px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; margin-left: 8px;">INGEST</div>
+        </div>
+
+        <!-- Skill hints -->
+        <div class="skill-hint" style="top: 12%; right: 6%;">
+          <div class="skill-dot"></div>
+          Suggest: Compare Skill
+        </div>
+
+        <!-- AI Bubble -->
+        <div class="ai-bubble" style="bottom: 14%; right: 3%;">
+          <div class="ai-bubble-inner"></div>
+        </div>
+
+        <!-- Taskbar -->
+        <div class="taskbar">
+          <div class="taskbar-item active">
+            <div class="icon"></div>
+            UI Spec v3.md
+          </div>
+          <div class="taskbar-item">
+            <div class="icon" style="background: var(--external-border); opacity: 0.5"></div>
+            Graph DB Bench
+          </div>
+          <div class="taskbar-divider"></div>
+          <div class="taskbar-item">
+            <div class="icon" style="background: var(--milestone); opacity: 0.5"></div>
+            Alex
+          </div>
+          <div class="taskbar-right">
+            <div class="taskbar-btn">🎤</div>
+            <div class="taskbar-btn">⌂</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- VIEW 4: SEARCH & FILTER         -->
+<!-- =============================== -->
+<div class="view" id="view-search">
+  <div class="view-label">Wireframe 04</div>
+  <div class="view-title">Search & Filter Overlay</div>
+  <div class="view-desc">A blurred overlay with search field, timebox jump, and type filters. Results show sovereignty shape distinction inline. The search field is always accessible from any view.</div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch owned"></div>Owned result</div>
+    <div class="legend-item"><div class="legend-swatch external"></div>External result</div>
+  </div>
+
+  <div class="screen-frame">
+    <div class="monitor-bezel"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+    <div class="screen-content">
+      <div class="search-canvas">
+        <!-- Faint background threads -->
+        <svg style="position:absolute;inset:0;pointer-events:none;width:100%;height:100%;opacity:0.06">
+          <line x1="0" y1="30%" x2="100%" y2="30%" stroke="#3a6b9f" stroke-width="1" />
+          <line x1="0" y1="50%" x2="100%" y2="50%" stroke="#3a6b9f" stroke-width="1" />
+          <line x1="0" y1="70%" x2="100%" y2="70%" stroke="#3a6b9f" stroke-width="1" />
+        </svg>
+
+        <div class="search-overlay">
+          <!-- Search box -->
+          <div class="search-box">
+            <div class="search-icon">⌕</div>
+            <div class="search-input">P2P storage architecture</div>
+            <div class="timebox">2026</div>
+          </div>
+
+          <!-- Filters -->
+          <div class="filter-row">
+            <div class="filter-chip active">All</div>
+            <div class="filter-chip">Documents</div>
+            <div class="filter-chip">Skills</div>
+            <div class="filter-chip">Contacts</div>
+          </div>
+
+          <!-- Results -->
+          <div class="search-results">
+            <div class="search-result-item">
+              <div class="result-shape owned"></div>
+              <div class="result-info">
+                <div class="result-title">Distributed Storage Architecture</div>
+                <div class="result-meta">doc · Project Sovereign thread</div>
+              </div>
+              <div class="result-date">Mar 14</div>
+            </div>
+            <div class="search-result-item">
+              <div class="result-shape external"></div>
+              <div class="result-info">
+                <div class="result-title">P2P Storage Benchmark Paper</div>
+                <div class="result-meta">web · Research thread</div>
+              </div>
+              <div class="result-date">Feb 22</div>
+            </div>
+            <div class="search-result-item">
+              <div class="result-shape owned"></div>
+              <div class="result-info">
+                <div class="result-title">Shamir's SSS — Implementation Notes</div>
+                <div class="result-meta">note · Research thread</div>
+              </div>
+              <div class="result-date">Apr 03</div>
+            </div>
+            <div class="search-result-item">
+              <div class="result-shape external"></div>
+              <div class="result-info">
+                <div class="result-title">IPFS vs Hypercore Comparison</div>
+                <div class="result-meta">web · Research thread</div>
+              </div>
+              <div class="result-date">Jan 18</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- =============================== -->
+<!-- VIEW 5: TASKBAR DETAIL          -->
+<!-- =============================== -->
+<div class="view" id="view-taskbar-view">
+  <div class="view-label">Wireframe 05</div>
+  <div class="view-title">Taskbar Detail & AI Bubble Expanded</div>
+  <div class="view-desc">The anchored bottom taskbar shows pinned items, recent context, and action buttons (mic, homebase, minimap toggle). The AI Orchestrator bubble is shown in its expanded conversational state.</div>
+
+  <div class="screen-frame">
+    <div class="monitor-bezel"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+    <div class="screen-content">
+      <div class="taskbar-detail-canvas">
+        <!-- Faint canvas -->
+        <div style="position:absolute;inset:0;opacity:0.08;">
+          <svg style="width:100%;height:100%">
+            <line x1="0" y1="30%" x2="100%" y2="30%" stroke="#3a6b9f" stroke-width="1" />
+            <line x1="0" y1="50%" x2="100%" y2="50%" stroke="#3a6b9f" stroke-width="1" />
+          </svg>
+        </div>
+
+        <!-- Expanded AI Bubble -->
+        <div class="ai-bubble-expanded">
+          <div class="ai-bubble-header">
+            <div class="ai-bubble-dot"></div>
+            <div class="ai-bubble-title">Orchestrator</div>
+          </div>
+          <div class="ai-bubble-body">
+            You're working on the storage spec. I found 3 related research papers from your Research thread. Want me to pull key findings into a comparison table?
+          </div>
+          <div class="ai-bubble-input">
+            <div class="ai-bubble-input-field">Ask or speak...</div>
+            <div class="ai-input-mic">🎤</div>
+          </div>
+        </div>
+
+        <!-- Detailed Taskbar -->
+        <div class="taskbar-detail">
+          <div class="tb-section">
+            <div class="tb-section-label">PINNED</div>
+            <div class="tb-card pinned">
+              <div class="tb-card-title">Project Sovereign <span class="tb-pin">📌</span></div>
+              <div class="tb-card-meta">thread · 24 items</div>
+            </div>
+          </div>
+
+          <div class="tb-section">
+            <div class="tb-section-label">RECENT</div>
+            <div class="tb-card">
+              <div class="tb-card-title">Storage Spec.md</div>
+              <div class="tb-card-meta">doc · edited 2h ago</div>
+            </div>
+            <div class="tb-card">
+              <div class="tb-card-title">Alex</div>
+              <div class="tb-card-meta">contact · call yesterday</div>
+            </div>
+          </div>
+
+          <div class="tb-spacer"></div>
+
+          <div class="tb-minimap-toggle">MINIMAP</div>
+          <div class="tb-action-btn mic">🎤</div>
+          <div class="tb-action-btn">⌂</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function showView(id) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.wireframe-nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('view-' + id).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>
+
+</body>
+</html>

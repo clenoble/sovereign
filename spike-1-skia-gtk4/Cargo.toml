@@ -1,0 +1,17 @@
+[package]
+name = "spike-1-skia-gtk4"
+version = "0.1.0"
+edition = "2021"
+description = "Validation spike: Skia CPU rendering inside GTK4 DrawingArea (Cairo blit)"
+
+[dependencies]
+gtk4 = "0.9"
+skia-safe = { version = "0.91", features = ["gl"] }
+gl = "0.14"
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[profile.release]
+opt-level = 2
+lto = "thin"

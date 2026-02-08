@@ -1,0 +1,11 @@
+Category,Requirement,Description,Choice/Status,Engineering Challenge
+Architecture,Content-First Design,Data exists independently of software; "Skills" are called to data.,Primary Paradigm,Universal Schema mapping.
+File System,Local Graph JSON/B,Standardized internal format for all sovereign documents.,Default Storage,Serialization overhead vs speed.
+UI/UX,Document Taskbar,Switching between intent threads rather than application icons.,Design Choice,Visualizing "Project" contexts.
+UI/UX,Spatial Map,3D zoomable navigation using depth as a proxy for time.,Navigation Logic,Screen-space optimization & clustering.
+Input,Multimodal AI Agent,Interaction via typing; voice; drawing; and stylus.,Interaction Model,Local semantic indexing of data.
+Security,Identity Firewall,Centralized PII/Cookie management with human-readable dashboard.,Identity Proxy,Bypassing Big Tech "Hard Blocks."
+Security,Distributed Backup,Redundant; encrypted P2P fragments via storage swarm.,Storage Choice,Network latency & availability risk.
+Recovery,Social Recovery,3-of-5 Guardian shard system for key restoration.,Recovery Logic,Asynchronous recovery UX.
+Interoperability,Soft Warning System,Alerts user when legacy formats (.docx) lose data vs Master JSON.,UI Friction,Maintaining compatibility vs obsolescence.
+Sovereignty,Sovereignty Halo,Visual distinction between local (Owned) and external (Web) content.,Visual Metric,Defining "Ingest" workflows.
