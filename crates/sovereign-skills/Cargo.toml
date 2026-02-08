@@ -1,0 +1,12 @@
+[package]
+name = "sovereign-skills"
+version = "0.1.0"
+edition = "2021"
+description = "Skill manifest parsing, registry, and CoreSkill trait"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

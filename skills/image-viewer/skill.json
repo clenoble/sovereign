@@ -1,0 +1,9 @@
+{
+    "name": "Image Viewer",
+    "version": "0.1.0",
+    "description": "View and annotate images with zoom and pan controls",
+    "author": "Sovereign OS",
+    "skill_type": "core",
+    "capabilities": ["view", "zoom", "annotate"],
+    "file_types": ["png", "jpg", "jpeg", "gif", "webp", "svg"]
+}

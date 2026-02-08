@@ -1,0 +1,9 @@
+{
+    "name": "PDF Export",
+    "version": "0.1.0",
+    "description": "Export documents to PDF format",
+    "author": "Community",
+    "skill_type": "community",
+    "capabilities": ["export"],
+    "file_types": ["pdf"]
+}

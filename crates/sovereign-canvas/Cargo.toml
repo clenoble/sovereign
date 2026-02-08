@@ -1,0 +1,7 @@
+[package]
+name = "sovereign-canvas"
+version = "0.1.0"
+edition = "2021"
+description = "Spatial canvas with Skia rendering (Phase 2)"
+
+[dependencies]

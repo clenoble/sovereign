@@ -1,0 +1,7 @@
+[package]
+name = "sovereign-ai"
+version = "0.1.0"
+edition = "2021"
+description = "AI orchestrator with llama.cpp inference (Phase 3)"
+
+[dependencies]
