@@ -862,25 +862,26 @@ See also: **Appendix B — AI Orchestrator UX Principles** for the user-facing d
 
 ### Default Model Suite
 
+**Runtime:** All models run through native C/C++ backends (llama.cpp, whisper.cpp, Piper). No Python runtime required for MVP inference. PyO3 bridge available as future extension via `ModelBackend` trait.
+
 **Always-Running Models (loaded on boot):**
 
-| Model | Size | Purpose | Hardware |
-|-------|------|---------|----------|
-| **Router Model** (Phi-3-mini) | 1-3B quantized | Intent classification | CPU, 2GB RAM |
-| **Whisper-small** | 244M | Voice → text (real-time) | CPU/GPU, 1GB VRAM |
-| **Piper TTS** | 10-50MB | Text → voice | CPU |
-| **TrOCR-base** | 334M | Handwriting & OCR | GPU, 1GB VRAM |
-| **sentence-transformers** | 110M | Semantic search | CPU/GPU |
-| **Stable Diffusion XL** | ~3GB quantized | Image generation | GPU, 4GB VRAM |
-| **CodeGemma-2B** | 2B quantized | Code completion | GPU, 2GB VRAM |
+| Model | Size | Purpose | Hardware | Runtime |
+|-------|------|---------|----------|---------|
+| **Qwen2.5-3B-Instruct** | 3B, ~2GB GGUF Q4 | Router: intent classification, quick generation | CPU, 2GB RAM | llama.cpp |
+| **whisper.cpp large-v3-turbo** | ~1.5GB | Voice → text (real-time) | CPU/GPU | whisper.cpp (native C++) |
+| **Piper TTS** | 10-50MB | Text → voice | CPU | Standalone binary |
+| **sentence-transformers** | ~110MB GGUF | Semantic search embeddings | CPU/GPU | llama.cpp (BERT GGUF) |
 
-**Total baseline:** ~8-10GB VRAM, 12GB RAM
+**Total baseline:** ~4-5GB VRAM, 8GB RAM
 
 **On-Demand Reasoning Model:**
 
-| Model | Size | When Loaded |
-|-------|------|-------------|
-| **Llama 3.1-8B** (quantized) | 4-5GB | Complex multi-step tasks, ambiguity resolution |
+| Model | Size | When Loaded | Runtime |
+|-------|------|-------------|---------|
+| **Qwen2.5-7B-Instruct** | 7B, ~5GB GGUF Q4 | Complex multi-step tasks, ambiguity resolution | llama.cpp |
+
+**Total with reasoning model loaded:** ~9-10GB VRAM
 
 **Trigger conditions:**
 - Request involves >2 skills in sequence
@@ -889,15 +890,21 @@ See also: **Appendix B — AI Orchestrator UX Principles** for the user-facing d
 
 **Unload after:** 5 minutes of inactivity
 
+**Deferred to post-MVP:**
+- Image generation (FLUX.1-schnell or SDXL) — not core to document workflow, saves ~3-4GB VRAM
+- TrOCR-base (handwriting OCR) — add when stylus input is implemented
+- CodeGemma (code completion) — add as optional skill
+
 ### Model Customization
 
 **User options:**
-- Install additional models locally (any size, if hardware supports)
-- Set preferred models for specific tasks
+- Install additional GGUF models locally (any size, if hardware supports)
+- Set preferred models for specific tasks via `models.toml`
 - Optional cloud API integration (never default, requires explicit opt-in)
+- Future: PyO3 bridge for Python-only models (post-MVP, via `ModelBackend` trait)
 
 **Pre-quantized defaults:**
-- All shipped models are 4-bit quantized
+- All shipped models are 4-bit quantized (GGUF Q4_K_M)
 - Reduces size by ~75%, slight quality trade-off
 - Power users can install full-precision versions
 
@@ -925,7 +932,7 @@ Audio Stream → Porcupine (wake word detection, 15ms chunks)
               ↓ (wake word detected)
          Speaker Verification (voiceprint check, optional)
               ↓ (speaker confirmed or skipped)
-         Whisper-small (transcription, rolling buffer)
+         whisper.cpp large-v3-turbo (transcription, rolling buffer)
               ↓ (voice activity detection)
          Orchestrator (intent parsing via control plane)
 ```
@@ -1243,21 +1250,22 @@ if not results['gpu_compute']:
 
 ### Model Candidates
 
-**Router (1-3B):**
-- **Phi-3-mini** (3.8B, Microsoft, Apache 2.0) - Recommended
-- Llama 3.2-3B (Meta, Llama 3 license)
-- StableLM-3B (Stability AI, Apache 2.0)
+**Router (1-3B) — Selected: Qwen2.5-3B-Instruct**
+- **Qwen2.5-3B-Instruct** (Alibaba, Apache 2.0) — **Selected**. Best multilingual (EN/FR), strong instruction-following, well-supported GGUF
+- Phi-4-mini (3.8B, Microsoft, MIT) — Strong reasoning, English-centric
+- Llama 3.2-3B (Meta, Llama 3 license) — Large community, weaker French
 
-**Reasoning (7-13B):**
-- **Llama 3.1-8B** (Meta) - Recommended
-- Mistral-7B-v0.3 (Mistral AI, Apache 2.0)
-- Qwen2.5-7B (Alibaba, Apache 2.0)
+**Reasoning (7-13B) — Selected: Qwen2.5-7B-Instruct**
+- **Qwen2.5-7B-Instruct** (Alibaba, Apache 2.0) — **Selected**. Excellent multilingual, same tokenizer family as router, strong coding
+- Llama 3.3-8B (Meta, Llama 3 license) — Strong English, good tool-use
+- Mistral-7B-v0.3 (Mistral AI, Apache 2.0) — Good European language support, sliding window attention
 
 **Selection criteria:**
 - Open weights (can fine-tune/quantize)
 - Permissive license (commercial use OK)
 - Strong instruction-following
 - Multi-language support (English/French)
+- GGUF format availability (for llama.cpp integration)
 
 ---
 

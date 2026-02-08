@@ -1,7 +1,8 @@
 # Sovereign OS — Implementation Plan
 
-**Date:** February 6, 2026  
-**Target:** MVP Alpha in ~4-6 months  
+**Date:** February 6, 2026
+**Updated:** February 8, 2026
+**Target:** MVP Alpha in ~4-6 months
 **Team:** You (testing, integration, hardware debugging, design decisions) + Claude (code generation, architecture, documentation)
 
 ---
@@ -23,45 +24,55 @@
 
 **Goal:** Validate the three highest-risk integrations before committing to the full build.
 
-### Spike 1: Skia ↔ GTK4 Canvas
+### Spike 1: Skia ↔ GTK4 Canvas — ✅ PASSED
 
 | Item | Detail |
 |------|--------|
 | **Deliverable** | Minimal GTK4 window with embedded Skia surface rendering rectangles, handling zoom/pan via mouse events |
 | **Accept criteria** | Smooth 60fps pan/zoom on your hardware. No tearing, no input lag. |
-| **Fallback** | If Skia integration takes >5 days, pivot to Cairo-only prototype. |
-| **Claude generates** | Rust project scaffold, gtk4-rs window, rust-skia rendering code, mouse event handling |
-| **You test** | Build, run, evaluate rendering quality and performance |
+| **Result** | GPU-accelerated rendering via GLArea + Skia DirectContext. Pan/zoom/hit-testing all functional. |
 
-### Spike 2: SurrealDB Embedded Benchmark
+### Spike 2: SurrealDB Embedded Benchmark — ✅ PASSED
 
 | Item | Detail |
 |------|--------|
 | **Deliverable** | Rust program that creates 50K document nodes with relationships in embedded SurrealDB, runs benchmark queries |
-| **Accept criteria** | Single document fetch < 5ms. Graph traversal (2 hops, 10 results) < 50ms. Bulk insert 50K docs < 30s. |
-| **Fallback** | SQLite + JSONB with application-level graph traversal. |
-| **Claude generates** | Benchmark harness, schema creation, test data generator, query suite |
-| **You test** | Run benchmarks, report numbers |
+| **Accept criteria** | Single document fetch < 5ms. Graph traversal (2 hops, 10 results) < 50ms. Bulk insert 50K docs < 30s. Search by title < 100ms. Thread query < 50ms. |
+| **Result** | All 5 benchmarks pass after adding `idx_thread_id` index. |
 
-### Spike 3: PyO3 + Model Loading
+**Benchmark results (in-memory, SurrealDB 2.6):**
+
+| Benchmark | Result | Target |
+|-----------|--------|--------|
+| Single document fetch | 0.10 ms | < 5 ms |
+| Graph traversal (2 hops) | 0.46 ms | < 50 ms |
+| Bulk insert 50K docs | 9.20 s | < 30 s |
+| Search by title | 3.96 ms | < 100 ms |
+| Thread documents query | 0.12 ms | < 50 ms |
+
+**Lesson learned:** SurrealDB requires explicit indexes for field-based queries. The thread query was 688ms without an index, 0.12ms with one. All query-filtered fields must be indexed in the production schema.
+
+### Spike 3: llama.cpp Direct FFI + Model Loading — 🔲 NEXT
 
 | Item | Detail |
 |------|--------|
-| **Deliverable** | Rust binary that loads a quantized Qwen2.5-3B via PyO3, sends a prompt, gets a response, unloads the model |
+| **Deliverable** | Rust binary that loads a quantized Qwen2.5-3B GGUF via `llama-cpp-2` crate, sends a prompt, gets a response, unloads the model |
 | **Accept criteria** | Model loads in < 10s. Inference latency < 500ms for simple classification. Memory returns to baseline after unload (±100MB). |
-| **Fallback** | Subprocess model (Python as separate process, communicate via Unix socket instead of PyO3). |
-| **Claude generates** | PyO3 bridge code, Python model wrapper, memory monitoring script |
+| **Fallback** | PyO3 + llama-cpp-python (adds Python runtime dependency). |
+| **Claude generates** | Rust `llama-cpp-2` integration code, `ModelBackend` trait, memory monitoring, benchmark harness |
 | **You test** | Run on your GPU, measure latency and memory |
 
-**Decision gate:** After week 2, review spike results. Adjust tech choices if any spike fails. Then commit to full build.
+**Design decision:** Direct llama.cpp FFI via Rust instead of PyO3. This eliminates the Python runtime dependency for core inference, removes one FFI boundary, and simplifies deployment. PyO3 can be added later as a second `ModelBackend` implementation if specialist Python-only models are needed.
+
+**Decision gate:** After spike 3, review all results. Adjust tech choices if any spike fails. Then commit to full build.
 
 ---
 
-## Phase 1: Core Foundation (Weeks 3-6)
+## Phase 1a: Data Layer (Weeks 3-4)
 
-**Goal:** Rust core runtime + SurrealDB + basic GTK4 shell. No canvas yet, no AI.
+**Goal:** Rust core runtime + SurrealDB abstraction with CLI harness. Test data layer independently before building UI.
 
-### 1.1 Project Structure & Build System
+### 1a.1 Project Structure & Build System
 
 ```
 sovereign-os/
@@ -69,18 +80,12 @@ sovereign-os/
 ├── crates/
 │   ├── sovereign-core/         # Core runtime, lifecycle, config
 │   ├── sovereign-db/           # SurrealDB abstraction layer
-│   ├── sovereign-skills/       # Skill registry, IPC, lifecycle
+│   ├── sovereign-skills/       # Skill registry, traits, lifecycle
 │   ├── sovereign-canvas/       # Skia canvas widget
 │   ├── sovereign-ui/           # GTK4 shell (taskbar, windows, search)
-│   ├── sovereign-ai/           # PyO3 bridge + orchestrator interface
+│   ├── sovereign-ai/           # llama.cpp bridge + orchestrator interface
 │   └── sovereign-app/          # Main binary, ties everything together
-├── python/
-│   ├── sovereign_ai/           # Python AI orchestrator
-│   │   ├── models/             # Model abstraction layer
-│   │   ├── intent/             # Intent classification
-│   │   ├── voice/              # STT/TTS pipeline
-│   │   └── profile/            # User profile & adaptive learning
-│   └── sovereign_sdk/          # Python SDK for skills
+├── models/                     # GGUF model files (gitignored)
 ├── skills/
 │   ├── markdown-editor/
 │   ├── image-viewer/
@@ -90,28 +95,50 @@ sovereign-os/
 └── config/
 ```
 
+**Note:** No `python/` directory in MVP. AI inference runs entirely through llama.cpp FFI. Python integration (PyO3) is a post-MVP option if specialist models require it.
+
 **Claude generates:** Full project scaffold, Cargo workspace config, CI pipeline (GitHub Actions), development Nix flake or Dockerfile for reproducible builds.
 
-### 1.2 SurrealDB Abstraction Layer (`sovereign-db`)
+### 1a.2 SurrealDB Abstraction Layer (`sovereign-db`)
 
 | Deliverable | Detail |
 |-------------|--------|
 | Schema definition | Document nodes, relationships, threads, version history |
+| Index strategy | Indexes on all query-filtered fields (thread_id, doc_type, title, created_at) |
 | CRUD operations | Create/read/update/delete documents |
 | Graph queries | Traverse relationships (outbound, inbound, N-hop) |
+| Batch operations | Bulk relationship creation in transactions (not individual RELATE queries) |
 | Version control | Commit, branch, diff, merge |
 | Abstraction trait | `GraphDB` trait that could be backed by SurrealDB or SQLite |
 
-### 1.3 Skill Registry & IPC (`sovereign-skills`)
+### 1a.3 Core Runtime (`sovereign-core`)
+
+| Deliverable | Detail |
+|-------------|--------|
+| Config system | Load `config.toml`, validate settings |
+| Lifecycle manager | Startup, shutdown, signal handling |
+| CLI harness | Command-line interface for CRUD operations (test data layer without UI) |
+
+**Phase 1a acceptance criteria:** `sovereign-db` CRUD and graph queries work via CLI. Batch relationship insert performs within 2x of single-insert benchmarks. Schema includes all indexes. Version control (commit/branch) works.
+
+---
+
+## Phase 1b: UI Shell (Weeks 5-6)
+
+**Goal:** GTK4 shell with static mock data. Skill manifest parsing. No data binding yet.
+
+### 1b.1 Skill Registry (`sovereign-skills`)
 
 | Deliverable | Detail |
 |-------------|--------|
 | Skill manifest parser | Parse `skill.json`, validate capabilities |
 | Skill lifecycle | Install, load, unload, health check |
-| IPC protocol | Unix socket server, JSON-RPC request/response |
-| Skill SDK (Python) | `sovereign_sdk` package that skills use to interact with GraphDB |
+| Core skill trait | `CoreSkill` trait for in-process skills (direct Rust calls, no IPC overhead) |
+| Community skill IPC | Unix socket server, JSON-RPC request/response (for sandboxed community/sideloaded skills only) |
 
-### 1.4 GTK4 Shell (`sovereign-ui`)
+**Design decision:** Core skills (markdown-editor, image-viewer, pdf-export) use direct Rust trait calls — no IPC serialization overhead, no Unix socket round-trip. IPC is reserved for community and sideloaded skills where the sandbox boundary requires process isolation.
+
+### 1b.2 GTK4 Shell (`sovereign-ui`)
 
 | Deliverable | Detail |
 |-------------|--------|
@@ -121,7 +148,22 @@ sovereign-os/
 | Search overlay | Blurred overlay with search field, filters, results list |
 | Theme | Dark theme matching wireframes (CSS variables for owned/external colors) |
 
-**Phase 1 acceptance criteria:** Application launches, shows GTK4 shell with taskbar, can create/read documents in SurrealDB via CLI commands. No canvas, no AI, no skills running yet — just the skeleton.
+**Phase 1b acceptance criteria:** Application launches, shows GTK4 shell with taskbar and mock documents. Skill manifests parse correctly. Core skill trait compiles and can be called in-process. No real data binding yet — just the visual skeleton.
+
+---
+
+## Week 7 Checkpoint: Cross-Phase Interface Definitions
+
+**Goal:** Before Phase 2 and 3 run in parallel, define the shared interfaces they'll both build against. This prevents integration pain in Phase 5.
+
+| Interface | Definition |
+|-----------|------------|
+| `CanvasController` trait | `navigate_to_document(doc_id)`, `highlight_card(doc_id)`, `zoom_to_thread(thread_id)`, `get_viewport()` |
+| `OrchestratorEvent` enum | Events the AI sends to the UI: `DocumentOpened`, `SearchResults`, `ActionProposed`, `ActionExecuted` |
+| `UserIntent` struct | Parsed intent from the AI: action type, target document/thread, confidence, entities |
+| `ModelBackend` trait | `classify_intent()`, `generate()`, `embed()` — already designed in spike 3 |
+
+Both Phase 2 and Phase 3 build to these interfaces. Integration in Phase 5 becomes wiring, not redesign.
 
 ---
 
@@ -133,10 +175,11 @@ sovereign-os/
 
 | Deliverable | Detail |
 |-------------|--------|
-| Custom GTK4 widget | Embeds Skia rendering surface |
+| Custom GTK4 widget | Embeds Skia rendering surface (proven in spike 1) |
 | Coordinate system | World coordinates (infinite 2D) ↔ screen coordinates (viewport) |
 | Camera | Pan (drag), zoom (scroll), animate transitions |
 | Hit testing | Click on card → identify which document node |
+| `CanvasController` impl | Implement the trait defined at week 7 checkpoint |
 
 ### 2.2 Canvas Rendering
 
@@ -166,7 +209,16 @@ sovereign-os/
 - User can drag to override positions
 - Position changes saved back to DB
 
-**Phase 2 acceptance criteria:** Canvas renders real documents from SurrealDB. Zoom/pan is smooth. Cards show sovereignty distinction. Progressive density works. Minimap works.
+### 2.5 Canvas Performance Benchmarks
+
+| Benchmark | Target | Description |
+|-----------|--------|-------------|
+| 50K cards at full zoom-out | ≥ 30 fps | Density blob rendering mode |
+| 200 cards in viewport | ≥ 60 fps | Mixed card + truncated label mode |
+| 50 cards at full zoom-in | ≥ 60 fps | Full card preview with labels |
+| Pan/zoom latency | < 16ms | No perceptible lag on input |
+
+**Phase 2 acceptance criteria:** Canvas renders real documents from SurrealDB. Zoom/pan is smooth. Cards show sovereignty distinction. Progressive density works. Minimap works. Performance benchmarks pass.
 
 ---
 
@@ -174,44 +226,36 @@ sovereign-os/
 
 **Goal:** Local AI that classifies intent, routes to skills, and converses with the user.
 
-### 3.1 PyO3 Bridge (`sovereign-ai`)
+### 3.1 llama.cpp Bridge (`sovereign-ai`)
 
 | Deliverable | Detail |
 |-------------|--------|
-| Python interpreter lifecycle | Init, run, shutdown within Rust process |
-| Model registry | Load/unload models, query status, swap models |
-| Async inference | Non-blocking calls from Rust → Python → model → Rust |
-| Memory watchdog | Monitor Python heap, alert on leaks |
+| `ModelBackend` trait impl | llama.cpp backend via `llama-cpp-2` crate (proven in spike 3) |
+| Model registry | Load/unload GGUF models, query status, swap models |
+| Async inference | Non-blocking calls from UI thread → inference thread → callback |
+| Memory watchdog | Monitor RSS, alert on leaks, enforce unload after inactivity timeout |
+| Config loader | Read `models.toml`, instantiate correct backend + quantization level |
 
-### 3.2 Model Abstraction Layer (`python/sovereign_ai/models/`)
-
-| Deliverable | Detail |
-|-------------|--------|
-| `ModelInterface` base class | `classify_intent()`, `generate()`, `embed()` |
-| llama.cpp backend | Load GGUF models via llama-cpp-python |
-| Config loader | Read `models.toml`, instantiate correct backend |
-| Model swap | Hot-swap models without restarting process |
-
-### 3.3 Intent Classifier (`python/sovereign_ai/intent/`)
+### 3.2 Intent Classifier (`sovereign-ai`)
 
 | Deliverable | Detail |
 |-------------|--------|
 | Intent taxonomy | navigation, edit_command, search, voice_dictation, skill_invoke, clarification |
-| Classification pipeline | Input → Router model → Intent + confidence + entities |
+| Classification pipeline | Input → Qwen2.5-3B router → `UserIntent` + confidence + entities |
 | Context manager | Active thread, active document, recent actions → context window |
-| Disambiguation | If confidence < 0.7, generate clarification question |
+| Disambiguation | If confidence < 0.7, generate clarification question via Qwen2.5-7B |
 
-### 3.4 Voice Pipeline (`python/sovereign_ai/voice/`)
+### 3.3 Voice Pipeline (`sovereign-ai`)
 
 | Deliverable | Detail |
 |-------------|--------|
 | Audio capture | System mic → rolling buffer |
 | Wake word detection | openWakeWord (or Porcupine) |
-| STT | Whisper-small, streaming chunks |
-| TTS | Piper, async playback |
+| STT | whisper.cpp large-v3-turbo (native C++, no Python) |
+| TTS | Piper (standalone C++ binary, invoked as subprocess) |
 | Mode detection | Command vs dictation based on context |
 
-### 3.5 User Profile (`python/sovereign_ai/profile/`)
+### 3.4 User Profile (`sovereign-ai`)
 
 | Deliverable | Detail |
 |-------------|--------|
@@ -219,7 +263,7 @@ sovereign-os/
 | Feedback loop | Track suggestion acceptance rate, adjust thresholds |
 | Persistence | JSON file, loaded on startup |
 
-**Phase 3 acceptance criteria:** User can type or speak a command ("open my research notes"), orchestrator classifies intent, routes to correct action (open document), responds via TTS. Disambiguation works for ambiguous queries.
+**Phase 3 acceptance criteria:** User can type or speak a command ("open my research notes"), orchestrator classifies intent via Qwen2.5-3B, routes to correct action (open document), responds via Piper TTS. Disambiguation works for ambiguous queries using Qwen2.5-7B.
 
 ---
 
@@ -233,7 +277,7 @@ sovereign-os/
 |-------------|--------|
 | Editor widget | Text editing with markdown syntax highlighting |
 | Live preview | Side-by-side or toggle rendered view |
-| GraphDB integration | Read/write document content via sovereign_sdk |
+| GraphDB integration | Read/write document content via `CoreSkill` trait (direct Rust calls) |
 | Auto-commit | Commit changes per version control policy |
 | Keyboard shortcuts | Standard editing shortcuts |
 
@@ -249,7 +293,7 @@ sovereign-os/
 | Viewer widget | Display PNG, JPEG, SVG, WebP |
 | Controls | Zoom, pan, fit-to-window, actual-size |
 | Metadata | Show EXIF/file metadata panel |
-| GraphDB integration | Read image file reference from document node |
+| GraphDB integration | Read image file reference from document node via `CoreSkill` trait |
 
 ### 4.3 PDF Export (`skills/pdf-export/`)
 
@@ -260,7 +304,7 @@ sovereign-os/
 | Layout options | Page size, margins, font, header/footer |
 | Engine | typst (Rust-native, fast) or weasyprint (Python, HTML→PDF) |
 
-**Phase 4 acceptance criteria:** User can create a markdown document, edit it, view images, and export to PDF — all through the skill system with proper IPC and GraphDB integration.
+**Phase 4 acceptance criteria:** User can create a markdown document, edit it, view images, and export to PDF — all through the skill system with `CoreSkill` trait calls and GraphDB integration.
 
 ---
 
@@ -272,7 +316,7 @@ sovereign-os/
 
 - User speaks "create a new research note in Project Alpha"
 - Orchestrator classifies intent → create document + assign to thread
-- Document appears on canvas in correct thread
+- Document appears on canvas in correct thread (via `CanvasController`)
 - Markdown editor opens in floating window
 - User edits, auto-commits
 - User says "export this as PDF"
@@ -299,7 +343,7 @@ sovereign-os/
 ### 5.4 Search & Semantic Index
 
 - Full-text search via SurrealDB
-- Semantic search via sentence-transformers embeddings
+- Semantic search via GGUF embedding model (loaded through `ModelBackend` trait)
 - Search overlay shows results with sovereignty shapes
 - Timebox jump filters by date range
 
@@ -308,8 +352,8 @@ sovereign-os/
 | Type | Tool | Coverage Target |
 |------|------|----------------|
 | Rust unit tests | cargo test | Core: 80%+, DB: 70%+, Skills: 60%+ |
-| Python unit tests | pytest | Orchestrator: 70%+, SDK: 80%+ |
 | Integration tests | Custom harness | Full loop: create → edit → export |
+| Canvas benchmarks | Built-in profiler | All Phase 2.5 targets pass |
 | Manual testing | You | UX, performance, edge cases |
 
 ### 5.6 Documentation
@@ -322,11 +366,51 @@ sovereign-os/
 
 ---
 
+## Post-MVP: Deferred Features
+
+The following are fully specified but intentionally excluded from MVP to keep scope manageable:
+
+| Feature | Specification Status | Why Deferred |
+|---------|---------------------|--------------|
+| **P2P Device Sync** | Fully specified (libp2p, QUIC, encrypted fragments) | Requires multi-device testing infrastructure. Single-device MVP is sufficient for validation. |
+| **Guardian Social Recovery** | Fully specified (Shamir 3-of-5, 72-hour waiting period) | Depends on P2P layer. Complex UX requiring multiple test participants. |
+| **Identity Firewall** | Fully specified (synthetic identities, kernel proxy) | Requires browser/network integration. Not needed for document-centric MVP. |
+| **Image Generation** | Model candidates evaluated (FLUX.1-schnell, SDXL) | Not core to document workflow. Saves ~3-4GB VRAM for router + reasoning models. Add as optional skill post-MVP. |
+| **PyO3 Python Bridge** | Architecture ready (`ModelBackend` trait) | llama.cpp direct FFI covers MVP inference needs. Add if specialist Python-only models are required. |
+| **Community Skill Registry** | Fully specified (registry.sovereign.org, PGP signatures) | No third-party skills exist yet. Core skills use in-process trait calls. IPC + sandbox for community skills when the ecosystem grows. |
+
+---
+
+## Default Model Suite (MVP)
+
+### Always-Running Models (loaded on boot)
+
+| Model | Size | Purpose | Hardware | Runtime |
+|-------|------|---------|----------|---------|
+| **Qwen2.5-3B-Instruct** | 3B, ~2GB GGUF Q4 | Router: intent classification, quick generation | CPU, 2GB RAM | llama.cpp |
+| **whisper.cpp large-v3-turbo** | ~1.5GB | Voice → text (real-time) | CPU/GPU | whisper.cpp (native C++) |
+| **Piper TTS** | 10-50MB | Text → voice | CPU | Standalone binary |
+| **sentence-transformers** | ~110MB GGUF | Semantic search embeddings | CPU/GPU | llama.cpp (BERT GGUF) |
+
+### On-Demand Models (loaded when needed)
+
+| Model | Size | When Loaded | Runtime |
+|-------|------|-------------|---------|
+| **Qwen2.5-7B-Instruct** | 7B, ~5GB GGUF Q4 | Complex multi-step tasks, disambiguation, reasoning | llama.cpp |
+
+**Total baseline VRAM:** ~4-5GB (without reasoning model). ~9-10GB with reasoning model loaded.
+
+**Unload policy:** On-demand models unload after 5 minutes of inactivity.
+
+---
+
 ## Timeline Summary
 
 ```
-Week  1-2   ██ Phase 0: Validation Spikes
-Week  3-6   ████ Phase 1: Core Foundation
+Week  1-2   ██ Phase 0: Validation Spikes [Spike 1 ✅, Spike 2 ✅, Spike 3 next]
+Week  3-4   ██ Phase 1a: Data Layer (sovereign-core + sovereign-db + CLI)
+Week  5-6   ██ Phase 1b: UI Shell (sovereign-ui + sovereign-skills)
+Week  7     █ Checkpoint: Cross-phase interface definitions
 Week  7-10  ████ Phase 2: Canvas & Visual System
 Week  8-12  █████ Phase 3: AI Orchestrator (parallel)
 Week 10-14  █████ Phase 4: MVP Skills (parallel)
@@ -368,12 +452,4 @@ Agent teams (Claude Code or multi-agent setups) are most useful for:
 
 ## Next Step
 
-Ready to start **Phase 0, Spike 1: Skia ↔ GTK4 Canvas prototype**?
-
-I can generate the full Rust project with:
-- Cargo.toml with gtk4-rs + rust-skia dependencies
-- Main window with embedded Skia surface
-- Rectangle rendering + mouse-driven pan/zoom
-- Basic hit testing
-
-You build and run it, tell me how it performs.
+**Spike 3: llama.cpp Direct FFI** — Load Qwen2.5-3B-Instruct GGUF from Rust via `llama-cpp-2` crate. Benchmark load time, inference latency, and memory reclamation on unload.
