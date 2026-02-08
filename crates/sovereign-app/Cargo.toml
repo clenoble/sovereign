@@ -1,0 +1,20 @@
+[package]
+name = "sovereign-app"
+version = "0.1.0"
+edition = "2021"
+description = "Sovereign OS binary — CLI and GUI entry point"
+
+[[bin]]
+name = "sovereign"
+path = "src/main.rs"
+
+[dependencies]
+sovereign-core = { workspace = true }
+sovereign-db = { workspace = true }
+sovereign-ui = { workspace = true }
+sovereign-skills = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
