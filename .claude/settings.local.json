@@ -12,6 +12,9 @@
       "Bash(git commit:*)",
       "Bash(wsl --list --verbose:*)",
       "Bash(wsl:*)"
+      "Bash(git clone:*)",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:surrealdb.com)"
     ]
   }
 }
