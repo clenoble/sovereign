@@ -1,0 +1,11 @@
+# Rust
+target/
+Cargo.lock
+
+# SurrealDB
+benchmark_db/
+*.db
+
+# OS
+.DS_Store
+Thumbs.db
