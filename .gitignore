@@ -32,3 +32,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Model files
+models/
+*.gguf
