@@ -80,4 +80,34 @@ window {
     font-size: 12px;
     margin-top: 8px;
 }
+
+/* ── Search results ───────────────────────────────── */
+.search-results {
+    padding: 4px 0;
+}
+
+.search-result-item {
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #d0d0d0;
+}
+
+.search-result-item:hover {
+    background-color: #222228;
+}
+
+.search-result-empty {
+    padding: 6px 12px;
+    font-size: 13px;
+    color: #666;
+    font-style: italic;
+}
+
+/* ── Voice status ─────────────────────────────────── */
+.voice-status {
+    color: #5a9fd4;
+    font-size: 12px;
+    font-weight: bold;
+}
 "#;

@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["spike-1-skia-gtk4"]
 members = [
     "crates/sovereign-core",
     "crates/sovereign-db",
@@ -44,3 +45,14 @@ sovereign-skills = { path = "crates/sovereign-skills" }
 sovereign-ui = { path = "crates/sovereign-ui" }
 sovereign-canvas = { path = "crates/sovereign-canvas" }
 sovereign-ai = { path = "crates/sovereign-ai" }
+
+# LLM inference
+llama-cpp-2 = "0.1"
+encoding_rs = "0.8"
+
+
+# Voice pipeline
+whisper-rs = "0.15"
+cpal = "0.17"
+rustpotter = "3.0"
+ringbuf = "0.4"

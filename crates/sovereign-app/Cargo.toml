@@ -13,6 +13,7 @@ sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
 sovereign-ui = { workspace = true }
 sovereign-skills = { workspace = true }
+sovereign-ai = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

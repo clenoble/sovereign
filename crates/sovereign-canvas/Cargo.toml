@@ -5,3 +5,17 @@ edition = "2021"
 description = "Spatial canvas with Skia rendering (Phase 2)"
 
 [dependencies]
+sovereign-core = { workspace = true }
+sovereign-db = { workspace = true }
+gtk4 = "0.9"
+skia-safe = { version = "0.91", features = ["gl"] }
+gl = "0.14"
+tracing = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+surrealdb = { workspace = true }
+
+[build-dependencies]
+pkg-config = "0.3"

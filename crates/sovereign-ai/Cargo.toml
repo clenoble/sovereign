@@ -5,3 +5,26 @@ edition = "2021"
 description = "AI orchestrator with llama.cpp inference (Phase 3)"
 
 [dependencies]
+sovereign-core = { workspace = true }
+sovereign-db = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+llama-cpp-2 = { workspace = true }
+encoding_rs = { workspace = true }
+
+# Voice pipeline
+whisper-rs = { workspace = true }
+cpal = { workspace = true }
+ringbuf = { workspace = true }
+
+# Wake word (optional due to candle-core version conflicts)
+rustpotter = { workspace = true, optional = true }
+
+[features]
+default = ["cuda"]
+cuda = ["llama-cpp-2/cuda"]
+wake-word = ["rustpotter"]

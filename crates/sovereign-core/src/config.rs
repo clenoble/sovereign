@@ -9,6 +9,8 @@ pub struct AppConfig {
     pub ui: UiConfig,
     #[serde(default)]
     pub ai: AiConfig,
+    #[serde(default)]
+    pub voice: VoiceConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -101,12 +103,52 @@ impl Default for AiConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_wake_word_model")]
+    pub wake_word_model: String,
+    #[serde(default = "default_whisper_model")]
+    pub whisper_model: String,
+    #[serde(default = "default_piper_binary")]
+    pub piper_binary: String,
+    #[serde(default)]
+    pub piper_model: String,
+    #[serde(default)]
+    pub piper_config: String,
+}
+
+fn default_wake_word_model() -> String {
+    "models/sovereign.rpw".into()
+}
+fn default_whisper_model() -> String {
+    "models/ggml-large-v3-turbo.bin".into()
+}
+fn default_piper_binary() -> String {
+    "piper".into()
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            wake_word_model: default_wake_word_model(),
+            whisper_model: default_whisper_model(),
+            piper_binary: default_piper_binary(),
+            piper_model: String::new(),
+            piper_config: String::new(),
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             database: DatabaseConfig::default(),
             ui: UiConfig::default(),
             ai: AiConfig::default(),
+            voice: VoiceConfig::default(),
         }
     }
 }

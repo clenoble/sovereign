@@ -1,6 +1,10 @@
+use std::sync::mpsc;
+use std::sync::Arc;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use sovereign_core::config::AppConfig;
+use sovereign_core::interfaces::OrchestratorEvent;
 use sovereign_core::lifecycle;
 use sovereign_db::schema::{thing_to_raw, Document, DocumentType, RelationType, Thread};
 use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
@@ -99,6 +103,83 @@ enum Commands {
     },
 }
 
+/// Populate the database with sample data when it's empty.
+/// Provides a visual baseline for testing the canvas.
+async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
+    let threads = db.list_threads().await?;
+    if !threads.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!("Empty database — seeding sample data");
+
+    let thread_defs = [
+        ("Research", "Research and exploration"),
+        ("Development", "Engineering and code"),
+        ("Design", "UX and visual design"),
+        ("Admin", "Administrative and planning"),
+    ];
+
+    let mut thread_ids = Vec::new();
+    for (name, desc) in &thread_defs {
+        let t = Thread::new(name.to_string(), desc.to_string());
+        let created = db.create_thread(t).await?;
+        thread_ids.push(created.id_string().unwrap());
+    }
+
+    let owned_docs = [
+        ("Research Notes", DocumentType::Markdown, 0),
+        ("Project Plan", DocumentType::Markdown, 1),
+        ("Architecture Diagram", DocumentType::Image, 1),
+        ("API Specification", DocumentType::Markdown, 1),
+        ("Budget Overview", DocumentType::Spreadsheet, 3),
+        ("Meeting Notes Q1", DocumentType::Markdown, 3),
+        ("Design Document", DocumentType::Markdown, 2),
+        ("Test Results", DocumentType::Data, 1),
+    ];
+
+    let external_docs = [
+        ("Wikipedia: Rust", DocumentType::Web, 0),
+        ("SO: GTK4 bindings", DocumentType::Web, 1),
+        ("GitHub Issue #42", DocumentType::Web, 1),
+        ("Research Paper (PDF)", DocumentType::Pdf, 0),
+        ("Shared Spec", DocumentType::Markdown, 2),
+        ("API Response Log", DocumentType::Data, 1),
+    ];
+
+    for (title, doc_type, thread_idx) in &owned_docs {
+        let doc = Document::new(
+            title.to_string(),
+            doc_type.clone(),
+            thread_ids[*thread_idx].clone(),
+            true,
+        );
+        db.create_document(doc).await?;
+    }
+
+    for (title, doc_type, thread_idx) in &external_docs {
+        let doc = Document::new(
+            title.to_string(),
+            doc_type.clone(),
+            thread_ids[*thread_idx].clone(),
+            false,
+        );
+        db.create_document(doc).await?;
+    }
+
+    // Add some relationships
+    let docs = db.list_documents(None).await?;
+    if docs.len() >= 4 {
+        let id0 = docs[0].id_string().unwrap();
+        let id3 = docs[3].id_string().unwrap();
+        db.create_relationship(&id0, &id3, RelationType::References, 0.8)
+            .await?;
+    }
+
+    tracing::info!("Seeded {} documents in {} threads", owned_docs.len() + external_docs.len(), thread_ids.len());
+    Ok(())
+}
+
 async fn create_db(config: &AppConfig) -> Result<SurrealGraphDB> {
     let mode = match config.database.mode.as_str() {
         "memory" => StorageMode::Memory,
@@ -126,12 +207,145 @@ async fn main() -> Result<()> {
                 registry.scan_directory(skills_dir)?;
                 tracing::info!("Loaded {} skill manifests", registry.manifests().len());
                 for manifest in registry.manifests() {
-                    tracing::info!("  - {} v{} ({})", manifest.name, manifest.version, manifest.description);
+                    tracing::info!(
+                        "  - {} v{} ({})",
+                        manifest.name,
+                        manifest.version,
+                        manifest.description
+                    );
                 }
             }
 
+            // Load documents and threads from DB for the canvas
+            let db = create_db(&config).await?;
+            seed_if_empty(&db).await?;
+            let threads = db.list_threads().await?;
+            let documents = db.list_documents(None).await?;
+            tracing::info!(
+                "Loaded {} documents, {} threads for canvas",
+                documents.len(),
+                threads.len()
+            );
+
+            // Create event channels
+            let (orch_tx, orch_rx) = mpsc::channel::<OrchestratorEvent>();
+
+            // Try to initialize AI orchestrator
+            let db_arc = Arc::new(db);
+            let orchestrator = match sovereign_ai::Orchestrator::new(
+                config.ai.clone(),
+                db_arc.clone(),
+                orch_tx,
+            )
+            .await
+            {
+                Ok(o) => {
+                    tracing::info!("AI orchestrator initialized");
+                    Some(Arc::new(o))
+                }
+                Err(e) => {
+                    tracing::warn!("AI orchestrator unavailable: {e}");
+                    None
+                }
+            };
+
+            // Build query callback for search overlay
+            let query_callback: Option<Box<dyn Fn(String) + Send + 'static>> =
+                orchestrator.as_ref().map(|orch| {
+                    let orch = orch.clone();
+                    Box::new(move |text: String| {
+                        let orch = orch.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = orch.handle_query(&text).await {
+                                tracing::error!("Query error: {e}");
+                            }
+                        });
+                    }) as Box<dyn Fn(String) + Send + 'static>
+                });
+
+            // Initialize voice pipeline (optional)
+            let voice_rx = if config.voice.enabled {
+                let (vtx, vrx) = mpsc::channel();
+
+                // Voice pipeline needs a query callback too
+                let voice_query_cb: Box<dyn Fn(String) + Send + 'static> =
+                    if let Some(ref orch) = orchestrator {
+                        let orch = orch.clone();
+                        Box::new(move |text: String| {
+                            let orch = orch.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = orch.handle_query(&text).await {
+                                    tracing::error!("Voice query error: {e}");
+                                }
+                            });
+                        })
+                    } else {
+                        Box::new(|text: String| {
+                            tracing::warn!("Voice query ignored (no orchestrator): {text}");
+                        })
+                    };
+
+                match sovereign_ai::voice::VoicePipeline::spawn(
+                    config.voice.clone(),
+                    vtx,
+                    voice_query_cb,
+                ) {
+                    Ok(_handle) => {
+                        tracing::info!("Voice pipeline started");
+                        Some(vrx)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Voice pipeline unavailable: {e}");
+                        None
+                    }
+                }
+            } else {
+                tracing::info!("Voice pipeline disabled in config");
+                None
+            };
+
+            // Convert voice_rx to UI's VoiceEvent type
+            let ui_voice_rx = voice_rx.map(|rx| {
+                let (ui_tx, ui_rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    while let Ok(event) = rx.recv() {
+                        let ui_event = match event {
+                            sovereign_ai::VoiceEvent::WakeWordDetected => {
+                                sovereign_ui::app::VoiceEvent::WakeWordDetected
+                            }
+                            sovereign_ai::VoiceEvent::ListeningStarted => {
+                                sovereign_ui::app::VoiceEvent::ListeningStarted
+                            }
+                            sovereign_ai::VoiceEvent::TranscriptionReady(t) => {
+                                sovereign_ui::app::VoiceEvent::TranscriptionReady(t)
+                            }
+                            sovereign_ai::VoiceEvent::ListeningStopped => {
+                                sovereign_ui::app::VoiceEvent::ListeningStopped
+                            }
+                            sovereign_ai::VoiceEvent::TtsSpeaking(t) => {
+                                sovereign_ui::app::VoiceEvent::TtsSpeaking(t)
+                            }
+                            sovereign_ai::VoiceEvent::TtsDone => {
+                                sovereign_ui::app::VoiceEvent::TtsDone
+                            }
+                        };
+                        if ui_tx.send(ui_event).is_err() {
+                            break;
+                        }
+                    }
+                });
+                ui_rx
+            });
+
             // Launch GTK4 UI
-            sovereign_ui::app::build_app(&config.ui);
+            sovereign_ui::app::build_app(
+                &config.ui,
+                documents,
+                threads,
+                query_callback,
+                Some(orch_rx),
+                ui_voice_rx,
+            );
         }
 
         Commands::CreateDoc {
