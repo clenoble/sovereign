@@ -20,6 +20,32 @@ This is critical — APIs change between versions and stale knowledge causes cas
 - When a problem can be solved either by installing a missing system package or by changing the code, **ask the user** which approach they prefer before proceeding
 - Never run `sudo` commands to install packages without explicit user approval
 
+## Git & NAS Push/Merge Workflow
+
+The bare repo lives on the NAS. From WSL:
+
+```bash
+# 1. Mount the NAS (if not already mounted — requires sudo, ask user)
+sudo mount -t drvfs 'Z:' /mnt/nas
+
+# 2. Ensure git trusts the NAS path (one-time)
+git config --global --add safe.directory '/mnt/nas/03 - user-centered OS'
+git config --global --add safe.directory '/mnt/nas/03 - user-centered OS/.git'
+
+# 3. Set remote to WSL-accessible path (if still set to Z:\)
+git remote set-url origin '/mnt/nas/03 - user-centered OS'
+
+# 4. Push
+git push origin main
+```
+
+The remote URL is stored as a WSL path (`/mnt/nas/03 - user-centered OS`), not the Windows `Z:\` path, because WSL git cannot resolve Windows drive letters.
+
+To pull updates back to the working copy after editing on the NAS side:
+```bash
+git pull origin main
+```
+
 ## Code Style
 - Rust: edition 2021, prefer safe code, minimize unsafe blocks
 - Keep spike code simple and focused — no over-engineering
