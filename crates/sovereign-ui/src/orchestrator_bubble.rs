@@ -1,10 +1,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::mpsc;
 
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, Label, Orientation, Overlay};
 
 use sovereign_core::content::{ContentFields, ContentImage};
+use sovereign_core::security::{ActionDecision, BubbleVisualState};
 use sovereign_skills::skills::image::ImageSkill;
 use sovereign_skills::skills::pdf_export::PdfExportSkill;
 use sovereign_skills::traits::{CoreSkill, SkillDocument, SkillOutput};
@@ -20,6 +22,64 @@ pub struct ActiveDocument {
     pub on_images_changed: Rc<dyn Fn(&[ContentImage])>,
     /// The document panel window, used as parent for file dialogs.
     pub panel_window: gtk4::Window,
+}
+
+/// CSS class names for each bubble visual state.
+const BUBBLE_STATE_CLASSES: &[&str] = &[
+    "bubble-idle",
+    "bubble-processing-owned",
+    "bubble-processing-external",
+    "bubble-proposing",
+    "bubble-executing",
+];
+
+/// Swap bubble CSS classes to reflect the current visual state.
+pub fn set_bubble_state(bubble: &Label, state: BubbleVisualState) {
+    for cls in BUBBLE_STATE_CLASSES {
+        bubble.remove_css_class(cls);
+    }
+    let cls = match state {
+        BubbleVisualState::Idle => "bubble-idle",
+        BubbleVisualState::ProcessingOwned => "bubble-processing-owned",
+        BubbleVisualState::ProcessingExternal => "bubble-processing-external",
+        BubbleVisualState::Proposing => "bubble-proposing",
+        BubbleVisualState::Executing => "bubble-executing",
+    };
+    bubble.add_css_class(cls);
+}
+
+/// Handle returned from `add_orchestrator_bubble` for event-driven updates.
+#[derive(Clone)]
+pub struct BubbleHandle {
+    pub bubble: Label,
+    pub confirmation_panel: GtkBox,
+    pub confirmation_label: Label,
+    pub rejection_toast: Label,
+}
+
+impl BubbleHandle {
+    /// Show the confirmation sub-panel with a description of the proposed action.
+    pub fn show_confirmation(&self, description: &str) {
+        self.confirmation_label.set_text(description);
+        self.confirmation_panel.set_visible(true);
+        self.rejection_toast.set_visible(false);
+    }
+
+    /// Hide the confirmation sub-panel.
+    pub fn hide_confirmation(&self) {
+        self.confirmation_panel.set_visible(false);
+    }
+
+    /// Show a brief rejection toast message.
+    pub fn show_rejection(&self, reason: &str) {
+        self.rejection_toast.set_text(reason);
+        self.rejection_toast.set_visible(true);
+        self.confirmation_panel.set_visible(false);
+    }
+
+    pub fn set_state(&self, state: BubbleVisualState) {
+        set_bubble_state(&self.bubble, state);
+    }
 }
 
 /// Position the skills panel near the bubble, clamped to stay within the overlay.
@@ -65,9 +125,11 @@ pub fn add_orchestrator_bubble(
     overlay: &Overlay,
     active_doc: Rc<RefCell<Option<ActiveDocument>>>,
     save_cb: Rc<dyn Fn(String, String, String)>,
-) {
+    decision_tx: Option<mpsc::Sender<ActionDecision>>,
+) -> BubbleHandle {
     let bubble = Label::new(Some("AI"));
     bubble.add_css_class("orchestrator-bubble");
+    bubble.add_css_class("bubble-idle");
     bubble.set_can_target(true);
     bubble.set_focusable(true);
 
@@ -78,6 +140,72 @@ pub fn add_orchestrator_bubble(
     bubble.set_margin_top(20);
 
     overlay.add_overlay(&bubble);
+
+    // Confirmation sub-panel (below skills panel)
+    let confirm_panel = GtkBox::new(Orientation::Vertical, 4);
+    confirm_panel.add_css_class("confirmation-panel");
+    confirm_panel.set_halign(gtk4::Align::Start);
+    confirm_panel.set_valign(gtk4::Align::Start);
+    confirm_panel.set_margin_start(20);
+    confirm_panel.set_margin_top(90);
+    confirm_panel.set_visible(false);
+
+    let confirm_label = Label::new(None);
+    confirm_label.add_css_class("confirmation-label");
+    confirm_label.set_halign(gtk4::Align::Start);
+    confirm_label.set_wrap(true);
+    confirm_label.set_max_width_chars(40);
+    confirm_panel.append(&confirm_label);
+
+    let button_row = GtkBox::new(Orientation::Horizontal, 4);
+    let approve_btn = Button::with_label("Approve");
+    approve_btn.add_css_class("approve-button");
+    let reject_btn = Button::with_label("Reject");
+    reject_btn.add_css_class("reject-button");
+    button_row.append(&approve_btn);
+    button_row.append(&reject_btn);
+    confirm_panel.append(&button_row);
+
+    overlay.add_overlay(&confirm_panel);
+
+    // Rejection toast
+    let rejection_toast = Label::new(None);
+    rejection_toast.add_css_class("rejection-toast");
+    rejection_toast.set_halign(gtk4::Align::Start);
+    rejection_toast.set_valign(gtk4::Align::Start);
+    rejection_toast.set_margin_start(20);
+    rejection_toast.set_margin_top(90);
+    rejection_toast.set_visible(false);
+    overlay.add_overlay(&rejection_toast);
+
+    // Wire approve/reject buttons to decision channel
+    {
+        let tx = decision_tx.clone();
+        let cp = confirm_panel.clone();
+        approve_btn.connect_clicked(move |_| {
+            if let Some(ref tx) = tx {
+                let _ = tx.send(ActionDecision::Approve);
+            }
+            cp.set_visible(false);
+        });
+    }
+    {
+        let tx = decision_tx;
+        let cp = confirm_panel.clone();
+        reject_btn.connect_clicked(move |_| {
+            if let Some(ref tx) = tx {
+                let _ = tx.send(ActionDecision::Reject("User rejected".into()));
+            }
+            cp.set_visible(false);
+        });
+    }
+
+    let handle = BubbleHandle {
+        bubble: bubble.clone(),
+        confirmation_panel: confirm_panel,
+        confirmation_label: confirm_label,
+        rejection_toast,
+    };
 
     // Skills panel — in-overlay widget that replaces the old Popover.
     // Lives inside the overlay so it is always visible within the canvas.
@@ -321,4 +449,6 @@ pub fn add_orchestrator_bubble(
             }
         });
     }
+
+    handle
 }

@@ -1,15 +1,20 @@
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Result;
 use sovereign_core::config::AiConfig;
 use sovereign_core::interfaces::{CommitSummary, OrchestratorEvent};
+use sovereign_core::security::{self, ActionDecision, BubbleVisualState, ProposedAction};
 use sovereign_db::schema::Thread;
 use sovereign_db::surreal::SurrealGraphDB;
 use sovereign_db::GraphDB;
 
+use crate::action_gate;
+use crate::injection;
 use crate::intent::IntentClassifier;
 use crate::session_log::SessionLog;
+use crate::trust::TrustTracker;
 
 /// Central AI orchestrator. Owns the intent classifier and DB handle.
 /// Receives queries (text from search overlay or voice pipeline),
@@ -19,6 +24,8 @@ pub struct Orchestrator {
     db: Arc<SurrealGraphDB>,
     event_tx: mpsc::Sender<OrchestratorEvent>,
     session_log: Option<Mutex<SessionLog>>,
+    decision_rx: Option<Mutex<mpsc::Receiver<ActionDecision>>>,
+    trust: Mutex<TrustTracker>,
 }
 
 impl Orchestrator {
@@ -49,17 +56,25 @@ impl Orchestrator {
             db,
             event_tx,
             session_log,
+            decision_rx: None,
+            trust: Mutex::new(TrustTracker::new()),
         })
     }
 
-    /// Handle a user query: classify intent, execute, emit events.
+    /// Attach a decision channel for user confirmations of Level 3+ actions.
+    pub fn set_decision_rx(&mut self, rx: mpsc::Receiver<ActionDecision>) {
+        self.decision_rx = Some(Mutex::new(rx));
+    }
+
+    /// Handle a user query: classify intent, gate check, execute or await confirmation.
     pub async fn handle_query(&self, query: &str) -> Result<()> {
         let intent = self.classifier.classify(query).await?;
         tracing::info!(
-            "Intent: action={}, confidence={:.2}, target={:?}",
+            "Intent: action={}, confidence={:.2}, target={:?}, origin={:?}",
             intent.action,
             intent.confidence,
-            intent.target
+            intent.target,
+            intent.origin,
         );
 
         // Log user input
@@ -69,13 +84,135 @@ impl Orchestrator {
             }
         }
 
-        match intent.action.as_str() {
+        // Gate check: plane violation
+        if let Some(reason) = action_gate::check_plane_violation(&intent) {
+            tracing::warn!("Plane violation: {reason}");
+            self.log_action("plane_violation", &reason);
+            let _ = self.event_tx.send(OrchestratorEvent::ActionRejected {
+                action: intent.action.clone(),
+                reason: reason.clone(),
+            });
+            return Ok(());
+        }
+
+        // Gate check: does this action level require confirmation?
+        let level = security::action_level(&intent.action);
+        if action_gate::requires_confirmation(level) {
+            // Check trust: can we auto-approve this action?
+            let trusted = {
+                if let Ok(trust) = self.trust.lock() {
+                    trust.should_auto_approve(&intent.action, level)
+                } else {
+                    false
+                }
+            };
+
+            if trusted {
+                tracing::info!("Auto-approved via trust: {}", intent.action);
+                self.log_action("trust_auto_approve", &intent.action);
+                let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                    BubbleVisualState::Executing,
+                ));
+                self.execute_action(&intent.action, intent.target.as_deref(), query)
+                    .await?;
+                let _ = self
+                    .event_tx
+                    .send(OrchestratorEvent::BubbleState(BubbleVisualState::Idle));
+            } else {
+                let proposal = action_gate::build_proposal(&intent);
+
+                // Signal bubble state
+                let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                    BubbleVisualState::Proposing,
+                ));
+
+                // Emit proposal to UI
+                let _ = self.event_tx.send(OrchestratorEvent::ActionProposed {
+                    proposal: proposal.clone(),
+                });
+
+                // Wait for user decision (with timeout)
+                let decision = self.wait_for_decision();
+                match decision {
+                    ActionDecision::Approve => {
+                        // Record approval in trust tracker
+                        if let Ok(mut trust) = self.trust.lock() {
+                            trust.record_approval(&intent.action);
+                        }
+                        let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                            BubbleVisualState::Executing,
+                        ));
+                        self.execute_action(&intent.action, intent.target.as_deref(), query)
+                            .await?;
+                    }
+                    ActionDecision::Reject(reason) => {
+                        // Record rejection in trust tracker (resets counter)
+                        if let Ok(mut trust) = self.trust.lock() {
+                            trust.record_rejection(&intent.action);
+                        }
+                        tracing::info!("Action rejected: {reason}");
+                        self.log_action("rejected", &format!("{}: {reason}", intent.action));
+                        let _ = self.event_tx.send(OrchestratorEvent::ActionRejected {
+                            action: intent.action.clone(),
+                            reason,
+                        });
+                    }
+                }
+
+                let _ = self
+                    .event_tx
+                    .send(OrchestratorEvent::BubbleState(BubbleVisualState::Idle));
+            }
+        } else {
+            // Low-gravity action — execute immediately
+            let bubble_state = if intent.origin == sovereign_core::security::Plane::Control {
+                BubbleVisualState::ProcessingOwned
+            } else {
+                BubbleVisualState::ProcessingExternal
+            };
+            let _ = self
+                .event_tx
+                .send(OrchestratorEvent::BubbleState(bubble_state));
+
+            self.execute_action(&intent.action, intent.target.as_deref(), query)
+                .await?;
+
+            let _ = self
+                .event_tx
+                .send(OrchestratorEvent::BubbleState(BubbleVisualState::Idle));
+        }
+
+        Ok(())
+    }
+
+    /// Wait for a user decision on the decision channel (30s timeout).
+    /// If no channel is configured, auto-approve (for backward compatibility/testing).
+    fn wait_for_decision(&self) -> ActionDecision {
+        if let Some(ref rx_mutex) = self.decision_rx {
+            if let Ok(rx) = rx_mutex.lock() {
+                match rx.recv_timeout(Duration::from_secs(30)) {
+                    Ok(decision) => return decision,
+                    Err(_) => {
+                        tracing::warn!("Decision timeout — rejecting action");
+                        return ActionDecision::Reject("Timeout waiting for user decision".into());
+                    }
+                }
+            }
+        }
+        // No decision channel — auto-approve (backward compat)
+        ActionDecision::Approve
+    }
+
+    /// Execute a classified action by name.
+    async fn execute_action(
+        &self,
+        action: &str,
+        target: Option<&str>,
+        query: &str,
+    ) -> Result<()> {
+        match action {
             "search" => {
-                let search_term = intent
-                    .target
-                    .as_deref()
-                    .unwrap_or(query)
-                    .to_lowercase();
+                let search_term = target.unwrap_or(query).to_lowercase();
 
                 let docs = self.db.list_documents(None).await?;
                 let matches: Vec<String> = docs
@@ -85,14 +222,17 @@ impl Orchestrator {
                     .collect();
 
                 tracing::info!("Search '{}': {} matches", search_term, matches.len());
-                self.log_action("search", &format!("{} matches for '{}'", matches.len(), search_term));
+                self.log_action(
+                    "search",
+                    &format!("{} matches for '{}'", matches.len(), search_term),
+                );
                 let _ = self.event_tx.send(OrchestratorEvent::SearchResults {
                     query: query.into(),
                     doc_ids: matches,
                 });
             }
             "open" | "navigate" => {
-                if let Some(target) = &intent.target {
+                if let Some(target) = target {
                     let docs = self.db.list_documents(None).await?;
                     if let Some(doc) = docs
                         .iter()
@@ -107,11 +247,7 @@ impl Orchestrator {
                 }
             }
             "create_thread" => {
-                let name = intent
-                    .target
-                    .as_deref()
-                    .unwrap_or("New Thread")
-                    .to_string();
+                let name = target.unwrap_or("New Thread").to_string();
                 let thread = Thread::new(name.clone(), String::new());
                 match self.db.create_thread(thread).await {
                     Ok(created) => {
@@ -127,8 +263,7 @@ impl Orchestrator {
                 }
             }
             "rename_thread" => {
-                if let Some(target) = &intent.target {
-                    // Expect entities with ("new_name", "...") or parse "X to Y" from target
+                if let Some(target) = target {
                     let (old_name, new_name) = parse_rename_target(target);
                     let threads = self.db.list_threads().await?;
                     if let Some(thread) = threads
@@ -138,11 +273,16 @@ impl Orchestrator {
                         if let Some(tid) = thread.id_string() {
                             match self.db.update_thread(&tid, Some(&new_name), None).await {
                                 Ok(_) => {
-                                    tracing::info!("Thread renamed: {} → {}", old_name, new_name);
-                                    let _ = self.event_tx.send(OrchestratorEvent::ThreadRenamed {
-                                        thread_id: tid,
-                                        name: new_name,
-                                    });
+                                    tracing::info!(
+                                        "Thread renamed: {} → {}",
+                                        old_name,
+                                        new_name
+                                    );
+                                    let _ =
+                                        self.event_tx.send(OrchestratorEvent::ThreadRenamed {
+                                            thread_id: tid,
+                                            name: new_name,
+                                        });
                                 }
                                 Err(e) => tracing::error!("Failed to rename thread: {e}"),
                             }
@@ -151,29 +291,29 @@ impl Orchestrator {
                 }
             }
             "delete_thread" => {
-                if let Some(target) = &intent.target {
+                if let Some(target) = target {
                     let threads = self.db.list_threads().await?;
                     if let Some(thread) = threads
                         .iter()
                         .find(|t| t.name.to_lowercase().contains(&target.to_lowercase()))
                     {
                         if let Some(tid) = thread.id_string() {
-                            match self.db.delete_thread(&tid).await {
+                            match self.db.soft_delete_thread(&tid).await {
                                 Ok(()) => {
-                                    tracing::info!("Thread deleted: {} ({})", target, tid);
-                                    let _ = self.event_tx.send(OrchestratorEvent::ThreadDeleted {
-                                        thread_id: tid,
-                                    });
+                                    tracing::info!("Thread soft-deleted: {} ({})", target, tid);
+                                    let _ =
+                                        self.event_tx.send(OrchestratorEvent::ThreadDeleted {
+                                            thread_id: tid,
+                                        });
                                 }
-                                Err(e) => tracing::error!("Failed to delete thread: {e}"),
+                                Err(e) => tracing::error!("Failed to soft-delete thread: {e}"),
                             }
                         }
                     }
                 }
             }
             "move_document" => {
-                // Expect target like "DocTitle to ThreadName" or entities
-                if let Some(target) = &intent.target {
+                if let Some(target) = target {
                     let (doc_name, thread_name) = parse_move_target(target);
                     let docs = self.db.list_documents(None).await?;
                     let threads = self.db.list_threads().await?;
@@ -191,10 +331,11 @@ impl Orchestrator {
                         match self.db.move_document_to_thread(&doc_id, &tid).await {
                             Ok(_) => {
                                 tracing::info!("Moved {} to {}", doc_name, thread_name);
-                                let _ = self.event_tx.send(OrchestratorEvent::DocumentMoved {
-                                    doc_id,
-                                    new_thread_id: tid,
-                                });
+                                let _ =
+                                    self.event_tx.send(OrchestratorEvent::DocumentMoved {
+                                        doc_id,
+                                        new_thread_id: tid,
+                                    });
                             }
                             Err(e) => tracing::error!("Failed to move document: {e}"),
                         }
@@ -202,7 +343,7 @@ impl Orchestrator {
                 }
             }
             "history" => {
-                if let Some(target) = &intent.target {
+                if let Some(target) = target {
                     let docs = self.db.list_documents(None).await?;
                     if let Some(doc) = docs
                         .iter()
@@ -218,19 +359,26 @@ impl Orchestrator {
                                     timestamp: c.timestamp.to_rfc3339(),
                                 })
                                 .collect();
-                            tracing::info!("History for {}: {} commits", target, summaries.len());
-                            self.log_action("history", &format!("{} commits for {}", summaries.len(), target));
-                            let _ = self.event_tx.send(OrchestratorEvent::VersionHistory {
-                                doc_id,
-                                commits: summaries,
-                            });
+                            tracing::info!(
+                                "History for {}: {} commits",
+                                target,
+                                summaries.len()
+                            );
+                            self.log_action(
+                                "history",
+                                &format!("{} commits for {}", summaries.len(), target),
+                            );
+                            let _ =
+                                self.event_tx.send(OrchestratorEvent::VersionHistory {
+                                    doc_id,
+                                    commits: summaries,
+                                });
                         }
                     }
                 }
             }
             "restore" => {
-                // Expects entities with commit_id, or target as "DocTitle to commit:xyz"
-                if let Some(target) = &intent.target {
+                if let Some(target) = target {
                     let (doc_name, commit_ref) = parse_move_target(target);
                     let docs = self.db.list_documents(None).await?;
                     if let Some(doc) = docs
@@ -241,8 +389,15 @@ impl Orchestrator {
                             if commit_ref.starts_with("commit:") {
                                 match self.db.restore_document(&doc_id, &commit_ref).await {
                                     Ok(_) => {
-                                        tracing::info!("Restored {} to {}", doc_name, commit_ref);
-                                        self.log_action("restore", &format!("{} to {}", doc_name, commit_ref));
+                                        tracing::info!(
+                                            "Restored {} to {}",
+                                            doc_name,
+                                            commit_ref
+                                        );
+                                        self.log_action(
+                                            "restore",
+                                            &format!("{} to {}", doc_name, commit_ref),
+                                        );
                                         let _ = self.event_tx.send(
                                             OrchestratorEvent::DocumentOpened { doc_id },
                                         );
@@ -250,14 +405,20 @@ impl Orchestrator {
                                     Err(e) => tracing::error!("Restore failed: {e}"),
                                 }
                             } else {
-                                // No specific commit — restore to latest (previous) commit
-                                let commits = self.db.list_document_commits(&doc_id).await?;
+                                let commits =
+                                    self.db.list_document_commits(&doc_id).await?;
                                 if commits.len() >= 2 {
                                     let prev = commits[1].id_string().unwrap_or_default();
                                     match self.db.restore_document(&doc_id, &prev).await {
                                         Ok(_) => {
-                                            tracing::info!("Restored {} to previous version", doc_name);
-                                            self.log_action("restore", &format!("{} to previous", doc_name));
+                                            tracing::info!(
+                                                "Restored {} to previous version",
+                                                doc_name
+                                            );
+                                            self.log_action(
+                                                "restore",
+                                                &format!("{} to previous", doc_name),
+                                            );
                                             let _ = self.event_tx.send(
                                                 OrchestratorEvent::DocumentOpened { doc_id },
                                             );
@@ -271,14 +432,57 @@ impl Orchestrator {
                 }
             }
             _ => {
+                let level = security::action_level(action);
                 let _ = self.event_tx.send(OrchestratorEvent::ActionProposed {
-                    description: format!("Unhandled intent: {}", intent.action),
-                    action: intent.action,
+                    proposal: ProposedAction {
+                        action: action.to_string(),
+                        level,
+                        plane: sovereign_core::security::Plane::Control,
+                        doc_id: None,
+                        thread_id: None,
+                        description: format!("Unhandled intent: {}", action),
+                    },
                 });
             }
         }
 
+        let _ = self.event_tx.send(OrchestratorEvent::ActionExecuted {
+            action: action.to_string(),
+            success: true,
+        });
+
         Ok(())
+    }
+
+    /// Scan document content for injection attempts. Emits InjectionDetected events.
+    /// Returns true if injection was detected (caller should refuse to process).
+    #[allow(dead_code)]
+    pub async fn scan_document_for_injection(&self, doc_id: &str) -> bool {
+        match self.db.get_document(doc_id).await {
+            Ok(doc) => {
+                let matches = injection::scan_for_injection(&doc.content);
+                if !matches.is_empty() {
+                    let top = &matches[0];
+                    tracing::warn!(
+                        "Injection detected in {}: {} (severity {})",
+                        doc_id,
+                        top.pattern_name,
+                        top.severity
+                    );
+                    self.log_action(
+                        "injection_detected",
+                        &format!("{}: {}", doc_id, top.pattern_name),
+                    );
+                    let _ = self.event_tx.send(OrchestratorEvent::InjectionDetected {
+                        source: doc_id.to_string(),
+                        pattern: top.pattern_name.clone(),
+                    });
+                    return true;
+                }
+                false
+            }
+            Err(_) => false,
+        }
     }
 
     fn log_action(&self, action: &str, details: &str) {

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use sovereign_core::interfaces::UserIntent;
+use sovereign_core::security::Plane;
 
 /// Parse the LLM's JSON response into a UserIntent.
 /// Falls back to keyword extraction if JSON is malformed.
@@ -44,6 +45,7 @@ fn try_parse_json(response: &str) -> Result<UserIntent> {
         target: parsed.target,
         confidence: parsed.confidence,
         entities: parsed.entities,
+        origin: Plane::Control,
     })
 }
 
@@ -82,6 +84,7 @@ fn extract_intent_heuristic(response: &str) -> UserIntent {
         target: None,
         confidence: 0.3,
         entities: vec![],
+        origin: Plane::Control,
     }
 }
 

@@ -12,6 +12,7 @@ use sovereign_core::content::ContentFields;
 use sovereign_core::interfaces::{OrchestratorEvent, SkillEvent};
 use sovereign_db::schema::{Document, Thread};
 
+use sovereign_core::security::ActionDecision;
 use crate::orchestrator_bubble::{add_orchestrator_bubble, ActiveDocument};
 use crate::panels::document_panel::DocumentPanel;
 use crate::search::build_search_overlay;
@@ -39,6 +40,7 @@ pub fn build_app(
     skill_rx: Option<mpsc::Receiver<SkillEvent>>,
     save_callback: Option<Box<dyn Fn(String, String, String) + Send + 'static>>,
     close_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
+    decision_tx: Option<mpsc::Sender<ActionDecision>>,
 ) {
     let app = Application::builder()
         .application_id("org.sovereign.os")
@@ -54,6 +56,7 @@ pub fn build_app(
     let skill_rx_cell = RefCell::new(skill_rx);
     let save_cb_cell = RefCell::new(save_callback);
     let close_cb_cell = RefCell::new(close_callback);
+    let decision_tx_cell = RefCell::new(decision_tx);
 
     // Build a local doc HashMap for lookups
     let doc_map: HashMap<String, Document> = documents
@@ -128,10 +131,12 @@ pub fn build_app(
         };
 
         // Orchestrator bubble — added directly onto overlay (no Fixed container)
-        add_orchestrator_bubble(
+        let dtx = decision_tx_cell.borrow_mut().take();
+        let bubble_handle = add_orchestrator_bubble(
             &overlay,
             active_doc.clone(),
             save_rc.clone(),
+            dtx,
         );
 
         vbox.append(&overlay);
@@ -220,6 +225,15 @@ pub fn build_app(
                             for c in commits {
                                 tracing::info!("  {} — {} ({})", c.id, c.message, c.timestamp);
                             }
+                        }
+                        OrchestratorEvent::BubbleState(state) => {
+                            bubble_handle.set_state(state);
+                        }
+                        OrchestratorEvent::ActionProposed { ref proposal } => {
+                            bubble_handle.show_confirmation(&proposal.description);
+                        }
+                        OrchestratorEvent::ActionRejected { ref reason, .. } => {
+                            bubble_handle.show_rejection(reason);
                         }
                         _ => {}
                     }

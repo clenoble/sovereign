@@ -86,14 +86,18 @@ impl GraphDB for SurrealGraphDB {
                 let tid = tid.to_string();
                 let mut result = self
                     .db
-                    .query("SELECT * FROM document WHERE thread_id = $tid ORDER BY created_at DESC")
+                    .query("SELECT * FROM document WHERE thread_id = $tid AND deleted_at IS NONE ORDER BY created_at DESC")
                     .bind(("tid", tid))
                     .await?;
                 let docs: Vec<Document> = result.take(0)?;
                 Ok(docs)
             }
             None => {
-                let docs: Vec<Document> = self.db.select("document").await?;
+                let mut result = self
+                    .db
+                    .query("SELECT * FROM document WHERE deleted_at IS NONE")
+                    .await?;
+                let docs: Vec<Document> = result.take(0)?;
                 Ok(docs)
             }
         }
@@ -152,7 +156,11 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn list_threads(&self) -> DbResult<Vec<Thread>> {
-        let threads: Vec<Thread> = self.db.select("thread").await?;
+        let mut result = self
+            .db
+            .query("SELECT * FROM thread WHERE deleted_at IS NONE")
+            .await?;
+        let threads: Vec<Thread> = result.take(0)?;
         Ok(threads)
     }
 
@@ -207,6 +215,89 @@ impl GraphDB for SurrealGraphDB {
 
         let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
         updated.ok_or_else(|| DbError::Query("Failed to move document".into()))
+    }
+
+    // -- Soft delete ---
+
+    async fn soft_delete_document(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_thing(id)?;
+        if table != "document" {
+            return Err(DbError::InvalidId(format!(
+                "Expected document ID, got table: {table}"
+            )));
+        }
+        let current: Option<Document> = self.db.select((table, key)).await?;
+        let mut doc = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        doc.deleted_at = Some(Utc::now().to_rfc3339());
+        let _: Option<Document> = self.db.update((table, key)).content(doc).await?;
+        Ok(())
+    }
+
+    async fn restore_soft_deleted_document(&self, id: &str) -> DbResult<Document> {
+        let (table, key) = parse_thing(id)?;
+        if table != "document" {
+            return Err(DbError::InvalidId(format!(
+                "Expected document ID, got table: {table}"
+            )));
+        }
+        let current: Option<Document> = self.db.select((table, key)).await?;
+        let mut doc = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        doc.deleted_at = None;
+        let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to restore document".into()))
+    }
+
+    async fn soft_delete_thread(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_thing(id)?;
+        if table != "thread" {
+            return Err(DbError::InvalidId(format!(
+                "Expected thread ID, got table: {table}"
+            )));
+        }
+        let current: Option<Thread> = self.db.select((table, key)).await?;
+        let mut thread = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        thread.deleted_at = Some(Utc::now().to_rfc3339());
+        let _: Option<Thread> = self.db.update((table, key)).content(thread).await?;
+        Ok(())
+    }
+
+    async fn restore_soft_deleted_thread(&self, id: &str) -> DbResult<Thread> {
+        let (table, key) = parse_thing(id)?;
+        if table != "thread" {
+            return Err(DbError::InvalidId(format!(
+                "Expected thread ID, got table: {table}"
+            )));
+        }
+        let current: Option<Thread> = self.db.select((table, key)).await?;
+        let mut thread = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        thread.deleted_at = None;
+        let updated: Option<Thread> = self.db.update((table, key)).content(thread).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to restore thread".into()))
+    }
+
+    async fn purge_deleted(&self, max_age: std::time::Duration) -> DbResult<u64> {
+        let cutoff =
+            Utc::now() - chrono::Duration::seconds(max_age.as_secs() as i64);
+        let cutoff_str = cutoff.to_rfc3339();
+
+        // Delete documents older than cutoff
+        let mut result = self
+            .db
+            .query("DELETE FROM document WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff")
+            .bind(("cutoff", cutoff_str.clone()))
+            .await?;
+        let _: Vec<Document> = result.take(0).unwrap_or_default();
+
+        // Delete threads older than cutoff
+        let mut result = self
+            .db
+            .query("DELETE FROM thread WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff")
+            .bind(("cutoff", cutoff_str))
+            .await?;
+        let _: Vec<Thread> = result.take(0).unwrap_or_default();
+
+        // SurrealDB DELETE doesn't return count easily; return 0 as placeholder
+        Ok(0)
     }
 
     // -- Relationships ---
@@ -626,5 +717,126 @@ mod tests {
             DbError::InvalidId(_) => {}
             other => panic!("Expected InvalidId, got: {other:?}"),
         }
+    }
+
+    // -- Soft delete tests ---
+
+    #[tokio::test]
+    async fn test_soft_delete_document() {
+        let db = setup_db().await;
+        let doc = Document::new("SoftDel".into(), "thread:t".into(), true);
+        let created = db.create_document(doc).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        db.soft_delete_document(&id).await.unwrap();
+
+        // Document should not appear in list
+        let docs = db.list_documents(None).await.unwrap();
+        assert!(docs.iter().all(|d| d.id_string().as_deref() != Some(id.as_str())));
+
+        // But get_document still works (it doesn't filter)
+        let fetched = db.get_document(&id).await.unwrap();
+        assert!(fetched.deleted_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_restore_soft_deleted_document() {
+        let db = setup_db().await;
+        let doc = Document::new("Restore".into(), "thread:t".into(), true);
+        let created = db.create_document(doc).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        db.soft_delete_document(&id).await.unwrap();
+        let restored = db.restore_soft_deleted_document(&id).await.unwrap();
+        assert!(restored.deleted_at.is_none());
+
+        // Should appear in list again
+        let docs = db.list_documents(None).await.unwrap();
+        assert!(docs.iter().any(|d| d.id_string().as_deref() == Some(id.as_str())));
+    }
+
+    #[tokio::test]
+    async fn test_soft_delete_thread() {
+        let db = setup_db().await;
+        let t = Thread::new("SoftDelThread".into(), "d".into());
+        let created = db.create_thread(t).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        db.soft_delete_thread(&id).await.unwrap();
+
+        let threads = db.list_threads().await.unwrap();
+        assert!(threads.iter().all(|t| t.id_string().as_deref() != Some(id.as_str())));
+    }
+
+    #[tokio::test]
+    async fn test_restore_soft_deleted_thread() {
+        let db = setup_db().await;
+        let t = Thread::new("RestoreThread".into(), "d".into());
+        let created = db.create_thread(t).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        db.soft_delete_thread(&id).await.unwrap();
+        let restored = db.restore_soft_deleted_thread(&id).await.unwrap();
+        assert!(restored.deleted_at.is_none());
+
+        let threads = db.list_threads().await.unwrap();
+        assert!(threads.iter().any(|t| t.id_string().as_deref() == Some(id.as_str())));
+    }
+
+    #[tokio::test]
+    async fn test_list_documents_excludes_soft_deleted() {
+        let db = setup_db().await;
+        let doc1 = Document::new("Active".into(), "thread:t".into(), true);
+        let doc2 = Document::new("Deleted".into(), "thread:t".into(), true);
+        db.create_document(doc1).await.unwrap();
+        let created2 = db.create_document(doc2).await.unwrap();
+        let id2 = created2.id_string().unwrap();
+
+        db.soft_delete_document(&id2).await.unwrap();
+
+        let docs = db.list_documents(None).await.unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].title, "Active");
+    }
+
+    #[tokio::test]
+    async fn test_list_documents_by_thread_excludes_soft_deleted() {
+        let db = setup_db().await;
+        let doc1 = Document::new("A".into(), "thread:alpha".into(), true);
+        let doc2 = Document::new("B".into(), "thread:alpha".into(), true);
+        db.create_document(doc1).await.unwrap();
+        let created2 = db.create_document(doc2).await.unwrap();
+        let id2 = created2.id_string().unwrap();
+
+        db.soft_delete_document(&id2).await.unwrap();
+
+        let docs = db.list_documents(Some("thread:alpha")).await.unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].title, "A");
+    }
+
+    #[tokio::test]
+    async fn test_purge_deleted() {
+        let db = setup_db().await;
+        let doc = Document::new("PurgeMe".into(), "thread:t".into(), true);
+        let created = db.create_document(doc).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        // Soft delete with a past timestamp to simulate expiry
+        let (table, key) = id.split_once(':').unwrap();
+        let mut fetched: Document = db.get_document(&id).await.unwrap();
+        let old_time = chrono::Utc::now() - chrono::Duration::days(31);
+        fetched.deleted_at = Some(old_time.to_rfc3339());
+        let _: Option<Document> = db.db.update((table, key)).content(fetched).await.unwrap();
+
+        // Purge with 30-day max age
+        let _ = db
+            .purge_deleted(std::time::Duration::from_secs(30 * 24 * 3600))
+            .await
+            .unwrap();
+
+        // Document should be gone
+        let result = db.get_document(&id).await;
+        assert!(result.is_err());
     }
 }

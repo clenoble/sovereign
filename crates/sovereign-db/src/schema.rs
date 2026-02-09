@@ -23,6 +23,9 @@ pub struct Document {
     pub spatial_y: f32,
     #[serde(default)]
     pub head_commit: Option<String>,
+    /// Soft-delete timestamp (ISO 8601). None means the document is active.
+    #[serde(default)]
+    pub deleted_at: Option<String>,
 }
 
 /// Thread (project/topic grouping)
@@ -32,6 +35,9 @@ pub struct Thread {
     pub name: String,
     pub description: String,
     pub created_at: DateTime<Utc>,
+    /// Soft-delete timestamp (ISO 8601). None means the thread is active.
+    #[serde(default)]
+    pub deleted_at: Option<String>,
 }
 
 /// Relationship edge between documents
@@ -116,6 +122,7 @@ impl Document {
             spatial_x: 0.0,
             spatial_y: 0.0,
             head_commit: None,
+            deleted_at: None,
         }
     }
 
@@ -137,6 +144,7 @@ impl Thread {
             name,
             description,
             created_at: Utc::now(),
+            deleted_at: None,
         }
     }
 

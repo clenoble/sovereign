@@ -159,4 +159,75 @@ window {
 .skill-button:disabled {
     color: #555;
 }
+
+/* -- Bubble visual states --------------------------------- */
+.bubble-idle {
+    background: #3a3af4;
+}
+
+.bubble-processing-owned {
+    background: #2a5af4;
+    animation: pulse-blue 1.5s ease-in-out infinite;
+}
+
+.bubble-processing-external {
+    background: #d4a05a;
+    animation: pulse-amber 1.5s ease-in-out infinite;
+}
+
+.bubble-proposing {
+    background: #d4a05a;
+    min-width: 64px;
+    min-height: 64px;
+    border-radius: 32px;
+}
+
+.bubble-executing {
+    background: #3ad47a;
+}
+
+/* -- Confirmation panel ----------------------------------- */
+.confirmation-panel {
+    background: #1e1e24;
+    border-radius: 12px;
+    padding: 12px;
+    border: 1px solid #d4a05a;
+    margin: 4px;
+}
+
+.confirmation-label {
+    color: #e0e0e0;
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+
+.approve-button {
+    padding: 6px 16px;
+    border-radius: 8px;
+    color: white;
+    background: #3a9a4a;
+    margin: 4px;
+}
+
+.approve-button:hover {
+    background: #4aaa5a;
+}
+
+.reject-button {
+    padding: 6px 16px;
+    border-radius: 8px;
+    color: white;
+    background: #9a3a3a;
+    margin: 4px;
+}
+
+.reject-button:hover {
+    background: #aa4a4a;
+}
+
+.rejection-toast {
+    color: #e07c6a;
+    font-size: 12px;
+    font-style: italic;
+}
 "#;

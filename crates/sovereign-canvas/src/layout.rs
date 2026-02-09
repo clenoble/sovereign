@@ -160,6 +160,7 @@ mod tests {
             name: name.to_string(),
             description: String::new(),
             created_at: Utc::now(),
+            deleted_at: None,
         }
     }
 
@@ -175,6 +176,7 @@ mod tests {
             spatial_x: 0.0,
             spatial_y: 0.0,
             head_commit: None,
+            deleted_at: None,
         }
     }
 

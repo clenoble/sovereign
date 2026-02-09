@@ -62,6 +62,23 @@ pub trait GraphDB: Send + Sync {
     /// Traverse the graph from a document, returning connected documents up to `depth` hops.
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>>;
 
+    // -- Soft delete ---
+
+    /// Mark a document as deleted (soft delete). Sets deleted_at timestamp.
+    async fn soft_delete_document(&self, id: &str) -> DbResult<()>;
+
+    /// Restore a soft-deleted document (clear deleted_at).
+    async fn restore_soft_deleted_document(&self, id: &str) -> DbResult<Document>;
+
+    /// Mark a thread as deleted (soft delete). Sets deleted_at timestamp.
+    async fn soft_delete_thread(&self, id: &str) -> DbResult<()>;
+
+    /// Restore a soft-deleted thread (clear deleted_at).
+    async fn restore_soft_deleted_thread(&self, id: &str) -> DbResult<Thread>;
+
+    /// Permanently remove records whose deleted_at is older than `max_age`.
+    async fn purge_deleted(&self, max_age: std::time::Duration) -> DbResult<u64>;
+
     // -- Version control ---
 
     /// Snapshot a single document into a commit, linked to its parent commit.

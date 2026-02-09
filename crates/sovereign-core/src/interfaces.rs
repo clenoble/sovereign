@@ -5,6 +5,8 @@
 
 use async_trait::async_trait;
 
+use crate::security::{BubbleVisualState, ProposedAction};
+
 /// Controls the spatial canvas viewport and highlights.
 /// Implemented in Phase 2 by sovereign-canvas.
 pub trait CanvasController: Send + Sync {
@@ -30,8 +32,11 @@ pub struct Viewport {
 pub enum OrchestratorEvent {
     DocumentOpened { doc_id: String },
     SearchResults { query: String, doc_ids: Vec<String> },
-    ActionProposed { description: String, action: String },
+    ActionProposed { proposal: ProposedAction },
     ActionExecuted { action: String, success: bool },
+    ActionRejected { action: String, reason: String },
+    InjectionDetected { source: String, pattern: String },
+    BubbleState(BubbleVisualState),
     ThreadCreated { thread_id: String, name: String },
     ThreadRenamed { thread_id: String, name: String },
     ThreadDeleted { thread_id: String },
@@ -54,6 +59,8 @@ pub struct UserIntent {
     pub target: Option<String>,
     pub confidence: f32,
     pub entities: Vec<(String, String)>,
+    /// Whether this intent originated from user input (Control) or document content (Data).
+    pub origin: crate::security::Plane,
 }
 
 /// Events emitted by the canvas/skills system for document actions.

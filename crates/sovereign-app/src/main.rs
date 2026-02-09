@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use sovereign_core::config::AppConfig;
 use sovereign_core::interfaces::OrchestratorEvent;
+use sovereign_core::security::ActionDecision;
 use sovereign_core::lifecycle;
 use sovereign_db::schema::{thing_to_raw, Document, RelationType, Thread};
 use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
@@ -243,6 +244,7 @@ async fn main() -> Result<()> {
 
             // Create event channels
             let (orch_tx, orch_rx) = mpsc::channel::<OrchestratorEvent>();
+            let (decision_tx, decision_rx) = mpsc::channel::<ActionDecision>();
 
             // Try to initialize AI orchestrator
             let db_arc = Arc::new(db);
@@ -253,7 +255,8 @@ async fn main() -> Result<()> {
             )
             .await
             {
-                Ok(o) => {
+                Ok(mut o) => {
+                    o.set_decision_rx(decision_rx);
                     tracing::info!("AI orchestrator initialized");
                     Some(Arc::new(o))
                 }
@@ -409,6 +412,7 @@ async fn main() -> Result<()> {
                 None, // skill_rx — canvas creates its own internally
                 Some(save_cb),
                 Some(close_cb),
+                Some(decision_tx),
             );
         }
 
