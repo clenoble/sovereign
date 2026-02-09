@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::error::DbResult;
 use crate::schema::{
-    Commit, Document, DocumentType, RelatedTo, RelationType, Thread,
+    Commit, Document, RelatedTo, RelationType, Thread,
 };
 
 /// Core database abstraction for the Sovereign OS document graph.
@@ -16,7 +16,7 @@ pub trait GraphDB: Send + Sync {
     /// Initialize schema (tables, indexes).
     async fn init_schema(&self) -> DbResult<()>;
 
-    // ── Documents ───────────────────────────────────────────
+    // -- Documents ---
 
     async fn create_document(&self, doc: Document) -> DbResult<Document>;
     async fn get_document(&self, id: &str) -> DbResult<Document>;
@@ -26,17 +26,16 @@ pub trait GraphDB: Send + Sync {
         id: &str,
         title: Option<&str>,
         content: Option<&str>,
-        doc_type: Option<DocumentType>,
     ) -> DbResult<Document>;
     async fn delete_document(&self, id: &str) -> DbResult<()>;
 
-    // ── Threads ─────────────────────────────────────────────
+    // -- Threads ---
 
     async fn create_thread(&self, thread: Thread) -> DbResult<Thread>;
     async fn get_thread(&self, id: &str) -> DbResult<Thread>;
     async fn list_threads(&self) -> DbResult<Vec<Thread>>;
 
-    // ── Relationships ───────────────────────────────────────
+    // -- Relationships ---
 
     async fn create_relationship(
         &self,
@@ -51,7 +50,7 @@ pub trait GraphDB: Send + Sync {
     /// Traverse the graph from a document, returning connected documents up to `depth` hops.
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>>;
 
-    // ── Version control ─────────────────────────────────────
+    // -- Version control ---
 
     /// Snapshot all documents into a commit record.
     async fn commit(&self, message: &str) -> DbResult<Commit>;

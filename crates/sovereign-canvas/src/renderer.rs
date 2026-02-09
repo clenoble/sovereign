@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::ffi::CString;
 use std::rc::Rc;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -11,7 +12,7 @@ use gtk4::GLArea;
 use skia_safe::gpu::SurfaceOrigin;
 use skia_safe::{gpu, Canvas, ColorType, Font, Paint, PaintStyle, Path, Point, RRect, Rect};
 
-use sovereign_core::interfaces::Viewport;
+use sovereign_core::interfaces::{SkillEvent, Viewport};
 
 use crate::colors::*;
 use crate::gl_loader;
@@ -22,6 +23,7 @@ use crate::state::{hit_test, CanvasState};
 pub fn create_gl_area(
     state: Rc<RefCell<CanvasState>>,
     viewport: Arc<Mutex<Viewport>>,
+    skill_tx: Option<mpsc::Sender<SkillEvent>>,
 ) -> GLArea {
     let gl_area = GLArea::new();
     gl_area.set_hexpand(true);
@@ -152,7 +154,7 @@ pub fn create_gl_area(
     attach_scroll_zoom(&gl_area, state.clone());
     attach_drag_pan(&gl_area, state.clone());
     attach_motion_hover(&gl_area, state.clone());
-    attach_click_select(&gl_area, state.clone());
+    attach_click_select(&gl_area, state.clone(), skill_tx);
 
     // ── Continuous render via tick callback ──────────────────────────────
     {
@@ -318,19 +320,10 @@ fn draw_card(
     };
     canvas.draw_str(&label, (card.x + 14.0, card.y + 26.0), &title_font, &tp);
 
-    // Type badge
+    // Sovereignty indicator
     let badge_font = Font::default()
         .with_size(10.0)
         .unwrap_or_else(|| Font::default());
-    tp.set_color4f(TEXT_DIM, None);
-    canvas.draw_str(
-        &card.doc_type,
-        (card.x + 14.0, card.y + 44.0),
-        &badge_font,
-        &tp,
-    );
-
-    // Sovereignty indicator
     let ind = if card.is_owned { "owned" } else { "external" };
     tp.set_color4f(border, None);
     canvas.draw_str(
@@ -435,26 +428,44 @@ fn attach_motion_hover(gl_area: &GLArea, state: Rc<RefCell<CanvasState>>) {
     gl_area.add_controller(motion);
 }
 
-fn attach_click_select(gl_area: &GLArea, state: Rc<RefCell<CanvasState>>) {
+fn attach_click_select(
+    gl_area: &GLArea,
+    state: Rc<RefCell<CanvasState>>,
+    skill_tx: Option<mpsc::Sender<SkillEvent>>,
+) {
     let a = gl_area.clone();
     let click = gtk4::GestureClick::new();
     click.set_button(1);
-    click.connect_released(move |_, _n, x, y| {
+    click.connect_released(move |_, n, x, y| {
         let mut st = state.borrow_mut();
         let hit = hit_test(&st, x, y);
-        if st.selected != hit {
-            st.selected = hit;
+
+        if n == 1 {
+            // Single click: select
+            if st.selected != hit {
+                st.selected = hit;
+                if let Some(i) = hit {
+                    let card = &st.layout.cards[i];
+                    tracing::info!(
+                        "Selected: \"{}\" [{}]",
+                        card.title,
+                        if card.is_owned { "owned" } else { "external" }
+                    );
+                }
+                drop(st);
+                a.queue_draw();
+            }
+        } else if n == 2 {
+            // Double click: open document
             if let Some(i) = hit {
                 let card = &st.layout.cards[i];
-                tracing::info!(
-                    "Selected: \"{}\" ({}) [{}]",
-                    card.title,
-                    card.doc_type,
-                    if card.is_owned { "owned" } else { "external" }
-                );
+                tracing::info!("Opening document: \"{}\"", card.title);
+                if let Some(ref tx) = skill_tx {
+                    let _ = tx.send(SkillEvent::OpenDocument {
+                        doc_id: card.doc_id.clone(),
+                    });
+                }
             }
-            drop(st);
-            a.queue_draw();
         }
     });
     gl_area.add_controller(click);

@@ -1,0 +1,111 @@
+use crate::traits::{CoreSkill, SkillDocument, SkillOutput};
+use sovereign_core::content::ContentImage;
+
+pub struct ImageSkill;
+
+impl CoreSkill for ImageSkill {
+    fn name(&self) -> &str {
+        "image"
+    }
+
+    fn activate(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn deactivate(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn execute(
+        &self,
+        action: &str,
+        doc: &SkillDocument,
+        params: &str,
+    ) -> anyhow::Result<SkillOutput> {
+        match action {
+            "add" => {
+                let mut updated = doc.content.clone();
+                updated.images.push(ContentImage {
+                    path: params.to_string(),
+                    caption: String::new(),
+                });
+                Ok(SkillOutput::ContentUpdate(updated))
+            }
+            "remove" => {
+                let idx: usize = params
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid image index: {params}"))?;
+                let mut updated = doc.content.clone();
+                if idx >= updated.images.len() {
+                    anyhow::bail!("Image index {idx} out of range ({})", updated.images.len());
+                }
+                updated.images.remove(idx);
+                Ok(SkillOutput::ContentUpdate(updated))
+            }
+            _ => anyhow::bail!("Unknown action: {action}"),
+        }
+    }
+
+    fn actions(&self) -> Vec<(String, String)> {
+        vec![
+            ("add".into(), "Add Image".into()),
+            ("remove".into(), "Remove Image".into()),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sovereign_core::content::ContentFields;
+
+    fn make_doc() -> SkillDocument {
+        SkillDocument {
+            id: "document:test".into(),
+            title: "Test Doc".into(),
+            content: ContentFields {
+                body: "body".into(),
+                images: vec![ContentImage {
+                    path: "/existing.png".into(),
+                    caption: "existing".into(),
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn add_appends_image() {
+        let skill = ImageSkill;
+        let doc = make_doc();
+        let result = skill.execute("add", &doc, "/new.png").unwrap();
+        match result {
+            SkillOutput::ContentUpdate(cf) => {
+                assert_eq!(cf.images.len(), 2);
+                assert_eq!(cf.images[1].path, "/new.png");
+            }
+            _ => panic!("Expected ContentUpdate"),
+        }
+    }
+
+    #[test]
+    fn remove_deletes_image() {
+        let skill = ImageSkill;
+        let doc = make_doc();
+        let result = skill.execute("remove", &doc, "0").unwrap();
+        match result {
+            SkillOutput::ContentUpdate(cf) => {
+                assert!(cf.images.is_empty());
+            }
+            _ => panic!("Expected ContentUpdate"),
+        }
+    }
+
+    #[test]
+    fn actions_returns_add_and_remove() {
+        let skill = ImageSkill;
+        let actions = skill.actions();
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].0, "add");
+        assert_eq!(actions[1].0, "remove");
+    }
+}

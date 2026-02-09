@@ -16,6 +16,10 @@ This is critical — APIs change between versions and stale knowledge causes cas
 - Always `rm -rf` target directory before `cp -r` (cp into existing dir nests instead of overwriting)
 - Rust linker is rust-lld — be aware of `--as-needed` link ordering issues
 
+## User Confirmation Required
+- When a problem can be solved either by installing a missing system package or by changing the code, **ask the user** which approach they prefer before proceeding
+- Never run `sudo` commands to install packages without explicit user approval
+
 ## Code Style
 - Rust: edition 2021, prefer safe code, minimize unsafe blocks
 - Keep spike code simple and focused — no over-engineering

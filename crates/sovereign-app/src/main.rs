@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use sovereign_core::config::AppConfig;
 use sovereign_core::interfaces::OrchestratorEvent;
 use sovereign_core::lifecycle;
-use sovereign_db::schema::{thing_to_raw, Document, DocumentType, RelationType, Thread};
+use sovereign_db::schema::{thing_to_raw, Document, RelationType, Thread};
 use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
 use sovereign_db::GraphDB;
 use std::path::PathBuf;
@@ -31,8 +31,6 @@ enum Commands {
     CreateDoc {
         #[arg(long)]
         title: String,
-        #[arg(long)]
-        doc_type: String,
         #[arg(long)]
         thread_id: String,
         #[arg(long, default_value_t = true)]
@@ -127,43 +125,51 @@ async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
         thread_ids.push(created.id_string().unwrap());
     }
 
-    let owned_docs = [
-        ("Research Notes", DocumentType::Markdown, 0),
-        ("Project Plan", DocumentType::Markdown, 1),
-        ("Architecture Diagram", DocumentType::Image, 1),
-        ("API Specification", DocumentType::Markdown, 1),
-        ("Budget Overview", DocumentType::Spreadsheet, 3),
-        ("Meeting Notes Q1", DocumentType::Markdown, 3),
-        ("Design Document", DocumentType::Markdown, 2),
-        ("Test Results", DocumentType::Data, 1),
+    let owned_docs: Vec<(&str, &str, usize)> = vec![
+        ("Research Notes", "# Research Notes\n\nExploring Rust + GTK4 for desktop OS development.\n\n## Key Findings\n- GTK4 bindings are solid\n- Skia provides GPU rendering", 0),
+        ("Project Plan", "# Project Plan\n\n## Phase 1: Foundation\n- Data layer\n- UI shell\n\n## Phase 2: Canvas\n- Spatial layout\n- GPU rendering", 1),
+        ("Architecture Diagram", "# Architecture\n\nComponent overview for Sovereign OS.", 1),
+        ("API Specification", "# API Spec\n\n## Endpoints\n- Document CRUD\n- Thread management\n- Relationship graph", 1),
+        ("Budget Overview", "# Budget 2026\n\n| Item | Cost |\n|------|------|\n| Infrastructure | $500 |\n| Tools | $200 |", 3),
+        ("Meeting Notes Q1", "# Meeting Notes — Q1 2026\n\n## Jan 15\n- Discussed architecture\n- Agreed on Rust + GTK4 stack", 3),
+        ("Design Document", "# Design System\n\n## Colors\n- Background: #0e0e10\n- Accent: #5a9fd4\n\n## Typography\n- System font, 13-16px", 2),
+        ("Test Results", "# Test Results\n\n- sovereign-db: 12 pass\n- sovereign-canvas: 12 pass\n- sovereign-ai: 8 pass", 1),
     ];
 
-    let external_docs = [
-        ("Wikipedia: Rust", DocumentType::Web, 0),
-        ("SO: GTK4 bindings", DocumentType::Web, 1),
-        ("GitHub Issue #42", DocumentType::Web, 1),
-        ("Research Paper (PDF)", DocumentType::Pdf, 0),
-        ("Shared Spec", DocumentType::Markdown, 2),
-        ("API Response Log", DocumentType::Data, 1),
+    let external_docs: Vec<(&str, &str, usize)> = vec![
+        ("Wikipedia: Rust", "# Rust (programming language)\n\nRust is a multi-paradigm systems programming language.", 0),
+        ("SO: GTK4 bindings", "# Stack Overflow: GTK4 Rust bindings\n\nQ: How to use gtk4-rs with GLib main loop?", 1),
+        ("GitHub Issue #42", "# Issue #42: Canvas performance\n\nReported: frame drops at 4K resolution.", 1),
+        ("Research Paper (PDF)", "# Paper: Local-first Software\n\nAbstract: We explore principles for software that keeps data on user devices.", 0),
+        ("Shared Spec", "# Shared API Specification\n\nCollaborative document for cross-team alignment.", 2),
+        ("API Response Log", "# API Logs\n\n```\n200 GET /documents — 12ms\n201 POST /documents — 45ms\n```", 1),
     ];
 
-    for (title, doc_type, thread_idx) in &owned_docs {
-        let doc = Document::new(
+    for (title, body, thread_idx) in &owned_docs {
+        let mut doc = Document::new(
             title.to_string(),
-            doc_type.clone(),
             thread_ids[*thread_idx].clone(),
             true,
         );
+        let content = sovereign_core::content::ContentFields {
+            body: body.to_string(),
+            images: vec![],
+        };
+        doc.content = content.serialize();
         db.create_document(doc).await?;
     }
 
-    for (title, doc_type, thread_idx) in &external_docs {
-        let doc = Document::new(
+    for (title, body, thread_idx) in &external_docs {
+        let mut doc = Document::new(
             title.to_string(),
-            doc_type.clone(),
             thread_ids[*thread_idx].clone(),
             false,
         );
+        let content = sovereign_core::content::ContentFields {
+            body: body.to_string(),
+            images: vec![],
+        };
+        doc.content = content.serialize();
         db.create_document(doc).await?;
     }
 
@@ -337,6 +343,22 @@ async fn main() -> Result<()> {
                 ui_rx
             });
 
+            // Build save callback for document panel
+            let save_cb: Box<dyn Fn(String, String, String) + Send + 'static> = {
+                let db = db_arc.clone();
+                Box::new(move |doc_id: String, title: String, content: String| {
+                    let db = db.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = db
+                            .update_document(&doc_id, Some(&title), Some(&content))
+                            .await
+                        {
+                            tracing::error!("Failed to save document {doc_id}: {e}");
+                        }
+                    });
+                })
+            };
+
             // Launch GTK4 UI
             sovereign_ui::app::build_app(
                 &config.ui,
@@ -345,20 +367,18 @@ async fn main() -> Result<()> {
                 query_callback,
                 Some(orch_rx),
                 ui_voice_rx,
+                None, // skill_rx — canvas creates its own internally
+                Some(save_cb),
             );
         }
 
         Commands::CreateDoc {
             title,
-            doc_type,
             thread_id,
             is_owned,
         } => {
             let db = create_db(&config).await?;
-            let dt: DocumentType = doc_type
-                .parse()
-                .map_err(|e: String| anyhow::anyhow!(e))?;
-            let doc = Document::new(title, dt, thread_id, is_owned);
+            let doc = Document::new(title, thread_id, is_owned);
             let created = db.create_document(doc).await?;
             let id = created.id_string().unwrap_or_default();
             println!("{id}");
@@ -375,7 +395,7 @@ async fn main() -> Result<()> {
             let docs = db.list_documents(thread_id.as_deref()).await?;
             for doc in &docs {
                 let id = doc.id_string().unwrap_or_default();
-                println!("{id}\t{}\t{}", doc.title, doc.doc_type);
+                println!("{id}\t{}", doc.title);
             }
             println!("({} documents)", docs.len());
         }
@@ -383,7 +403,7 @@ async fn main() -> Result<()> {
         Commands::UpdateDoc { id, title, content } => {
             let db = create_db(&config).await?;
             let updated = db
-                .update_document(&id, title.as_deref(), content.as_deref(), None)
+                .update_document(&id, title.as_deref(), content.as_deref())
                 .await?;
             println!("{}", serde_json::to_string_pretty(&updated)?);
         }

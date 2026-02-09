@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use gtk4::prelude::*;
-use sovereign_core::interfaces::{CanvasController, Viewport};
+use sovereign_core::interfaces::{CanvasController, SkillEvent, Viewport};
 use sovereign_db::schema::{Document, Thread};
 
 use controller::{CanvasCommand, SovereignCanvasController};
@@ -28,6 +28,7 @@ use state::CanvasState;
 pub fn build_canvas(
     documents: Vec<Document>,
     threads: Vec<Thread>,
+    skill_tx: Option<mpsc::Sender<SkillEvent>>,
 ) -> (gtk4::GLArea, Box<dyn CanvasController>) {
     let canvas_layout = compute_layout(&documents, &threads);
 
@@ -44,7 +45,7 @@ pub fn build_canvas(
     let (sender, receiver) = mpsc::channel::<CanvasCommand>();
     let receiver = Rc::new(RefCell::new(receiver));
 
-    let gl_area = create_gl_area(state.clone(), viewport.clone());
+    let gl_area = create_gl_area(state.clone(), viewport.clone(), skill_tx);
 
     // Poll commands from the tick callback (already runs every frame)
     {

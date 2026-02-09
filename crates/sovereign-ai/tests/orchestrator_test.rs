@@ -4,7 +4,7 @@ use std::sync::Arc;
 use sovereign_core::interfaces::OrchestratorEvent;
 use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
 use sovereign_db::GraphDB;
-use sovereign_db::schema::{Document, DocumentType, Thread};
+use sovereign_db::schema::{Document, Thread};
 
 /// Helper: create an in-memory SurrealDB with some test documents.
 async fn setup_db_with_docs() -> Arc<SurrealGraphDB> {
@@ -18,19 +18,16 @@ async fn setup_db_with_docs() -> Arc<SurrealGraphDB> {
 
     let doc1 = Document::new(
         "Meeting Notes Q1".to_string(),
-        DocumentType::Markdown,
         tid.clone(),
         true,
     );
     let doc2 = Document::new(
         "Budget Report 2026".to_string(),
-        DocumentType::Spreadsheet,
         tid.clone(),
         true,
     );
     let doc3 = Document::new(
         "Project Roadmap".to_string(),
-        DocumentType::Markdown,
         tid,
         true,
     );

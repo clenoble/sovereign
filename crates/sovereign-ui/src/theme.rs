@@ -110,4 +110,52 @@ window {
     font-size: 12px;
     font-weight: bold;
 }
+
+/* -- Document panel ---------------------------------------- */
+.document-panel {
+    background-color: #1a1a20;
+}
+
+.markdown-editor {
+    background: #1a1a20;
+    color: #e0e0e0;
+}
+
+.image-gallery {
+    padding: 8px;
+}
+
+/* -- Orchestrator bubble ----------------------------------- */
+.orchestrator-bubble {
+    min-width: 56px;
+    min-height: 56px;
+    border-radius: 28px;
+    background: #3a3af4;
+    color: white;
+    font-weight: bold;
+    font-size: 16px;
+    padding: 14px 18px;
+}
+
+.skill-popover {
+    background: #1e1e24;
+    border-radius: 12px;
+    padding: 8px;
+}
+
+.skill-button {
+    padding: 8px 16px;
+    border-radius: 8px;
+    color: #e0e0e0;
+    background: #2a2a32;
+    margin: 4px;
+}
+
+.skill-button:hover {
+    background: #3a3a42;
+}
+
+.skill-button:disabled {
+    color: #555;
+}
 "#;

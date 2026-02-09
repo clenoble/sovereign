@@ -77,7 +77,6 @@ mod tests {
                 CardLayout {
                     doc_id: "d1".into(),
                     title: "Card 1".into(),
-                    doc_type: "markdown".into(),
                     is_owned: true,
                     x: 100.0,
                     y: 100.0,
@@ -87,7 +86,6 @@ mod tests {
                 CardLayout {
                     doc_id: "d2".into(),
                     title: "Card 2".into(),
-                    doc_type: "web".into(),
                     is_owned: false,
                     x: 320.0,
                     y: 100.0,

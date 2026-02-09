@@ -14,7 +14,6 @@ pub fn thing_to_raw(t: &Thing) -> String {
 pub struct Document {
     pub id: Option<Thing>,
     pub title: String,
-    pub doc_type: DocumentType,
     pub content: String,
     pub thread_id: String,
     pub is_owned: bool,
@@ -22,46 +21,6 @@ pub struct Document {
     pub modified_at: DateTime<Utc>,
     pub spatial_x: f32,
     pub spatial_y: f32,
-}
-
-/// Document type classification
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum DocumentType {
-    Markdown,
-    Image,
-    Pdf,
-    Web,
-    Data,
-    Spreadsheet,
-}
-
-impl std::fmt::Display for DocumentType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Markdown => write!(f, "markdown"),
-            Self::Image => write!(f, "image"),
-            Self::Pdf => write!(f, "pdf"),
-            Self::Web => write!(f, "web"),
-            Self::Data => write!(f, "data"),
-            Self::Spreadsheet => write!(f, "spreadsheet"),
-        }
-    }
-}
-
-impl std::str::FromStr for DocumentType {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "markdown" => Ok(Self::Markdown),
-            "image" => Ok(Self::Image),
-            "pdf" => Ok(Self::Pdf),
-            "web" => Ok(Self::Web),
-            "data" => Ok(Self::Data),
-            "spreadsheet" => Ok(Self::Spreadsheet),
-            _ => Err(format!("Unknown document type: {s}")),
-        }
-    }
 }
 
 /// Thread (project/topic grouping)
@@ -128,7 +87,6 @@ pub struct DocumentSnapshot {
     pub document_id: String,
     pub title: String,
     pub content: String,
-    pub doc_type: DocumentType,
 }
 
 /// A version control commit — snapshot of all documents
@@ -141,13 +99,12 @@ pub struct Commit {
 }
 
 impl Document {
-    pub fn new(title: String, doc_type: DocumentType, thread_id: String, is_owned: bool) -> Self {
+    pub fn new(title: String, thread_id: String, is_owned: bool) -> Self {
         let now = Utc::now();
         Self {
             id: None,
             title,
-            doc_type,
-            content: String::new(),
+            content: r#"{"body":"","images":[]}"#.to_string(),
             thread_id,
             is_owned,
             created_at: now,

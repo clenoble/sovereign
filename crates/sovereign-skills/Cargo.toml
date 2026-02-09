@@ -5,8 +5,10 @@ edition = "2021"
 description = "Skill manifest parsing, registry, and CoreSkill trait"
 
 [dependencies]
+sovereign-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+genpdf = { workspace = true }

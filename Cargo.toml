@@ -51,6 +51,9 @@ llama-cpp-2 = "0.1"
 encoding_rs = "0.8"
 
 
+# PDF generation
+genpdf = "0.2"
+
 # Voice pipeline
 whisper-rs = "0.15"
 cpal = "0.17"

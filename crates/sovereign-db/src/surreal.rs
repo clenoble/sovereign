@@ -5,7 +5,7 @@ use surrealdb::Surreal;
 
 use crate::error::{DbError, DbResult};
 use crate::schema::{
-    Commit, Document, DocumentSnapshot, DocumentType, RelatedTo, RelationType, Thread,
+    Commit, Document, DocumentSnapshot, RelatedTo, RelationType, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -50,7 +50,6 @@ impl GraphDB for SurrealGraphDB {
     async fn init_schema(&self) -> DbResult<()> {
         let queries = [
             "DEFINE INDEX idx_thread_id ON document FIELDS thread_id",
-            "DEFINE INDEX idx_doc_type ON document FIELDS doc_type",
             "DEFINE INDEX idx_doc_title ON document FIELDS title",
             "DEFINE INDEX idx_doc_created ON document FIELDS created_at",
             "DEFINE INDEX idx_commit_timestamp ON commit FIELDS timestamp",
@@ -64,7 +63,7 @@ impl GraphDB for SurrealGraphDB {
         Ok(())
     }
 
-    // ── Documents ───────────────────────────────────────────
+    // -- Documents ---
 
     async fn create_document(&self, doc: Document) -> DbResult<Document> {
         let created: Option<Document> = self.db.create("document").content(doc).await?;
@@ -104,7 +103,6 @@ impl GraphDB for SurrealGraphDB {
         id: &str,
         title: Option<&str>,
         content: Option<&str>,
-        doc_type: Option<DocumentType>,
     ) -> DbResult<Document> {
         let (table, key) = parse_thing(id)?;
         if table != "document" {
@@ -121,9 +119,6 @@ impl GraphDB for SurrealGraphDB {
         if let Some(c) = content {
             doc.content = c.to_string();
         }
-        if let Some(dt) = doc_type {
-            doc.doc_type = dt;
-        }
         doc.modified_at = Utc::now();
 
         let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
@@ -139,7 +134,7 @@ impl GraphDB for SurrealGraphDB {
         Ok(())
     }
 
-    // ── Threads ─────────────────────────────────────────────
+    // -- Threads ---
 
     async fn create_thread(&self, thread: Thread) -> DbResult<Thread> {
         let created: Option<Thread> = self.db.create("thread").content(thread).await?;
@@ -160,7 +155,7 @@ impl GraphDB for SurrealGraphDB {
         Ok(threads)
     }
 
-    // ── Relationships ───────────────────────────────────────
+    // -- Relationships ---
 
     async fn create_relationship(
         &self,
@@ -195,7 +190,6 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn list_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
-        // Use record reference directly in query since SurrealDB stores in/out as Thing
         let query = format!(
             "SELECT * FROM related_to WHERE in = {doc_id} OR out = {doc_id}"
         );
@@ -205,7 +199,6 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>> {
-        // Build traversal path based on depth
         let arrow_path = "->related_to->document".repeat(depth as usize);
         let query = format!(
             "SELECT {arrow_path} FROM {doc_id} LIMIT {limit}"
@@ -215,10 +208,9 @@ impl GraphDB for SurrealGraphDB {
         Ok(docs)
     }
 
-    // ── Version control ─────────────────────────────────────
+    // -- Version control ---
 
     async fn commit(&self, message: &str) -> DbResult<Commit> {
-        // Snapshot all documents
         let all_docs: Vec<Document> = self.db.select("document").await?;
         let snapshots: Vec<DocumentSnapshot> = all_docs
             .into_iter()
@@ -226,7 +218,6 @@ impl GraphDB for SurrealGraphDB {
                 document_id: doc.id_string().unwrap_or_default(),
                 title: doc.title,
                 content: doc.content,
-                doc_type: doc.doc_type,
             })
             .collect();
 
@@ -267,7 +258,6 @@ mod tests {
         let db = setup_db().await;
         let doc = Document::new(
             "Test Doc".into(),
-            DocumentType::Markdown,
             "thread:test".into(),
             true,
         );
@@ -278,7 +268,6 @@ mod tests {
         let id = created.id_string().unwrap();
         let fetched = db.get_document(&id).await.unwrap();
         assert_eq!(fetched.title, "Test Doc");
-        assert_eq!(fetched.doc_type, DocumentType::Markdown);
         assert!(fetched.is_owned);
     }
 
@@ -288,7 +277,6 @@ mod tests {
         for i in 0..3 {
             let doc = Document::new(
                 format!("Doc {i}"),
-                DocumentType::Markdown,
                 "thread:test".into(),
                 true,
             );
@@ -301,8 +289,8 @@ mod tests {
     #[tokio::test]
     async fn test_list_documents_by_thread() {
         let db = setup_db().await;
-        let doc_a = Document::new("A".into(), DocumentType::Markdown, "thread:alpha".into(), true);
-        let doc_b = Document::new("B".into(), DocumentType::Image, "thread:beta".into(), true);
+        let doc_a = Document::new("A".into(), "thread:alpha".into(), true);
+        let doc_b = Document::new("B".into(), "thread:beta".into(), true);
         db.create_document(doc_a).await.unwrap();
         db.create_document(doc_b).await.unwrap();
 
@@ -314,12 +302,12 @@ mod tests {
     #[tokio::test]
     async fn test_update_document() {
         let db = setup_db().await;
-        let doc = Document::new("Original".into(), DocumentType::Markdown, "thread:t".into(), true);
+        let doc = Document::new("Original".into(), "thread:t".into(), true);
         let created = db.create_document(doc).await.unwrap();
         let id = created.id_string().unwrap();
 
         let updated = db
-            .update_document(&id, Some("Updated Title"), Some("New content"), None)
+            .update_document(&id, Some("Updated Title"), Some("New content"))
             .await
             .unwrap();
         assert_eq!(updated.title, "Updated Title");
@@ -329,7 +317,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_document() {
         let db = setup_db().await;
-        let doc = Document::new("ToDelete".into(), DocumentType::Pdf, "thread:t".into(), true);
+        let doc = Document::new("ToDelete".into(), "thread:t".into(), true);
         let created = db.create_document(doc).await.unwrap();
         let id = created.id_string().unwrap();
 
@@ -365,8 +353,8 @@ mod tests {
     #[tokio::test]
     async fn test_create_and_list_relationships() {
         let db = setup_db().await;
-        let doc1 = Document::new("Doc1".into(), DocumentType::Markdown, "thread:t".into(), true);
-        let doc2 = Document::new("Doc2".into(), DocumentType::Markdown, "thread:t".into(), true);
+        let doc1 = Document::new("Doc1".into(), "thread:t".into(), true);
+        let doc2 = Document::new("Doc2".into(), "thread:t".into(), true);
         let d1 = db.create_document(doc1).await.unwrap();
         let d2 = db.create_document(doc2).await.unwrap();
         let id1 = d1.id_string().unwrap();
@@ -385,7 +373,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_snapshots_documents() {
         let db = setup_db().await;
-        let doc = Document::new("Snap".into(), DocumentType::Markdown, "thread:t".into(), true);
+        let doc = Document::new("Snap".into(), "thread:t".into(), true);
         db.create_document(doc).await.unwrap();
 
         let commit = db.commit("Test commit").await.unwrap();
@@ -398,7 +386,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_commits() {
         let db = setup_db().await;
-        let doc = Document::new("D".into(), DocumentType::Data, "thread:t".into(), true);
+        let doc = Document::new("D".into(), "thread:t".into(), true);
         db.create_document(doc).await.unwrap();
 
         db.commit("First").await.unwrap();

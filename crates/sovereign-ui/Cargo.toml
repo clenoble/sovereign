@@ -8,4 +8,6 @@ description = "GTK4 UI shell with dark theme, taskbar, and search overlay"
 sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
 sovereign-canvas = { workspace = true }
-gtk4 = "0.9"
+sovereign-skills = { workspace = true }
+gtk4 = { version = "0.9", features = ["v4_10"] }
+tracing = { workspace = true }

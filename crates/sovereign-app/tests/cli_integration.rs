@@ -49,8 +49,6 @@ fn test_cli_round_trip() {
         .arg("create-doc")
         .arg("--title")
         .arg("Meeting Notes")
-        .arg("--doc-type")
-        .arg("markdown")
         .arg("--thread-id")
         .arg(thread_id));
     let doc_id = doc_out.trim();
@@ -92,8 +90,6 @@ fn test_cli_round_trip() {
         .arg("create-doc")
         .arg("--title")
         .arg("Source Doc")
-        .arg("--doc-type")
-        .arg("web")
         .arg("--thread-id")
         .arg(thread_id));
     let doc2_id = doc2_out.trim();

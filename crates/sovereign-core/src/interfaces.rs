@@ -43,8 +43,36 @@ pub struct UserIntent {
     pub entities: Vec<(String, String)>,
 }
 
+/// Events emitted by the canvas/skills system for document actions.
+#[derive(Debug, Clone)]
+pub enum SkillEvent {
+    OpenDocument { doc_id: String },
+}
+
 /// Backend for loading and running LLM inference.
 /// Implemented in Phase 3 by sovereign-ai.
+///
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skill_event_is_send_and_clone() {
+        fn assert_send<T: Send>() {}
+        fn assert_clone<T: Clone>() {}
+        assert_send::<SkillEvent>();
+        assert_clone::<SkillEvent>();
+
+        let event = SkillEvent::OpenDocument {
+            doc_id: "document:abc".into(),
+        };
+        let cloned = event.clone();
+        match cloned {
+            SkillEvent::OpenDocument { doc_id } => assert_eq!(doc_id, "document:abc"),
+        }
+    }
+}
+
 #[async_trait]
 pub trait ModelBackend: Send + Sync {
     async fn load(&mut self, model_path: &str, n_gpu_layers: i32) -> anyhow::Result<()>;

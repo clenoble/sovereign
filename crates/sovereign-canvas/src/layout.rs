@@ -15,7 +15,6 @@ pub const LANE_PADDING_TOP: f32 = 30.0;
 pub struct CardLayout {
     pub doc_id: String,
     pub title: String,
-    pub doc_type: String,
     pub is_owned: bool,
     pub x: f32,
     pub y: f32,
@@ -135,7 +134,6 @@ fn place_cards_in_lane(
         cards.push(CardLayout {
             doc_id: doc.id_string().unwrap_or_default(),
             title: doc.title.clone(),
-            doc_type: doc.doc_type.to_string(),
             is_owned: doc.is_owned,
             x,
             y,
@@ -149,7 +147,7 @@ fn place_cards_in_lane(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use sovereign_db::schema::{Document, DocumentType, Thread};
+    use sovereign_db::schema::{Document, Thread};
     use surrealdb::sql::Thing;
 
     fn make_thread(id: &str, name: &str) -> Thread {
@@ -165,8 +163,7 @@ mod tests {
         Document {
             id: Some(Thing::from(("document", id))),
             title: title.to_string(),
-            doc_type: DocumentType::Markdown,
-            content: String::new(),
+            content: r#"{"body":"","images":[]}"#.to_string(),
             thread_id: thread_id.to_string(),
             is_owned,
             created_at: Utc::now(),
