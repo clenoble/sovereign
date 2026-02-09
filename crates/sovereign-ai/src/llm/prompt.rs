@@ -11,7 +11,7 @@ pub fn qwen_chat_prompt(system: &str, user: &str) -> String {
 pub const ROUTER_SYSTEM_PROMPT: &str = "\
 You are an intent classifier for a document management OS. \
 Given user input, output JSON only:\n\
-{\"action\": \"search|open|create|navigate|summarize|unknown\", \
+{\"action\": \"search|open|create|navigate|summarize|create_thread|rename_thread|delete_thread|move_document|history|restore|unknown\", \
 \"target\": \"...\", \"confidence\": 0.0-1.0, \
 \"entities\": [[\"key\", \"value\"]]}";
 
@@ -19,7 +19,7 @@ Given user input, output JSON only:\n\
 pub const REASONING_SYSTEM_PROMPT: &str = "\
 You are a helpful assistant for a document management OS. \
 Analyze the user's request carefully and output JSON:\n\
-{\"action\": \"search|open|create|navigate|summarize|unknown\", \
+{\"action\": \"search|open|create|navigate|summarize|create_thread|rename_thread|delete_thread|move_document|history|restore|unknown\", \
 \"target\": \"...\", \"confidence\": 0.0-1.0, \
 \"entities\": [[\"key\", \"value\"]], \
 \"reasoning\": \"brief explanation\"}";
@@ -44,6 +44,12 @@ mod tests {
         assert!(ROUTER_SYSTEM_PROMPT.contains("create"));
         assert!(ROUTER_SYSTEM_PROMPT.contains("navigate"));
         assert!(ROUTER_SYSTEM_PROMPT.contains("summarize"));
+        assert!(ROUTER_SYSTEM_PROMPT.contains("create_thread"));
+        assert!(ROUTER_SYSTEM_PROMPT.contains("rename_thread"));
+        assert!(ROUTER_SYSTEM_PROMPT.contains("delete_thread"));
+        assert!(ROUTER_SYSTEM_PROMPT.contains("move_document"));
+        assert!(ROUTER_SYSTEM_PROMPT.contains("history"));
+        assert!(ROUTER_SYSTEM_PROMPT.contains("restore"));
         assert!(ROUTER_SYSTEM_PROMPT.contains("unknown"));
     }
 }

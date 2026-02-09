@@ -34,6 +34,18 @@ pub trait GraphDB: Send + Sync {
     async fn create_thread(&self, thread: Thread) -> DbResult<Thread>;
     async fn get_thread(&self, id: &str) -> DbResult<Thread>;
     async fn list_threads(&self) -> DbResult<Vec<Thread>>;
+    async fn update_thread(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> DbResult<Thread>;
+    async fn delete_thread(&self, id: &str) -> DbResult<()>;
+    async fn move_document_to_thread(
+        &self,
+        doc_id: &str,
+        new_thread_id: &str,
+    ) -> DbResult<Document>;
 
     // -- Relationships ---
 
@@ -52,9 +64,15 @@ pub trait GraphDB: Send + Sync {
 
     // -- Version control ---
 
-    /// Snapshot all documents into a commit record.
-    async fn commit(&self, message: &str) -> DbResult<Commit>;
+    /// Snapshot a single document into a commit, linked to its parent commit.
+    async fn commit_document(&self, doc_id: &str, message: &str) -> DbResult<Commit>;
 
-    /// List all commits, most recent first.
-    async fn list_commits(&self) -> DbResult<Vec<Commit>>;
+    /// List commits for a specific document, most recent first.
+    async fn list_document_commits(&self, doc_id: &str) -> DbResult<Vec<Commit>>;
+
+    /// Get a single commit by ID.
+    async fn get_commit(&self, commit_id: &str) -> DbResult<Commit>;
+
+    /// Restore a document to a previous commit's snapshot.
+    async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document>;
 }

@@ -38,6 +38,7 @@ pub fn build_app(
     voice_rx: Option<mpsc::Receiver<VoiceEvent>>,
     skill_rx: Option<mpsc::Receiver<SkillEvent>>,
     save_callback: Option<Box<dyn Fn(String, String, String) + Send + 'static>>,
+    close_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
 ) {
     let app = Application::builder()
         .application_id("org.sovereign.os")
@@ -52,6 +53,7 @@ pub fn build_app(
     let voice_rx_cell = RefCell::new(voice_rx);
     let skill_rx_cell = RefCell::new(skill_rx);
     let save_cb_cell = RefCell::new(save_callback);
+    let close_cb_cell = RefCell::new(close_callback);
 
     // Build a local doc HashMap for lookups
     let doc_map: HashMap<String, Document> = documents
@@ -118,6 +120,13 @@ pub fn build_app(
             None => Rc::new(|_, _, _| {}),
         };
 
+        // Close callback wrapped in Rc
+        let close_cb_taken = close_cb_cell.borrow_mut().take();
+        let close_rc: Rc<dyn Fn(String)> = match close_cb_taken {
+            Some(cb) => Rc::new(move |doc_id: String| cb(doc_id)),
+            None => Rc::new(|_| {}),
+        };
+
         // Orchestrator bubble — added directly onto overlay (no Fixed container)
         add_orchestrator_bubble(
             &overlay,
@@ -178,6 +187,7 @@ pub fn build_app(
         let doc_map_poll = doc_map.clone();
         let active_doc_poll = active_doc.clone();
         let save_rc_poll = save_rc.clone();
+        let close_rc_poll = close_rc.clone();
 
         gl_area.add_tick_callback(move |_area, _| {
             // Poll orchestrator events
@@ -192,6 +202,24 @@ pub fn build_app(
                         }
                         OrchestratorEvent::DocumentOpened { ref doc_id } => {
                             controller.navigate_to_document(doc_id);
+                        }
+                        OrchestratorEvent::ThreadCreated { ref thread_id, ref name } => {
+                            tracing::info!("UI: Thread created: {} ({})", name, thread_id);
+                        }
+                        OrchestratorEvent::ThreadRenamed { ref thread_id, ref name } => {
+                            tracing::info!("UI: Thread renamed: {} → {}", thread_id, name);
+                        }
+                        OrchestratorEvent::ThreadDeleted { ref thread_id } => {
+                            tracing::info!("UI: Thread deleted: {}", thread_id);
+                        }
+                        OrchestratorEvent::DocumentMoved { ref doc_id, ref new_thread_id } => {
+                            tracing::info!("UI: Document {} moved to {}", doc_id, new_thread_id);
+                        }
+                        OrchestratorEvent::VersionHistory { ref doc_id, ref commits } => {
+                            tracing::info!("UI: Version history for {}: {} commits", doc_id, commits.len());
+                            for c in commits {
+                                tracing::info!("  {} — {} ({})", c.id, c.message, c.timestamp);
+                            }
                         }
                         _ => {}
                     }
@@ -245,6 +273,10 @@ pub fn build_app(
                                         doc.is_owned,
                                     );
                                 }
+                            }
+                            SkillEvent::DocumentClosed { ref doc_id } => {
+                                tracing::info!("Document closed: {}", doc_id);
+                                close_rc_poll(doc_id.clone());
                             }
                         }
                     }

@@ -94,10 +94,18 @@ enum Commands {
         doc_id: String,
     },
 
-    /// Snapshot all documents into a commit
+    /// Commit a document snapshot
     Commit {
         #[arg(long)]
+        doc_id: String,
+        #[arg(long)]
         message: String,
+    },
+
+    /// List commits for a document
+    ListCommits {
+        #[arg(long)]
+        doc_id: String,
     },
 }
 
@@ -343,11 +351,18 @@ async fn main() -> Result<()> {
                 ui_rx
             });
 
-            // Build save callback for document panel
+            // Auto-commit engine
+            let autocommit = Arc::new(tokio::sync::Mutex::new(
+                sovereign_ai::AutoCommitEngine::new(db_arc.clone()),
+            ));
+
+            // Build save callback for document panel — records edits for auto-commit
             let save_cb: Box<dyn Fn(String, String, String) + Send + 'static> = {
                 let db = db_arc.clone();
+                let ac = autocommit.clone();
                 Box::new(move |doc_id: String, title: String, content: String| {
                     let db = db.clone();
+                    let ac = ac.clone();
                     tokio::spawn(async move {
                         if let Err(e) = db
                             .update_document(&doc_id, Some(&title), Some(&content))
@@ -355,6 +370,30 @@ async fn main() -> Result<()> {
                         {
                             tracing::error!("Failed to save document {doc_id}: {e}");
                         }
+                        ac.lock().await.record_edit(&doc_id);
+                    });
+                })
+            };
+
+            // Periodic auto-commit check (every 30s)
+            {
+                let ac = autocommit.clone();
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                    loop {
+                        interval.tick().await;
+                        ac.lock().await.check_and_commit().await;
+                    }
+                });
+            }
+
+            // Close callback for auto-commit on document close
+            let close_cb: Box<dyn Fn(String) + Send + 'static> = {
+                let ac = autocommit.clone();
+                Box::new(move |doc_id: String| {
+                    let ac = ac.clone();
+                    tokio::spawn(async move {
+                        ac.lock().await.commit_on_close(&doc_id).await;
                     });
                 })
             };
@@ -369,6 +408,7 @@ async fn main() -> Result<()> {
                 ui_voice_rx,
                 None, // skill_rx — canvas creates its own internally
                 Some(save_cb),
+                Some(close_cb),
             );
         }
 
@@ -457,11 +497,21 @@ async fn main() -> Result<()> {
             println!("({} relationships)", rels.len());
         }
 
-        Commands::Commit { message } => {
+        Commands::Commit { doc_id, message } => {
             let db = create_db(&config).await?;
-            let commit = db.commit(&message).await?;
+            let commit = db.commit_document(&doc_id, &message).await?;
             let id = commit.id.map(|t| thing_to_raw(&t)).unwrap_or_default();
-            println!("{id} ({} document snapshots)", commit.snapshots.len());
+            println!("{id} ({})", commit.snapshot.title);
+        }
+
+        Commands::ListCommits { doc_id } => {
+            let db = create_db(&config).await?;
+            let commits = db.list_document_commits(&doc_id).await?;
+            for c in &commits {
+                let id = c.id.as_ref().map(|t| thing_to_raw(t)).unwrap_or_default();
+                println!("{id}\t{}\t{}", c.timestamp.format("%Y-%m-%d %H:%M:%S"), c.message);
+            }
+            println!("({} commits)", commits.len());
         }
     }
 

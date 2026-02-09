@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Button, Label, Orientation, Overlay, Popover, PositionType};
+use gtk4::{Box as GtkBox, Button, Label, Orientation, Overlay};
 
 use sovereign_core::content::{ContentFields, ContentImage};
 use sovereign_skills::skills::image::ImageSkill;
@@ -22,10 +22,45 @@ pub struct ActiveDocument {
     pub panel_window: gtk4::Window,
 }
 
+/// Position the skills panel near the bubble, clamped to stay within the overlay.
+fn position_panel(bubble: &Label, panel: &GtkBox, overlay: &Overlay) {
+    let bx = bubble.margin_start();
+    let by = bubble.margin_top();
+    let bh = bubble.height();
+    let ow = overlay.width();
+    let oh = overlay.height();
+
+    // Measure the panel's natural size (works even before first render)
+    let (_, nat_w, _, _) = panel.measure(Orientation::Horizontal, -1);
+    let (_, nat_h, _, _) = panel.measure(Orientation::Vertical, nat_w);
+    let pw = if nat_w > 0 { nat_w } else { 160 };
+    let ph = if nat_h > 0 { nat_h } else { 180 };
+    let gap = 8;
+
+    // Default: below the bubble, left-aligned
+    let mut x = bx;
+    let mut y = by + bh + gap;
+
+    // Clamp horizontal: keep panel within overlay
+    if ow > 0 && x + pw > ow {
+        x = (ow - pw - gap).max(gap);
+    }
+
+    // If below goes off-screen, show above the bubble
+    if oh > 0 && y + ph > oh {
+        y = (by - ph - gap).max(gap);
+    }
+
+    panel.set_margin_start(x.max(0));
+    panel.set_margin_top(y.max(0));
+}
+
 /// Add the orchestrator bubble directly onto an Overlay.
 ///
 /// The bubble is positioned via alignment + margins (no Fixed container)
 /// so that events outside the bubble pass through to the canvas.
+/// The skills panel is an in-overlay widget (not a Popover) so it always
+/// stays within the canvas bounds regardless of bubble position.
 pub fn add_orchestrator_bubble(
     overlay: &Overlay,
     active_doc: Rc<RefCell<Option<ActiveDocument>>>,
@@ -44,33 +79,32 @@ pub fn add_orchestrator_bubble(
 
     overlay.add_overlay(&bubble);
 
-    // Popover opens below the bubble
-    let popover = Popover::new();
-    popover.set_parent(&bubble);
-    popover.set_position(PositionType::Bottom);
-    popover.add_css_class("skill-popover");
-    popover.set_autohide(false);
-
-    let pop_box = GtkBox::new(Orientation::Vertical, 4);
+    // Skills panel — in-overlay widget that replaces the old Popover.
+    // Lives inside the overlay so it is always visible within the canvas.
+    let skills_panel = GtkBox::new(Orientation::Vertical, 4);
+    skills_panel.add_css_class("skill-panel");
+    skills_panel.set_halign(gtk4::Align::Start);
+    skills_panel.set_valign(gtk4::Align::Start);
+    skills_panel.set_visible(false);
 
     let save_btn = Button::with_label("Save");
     save_btn.add_css_class("skill-button");
-    pop_box.append(&save_btn);
+    skills_panel.append(&save_btn);
 
     let add_image_btn = Button::with_label("Add Image");
     add_image_btn.add_css_class("skill-button");
-    pop_box.append(&add_image_btn);
+    skills_panel.append(&add_image_btn);
 
     let export_pdf_btn = Button::with_label("Export PDF");
     export_pdf_btn.add_css_class("skill-button");
-    pop_box.append(&export_pdf_btn);
+    skills_panel.append(&export_pdf_btn);
 
     let status_label = Label::new(None);
     status_label.set_halign(gtk4::Align::Start);
     status_label.set_margin_top(4);
-    pop_box.append(&status_label);
+    skills_panel.append(&status_label);
 
-    popover.set_child(Some(&pop_box));
+    overlay.add_overlay(&skills_panel);
 
     // Track drag vs click
     let dragged = Rc::new(RefCell::new(false));
@@ -81,6 +115,7 @@ pub fn add_orchestrator_bubble(
     {
         let bubble_ref = bubble.clone();
         let dragged = dragged.clone();
+        let skills_panel = skills_panel.clone();
         let start_margins = Rc::new(RefCell::new((0i32, 0i32)));
 
         let sm = start_margins.clone();
@@ -96,6 +131,7 @@ pub fn add_orchestrator_bubble(
         drag.connect_drag_update(move |_, dx, dy| {
             if dx.abs() > 5.0 || dy.abs() > 5.0 {
                 *dragged3.borrow_mut() = true;
+                skills_panel.set_visible(false);
             }
             let (sx, sy) = *sm.borrow();
             bubble_ref.set_margin_start((sx + dx as i32).max(0));
@@ -104,11 +140,13 @@ pub fn add_orchestrator_bubble(
     }
     bubble.add_controller(drag);
 
-    // Click gesture — open popover (only if not a drag)
+    // Click gesture — toggle skills panel
     let click = gtk4::GestureClick::new();
     click.set_button(1);
     {
-        let popover = popover.clone();
+        let skills_panel = skills_panel.clone();
+        let bubble = bubble.clone();
+        let overlay = overlay.clone();
         let active_doc = active_doc.clone();
         let save_btn = save_btn.clone();
         let add_image_btn = add_image_btn.clone();
@@ -119,9 +157,9 @@ pub fn add_orchestrator_bubble(
             if *dragged.borrow() {
                 return;
             }
-            // Toggle popover
-            if popover.is_visible() {
-                popover.popdown();
+            // Toggle
+            if skills_panel.is_visible() {
+                skills_panel.set_visible(false);
                 return;
             }
             let has_doc = active_doc.borrow().is_some();
@@ -133,7 +171,8 @@ pub fn add_orchestrator_bubble(
             } else {
                 status_label.set_text("");
             }
-            popover.popup();
+            position_panel(&bubble, &skills_panel, &overlay);
+            skills_panel.set_visible(true);
         });
     }
     bubble.add_controller(click);
@@ -142,7 +181,7 @@ pub fn add_orchestrator_bubble(
     {
         let active_doc = active_doc.clone();
         let save_cb = save_cb.clone();
-        let popover = popover.clone();
+        let skills_panel = skills_panel.clone();
         save_btn.connect_clicked(move |_| {
             if let Some(ref doc) = *active_doc.borrow() {
                 let body = (doc.get_current_body)();
@@ -153,7 +192,7 @@ pub fn add_orchestrator_bubble(
                 save_cb(doc.doc_id.clone(), doc.title.clone(), cf.serialize());
                 tracing::info!("Saved via orchestrator bubble: {}", doc.doc_id);
             }
-            popover.popdown();
+            skills_panel.set_visible(false);
         });
     }
 
@@ -161,9 +200,9 @@ pub fn add_orchestrator_bubble(
     {
         let active_doc = active_doc.clone();
         let save_cb = save_cb.clone();
-        let popover = popover.clone();
+        let skills_panel = skills_panel.clone();
         add_image_btn.connect_clicked(move |_| {
-            popover.popdown();
+            skills_panel.set_visible(false);
 
             // Use the document panel as dialog parent so it appears on top
             let panel = active_doc.borrow().as_ref().map(|ad| ad.panel_window.clone());
@@ -225,9 +264,9 @@ pub fn add_orchestrator_bubble(
     // Export PDF action
     {
         let active_doc = active_doc.clone();
-        let popover = popover.clone();
+        let skills_panel = skills_panel.clone();
         export_pdf_btn.connect_clicked(move |_| {
-            popover.popdown();
+            skills_panel.set_visible(false);
 
             // Extract data and panel window (immutable borrow, then drop)
             let doc_data = {

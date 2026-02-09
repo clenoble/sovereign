@@ -50,7 +50,20 @@ fn try_parse_json(response: &str) -> Result<UserIntent> {
 fn extract_intent_heuristic(response: &str) -> UserIntent {
     let lower = response.to_lowercase();
 
-    let action = if lower.contains("search") || lower.contains("find") || lower.contains("look") {
+    // Thread-specific intents (check before generic "create"/"new")
+    let action = if lower.contains("create thread") || lower.contains("new thread") || lower.contains("new project") {
+        "create_thread"
+    } else if lower.contains("rename thread") || lower.contains("rename project") {
+        "rename_thread"
+    } else if lower.contains("delete thread") || lower.contains("remove thread") || lower.contains("delete project") {
+        "delete_thread"
+    } else if lower.contains("move") || lower.contains("assign") || lower.contains("reassign") {
+        "move_document"
+    } else if lower.contains("history") || lower.contains("versions") || lower.contains("changelog") {
+        "history"
+    } else if lower.contains("restore") || lower.contains("revert") || lower.contains("rollback") {
+        "restore"
+    } else if lower.contains("search") || lower.contains("find") || lower.contains("look") {
         "search"
     } else if lower.contains("open") || lower.contains("show") {
         "open"
@@ -67,7 +80,7 @@ fn extract_intent_heuristic(response: &str) -> UserIntent {
     UserIntent {
         action: action.to_string(),
         target: None,
-        confidence: 0.3, // low confidence for heuristic
+        confidence: 0.3,
         entities: vec![],
     }
 }
@@ -131,5 +144,53 @@ mod tests {
         let intent = parse_intent_response(response).unwrap();
         // Malformed JSON → falls back to heuristic which finds "search"
         assert_eq!(intent.action, "search");
+    }
+
+    #[test]
+    fn heuristic_create_thread() {
+        let intent = parse_intent_response("create thread called Alpha").unwrap();
+        assert_eq!(intent.action, "create_thread");
+    }
+
+    #[test]
+    fn heuristic_new_project() {
+        let intent = parse_intent_response("I want a new project for research").unwrap();
+        assert_eq!(intent.action, "create_thread");
+    }
+
+    #[test]
+    fn heuristic_rename_thread() {
+        let intent = parse_intent_response("rename thread Research to Science").unwrap();
+        assert_eq!(intent.action, "rename_thread");
+    }
+
+    #[test]
+    fn heuristic_delete_thread() {
+        let intent = parse_intent_response("delete thread Old Stuff").unwrap();
+        assert_eq!(intent.action, "delete_thread");
+    }
+
+    #[test]
+    fn heuristic_move_document() {
+        let intent = parse_intent_response("move Research Notes to Development").unwrap();
+        assert_eq!(intent.action, "move_document");
+    }
+
+    #[test]
+    fn heuristic_assign_document() {
+        let intent = parse_intent_response("assign this document to the Research thread").unwrap();
+        assert_eq!(intent.action, "move_document");
+    }
+
+    #[test]
+    fn heuristic_history() {
+        let intent = parse_intent_response("show me the history of this document").unwrap();
+        assert_eq!(intent.action, "history");
+    }
+
+    #[test]
+    fn heuristic_restore() {
+        let intent = parse_intent_response("restore the previous version").unwrap();
+        assert_eq!(intent.action, "restore");
     }
 }

@@ -120,7 +120,11 @@ fn place_cards_in_lane(
     lane_y: f32,
     cards: &mut Vec<CardLayout>,
 ) {
-    for (i, doc) in docs.iter().enumerate() {
+    // Sort by modified_at ascending (oldest → left, newest → right) for timeline layout
+    let mut sorted: Vec<&Document> = docs.to_vec();
+    sorted.sort_by_key(|d| d.modified_at);
+
+    for (i, doc) in sorted.iter().enumerate() {
         let has_spatial = doc.spatial_x != 0.0 || doc.spatial_y != 0.0;
         let (x, y) = if has_spatial {
             (doc.spatial_x, doc.spatial_y)
@@ -170,6 +174,7 @@ mod tests {
             modified_at: Utc::now(),
             spatial_x: 0.0,
             spatial_y: 0.0,
+            head_commit: None,
         }
     }
 

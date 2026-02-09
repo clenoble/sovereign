@@ -21,6 +21,8 @@ pub struct Document {
     pub modified_at: DateTime<Utc>,
     pub spatial_x: f32,
     pub spatial_y: f32,
+    #[serde(default)]
+    pub head_commit: Option<String>,
 }
 
 /// Thread (project/topic grouping)
@@ -89,13 +91,15 @@ pub struct DocumentSnapshot {
     pub content: String,
 }
 
-/// A version control commit — snapshot of all documents
+/// A per-document version control commit with parent chain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Commit {
     pub id: Option<Thing>,
+    pub document_id: String,
+    pub parent_commit: Option<String>,
     pub message: String,
     pub timestamp: DateTime<Utc>,
-    pub snapshots: Vec<DocumentSnapshot>,
+    pub snapshot: DocumentSnapshot,
 }
 
 impl Document {
@@ -111,9 +115,16 @@ impl Document {
             modified_at: now,
             spatial_x: 0.0,
             spatial_y: 0.0,
+            head_commit: None,
         }
     }
 
+    pub fn id_string(&self) -> Option<String> {
+        self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+}
+
+impl Commit {
     pub fn id_string(&self) -> Option<String> {
         self.id.as_ref().map(|t| thing_to_raw(t))
     }

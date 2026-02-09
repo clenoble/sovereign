@@ -32,6 +32,19 @@ pub enum OrchestratorEvent {
     SearchResults { query: String, doc_ids: Vec<String> },
     ActionProposed { description: String, action: String },
     ActionExecuted { action: String, success: bool },
+    ThreadCreated { thread_id: String, name: String },
+    ThreadRenamed { thread_id: String, name: String },
+    ThreadDeleted { thread_id: String },
+    DocumentMoved { doc_id: String, new_thread_id: String },
+    VersionHistory { doc_id: String, commits: Vec<CommitSummary> },
+}
+
+/// Lightweight commit summary for version history events.
+#[derive(Debug, Clone)]
+pub struct CommitSummary {
+    pub id: String,
+    pub message: String,
+    pub timestamp: String,
 }
 
 /// Parsed user intent from the AI router.
@@ -47,6 +60,7 @@ pub struct UserIntent {
 #[derive(Debug, Clone)]
 pub enum SkillEvent {
     OpenDocument { doc_id: String },
+    DocumentClosed { doc_id: String },
 }
 
 /// Backend for loading and running LLM inference.
@@ -69,6 +83,7 @@ mod tests {
         let cloned = event.clone();
         match cloned {
             SkillEvent::OpenDocument { doc_id } => assert_eq!(doc_id, "document:abc"),
+            SkillEvent::DocumentClosed { .. } => panic!("wrong variant"),
         }
     }
 }

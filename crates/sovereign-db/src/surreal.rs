@@ -53,6 +53,7 @@ impl GraphDB for SurrealGraphDB {
             "DEFINE INDEX idx_doc_title ON document FIELDS title",
             "DEFINE INDEX idx_doc_created ON document FIELDS created_at",
             "DEFINE INDEX idx_commit_timestamp ON commit FIELDS timestamp",
+            "DEFINE INDEX idx_commit_doc ON commit FIELDS document_id",
         ];
         for q in queries {
             self.db
@@ -155,6 +156,59 @@ impl GraphDB for SurrealGraphDB {
         Ok(threads)
     }
 
+    async fn update_thread(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> DbResult<Thread> {
+        let (table, key) = parse_thing(id)?;
+        if table != "thread" {
+            return Err(DbError::InvalidId(format!("Expected thread ID, got table: {table}")));
+        }
+
+        let current: Option<Thread> = self.db.select((table, key)).await?;
+        let mut thread = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+
+        if let Some(n) = name {
+            thread.name = n.to_string();
+        }
+        if let Some(d) = description {
+            thread.description = d.to_string();
+        }
+
+        let updated: Option<Thread> = self.db.update((table, key)).content(thread).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to update thread".into()))
+    }
+
+    async fn delete_thread(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_thing(id)?;
+        if table != "thread" {
+            return Err(DbError::InvalidId(format!("Expected thread ID, got table: {table}")));
+        }
+        let _: Option<Thread> = self.db.delete((table, key)).await?;
+        Ok(())
+    }
+
+    async fn move_document_to_thread(
+        &self,
+        doc_id: &str,
+        new_thread_id: &str,
+    ) -> DbResult<Document> {
+        let (table, key) = parse_thing(doc_id)?;
+        if table != "document" {
+            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
+        }
+
+        let current: Option<Document> = self.db.select((table, key)).await?;
+        let mut doc = current.ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
+        doc.thread_id = new_thread_id.to_string();
+        doc.modified_at = Utc::now();
+
+        let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to move document".into()))
+    }
+
     // -- Relationships ---
 
     async fn create_relationship(
@@ -210,35 +264,79 @@ impl GraphDB for SurrealGraphDB {
 
     // -- Version control ---
 
-    async fn commit(&self, message: &str) -> DbResult<Commit> {
-        let all_docs: Vec<Document> = self.db.select("document").await?;
-        let snapshots: Vec<DocumentSnapshot> = all_docs
-            .into_iter()
-            .map(|doc| DocumentSnapshot {
-                document_id: doc.id_string().unwrap_or_default(),
-                title: doc.title,
-                content: doc.content,
-            })
-            .collect();
+    async fn commit_document(&self, doc_id: &str, message: &str) -> DbResult<Commit> {
+        let doc = self.get_document(doc_id).await?;
+
+        let snapshot = DocumentSnapshot {
+            document_id: doc_id.to_string(),
+            title: doc.title.clone(),
+            content: doc.content.clone(),
+        };
 
         let commit = Commit {
             id: None,
+            document_id: doc_id.to_string(),
+            parent_commit: doc.head_commit.clone(),
             message: message.to_string(),
             timestamp: Utc::now(),
-            snapshots,
+            snapshot,
         };
 
         let created: Option<Commit> = self.db.create("commit").content(commit).await?;
-        created.ok_or_else(|| DbError::Query("Failed to create commit".into()))
+        let created = created.ok_or_else(|| DbError::Query("Failed to create commit".into()))?;
+
+        // Update document's head_commit pointer
+        let commit_id = created.id_string().unwrap_or_default();
+        let (table, key) = parse_thing(doc_id)?;
+        let mut doc_updated = doc;
+        doc_updated.head_commit = Some(commit_id);
+        let _: Option<Document> = self.db.update((table, key)).content(doc_updated).await?;
+
+        Ok(created)
     }
 
-    async fn list_commits(&self) -> DbResult<Vec<Commit>> {
+    async fn list_document_commits(&self, doc_id: &str) -> DbResult<Vec<Commit>> {
+        let doc_id_owned = doc_id.to_string();
         let mut result = self
             .db
-            .query("SELECT * FROM commit ORDER BY timestamp DESC")
+            .query("SELECT * FROM commit WHERE document_id = $doc_id ORDER BY timestamp DESC")
+            .bind(("doc_id", doc_id_owned))
             .await?;
         let commits: Vec<Commit> = result.take(0)?;
         Ok(commits)
+    }
+
+    async fn get_commit(&self, commit_id: &str) -> DbResult<Commit> {
+        let (table, key) = parse_thing(commit_id)?;
+        if table != "commit" {
+            return Err(DbError::InvalidId(format!("Expected commit ID, got table: {table}")));
+        }
+        let commit: Option<Commit> = self.db.select((table, key)).await?;
+        commit.ok_or_else(|| DbError::NotFound(commit_id.to_string()))
+    }
+
+    async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> {
+        let commit = self.get_commit(commit_id).await?;
+
+        // Update document to the snapshot's state
+        let (table, key) = parse_thing(doc_id)?;
+        if table != "document" {
+            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
+        }
+        let current: Option<Document> = self.db.select((table, key)).await?;
+        let mut doc = current.ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
+        doc.title = commit.snapshot.title.clone();
+        doc.content = commit.snapshot.content.clone();
+        doc.modified_at = Utc::now();
+
+        let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
+        let restored = updated.ok_or_else(|| DbError::Query("Failed to restore document".into()))?;
+
+        // Create a new commit recording the restore
+        let restore_msg = format!("Restored from {}", commit_id);
+        self.commit_document(doc_id, &restore_msg).await?;
+
+        Ok(restored)
     }
 }
 
@@ -371,31 +469,141 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_commit_snapshots_documents() {
+    async fn test_commit_document() {
         let db = setup_db().await;
         let doc = Document::new("Snap".into(), "thread:t".into(), true);
-        db.create_document(doc).await.unwrap();
+        let created = db.create_document(doc).await.unwrap();
+        let doc_id = created.id_string().unwrap();
 
-        let commit = db.commit("Test commit").await.unwrap();
+        let commit = db.commit_document(&doc_id, "Initial commit").await.unwrap();
         assert!(commit.id.is_some());
-        assert_eq!(commit.message, "Test commit");
-        assert_eq!(commit.snapshots.len(), 1);
-        assert_eq!(commit.snapshots[0].title, "Snap");
+        assert_eq!(commit.message, "Initial commit");
+        assert_eq!(commit.document_id, doc_id);
+        assert_eq!(commit.snapshot.title, "Snap");
+        assert!(commit.parent_commit.is_none());
+
+        // head_commit should be updated
+        let fetched = db.get_document(&doc_id).await.unwrap();
+        assert_eq!(fetched.head_commit, commit.id_string());
     }
 
     #[tokio::test]
-    async fn test_list_commits() {
+    async fn test_commit_document_creates_chain() {
+        let db = setup_db().await;
+        let doc = Document::new("Chain".into(), "thread:t".into(), true);
+        let created = db.create_document(doc).await.unwrap();
+        let doc_id = created.id_string().unwrap();
+
+        let c1 = db.commit_document(&doc_id, "First").await.unwrap();
+        let c1_id = c1.id_string().unwrap();
+        assert!(c1.parent_commit.is_none());
+
+        let c2 = db.commit_document(&doc_id, "Second").await.unwrap();
+        assert_eq!(c2.parent_commit, Some(c1_id));
+    }
+
+    #[tokio::test]
+    async fn test_list_document_commits() {
         let db = setup_db().await;
         let doc = Document::new("D".into(), "thread:t".into(), true);
-        db.create_document(doc).await.unwrap();
+        let created = db.create_document(doc).await.unwrap();
+        let doc_id = created.id_string().unwrap();
 
-        db.commit("First").await.unwrap();
-        db.commit("Second").await.unwrap();
+        db.commit_document(&doc_id, "First").await.unwrap();
+        db.commit_document(&doc_id, "Second").await.unwrap();
 
-        let commits = db.list_commits().await.unwrap();
+        let commits = db.list_document_commits(&doc_id).await.unwrap();
         assert_eq!(commits.len(), 2);
-        // Most recent first
         assert_eq!(commits[0].message, "Second");
+    }
+
+    #[tokio::test]
+    async fn test_get_commit() {
+        let db = setup_db().await;
+        let doc = Document::new("G".into(), "thread:t".into(), true);
+        let created = db.create_document(doc).await.unwrap();
+        let doc_id = created.id_string().unwrap();
+
+        let commit = db.commit_document(&doc_id, "Snapshot").await.unwrap();
+        let commit_id = commit.id_string().unwrap();
+
+        let fetched = db.get_commit(&commit_id).await.unwrap();
+        assert_eq!(fetched.message, "Snapshot");
+        assert_eq!(fetched.snapshot.title, "G");
+    }
+
+    #[tokio::test]
+    async fn test_restore_document() {
+        let db = setup_db().await;
+        let doc = Document::new("Original".into(), "thread:t".into(), true);
+        let created = db.create_document(doc).await.unwrap();
+        let doc_id = created.id_string().unwrap();
+
+        // Commit v1
+        let c1 = db.commit_document(&doc_id, "v1").await.unwrap();
+        let c1_id = c1.id_string().unwrap();
+
+        // Modify document
+        db.update_document(&doc_id, Some("Modified"), None).await.unwrap();
+        db.commit_document(&doc_id, "v2").await.unwrap();
+
+        // Restore to v1
+        let restored = db.restore_document(&doc_id, &c1_id).await.unwrap();
+        assert_eq!(restored.title, "Original");
+
+        // Should have created a restore commit
+        let commits = db.list_document_commits(&doc_id).await.unwrap();
+        assert!(commits[0].message.contains("Restored from"));
+    }
+
+    #[tokio::test]
+    async fn test_update_thread() {
+        let db = setup_db().await;
+        let t = Thread::new("Original".into(), "desc".into());
+        let created = db.create_thread(t).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        let updated = db
+            .update_thread(&id, Some("Renamed"), None)
+            .await
+            .unwrap();
+        assert_eq!(updated.name, "Renamed");
+        assert_eq!(updated.description, "desc");
+    }
+
+    #[tokio::test]
+    async fn test_delete_thread() {
+        let db = setup_db().await;
+        let t = Thread::new("ToDelete".into(), "d".into());
+        let created = db.create_thread(t).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        db.delete_thread(&id).await.unwrap();
+
+        let result = db.get_thread(&id).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_move_document_to_thread() {
+        let db = setup_db().await;
+        let t1 = Thread::new("Thread A".into(), "".into());
+        let t2 = Thread::new("Thread B".into(), "".into());
+        let created_t1 = db.create_thread(t1).await.unwrap();
+        let created_t2 = db.create_thread(t2).await.unwrap();
+        let tid1 = created_t1.id_string().unwrap();
+        let tid2 = created_t2.id_string().unwrap();
+
+        let doc = Document::new("Movable".into(), tid1.clone(), true);
+        let created = db.create_document(doc).await.unwrap();
+        let doc_id = created.id_string().unwrap();
+        assert_eq!(created.thread_id, tid1);
+
+        let moved = db.move_document_to_thread(&doc_id, &tid2).await.unwrap();
+        assert_eq!(moved.thread_id, tid2);
+
+        let fetched = db.get_document(&doc_id).await.unwrap();
+        assert_eq!(fetched.thread_id, tid2);
     }
 
     #[tokio::test]

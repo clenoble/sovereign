@@ -120,18 +120,26 @@ fn test_cli_round_trip() {
         "List relationships output: [{rels_out}]"
     );
 
-    // Commit
+    // Commit a document
     let commit_out = run(sovereign_cmd()
         .arg("commit")
+        .arg("--doc-id")
+        .arg(doc_id)
         .arg("--message")
         .arg("Initial setup"));
     assert!(
         commit_out.contains("commit:"),
         "Commit output: [{commit_out}]"
     );
+
+    // List commits for the document
+    let list_commits_out = run(sovereign_cmd()
+        .arg("list-commits")
+        .arg("--doc-id")
+        .arg(doc_id));
     assert!(
-        commit_out.contains("document snapshots"),
-        "Commit output: [{commit_out}]"
+        list_commits_out.contains("Initial setup"),
+        "List commits output: [{list_commits_out}]"
     );
 
     // Clean up temp dir

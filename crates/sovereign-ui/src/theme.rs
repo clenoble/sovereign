@@ -137,10 +137,11 @@ window {
     padding: 14px 18px;
 }
 
-.skill-popover {
+.skill-panel {
     background: #1e1e24;
     border-radius: 12px;
     padding: 8px;
+    border: 1px solid #2a2a30;
 }
 
 .skill-button {
