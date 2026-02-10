@@ -7,11 +7,12 @@ const MINIMAP_W: f32 = 200.0;
 const MINIMAP_H: f32 = 120.0;
 const MINIMAP_MARGIN: f32 = 12.0;
 
-/// Compute the screen-space bounding box of the minimap overlay (bottom-right).
+/// Compute the screen-space bounding box of the minimap overlay (top-right).
 pub fn minimap_rect(screen_w: f32, screen_h: f32) -> Rect {
+    let _ = screen_h; // kept in signature for API compat
     Rect::from_xywh(
         screen_w - MINIMAP_W - MINIMAP_MARGIN,
-        screen_h - MINIMAP_H - MINIMAP_MARGIN,
+        MINIMAP_MARGIN,
         MINIMAP_W,
         MINIMAP_H,
     )
@@ -35,9 +36,9 @@ pub fn draw_minimap(canvas: &Canvas, state: &CanvasState, screen_w: f32, screen_
     // Border
     let mut border = Paint::default();
     border.set_anti_alias(true);
-    border.set_color4f(GRID_LINE, None);
+    border.set_color4f(TEXT_DIM, None);
     border.set_style(PaintStyle::Stroke);
-    border.set_stroke_width(1.0);
+    border.set_stroke_width(1.5);
     canvas.draw_rect(mr, &border);
 
     // Compute world bounding box of all cards
@@ -96,12 +97,18 @@ pub fn draw_minimap(canvas: &Canvas, state: &CanvasState, screen_w: f32, screen_
     let vw = vp_w * scale;
     let vh = vp_h * scale;
 
+    // Clamp viewport rect to minimap bounds
+    let clamp_x = vx.max(mr.left).min(mr.right - 4.0);
+    let clamp_y = vy.max(mr.top).min(mr.bottom - 4.0);
+    let clamp_w = vw.min(mr.right - clamp_x).max(4.0);
+    let clamp_h = vh.min(mr.bottom - clamp_y).max(4.0);
+
     let mut vp_paint = Paint::default();
     vp_paint.set_anti_alias(true);
     vp_paint.set_color4f(TEXT_PRIMARY, None);
     vp_paint.set_style(PaintStyle::Stroke);
     vp_paint.set_stroke_width(1.0);
-    canvas.draw_rect(Rect::from_xywh(vx, vy, vw, vh), &vp_paint);
+    canvas.draw_rect(Rect::from_xywh(clamp_x, clamp_y, clamp_w, clamp_h), &vp_paint);
 }
 
 /// Test whether a screen-space click falls inside the minimap.
@@ -209,7 +216,8 @@ mod tests {
     fn minimap_rect_position() {
         let r = minimap_rect(1280.0, 720.0);
         assert!(r.right <= 1280.0);
-        assert!(r.bottom <= 720.0);
+        // Top-right: top edge is MINIMAP_MARGIN
+        assert_eq!(r.top, MINIMAP_MARGIN);
         assert_eq!(r.width(), MINIMAP_W);
         assert_eq!(r.height(), MINIMAP_H);
     }

@@ -153,6 +153,8 @@ enum Commands {
 /// Populate the database with sample data when it's empty.
 /// Provides a visual baseline for testing the canvas.
 async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
+    use chrono::{TimeZone, Utc};
+
     let threads = db.list_threads().await?;
     if !threads.is_empty() {
         return Ok(());
@@ -174,6 +176,24 @@ async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
         thread_ids.push(created.id_string().unwrap());
     }
 
+    // Staggered creation times: Jan–Apr 2026
+    let timestamps = [
+        Utc.with_ymd_and_hms(2026, 1, 5, 10, 0, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 1, 18, 14, 30, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 2, 2, 9, 15, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 2, 14, 11, 0, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 2, 28, 16, 45, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 3, 5, 8, 0, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 3, 15, 13, 20, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 3, 25, 10, 30, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 4, 1, 9, 0, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 4, 8, 15, 0, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 4, 15, 11, 30, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 4, 20, 14, 0, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 4, 25, 10, 0, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 4, 28, 16, 0, 0).unwrap(),
+    ];
+
     let owned_docs: Vec<(&str, &str, usize)> = vec![
         ("Research Notes", "# Research Notes\n\nExploring Rust + GTK4 for desktop OS development.\n\n## Key Findings\n- GTK4 bindings are solid\n- Skia provides GPU rendering", 0),
         ("Project Plan", "# Project Plan\n\n## Phase 1: Foundation\n- Data layer\n- UI shell\n\n## Phase 2: Canvas\n- Spatial layout\n- GPU rendering", 1),
@@ -194,6 +214,9 @@ async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
         ("API Response Log", "# API Logs\n\n```\n200 GET /documents — 12ms\n201 POST /documents — 45ms\n```", 1),
     ];
 
+    let mut created_doc_ids: Vec<String> = Vec::new();
+    let mut ts_idx = 0;
+
     for (title, body, thread_idx) in &owned_docs {
         let mut doc = Document::new(
             title.to_string(),
@@ -205,7 +228,11 @@ async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
             images: vec![],
         };
         doc.content = content.serialize();
-        db.create_document(doc).await?;
+        doc.created_at = timestamps[ts_idx % timestamps.len()];
+        doc.modified_at = doc.created_at;
+        ts_idx += 1;
+        let created = db.create_document(doc).await?;
+        created_doc_ids.push(created.id_string().unwrap());
     }
 
     for (title, body, thread_idx) in &external_docs {
@@ -219,19 +246,71 @@ async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
             images: vec![],
         };
         doc.content = content.serialize();
-        db.create_document(doc).await?;
+        doc.created_at = timestamps[ts_idx % timestamps.len()];
+        doc.modified_at = doc.created_at;
+        ts_idx += 1;
+        let created = db.create_document(doc).await?;
+        created_doc_ids.push(created.id_string().unwrap());
     }
 
-    // Add some relationships
-    let docs = db.list_documents(None).await?;
-    if docs.len() >= 4 {
-        let id0 = docs[0].id_string().unwrap();
-        let id3 = docs[3].id_string().unwrap();
-        db.create_relationship(&id0, &id3, RelationType::References, 0.8)
-            .await?;
+    // Add relationships between related documents
+    // Research Notes (0) references Research Paper (11)
+    if created_doc_ids.len() > 11 {
+        db.create_relationship(
+            &created_doc_ids[0], &created_doc_ids[11],
+            RelationType::References, 0.8,
+        ).await?;
+    }
+    // Architecture Diagram (2) references API Specification (3)
+    if created_doc_ids.len() > 3 {
+        db.create_relationship(
+            &created_doc_ids[2], &created_doc_ids[3],
+            RelationType::References, 0.9,
+        ).await?;
+    }
+    // Design Document (6) references Architecture Diagram (2)
+    if created_doc_ids.len() > 6 {
+        db.create_relationship(
+            &created_doc_ids[6], &created_doc_ids[2],
+            RelationType::References, 0.7,
+        ).await?;
+    }
+    // Project Plan (1) branches to Architecture Diagram (2)
+    if created_doc_ids.len() > 2 {
+        db.create_relationship(
+            &created_doc_ids[2], &created_doc_ids[1],
+            RelationType::BranchesFrom, 0.85,
+        ).await?;
+    }
+    // Test Results (7) references GitHub Issue #42 (10)
+    if created_doc_ids.len() > 10 {
+        db.create_relationship(
+            &created_doc_ids[7], &created_doc_ids[10],
+            RelationType::References, 0.6,
+        ).await?;
     }
 
-    tracing::info!("Seeded {} documents in {} threads", owned_docs.len() + external_docs.len(), thread_ids.len());
+    // Add commits for key documents to show version history
+    let commit_targets = [
+        (0, vec!["Initial research notes", "Added GTK4 findings"]),
+        (1, vec!["Draft project plan", "Added Phase 2 details", "Finalized milestones"]),
+        (3, vec!["Initial API spec", "Added relationship graph endpoints"]),
+        (6, vec!["Initial design system", "Updated color palette"]),
+    ];
+
+    for (doc_idx, messages) in &commit_targets {
+        if let Some(doc_id) = created_doc_ids.get(*doc_idx) {
+            for msg in messages {
+                let _ = db.commit_document(doc_id, msg).await;
+            }
+        }
+    }
+
+    tracing::info!(
+        "Seeded {} documents in {} threads with relationships and commits",
+        owned_docs.len() + external_docs.len(),
+        thread_ids.len(),
+    );
     Ok(())
 }
 

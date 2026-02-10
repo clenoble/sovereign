@@ -65,6 +65,8 @@ pub enum OrchestratorEvent {
     EncryptionEnabled,
     MigrationProgress { encrypted: u32, total: u32 },
     MigrationComplete,
+    // Document creation
+    DocumentCreated { doc_id: String, title: String, thread_id: String },
 }
 
 /// Lightweight milestone summary for milestone events.

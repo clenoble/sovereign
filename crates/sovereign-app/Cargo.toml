@@ -19,6 +19,7 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
 
 # Optional crypto / P2P deps
 sovereign-crypto = { workspace = true, optional = true }

@@ -43,8 +43,34 @@ impl CoreSkill for FileImportSkill {
                     anyhow::bail!("File not found: {params}");
                 }
 
-                let text = std::fs::read_to_string(path)
-                    .map_err(|e| anyhow::anyhow!("Failed to read file: {e}"))?;
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+
+                let text = match ext.as_str() {
+                    "txt" | "md" | "csv" | "json" | "toml" | "yaml" | "yml" | "rs"
+                    | "py" | "js" | "ts" | "html" | "css" | "xml" => {
+                        std::fs::read_to_string(path)
+                            .map_err(|e| anyhow::anyhow!("Failed to read file: {e}"))?
+                    }
+                    "pdf" => {
+                        pdf_extract::extract_text(path)
+                            .map_err(|e| anyhow::anyhow!("Failed to extract PDF text: {e}"))?
+                    }
+                    _ => {
+                        // Try reading as UTF-8 text, fall back to lossy conversion
+                        match std::fs::read_to_string(path) {
+                            Ok(s) => s,
+                            Err(_) => {
+                                let bytes = std::fs::read(path)
+                                    .map_err(|e| anyhow::anyhow!("Failed to read file: {e}"))?;
+                                String::from_utf8_lossy(&bytes).into_owned()
+                            }
+                        }
+                    }
+                };
 
                 let title = path
                     .file_stem()
@@ -136,5 +162,26 @@ mod tests {
         let result = skill.execute("import", &make_doc(), "/nonexistent/file.txt");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn import_binary_file_uses_lossy_conversion() {
+        let db = setup_db().await;
+        let mut tmp = tempfile::Builder::new()
+            .suffix(".bin")
+            .tempfile()
+            .unwrap();
+        // Write some bytes including non-UTF-8
+        use std::io::Write;
+        tmp.write_all(&[0x48, 0x65, 0x6c, 0x6c, 0x6f, 0xff, 0xfe])
+            .unwrap();
+        let path = tmp.path().to_string_lossy().to_string();
+
+        let skill = FileImportSkill::new(db.clone());
+        let result = skill.execute("import", &make_doc(), &path);
+        assert!(result.is_ok());
+
+        let docs = db.list_documents(None).await.unwrap();
+        assert_eq!(docs.len(), 1);
     }
 }

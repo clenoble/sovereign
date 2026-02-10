@@ -4,8 +4,8 @@ path = "data/sovereign.db"
 
 [ui]
 theme = "dark"
-default_width = 1280
-default_height = 720
+default_width = 2560
+default_height = 1440
 
 [ai]
 model_dir = "models"

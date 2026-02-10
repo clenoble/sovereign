@@ -799,6 +799,38 @@ impl Orchestrator {
                     success: true,
                 });
             }
+            "create_document" => {
+                let title = target
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or("Untitled Document")
+                    .to_string();
+
+                // Pick the first thread, or let target specify it
+                let threads = self.db.list_threads().await?;
+                let thread_id = threads
+                    .first()
+                    .and_then(|t| t.id_string())
+                    .unwrap_or_default();
+
+                let doc = sovereign_db::schema::Document::new(
+                    title.clone(),
+                    thread_id.clone(),
+                    true,
+                );
+                match self.db.create_document(doc).await {
+                    Ok(created) => {
+                        let doc_id = created.id_string().unwrap_or_default();
+                        tracing::info!("Document created: {} ({})", title, doc_id);
+                        self.log_action("create_document", &format!("{} ({})", title, doc_id));
+                        let _ = self.event_tx.send(OrchestratorEvent::DocumentCreated {
+                            doc_id,
+                            title,
+                            thread_id,
+                        });
+                    }
+                    Err(e) => tracing::error!("Failed to create document: {e}"),
+                }
+            }
             "word_count" | "find_replace" | "duplicate" | "import_file" => {
                 let _ = self.event_tx.send(OrchestratorEvent::SkillResult {
                     skill: action.to_string(),

@@ -226,19 +226,14 @@ fn draw_lane_backgrounds(canvas: &Canvas, state: &CanvasState, screen_w: f32) {
     paint.set_anti_alias(true);
     paint.set_style(PaintStyle::Fill);
 
-    // Alternating subtle tint for lanes
-    let (_, _) = state.camera.screen_to_world(screen_w as f64, 0.0);
-
     for (i, lane) in state.layout.lanes.iter().enumerate() {
-        if i % 2 == 1 {
-            paint.set_color4f(LANE_HEADER_BG, None);
-            let world_left = state.camera.pan_x as f32 - 200.0;
-            let world_right = world_left + screen_w / state.camera.zoom as f32 + 400.0;
-            canvas.draw_rect(
-                Rect::from_xywh(world_left, lane.y, world_right - world_left, lane.height),
-                &paint,
-            );
-        }
+        paint.set_color4f(LANE_COLORS[i % LANE_COLORS.len()], None);
+        let world_left = state.camera.pan_x as f32 - 200.0;
+        let world_right = world_left + screen_w / state.camera.zoom as f32 + 400.0;
+        canvas.draw_rect(
+            Rect::from_xywh(world_left, lane.y, world_right - world_left, lane.height),
+            &paint,
+        );
     }
 }
 
@@ -250,10 +245,14 @@ fn draw_lane_headers(canvas: &Canvas, state: &CanvasState) {
     paint.set_anti_alias(true);
     paint.set_color4f(TEXT_DIM, None);
 
-    for lane in &state.layout.lanes {
-        // Header background
+    for (i, lane) in state.layout.lanes.iter().enumerate() {
+        // Header background — match the lane's color but more opaque
         let mut bg = Paint::default();
-        bg.set_color4f(LANE_HEADER_BG, None);
+        let lane_color = LANE_COLORS[i % LANE_COLORS.len()];
+        bg.set_color4f(
+            Color4f::new(lane_color.r, lane_color.g, lane_color.b, 0.75),
+            None,
+        );
         bg.set_style(PaintStyle::Fill);
         canvas.draw_rect(
             Rect::from_xywh(
@@ -315,9 +314,16 @@ fn draw_timeline_markers(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
         .map(|l| l.y + l.height)
         .unwrap_or(400.0);
 
+    let label_y = state
+        .layout
+        .lanes
+        .first()
+        .map(|l| l.y + 14.0)
+        .unwrap_or(12.0);
+
     let mut line_paint = Paint::default();
     line_paint.set_anti_alias(true);
-    line_paint.set_color4f(GRID_LINE, None);
+    line_paint.set_color4f(TIMELINE_LINE, None);
     line_paint.set_style(PaintStyle::Stroke);
     line_paint.set_stroke_width(1.0);
 
@@ -340,7 +346,7 @@ fn draw_timeline_markers(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
             line_paint.set_color4f(ACCENT, None);
             text_paint.set_color4f(ACCENT, None);
         } else {
-            line_paint.set_color4f(GRID_LINE, None);
+            line_paint.set_color4f(TIMELINE_LINE, None);
             text_paint.set_color4f(TEXT_DIM, None);
         }
 
@@ -354,7 +360,7 @@ fn draw_timeline_markers(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
             }
             _ => marker.label.clone(),
         };
-        canvas.draw_str(&label, (marker.x + 4.0, -4.0), &font, &text_paint);
+        canvas.draw_str(&label, (marker.x + 4.0, label_y), &font, &text_paint);
     }
 }
 
@@ -460,6 +466,21 @@ fn draw_card_simplified(
         canvas.draw_path(&path, &fp);
         canvas.draw_path(&path, &bp);
     }
+
+    // Title (smaller font for simplified zoom)
+    let title_font = Font::default()
+        .with_size(11.0)
+        .unwrap_or_else(|| Font::default());
+    let mut tp = Paint::default();
+    tp.set_anti_alias(true);
+    tp.set_color4f(TEXT_PRIMARY, None);
+    let max = (card.w / 9.0) as usize;
+    let label = if card.title.len() > max {
+        format!("{}...", &card.title[..max.saturating_sub(3)])
+    } else {
+        card.title.clone()
+    };
+    canvas.draw_str(&label, (card.x + 10.0, card.y + 20.0), &title_font, &tp);
 }
 
 /// Linearly interpolate between two Color4f values.

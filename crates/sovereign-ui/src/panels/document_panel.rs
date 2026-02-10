@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::{
-    Box as GtkBox, Button, ContentFit, Entry, FlowBox, Label, Orientation, Picture,
-    ScrolledWindow, TextView, Window, WrapMode,
+    ApplicationWindow, Box as GtkBox, Button, ContentFit, Entry, FlowBox, Label, Orientation,
+    Picture, ScrolledWindow, TextView, Window, WrapMode,
 };
 
 use sovereign_core::content::{ContentFields, ContentImage};
@@ -80,6 +80,7 @@ impl DocumentPanel {
         content: &ContentFields,
         active_doc: Rc<RefCell<Option<ActiveDocument>>>,
         save_cb: Rc<dyn Fn(String, String, String)>,
+        main_window: Option<&ApplicationWindow>,
     ) {
         let window = Window::builder()
             .title(&format!("Document — {}", title))
@@ -87,6 +88,9 @@ impl DocumentPanel {
             .default_height(500)
             .modal(false)
             .build();
+        if let Some(main_win) = main_window {
+            window.set_transient_for(Some(main_win));
+        }
         window.add_css_class("document-panel");
 
         let vbox = GtkBox::new(Orientation::Vertical, 0);

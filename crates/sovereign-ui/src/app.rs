@@ -212,7 +212,9 @@ pub fn build_app(
         let active_doc_poll = active_doc.clone();
         let save_rc_poll = save_rc.clone();
         let close_rc_poll = close_rc.clone();
+        let main_window_rc: Rc<ApplicationWindow> = Rc::new(window.clone());
 
+        let main_window_poll = main_window_rc.clone();
         gl_area.add_tick_callback(move |_area, _| {
             // Poll orchestrator events
             if let Some(ref rx) = orch_rx {
@@ -256,6 +258,17 @@ pub fn build_app(
                         }
                         OrchestratorEvent::Suggestion { ref text, ref action } => {
                             bubble_handle.show_suggestion(text, action);
+                        }
+                        OrchestratorEvent::DocumentCreated { ref doc_id, ref title, ref thread_id } => {
+                            tracing::info!("UI: Document created: {} ({}) in {}", title, doc_id, thread_id);
+                            // Add to local doc map so double-click open works
+                            let new_doc = sovereign_db::schema::Document::new(
+                                title.clone(),
+                                thread_id.clone(),
+                                true,
+                            );
+                            // Give it a mock id for display purposes
+                            doc_map_poll.borrow_mut().insert(doc_id.clone(), new_doc);
                         }
                         OrchestratorEvent::SkillResult { ref kind, ref data, .. } => {
                             let display = match kind.as_str() {
@@ -315,6 +328,7 @@ pub fn build_app(
                                         &content,
                                         active_doc_poll.clone(),
                                         save_rc_poll.clone(),
+                                        Some(&main_window_poll),
                                     );
                                     taskbar_handle.add_document(
                                         doc_id,
