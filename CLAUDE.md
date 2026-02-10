@@ -15,6 +15,7 @@ This is critical — APIs change between versions and stale knowledge causes cas
 - Copy to WSL native filesystem (`~/`) before building for performance
 - Always `rm -rf` target directory before `cp -r` (cp into existing dir nests instead of overwriting)
 - Rust linker is rust-lld — be aware of `--as-needed` link ordering issues
+- Limit parallel compilation to avoid OOM-crashing WSL: use `cargo test -j 2` (safe) or `-j 4` (faster, test if stable)
 
 ## User Confirmation Required
 - When a problem can be solved either by installing a missing system package or by changing the code, **ask the user** which approach they prefer before proceeding
