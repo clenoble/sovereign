@@ -68,6 +68,14 @@ pub struct CommitSummary {
     pub timestamp: String,
 }
 
+/// Feedback events sent from the UI back to the orchestrator
+/// when a user accepts or dismisses a proactive suggestion.
+#[derive(Debug, Clone)]
+pub enum FeedbackEvent {
+    SuggestionAccepted { action: String },
+    SuggestionDismissed { action: String },
+}
+
 /// Parsed user intent from the AI router.
 #[derive(Debug, Clone)]
 pub struct UserIntent {

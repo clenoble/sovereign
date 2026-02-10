@@ -6,6 +6,7 @@ use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, Label, Orientation, Overlay};
 
 use sovereign_core::content::{ContentFields, ContentImage};
+use sovereign_core::interfaces::FeedbackEvent;
 use sovereign_core::security::{ActionDecision, BubbleVisualState};
 use sovereign_skills::registry::SkillRegistry;
 use sovereign_skills::traits::{SkillDocument, SkillOutput};
@@ -58,6 +59,8 @@ pub struct BubbleHandle {
     pub rejection_toast: Label,
     pub status_label: Label,
     pub suggestion_tooltip: Label,
+    /// Tracks the action name of the currently displayed suggestion (for feedback).
+    current_suggestion_action: Rc<RefCell<Option<String>>>,
 }
 
 impl BubbleHandle {
@@ -90,15 +93,18 @@ impl BubbleHandle {
     }
 
     /// Show a proactive suggestion tooltip near the bubble.
-    pub fn show_suggestion(&self, text: &str) {
+    /// Stores the action name so dismiss/accept feedback can reference it.
+    pub fn show_suggestion(&self, text: &str, action: &str) {
         self.suggestion_tooltip.set_text(text);
         self.suggestion_tooltip.set_visible(true);
+        *self.current_suggestion_action.borrow_mut() = Some(action.to_string());
         set_bubble_state(&self.bubble, BubbleVisualState::Suggesting);
     }
 
     /// Dismiss the suggestion tooltip and return to idle.
     pub fn dismiss_suggestion(&self) {
         self.suggestion_tooltip.set_visible(false);
+        *self.current_suggestion_action.borrow_mut() = None;
         set_bubble_state(&self.bubble, BubbleVisualState::Idle);
     }
 }
@@ -161,6 +167,7 @@ pub fn add_orchestrator_bubble(
     save_cb: Rc<dyn Fn(String, String, String)>,
     decision_tx: Option<mpsc::Sender<ActionDecision>>,
     registry: Rc<SkillRegistry>,
+    feedback_tx: Option<mpsc::Sender<FeedbackEvent>>,
 ) -> BubbleHandle {
     let bubble = Label::new(Some("AI"));
     bubble.add_css_class("orchestrator-bubble");
@@ -357,13 +364,25 @@ pub fn add_orchestrator_bubble(
     suggestion_tooltip.set_visible(false);
     overlay.add_overlay(&suggestion_tooltip);
 
-    // Click on suggestion tooltip dismisses it
+    // Shared state for the current suggestion's action name
+    let current_suggestion_action: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+    // Click on suggestion tooltip dismisses it + sends feedback
     {
         let tooltip_ref = suggestion_tooltip.clone();
         let bubble_ref = bubble.clone();
+        let action_ref = current_suggestion_action.clone();
+        let ftx = feedback_tx;
         let dismiss_click = gtk4::GestureClick::new();
         dismiss_click.set_button(1);
         dismiss_click.connect_released(move |_, _, _, _| {
+            // Send dismiss feedback if we know the action
+            if let Some(ref tx) = ftx {
+                if let Some(action) = action_ref.borrow().clone() {
+                    let _ = tx.send(FeedbackEvent::SuggestionDismissed { action });
+                }
+            }
+            *action_ref.borrow_mut() = None;
             tooltip_ref.set_visible(false);
             set_bubble_state(&bubble_ref, BubbleVisualState::Idle);
         });
@@ -377,6 +396,7 @@ pub fn add_orchestrator_bubble(
         rejection_toast,
         status_label: status_label.clone(),
         suggestion_tooltip,
+        current_suggestion_action,
     };
 
     // Track drag vs click

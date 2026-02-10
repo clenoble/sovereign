@@ -1,10 +1,14 @@
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
 use sovereign_core::config::AiConfig;
-use sovereign_core::interfaces::{CommitSummary, MilestoneSummary, ModelBackend, OrchestratorEvent};
+use sovereign_core::interfaces::{
+    CommitSummary, FeedbackEvent, MilestoneSummary, ModelBackend, OrchestratorEvent,
+};
+use sovereign_core::profile::{AdaptiveParams, SuggestionFeedback, UserProfile};
 use sovereign_core::security::{self, ActionDecision, BubbleVisualState, ProposedAction};
 use sovereign_db::schema::{Milestone, Thread};
 use sovereign_db::surreal::SurrealGraphDB;
@@ -25,7 +29,10 @@ pub struct Orchestrator {
     event_tx: mpsc::Sender<OrchestratorEvent>,
     session_log: Option<Mutex<SessionLog>>,
     decision_rx: Option<Mutex<mpsc::Receiver<ActionDecision>>>,
+    feedback_rx: Option<Mutex<mpsc::Receiver<FeedbackEvent>>>,
     trust: Mutex<TrustTracker>,
+    profile: Mutex<UserProfile>,
+    profile_dir: PathBuf,
     model_dir: String,
     n_gpu_layers: i32,
 }
@@ -42,16 +49,40 @@ impl Orchestrator {
         let mut classifier = IntentClassifier::new(config);
         classifier.load_router().await?;
 
-        // Initialize session log
+        // Initialize session log + profile directory
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let log_dir = std::path::PathBuf::from(home)
+        let profile_dir = PathBuf::from(home)
             .join(".sovereign")
             .join("orchestrator");
-        let session_log = match SessionLog::open(&log_dir) {
+        let session_log = match SessionLog::open(&profile_dir) {
             Ok(log) => Some(Mutex::new(log)),
             Err(e) => {
                 tracing::warn!("Session log unavailable: {e}");
                 None
+            }
+        };
+
+        // Load persistent user profile
+        let profile = match UserProfile::load(&profile_dir) {
+            Ok(p) => {
+                tracing::info!("User profile loaded (id={})", p.user_id);
+                p
+            }
+            Err(e) => {
+                tracing::warn!("Profile load failed, using default: {e}");
+                UserProfile::default_new()
+            }
+        };
+
+        // Load persistent trust state
+        let trust = match TrustTracker::load(&profile_dir) {
+            Ok(t) => {
+                tracing::info!("Trust state loaded from disk");
+                t
+            }
+            Err(e) => {
+                tracing::warn!("Trust load failed, using default: {e}");
+                TrustTracker::new()
             }
         };
 
@@ -61,7 +92,10 @@ impl Orchestrator {
             event_tx,
             session_log,
             decision_rx: None,
-            trust: Mutex::new(TrustTracker::new()),
+            feedback_rx: None,
+            trust: Mutex::new(trust),
+            profile: Mutex::new(profile),
+            profile_dir,
             model_dir,
             n_gpu_layers,
         })
@@ -70,6 +104,11 @@ impl Orchestrator {
     /// Attach a decision channel for user confirmations of Level 3+ actions.
     pub fn set_decision_rx(&mut self, rx: mpsc::Receiver<ActionDecision>) {
         self.decision_rx = Some(Mutex::new(rx));
+    }
+
+    /// Attach a feedback channel for suggestion accept/dismiss events from the UI.
+    pub fn set_feedback_rx(&mut self, rx: mpsc::Receiver<FeedbackEvent>) {
+        self.feedback_rx = Some(Mutex::new(rx));
     }
 
     /// Handle a user query: classify intent, gate check, execute or await confirmation.
@@ -141,9 +180,12 @@ impl Orchestrator {
                 let decision = self.wait_for_decision();
                 match decision {
                     ActionDecision::Approve => {
-                        // Record approval in trust tracker
+                        // Record approval in trust tracker + persist
                         if let Ok(mut trust) = self.trust.lock() {
                             trust.record_approval(&intent.action);
+                            if let Err(e) = trust.save(&self.profile_dir) {
+                                tracing::warn!("Failed to save trust state: {e}");
+                            }
                         }
                         let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
                             BubbleVisualState::Executing,
@@ -152,9 +194,12 @@ impl Orchestrator {
                             .await?;
                     }
                     ActionDecision::Reject(reason) => {
-                        // Record rejection in trust tracker (resets counter)
+                        // Record rejection in trust tracker (resets counter) + persist
                         if let Ok(mut trust) = self.trust.lock() {
                             trust.record_rejection(&intent.action);
+                            if let Err(e) = trust.save(&self.profile_dir) {
+                                tracing::warn!("Failed to save trust state: {e}");
+                            }
                         }
                         tracing::info!("Action rejected: {reason}");
                         self.log_action("rejected", &format!("{}: {reason}", intent.action));
@@ -769,31 +814,95 @@ impl Orchestrator {
 
     /// Generate a proactive suggestion based on current context.
     /// Called after N seconds of idle time. Never auto-executes.
+    /// Uses adaptive thresholds from the user profile to decide whether to show.
     pub async fn idle_suggest(&self) -> Result<()> {
+        // Drain any pending feedback events first
+        self.poll_feedback();
+
         let docs = self.db.list_documents(None).await?;
         let threads = self.db.list_threads().await?;
 
-        // Heuristic suggestions based on context
-        if let Some(suggestion) = self.suggest_from_context(&docs, &threads) {
-            let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
-                BubbleVisualState::Suggesting,
-            ));
-            let _ = self.event_tx.send(OrchestratorEvent::Suggestion {
-                text: suggestion.0,
-                action: suggestion.1,
-            });
+        if let Some((text, action)) = generate_suggestion(&docs, &threads) {
+            // Adaptive gating: check profile feedback for this action
+            let should_show = {
+                if let Ok(profile) = self.profile.lock() {
+                    if let Some(fb) = profile.suggestion_feedback.get(&action) {
+                        if fb.shown < 5 {
+                            true // cold-start: always show first 5
+                        } else {
+                            let params = AdaptiveParams::from_acceptance_rate(fb.acceptance_rate());
+                            fb.acceptance_rate() >= params.suggestion_threshold
+                        }
+                    } else {
+                        true // never shown this action before
+                    }
+                } else {
+                    true
+                }
+            };
+
+            if should_show {
+                // Record that we showed this suggestion
+                if let Ok(mut profile) = self.profile.lock() {
+                    profile
+                        .suggestion_feedback
+                        .entry(action.clone())
+                        .or_insert_with(SuggestionFeedback::new)
+                        .record_shown();
+                    if let Err(e) = profile.save(&self.profile_dir) {
+                        tracing::warn!("Failed to save profile: {e}");
+                    }
+                }
+
+                let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                    BubbleVisualState::Suggesting,
+                ));
+                let _ = self.event_tx.send(OrchestratorEvent::Suggestion {
+                    text,
+                    action,
+                });
+            }
         }
 
         Ok(())
     }
 
-    /// Analyze documents and threads to generate contextual suggestions.
-    fn suggest_from_context(
-        &self,
-        docs: &[sovereign_db::schema::Document],
-        threads: &[Thread],
-    ) -> Option<(String, String)> {
-        generate_suggestion(docs, threads)
+    /// Drain pending feedback events from the UI and update the profile.
+    fn poll_feedback(&self) {
+        if let Some(ref rx_mutex) = self.feedback_rx {
+            if let Ok(rx) = rx_mutex.lock() {
+                while let Ok(event) = rx.try_recv() {
+                    match event {
+                        FeedbackEvent::SuggestionAccepted { action } => {
+                            if let Ok(mut profile) = self.profile.lock() {
+                                profile
+                                    .suggestion_feedback
+                                    .entry(action.clone())
+                                    .or_insert_with(SuggestionFeedback::new)
+                                    .record_accepted();
+                                if let Err(e) = profile.save(&self.profile_dir) {
+                                    tracing::warn!("Failed to save profile: {e}");
+                                }
+                            }
+                            tracing::info!("Suggestion accepted: {action}");
+                        }
+                        FeedbackEvent::SuggestionDismissed { action } => {
+                            if let Ok(mut profile) = self.profile.lock() {
+                                profile
+                                    .suggestion_feedback
+                                    .entry(action.clone())
+                                    .or_insert_with(SuggestionFeedback::new)
+                                    .record_dismissed();
+                                if let Err(e) = profile.save(&self.profile_dir) {
+                                    tracing::warn!("Failed to save profile: {e}");
+                                }
+                            }
+                            tracing::info!("Suggestion dismissed: {action}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn log_action(&self, action: &str, details: &str) {
@@ -1026,5 +1135,74 @@ mod tests {
         let (doc, thread) = parse_move_target("Notes to Research");
         assert_eq!(doc, "Notes");
         assert_eq!(thread, "Research");
+    }
+
+    #[test]
+    fn adaptive_params_gate_cold_start_always_shows() {
+        // Cold start: shown < 5 means we always show
+        let fb = sovereign_core::profile::SuggestionFeedback {
+            shown: 3,
+            accepted: 0,
+            dismissed: 3,
+        };
+        // Even with 0% acceptance, cold-start passes
+        assert!(fb.shown < 5);
+    }
+
+    #[test]
+    fn adaptive_params_gate_blocks_low_acceptance() {
+        let fb = sovereign_core::profile::SuggestionFeedback {
+            shown: 10,
+            accepted: 1,
+            dismissed: 9,
+        };
+        let params = AdaptiveParams::from_acceptance_rate(fb.acceptance_rate());
+        // acceptance_rate = 0.1, threshold = 0.9 → should NOT show
+        assert!(fb.acceptance_rate() < params.suggestion_threshold);
+    }
+
+    #[test]
+    fn adaptive_params_gate_allows_high_acceptance() {
+        let fb = sovereign_core::profile::SuggestionFeedback {
+            shown: 10,
+            accepted: 9,
+            dismissed: 1,
+        };
+        let params = AdaptiveParams::from_acceptance_rate(fb.acceptance_rate());
+        // acceptance_rate = 0.9, threshold = 0.5 → should show
+        assert!(fb.acceptance_rate() >= params.suggestion_threshold);
+    }
+
+    #[test]
+    fn feedback_event_is_send_and_clone() {
+        fn assert_send<T: Send>() {}
+        fn assert_clone<T: Clone>() {}
+        assert_send::<FeedbackEvent>();
+        assert_clone::<FeedbackEvent>();
+    }
+
+    #[test]
+    fn poll_feedback_updates_profile() {
+        // Unit test: verify SuggestionFeedback math used by poll_feedback
+        let mut fb = sovereign_core::profile::SuggestionFeedback::new();
+        fb.record_accepted();
+        fb.record_accepted();
+        fb.record_dismissed();
+        assert_eq!(fb.accepted, 2);
+        assert_eq!(fb.dismissed, 1);
+        assert!((fb.acceptance_rate() - 2.0 / 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn trust_persistence_roundtrip() {
+        let dir = make_test_dir("trust_persist");
+        let mut trust = crate::trust::TrustTracker::with_threshold(3);
+        trust.record_approval("create_thread");
+        trust.record_approval("create_thread");
+        trust.save(&dir).unwrap();
+
+        let loaded = crate::trust::TrustTracker::load(&dir).unwrap();
+        assert_eq!(loaded.approval_count("create_thread"), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

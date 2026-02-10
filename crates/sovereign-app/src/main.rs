@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use sovereign_core::config::AppConfig;
-use sovereign_core::interfaces::OrchestratorEvent;
+use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent};
 use sovereign_core::security::ActionDecision;
 use sovereign_core::lifecycle;
 use sovereign_db::schema::{thing_to_raw, Document, RelationType, Thread};
@@ -277,6 +277,7 @@ async fn main() -> Result<()> {
             // Create event channels
             let (orch_tx, orch_rx) = mpsc::channel::<OrchestratorEvent>();
             let (decision_tx, decision_rx) = mpsc::channel::<ActionDecision>();
+            let (feedback_tx, feedback_rx) = mpsc::channel::<FeedbackEvent>();
 
             // Try to initialize AI orchestrator
             let db_arc = db_arc_for_skills;
@@ -289,6 +290,7 @@ async fn main() -> Result<()> {
             {
                 Ok(mut o) => {
                     o.set_decision_rx(decision_rx);
+                    o.set_feedback_rx(feedback_rx);
                     tracing::info!("AI orchestrator initialized");
                     Some(Arc::new(o))
                 }
@@ -446,6 +448,7 @@ async fn main() -> Result<()> {
                 Some(close_cb),
                 Some(decision_tx),
                 Some(registry),
+                Some(feedback_tx),
             );
         }
 

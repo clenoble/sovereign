@@ -9,7 +9,7 @@ use gtk4::{Application, ApplicationWindow, Box as GtkBox, CssProvider, Orientati
 
 use sovereign_core::config::UiConfig;
 use sovereign_core::content::ContentFields;
-use sovereign_core::interfaces::{OrchestratorEvent, SkillEvent};
+use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent, SkillEvent};
 use sovereign_db::schema::{Document, Thread};
 
 use sovereign_core::security::ActionDecision;
@@ -43,6 +43,7 @@ pub fn build_app(
     close_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
     decision_tx: Option<mpsc::Sender<ActionDecision>>,
     skill_registry: Option<SkillRegistry>,
+    feedback_tx: Option<mpsc::Sender<FeedbackEvent>>,
 ) {
     let app = Application::builder()
         .application_id("org.sovereign.os")
@@ -60,6 +61,7 @@ pub fn build_app(
     let close_cb_cell = RefCell::new(close_callback);
     let decision_tx_cell = RefCell::new(decision_tx);
     let registry_cell = RefCell::new(skill_registry);
+    let feedback_tx_cell = RefCell::new(feedback_tx);
 
     // Build a local doc HashMap for lookups
     let doc_map: HashMap<String, Document> = documents
@@ -135,6 +137,7 @@ pub fn build_app(
 
         // Orchestrator bubble — added directly onto overlay (no Fixed container)
         let dtx = decision_tx_cell.borrow_mut().take();
+        let ftx = feedback_tx_cell.borrow_mut().take();
         let reg = registry_cell.borrow_mut().take().unwrap_or_default();
         let registry_rc = Rc::new(reg);
         let bubble_handle = add_orchestrator_bubble(
@@ -143,6 +146,7 @@ pub fn build_app(
             save_rc.clone(),
             dtx,
             registry_rc,
+            ftx,
         );
 
         vbox.append(&overlay);
@@ -250,8 +254,8 @@ pub fn build_app(
                         OrchestratorEvent::ActionRejected { ref reason, .. } => {
                             bubble_handle.show_rejection(reason);
                         }
-                        OrchestratorEvent::Suggestion { ref text, .. } => {
-                            bubble_handle.show_suggestion(text);
+                        OrchestratorEvent::Suggestion { ref text, ref action } => {
+                            bubble_handle.show_suggestion(text, action);
                         }
                         OrchestratorEvent::SkillResult { ref kind, ref data, .. } => {
                             let display = match kind.as_str() {
