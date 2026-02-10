@@ -21,6 +21,9 @@ pub enum SkillOutput {
     },
     /// Nothing (action had side effects only)
     None,
+    /// Structured data result (e.g., search results, word count stats).
+    /// `kind` discriminates the payload; `json` is the serialized data.
+    StructuredData { kind: String, json: String },
 }
 
 /// Trait for core skills that are compiled into the Sovereign OS binary.
@@ -147,5 +150,15 @@ mod tests {
 
         let none = SkillOutput::None;
         assert!(matches!(none, SkillOutput::None));
+
+        let data = SkillOutput::StructuredData {
+            kind: "test".into(),
+            json: r#"{"value":42}"#.into(),
+        };
+        assert!(matches!(data, SkillOutput::StructuredData { .. }));
+        if let SkillOutput::StructuredData { kind, json } = data {
+            assert_eq!(kind, "test");
+            assert!(json.contains("42"));
+        }
     }
 }

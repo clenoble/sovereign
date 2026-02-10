@@ -51,11 +51,12 @@ pub enum ActionDecision {
 /// Map an intent action string to its gravity level.
 pub fn action_level(action: &str) -> ActionLevel {
     match action {
-        "search" | "open" | "navigate" | "history" => ActionLevel::Observe,
-        "annotate" | "tag" | "bookmark" => ActionLevel::Annotate,
-        "create_thread" | "rename_thread" | "move_document" | "restore" | "edit" => {
-            ActionLevel::Modify
+        "search" | "open" | "navigate" | "history" | "summarize" | "word_count" => {
+            ActionLevel::Observe
         }
+        "annotate" | "tag" | "bookmark" => ActionLevel::Annotate,
+        "create_thread" | "rename_thread" | "move_document" | "restore" | "edit"
+        | "find_replace" | "duplicate" | "import_file" => ActionLevel::Modify,
         "export" | "share" | "transmit" => ActionLevel::Transmit,
         "delete_thread" | "delete_document" | "purge" => ActionLevel::Destruct,
         _ => ActionLevel::Observe,
@@ -119,6 +120,19 @@ mod tests {
         assert_eq!(action_level("delete_thread"), ActionLevel::Destruct);
         assert_eq!(action_level("delete_document"), ActionLevel::Destruct);
         assert_eq!(action_level("purge"), ActionLevel::Destruct);
+    }
+
+    #[test]
+    fn action_level_skill_observe() {
+        assert_eq!(action_level("summarize"), ActionLevel::Observe);
+        assert_eq!(action_level("word_count"), ActionLevel::Observe);
+    }
+
+    #[test]
+    fn action_level_skill_modify() {
+        assert_eq!(action_level("find_replace"), ActionLevel::Modify);
+        assert_eq!(action_level("duplicate"), ActionLevel::Modify);
+        assert_eq!(action_level("import_file"), ActionLevel::Modify);
     }
 
     #[test]

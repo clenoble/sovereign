@@ -13,6 +13,7 @@ use sovereign_core::interfaces::{OrchestratorEvent, SkillEvent};
 use sovereign_db::schema::{Document, Thread};
 
 use sovereign_core::security::ActionDecision;
+use sovereign_skills::registry::SkillRegistry;
 use crate::orchestrator_bubble::{add_orchestrator_bubble, ActiveDocument};
 use crate::panels::document_panel::DocumentPanel;
 use crate::search::build_search_overlay;
@@ -41,6 +42,7 @@ pub fn build_app(
     save_callback: Option<Box<dyn Fn(String, String, String) + Send + 'static>>,
     close_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
     decision_tx: Option<mpsc::Sender<ActionDecision>>,
+    skill_registry: Option<SkillRegistry>,
 ) {
     let app = Application::builder()
         .application_id("org.sovereign.os")
@@ -57,6 +59,7 @@ pub fn build_app(
     let save_cb_cell = RefCell::new(save_callback);
     let close_cb_cell = RefCell::new(close_callback);
     let decision_tx_cell = RefCell::new(decision_tx);
+    let registry_cell = RefCell::new(skill_registry);
 
     // Build a local doc HashMap for lookups
     let doc_map: HashMap<String, Document> = documents
@@ -132,11 +135,14 @@ pub fn build_app(
 
         // Orchestrator bubble — added directly onto overlay (no Fixed container)
         let dtx = decision_tx_cell.borrow_mut().take();
+        let reg = registry_cell.borrow_mut().take().unwrap_or_default();
+        let registry_rc = Rc::new(reg);
         let bubble_handle = add_orchestrator_bubble(
             &overlay,
             active_doc.clone(),
             save_rc.clone(),
             dtx,
+            registry_rc,
         );
 
         vbox.append(&overlay);
@@ -234,6 +240,19 @@ pub fn build_app(
                         }
                         OrchestratorEvent::ActionRejected { ref reason, .. } => {
                             bubble_handle.show_rejection(reason);
+                        }
+                        OrchestratorEvent::SkillResult { ref kind, ref data, .. } => {
+                            let display = match kind.as_str() {
+                                "summary" => {
+                                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                                        format!("Summary: {}", v["summary"].as_str().unwrap_or(data))
+                                    } else {
+                                        data.clone()
+                                    }
+                                }
+                                _ => data.clone(),
+                            };
+                            bubble_handle.show_skill_result(&display);
                         }
                         _ => {}
                     }

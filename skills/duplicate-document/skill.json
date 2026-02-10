@@ -1,0 +1,9 @@
+{
+    "name": "Duplicate Document",
+    "version": "0.1.0",
+    "description": "Create a copy of an existing document",
+    "author": "Sovereign OS",
+    "skill_type": "core",
+    "capabilities": ["duplicate"],
+    "file_types": []
+}

@@ -12,7 +12,7 @@ use super::parser::parse_intent_response;
 /// Classifies user text into a `UserIntent` using the 3B router model.
 /// Falls back to 7B reasoning model if confidence is below threshold.
 pub struct IntentClassifier {
-    router: AsyncLlmBackend,
+    pub(crate) router: AsyncLlmBackend,
     config: AiConfig,
     confidence_threshold: f32,
 }

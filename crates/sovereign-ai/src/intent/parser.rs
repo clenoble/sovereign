@@ -65,6 +65,14 @@ fn extract_intent_heuristic(response: &str) -> UserIntent {
         "history"
     } else if lower.contains("restore") || lower.contains("revert") || lower.contains("rollback") {
         "restore"
+    } else if lower.contains("word count") || lower.contains("statistics") || lower.contains("how many words") {
+        "word_count"
+    } else if lower.contains("find and replace") || lower.contains("find & replace") || lower.contains("replace all") {
+        "find_replace"
+    } else if lower.contains("duplicate") || lower.contains("copy document") || lower.contains("make a copy") {
+        "duplicate"
+    } else if lower.contains("import file") || lower.contains("import from") || lower.contains("import a file") {
+        "import_file"
     } else if lower.contains("search") || lower.contains("find") || lower.contains("look") {
         "search"
     } else if lower.contains("open") || lower.contains("show") {
@@ -195,5 +203,41 @@ mod tests {
     fn heuristic_restore() {
         let intent = parse_intent_response("restore the previous version").unwrap();
         assert_eq!(intent.action, "restore");
+    }
+
+    #[test]
+    fn heuristic_word_count() {
+        let intent = parse_intent_response("show me the word count").unwrap();
+        assert_eq!(intent.action, "word_count");
+    }
+
+    #[test]
+    fn heuristic_statistics() {
+        let intent = parse_intent_response("show document statistics").unwrap();
+        assert_eq!(intent.action, "word_count");
+    }
+
+    #[test]
+    fn heuristic_find_replace() {
+        let intent = parse_intent_response("find and replace all occurrences").unwrap();
+        assert_eq!(intent.action, "find_replace");
+    }
+
+    #[test]
+    fn heuristic_duplicate() {
+        let intent = parse_intent_response("duplicate this document").unwrap();
+        assert_eq!(intent.action, "duplicate");
+    }
+
+    #[test]
+    fn heuristic_copy_document() {
+        let intent = parse_intent_response("copy document to a new one").unwrap();
+        assert_eq!(intent.action, "duplicate");
+    }
+
+    #[test]
+    fn heuristic_import_file() {
+        let intent = parse_intent_response("import file from disk").unwrap();
+        assert_eq!(intent.action, "import_file");
     }
 }

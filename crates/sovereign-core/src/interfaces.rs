@@ -42,6 +42,7 @@ pub enum OrchestratorEvent {
     ThreadDeleted { thread_id: String },
     DocumentMoved { doc_id: String, new_thread_id: String },
     VersionHistory { doc_id: String, commits: Vec<CommitSummary> },
+    SkillResult { skill: String, action: String, kind: String, data: String },
 }
 
 /// Lightweight commit summary for version history events.

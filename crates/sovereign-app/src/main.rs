@@ -215,7 +215,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Run => {
-            // Scan skills directory
+            // Scan skills directory for manifests
             let mut registry = sovereign_skills::SkillRegistry::new();
             let skills_dir = std::path::Path::new("skills");
             if skills_dir.exists() {
@@ -231,6 +231,8 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // Register core skills (will be wired to DB after db creation)
+
             // Load documents and threads from DB for the canvas
             let db = create_db(&config).await?;
             seed_if_empty(&db).await?;
@@ -242,12 +244,42 @@ async fn main() -> Result<()> {
                 threads.len()
             );
 
+            // Register all core skills
+            let db_arc_for_skills = Arc::new(db);
+            registry.register(Box::new(
+                sovereign_skills::skills::text_editor::TextEditorSkill,
+            ));
+            registry.register(Box::new(sovereign_skills::skills::image::ImageSkill));
+            registry.register(Box::new(
+                sovereign_skills::skills::pdf_export::PdfExportSkill,
+            ));
+            registry.register(Box::new(
+                sovereign_skills::skills::word_count::WordCountSkill,
+            ));
+            registry.register(Box::new(
+                sovereign_skills::skills::find_replace::FindReplaceSkill,
+            ));
+            registry.register(Box::new(sovereign_skills::skills::search::SearchSkill::new(
+                db_arc_for_skills.clone(),
+            )));
+            registry.register(Box::new(
+                sovereign_skills::skills::file_import::FileImportSkill::new(
+                    db_arc_for_skills.clone(),
+                ),
+            ));
+            registry.register(Box::new(
+                sovereign_skills::skills::duplicate_document::DuplicateDocumentSkill::new(
+                    db_arc_for_skills.clone(),
+                ),
+            ));
+            tracing::info!("Registered {} core skills", registry.all_skills().len());
+
             // Create event channels
             let (orch_tx, orch_rx) = mpsc::channel::<OrchestratorEvent>();
             let (decision_tx, decision_rx) = mpsc::channel::<ActionDecision>();
 
             // Try to initialize AI orchestrator
-            let db_arc = Arc::new(db);
+            let db_arc = db_arc_for_skills;
             let orchestrator = match sovereign_ai::Orchestrator::new(
                 config.ai.clone(),
                 db_arc.clone(),
@@ -413,6 +445,7 @@ async fn main() -> Result<()> {
                 Some(save_cb),
                 Some(close_cb),
                 Some(decision_tx),
+                Some(registry),
             );
         }
 

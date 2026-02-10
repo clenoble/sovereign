@@ -1,0 +1,9 @@
+{
+    "name": "File Import",
+    "version": "0.1.0",
+    "description": "Import UTF-8 text files as new documents",
+    "author": "Sovereign OS",
+    "skill_type": "core",
+    "capabilities": ["import"],
+    "file_types": ["txt", "md", "csv", "json"]
+}

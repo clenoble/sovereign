@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use sovereign_core::config::AiConfig;
-use sovereign_core::interfaces::{CommitSummary, OrchestratorEvent};
+use sovereign_core::interfaces::{CommitSummary, ModelBackend, OrchestratorEvent};
 use sovereign_core::security::{self, ActionDecision, BubbleVisualState, ProposedAction};
 use sovereign_db::schema::Thread;
 use sovereign_db::surreal::SurrealGraphDB;
@@ -376,6 +376,45 @@ impl Orchestrator {
                         }
                     }
                 }
+            }
+            "summarize" => {
+                if let Some(target) = target {
+                    let docs = self.db.list_documents(None).await?;
+                    if let Some(doc) = docs
+                        .iter()
+                        .find(|d| d.title.to_lowercase().contains(&target.to_lowercase()))
+                    {
+                        let content = &doc.content;
+                        let prompt = crate::llm::prompt::qwen_chat_prompt(
+                            "You are a concise summarizer. Summarize the following document in 2-3 sentences.",
+                            content,
+                        );
+                        match self.classifier.router.generate(&prompt, 200).await {
+                            Ok(summary) => {
+                                let summary_text: &str = summary.trim();
+                                let json = serde_json::json!({
+                                    "doc_title": doc.title,
+                                    "summary": summary_text,
+                                });
+                                let _ = self.event_tx.send(OrchestratorEvent::SkillResult {
+                                    skill: "summarizer".into(),
+                                    action: "summarize".into(),
+                                    kind: "summary".into(),
+                                    data: json.to_string(),
+                                });
+                            }
+                            Err(e) => tracing::error!("Summarize failed: {e}"),
+                        }
+                    }
+                }
+            }
+            "word_count" | "find_replace" | "duplicate" | "import_file" => {
+                let _ = self.event_tx.send(OrchestratorEvent::SkillResult {
+                    skill: action.to_string(),
+                    action: action.to_string(),
+                    kind: "skill_hint".into(),
+                    data: serde_json::json!({ "hint": format!("Use the {} skill from the skills panel", action) }).to_string(),
+                });
             }
             "restore" => {
                 if let Some(target) = target {

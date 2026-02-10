@@ -8,7 +8,7 @@ pub struct ContentFields {
     pub images: Vec<ContentImage>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ContentImage {
     pub path: String,
     #[serde(default)]

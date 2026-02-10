@@ -7,9 +7,8 @@ use gtk4::{Box as GtkBox, Button, Label, Orientation, Overlay};
 
 use sovereign_core::content::{ContentFields, ContentImage};
 use sovereign_core::security::{ActionDecision, BubbleVisualState};
-use sovereign_skills::skills::image::ImageSkill;
-use sovereign_skills::skills::pdf_export::PdfExportSkill;
-use sovereign_skills::traits::{CoreSkill, SkillDocument, SkillOutput};
+use sovereign_skills::registry::SkillRegistry;
+use sovereign_skills::traits::{SkillDocument, SkillOutput};
 
 /// State for the currently open document, shared between panel and bubble.
 #[derive(Clone)]
@@ -55,6 +54,7 @@ pub struct BubbleHandle {
     pub confirmation_panel: GtkBox,
     pub confirmation_label: Label,
     pub rejection_toast: Label,
+    pub status_label: Label,
 }
 
 impl BubbleHandle {
@@ -79,6 +79,11 @@ impl BubbleHandle {
 
     pub fn set_state(&self, state: BubbleVisualState) {
         set_bubble_state(&self.bubble, state);
+    }
+
+    /// Show a skill result in the status label.
+    pub fn show_skill_result(&self, text: &str) {
+        self.status_label.set_text(text);
     }
 }
 
@@ -115,6 +120,19 @@ fn position_panel(bubble: &Label, panel: &GtkBox, overlay: &Overlay) {
     panel.set_margin_top(y.max(0));
 }
 
+/// Build a SkillDocument from the active document state.
+fn build_skill_doc(ad: &ActiveDocument) -> SkillDocument {
+    let body = (ad.get_current_body)();
+    SkillDocument {
+        id: ad.doc_id.clone(),
+        title: ad.title.clone(),
+        content: ContentFields {
+            body,
+            images: ad.content.images.clone(),
+        },
+    }
+}
+
 /// Add the orchestrator bubble directly onto an Overlay.
 ///
 /// The bubble is positioned via alignment + margins (no Fixed container)
@@ -126,6 +144,7 @@ pub fn add_orchestrator_bubble(
     active_doc: Rc<RefCell<Option<ActiveDocument>>>,
     save_cb: Rc<dyn Fn(String, String, String)>,
     decision_tx: Option<mpsc::Sender<ActionDecision>>,
+    registry: Rc<SkillRegistry>,
 ) -> BubbleHandle {
     let bubble = Label::new(Some("AI"));
     bubble.add_css_class("orchestrator-bubble");
@@ -200,39 +219,123 @@ pub fn add_orchestrator_bubble(
         });
     }
 
-    let handle = BubbleHandle {
-        bubble: bubble.clone(),
-        confirmation_panel: confirm_panel,
-        confirmation_label: confirm_label,
-        rejection_toast,
-    };
-
-    // Skills panel — in-overlay widget that replaces the old Popover.
-    // Lives inside the overlay so it is always visible within the canvas.
+    // Skills panel — dynamically generated from registry
     let skills_panel = GtkBox::new(Orientation::Vertical, 4);
     skills_panel.add_css_class("skill-panel");
     skills_panel.set_halign(gtk4::Align::Start);
     skills_panel.set_valign(gtk4::Align::Start);
     skills_panel.set_visible(false);
 
-    let save_btn = Button::with_label("Save");
-    save_btn.add_css_class("skill-button");
-    skills_panel.append(&save_btn);
-
-    let add_image_btn = Button::with_label("Add Image");
-    add_image_btn.add_css_class("skill-button");
-    skills_panel.append(&add_image_btn);
-
-    let export_pdf_btn = Button::with_label("Export PDF");
-    export_pdf_btn.add_css_class("skill-button");
-    skills_panel.append(&export_pdf_btn);
-
     let status_label = Label::new(None);
     status_label.set_halign(gtk4::Align::Start);
     status_label.set_margin_top(4);
-    skills_panel.append(&status_label);
+    status_label.set_wrap(true);
+    status_label.set_max_width_chars(30);
 
+    // Collect all buttons so we can enable/disable them
+    let all_buttons: Rc<RefCell<Vec<Button>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // Generate buttons from registry
+    for skill in registry.all_skills() {
+        let skill_name = skill.name().to_string();
+        for (action_id, action_label) in skill.actions() {
+            let btn = Button::with_label(&action_label);
+            btn.add_css_class("skill-button");
+            skills_panel.append(&btn);
+            all_buttons.borrow_mut().push(btn.clone());
+
+            let skill_name = skill_name.clone();
+            let action_id = action_id.clone();
+            let active_doc = active_doc.clone();
+            let save_cb = save_cb.clone();
+            let skills_panel_ref = skills_panel.clone();
+            let status_label_ref = status_label.clone();
+            let registry = registry.clone();
+
+            btn.connect_clicked(move |_| {
+                // Special case: "add" (image) and "import" need file dialog
+                if (skill_name == "image" && action_id == "add")
+                    || (skill_name == "file-import" && action_id == "import")
+                {
+                    skills_panel_ref.set_visible(false);
+                    handle_file_dialog_action(
+                        &skill_name,
+                        &action_id,
+                        &active_doc,
+                        &save_cb,
+                        &registry,
+                    );
+                    return;
+                }
+
+                // Special case: "export" (PDF) needs save dialog
+                if skill_name == "pdf-export" && action_id == "export" {
+                    skills_panel_ref.set_visible(false);
+                    handle_export_action(&active_doc, &registry);
+                    return;
+                }
+
+                // Special case: "find_replace" and "search" need text entry
+                // For now, show a hint; in future, open a dialog
+                if action_id == "find_replace" || action_id == "search" {
+                    status_label_ref.set_text(&format!("Use search bar for {}", action_id.replace('_', " ")));
+                    return;
+                }
+
+                // Default: immediate execution
+                let doc_data = {
+                    let guard = active_doc.borrow();
+                    guard.as_ref().map(|ad| build_skill_doc(ad))
+                };
+
+                if let Some(skill_doc) = doc_data {
+                    if let Some(skill) = registry.find_skill(&skill_name) {
+                        match skill.execute(&action_id, &skill_doc, "") {
+                            Ok(SkillOutput::ContentUpdate(cf)) => {
+                                let doc_id = skill_doc.id.clone();
+                                let title = skill_doc.title.clone();
+                                save_cb(doc_id, title, cf.serialize());
+                                // Update images if they changed
+                                if let Some(ref mut ad) = *active_doc.borrow_mut() {
+                                    if ad.content.images != cf.images {
+                                        ad.content.images = cf.images.clone();
+                                        (ad.on_images_changed)(&cf.images);
+                                    }
+                                }
+                                status_label_ref.set_text("Done");
+                            }
+                            Ok(SkillOutput::StructuredData { kind, json }) => {
+                                let display = format_structured_data(&kind, &json);
+                                status_label_ref.set_text(&display);
+                            }
+                            Ok(SkillOutput::File { .. }) => {
+                                status_label_ref.set_text("File generated");
+                            }
+                            Ok(SkillOutput::None) => {
+                                status_label_ref.set_text("Done");
+                            }
+                            Err(e) => {
+                                status_label_ref.set_text(&format!("Error: {e}"));
+                            }
+                        }
+                    }
+                } else {
+                    status_label_ref.set_text("Open a document first");
+                }
+            });
+        }
+    }
+
+    skills_panel.append(&status_label);
     overlay.add_overlay(&skills_panel);
+
+    let handle = BubbleHandle {
+        bubble: bubble.clone(),
+        confirmation_panel: confirm_panel,
+        confirmation_label: confirm_label,
+        rejection_toast,
+        status_label: status_label.clone(),
+    };
 
     // Track drag vs click
     let dragged = Rc::new(RefCell::new(false));
@@ -276,9 +379,7 @@ pub fn add_orchestrator_bubble(
         let bubble = bubble.clone();
         let overlay = overlay.clone();
         let active_doc = active_doc.clone();
-        let save_btn = save_btn.clone();
-        let add_image_btn = add_image_btn.clone();
-        let export_pdf_btn = export_pdf_btn.clone();
+        let all_buttons = all_buttons.clone();
         let status_label = status_label.clone();
         let dragged = dragged.clone();
         click.connect_released(move |_, _, _, _| {
@@ -291,9 +392,9 @@ pub fn add_orchestrator_bubble(
                 return;
             }
             let has_doc = active_doc.borrow().is_some();
-            save_btn.set_sensitive(has_doc);
-            add_image_btn.set_sensitive(has_doc);
-            export_pdf_btn.set_sensitive(has_doc);
+            for btn in all_buttons.borrow().iter() {
+                btn.set_sensitive(has_doc);
+            }
             if !has_doc {
                 status_label.set_text("Open a document to use skills");
             } else {
@@ -305,150 +406,167 @@ pub fn add_orchestrator_bubble(
     }
     bubble.add_controller(click);
 
-    // Save action
-    {
-        let active_doc = active_doc.clone();
-        let save_cb = save_cb.clone();
-        let skills_panel = skills_panel.clone();
-        save_btn.connect_clicked(move |_| {
-            if let Some(ref doc) = *active_doc.borrow() {
-                let body = (doc.get_current_body)();
-                let cf = ContentFields {
-                    body,
-                    images: doc.content.images.clone(),
-                };
-                save_cb(doc.doc_id.clone(), doc.title.clone(), cf.serialize());
-                tracing::info!("Saved via orchestrator bubble: {}", doc.doc_id);
-            }
-            skills_panel.set_visible(false);
-        });
+    handle
+}
+
+/// Handle file dialog actions (add image, import file).
+fn handle_file_dialog_action(
+    skill_name: &str,
+    action_id: &str,
+    active_doc: &Rc<RefCell<Option<ActiveDocument>>>,
+    save_cb: &Rc<dyn Fn(String, String, String)>,
+    registry: &Rc<SkillRegistry>,
+) {
+    let panel = active_doc.borrow().as_ref().map(|ad| ad.panel_window.clone());
+    let active_doc = active_doc.clone();
+    let save_cb = save_cb.clone();
+    let skill_name = skill_name.to_string();
+    let action_id = action_id.to_string();
+    let registry = registry.clone();
+
+    let dialog = gtk4::FileDialog::builder()
+        .title(if skill_name == "image" { "Select Image" } else { "Import File" })
+        .build();
+
+    if skill_name == "image" {
+        let filter = gtk4::FileFilter::new();
+        filter.add_mime_type("image/*");
+        filter.set_name(Some("Images"));
+        let filters = gtk4::gio::ListStore::new::<gtk4::FileFilter>();
+        filters.append(&filter);
+        dialog.set_filters(Some(&filters));
     }
 
-    // Add Image action
-    {
-        let active_doc = active_doc.clone();
-        let save_cb = save_cb.clone();
-        let skills_panel = skills_panel.clone();
-        add_image_btn.connect_clicked(move |_| {
-            skills_panel.set_visible(false);
+    dialog.open(panel.as_ref(), gtk4::gio::Cancellable::NONE, move |result: Result<gtk4::gio::File, gtk4::glib::Error>| {
+        if let Ok(file) = result {
+            if let Some(path) = file.path() {
+                let path_str = path.to_string_lossy().to_string();
 
-            // Use the document panel as dialog parent so it appears on top
-            let panel = active_doc.borrow().as_ref().map(|ad| ad.panel_window.clone());
-            let active_doc = active_doc.clone();
-            let save_cb = save_cb.clone();
+                let doc_data = {
+                    let guard = active_doc.borrow();
+                    guard.as_ref().map(|ad| build_skill_doc(ad))
+                };
 
-            let dialog = gtk4::FileDialog::builder()
-                .title("Select Image")
-                .build();
-
-            let filter = gtk4::FileFilter::new();
-            filter.add_mime_type("image/*");
-            filter.set_name(Some("Images"));
-            let filters = gtk4::gio::ListStore::new::<gtk4::FileFilter>();
-            filters.append(&filter);
-            dialog.set_filters(Some(&filters));
-
-            dialog.open(panel.as_ref(), gtk4::gio::Cancellable::NONE, move |result: Result<gtk4::gio::File, gtk4::glib::Error>| {
-                if let Ok(file) = result {
-                    if let Some(path) = file.path() {
-                        let path_str = path.to_string_lossy().to_string();
-
-                        // Extract data (immutable borrow, then drop before borrow_mut)
-                        let doc_data = {
-                            let guard = active_doc.borrow();
-                            guard.as_ref().map(|ad| {
-                                let body = (ad.get_current_body)();
-                                (ad.doc_id.clone(), ad.title.clone(), body, ad.content.images.clone())
-                            })
-                        };
-
-                        if let Some((doc_id, title, body, images)) = doc_data {
-                            let skill_doc = SkillDocument {
-                                id: doc_id.clone(),
-                                title: title.clone(),
-                                content: ContentFields { body, images },
-                            };
-                            let skill = ImageSkill;
-                            match skill.execute("add", &skill_doc, &path_str) {
-                                Ok(SkillOutput::ContentUpdate(cf)) => {
-                                    save_cb(doc_id, title, cf.serialize());
-                                    // Update active_doc and refresh panel gallery
-                                    if let Some(ref mut ad) = *active_doc.borrow_mut() {
-                                        ad.content.images = cf.images.clone();
-                                        (ad.on_images_changed)(&cf.images);
-                                    }
-                                    tracing::info!("Image added: {}", path_str);
+                if let Some(skill_doc) = doc_data {
+                    if let Some(skill) = registry.find_skill(&skill_name) {
+                        match skill.execute(&action_id, &skill_doc, &path_str) {
+                            Ok(SkillOutput::ContentUpdate(cf)) => {
+                                save_cb(skill_doc.id.clone(), skill_doc.title.clone(), cf.serialize());
+                                if let Some(ref mut ad) = *active_doc.borrow_mut() {
+                                    ad.content.images = cf.images.clone();
+                                    (ad.on_images_changed)(&cf.images);
                                 }
-                                Ok(_) => {}
-                                Err(e) => tracing::error!("Add image failed: {e}"),
+                                tracing::info!("{} completed: {}", skill_name, path_str);
                             }
+                            Ok(SkillOutput::StructuredData { kind, json }) => {
+                                tracing::info!("{}: {} — {}", skill_name, kind, json);
+                            }
+                            Ok(_) => {}
+                            Err(e) => tracing::error!("{} failed: {e}", skill_name),
                         }
                     }
                 }
-            });
-        });
-    }
+            }
+        }
+    });
+}
 
-    // Export PDF action
-    {
-        let active_doc = active_doc.clone();
-        let skills_panel = skills_panel.clone();
-        export_pdf_btn.connect_clicked(move |_| {
-            skills_panel.set_visible(false);
+/// Handle export actions (PDF export → save dialog).
+fn handle_export_action(
+    active_doc: &Rc<RefCell<Option<ActiveDocument>>>,
+    registry: &Rc<SkillRegistry>,
+) {
+    let doc_data = {
+        let guard = active_doc.borrow();
+        guard.as_ref().map(|ad| (build_skill_doc(ad), ad.panel_window.clone()))
+    };
 
-            // Extract data and panel window (immutable borrow, then drop)
-            let doc_data = {
-                let guard = active_doc.borrow();
-                guard.as_ref().map(|ad| {
-                    let body = (ad.get_current_body)();
-                    let skill_doc = SkillDocument {
-                        id: ad.doc_id.clone(),
-                        title: ad.title.clone(),
-                        content: ContentFields {
-                            body,
-                            images: ad.content.images.clone(),
-                        },
-                    };
-                    (skill_doc, ad.panel_window.clone())
-                })
-            };
+    if let Some((skill_doc, panel)) = doc_data {
+        if let Some(skill) = registry.find_skill("pdf-export") {
+            match skill.execute("export", &skill_doc, "") {
+                Ok(SkillOutput::File { name, data, .. }) => {
+                    let dialog = gtk4::FileDialog::builder()
+                        .title("Save PDF")
+                        .initial_name(&name)
+                        .build();
 
-            if let Some((skill_doc, panel)) = doc_data {
-                let skill = PdfExportSkill;
-                match skill.execute("export", &skill_doc, "") {
-                    Ok(SkillOutput::File { name, data, .. }) => {
-                        let dialog = gtk4::FileDialog::builder()
-                            .title("Save PDF")
-                            .initial_name(&name)
-                            .build();
-
-                        let data = data.clone();
-                        dialog.save(
-                            Some(&panel),
-                            gtk4::gio::Cancellable::NONE,
-                            move |result: Result<gtk4::gio::File, gtk4::glib::Error>| {
-                                if let Ok(file) = result {
-                                    if let Some(path) = file.path() {
-                                        match std::fs::write(path.as_path(), &data) {
-                                            Ok(()) => tracing::info!(
-                                                "PDF exported to {}",
-                                                path.display()
-                                            ),
-                                            Err(e) => tracing::error!(
-                                                "Failed to write PDF: {e}"
-                                            ),
-                                        }
+                    let data = data.clone();
+                    dialog.save(
+                        Some(&panel),
+                        gtk4::gio::Cancellable::NONE,
+                        move |result: Result<gtk4::gio::File, gtk4::glib::Error>| {
+                            if let Ok(file) = result {
+                                if let Some(path) = file.path() {
+                                    match std::fs::write(path.as_path(), &data) {
+                                        Ok(()) => tracing::info!(
+                                            "PDF exported to {}",
+                                            path.display()
+                                        ),
+                                        Err(e) => tracing::error!(
+                                            "Failed to write PDF: {e}"
+                                        ),
                                     }
                                 }
-                            },
-                        );
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::error!("PDF export failed: {e}"),
+                            }
+                        },
+                    );
                 }
+                Ok(_) => {}
+                Err(e) => tracing::error!("PDF export failed: {e}"),
             }
-        });
+        }
     }
+}
 
-    handle
+/// Format structured data for display in the status label.
+fn format_structured_data(kind: &str, json: &str) -> String {
+    match kind {
+        "word_count" => {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+                format!(
+                    "Words: {} | Chars: {} | Lines: {} | ~{} min read",
+                    v["words"], v["characters"], v["lines"], v["reading_time_min"]
+                )
+            } else {
+                json.to_string()
+            }
+        }
+        "search_results" => {
+            if let Ok(v) = serde_json::from_str::<Vec<serde_json::Value>>(json) {
+                if v.is_empty() {
+                    "No results found".into()
+                } else {
+                    let titles: Vec<String> = v.iter()
+                        .take(5)
+                        .filter_map(|item| item["title"].as_str().map(String::from))
+                        .collect();
+                    format!("{} results: {}", v.len(), titles.join(", "))
+                }
+            } else {
+                json.to_string()
+            }
+        }
+        "find_replace" => {
+            if serde_json::from_str::<serde_json::Value>(json).is_ok() {
+                "No matches found (0 replacements)".into()
+            } else {
+                json.to_string()
+            }
+        }
+        "duplicate_result" => {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+                format!("Created: {}", v["title"].as_str().unwrap_or("copy"))
+            } else {
+                json.to_string()
+            }
+        }
+        "import_result" => {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+                format!("Imported: {}", v["title"].as_str().unwrap_or("document"))
+            } else {
+                json.to_string()
+            }
+        }
+        _ => json.to_string(),
+    }
 }

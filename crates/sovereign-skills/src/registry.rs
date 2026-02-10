@@ -117,8 +117,8 @@ mod tests {
         registry.scan_directory(&skills_dir).unwrap();
         assert_eq!(
             registry.manifests().len(),
-            3,
-            "Expected 3 skill manifests in {:?}, found {}",
+            9,
+            "Expected 9 skill manifests in {:?}, found {}",
             skills_dir,
             registry.manifests().len()
         );
@@ -152,5 +152,29 @@ mod tests {
         registry.register(Box::new(DummySkill("a")));
         registry.register(Box::new(DummySkill("b")));
         assert_eq!(registry.all_skills().len(), 2);
+    }
+
+    #[test]
+    fn test_registry_with_all_core_skills() {
+        use crate::skills::text_editor::TextEditorSkill;
+        use crate::skills::image::ImageSkill;
+        use crate::skills::pdf_export::PdfExportSkill;
+        use crate::skills::word_count::WordCountSkill;
+        use crate::skills::find_replace::FindReplaceSkill;
+
+        let mut registry = SkillRegistry::new();
+        registry.register(Box::new(TextEditorSkill));
+        registry.register(Box::new(ImageSkill));
+        registry.register(Box::new(PdfExportSkill));
+        registry.register(Box::new(WordCountSkill));
+        registry.register(Box::new(FindReplaceSkill));
+        // DB-dependent skills would need Arc<SurrealGraphDB>, tested in async tests below
+
+        assert_eq!(registry.all_skills().len(), 5);
+        assert!(registry.find_skill("text-editor").is_some());
+        assert!(registry.find_skill("image").is_some());
+        assert!(registry.find_skill("pdf-export").is_some());
+        assert!(registry.find_skill("word-count").is_some());
+        assert!(registry.find_skill("find-replace").is_some());
     }
 }

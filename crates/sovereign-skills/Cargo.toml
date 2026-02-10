@@ -6,9 +6,15 @@ description = "Skill manifest parsing, registry, and CoreSkill trait"
 
 [dependencies]
 sovereign-core = { workspace = true }
+sovereign-db = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
 genpdf = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
