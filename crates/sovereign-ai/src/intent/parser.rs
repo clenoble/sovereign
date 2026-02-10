@@ -65,6 +65,11 @@ fn extract_intent_heuristic(response: &str) -> UserIntent {
         || lower.contains("show models")
     {
         "list_models"
+    // Thread merge/split (check before generic thread ops)
+    } else if lower.contains("merge thread") || lower.contains("combine thread") || lower.contains("merge project") {
+        "merge_threads"
+    } else if lower.contains("split thread") || lower.contains("separate thread") || lower.contains("split project") {
+        "split_thread"
     // Thread-specific intents (check before generic "create"/"new")
     } else if lower.contains("create thread") || lower.contains("new thread") || lower.contains("new project") {
         "create_thread"
@@ -86,6 +91,12 @@ fn extract_intent_heuristic(response: &str) -> UserIntent {
         "duplicate"
     } else if lower.contains("import file") || lower.contains("import from") || lower.contains("import a file") {
         "import_file"
+    } else if lower.contains("adopt") || lower.contains("claim") || lower.contains("take ownership") {
+        "adopt"
+    } else if lower.contains("create milestone") || lower.contains("add milestone") || lower.contains("set milestone") {
+        "create_milestone"
+    } else if lower.contains("list milestone") || lower.contains("show milestone") {
+        "list_milestones"
     } else if lower.contains("search") || lower.contains("find") || lower.contains("look") {
         "search"
     } else if lower.contains("open") || lower.contains("show") {
@@ -252,6 +263,54 @@ mod tests {
     fn heuristic_import_file() {
         let intent = parse_intent_response("import file from disk").unwrap();
         assert_eq!(intent.action, "import_file");
+    }
+
+    #[test]
+    fn heuristic_merge_threads() {
+        let intent = parse_intent_response("merge thread Alpha into Beta").unwrap();
+        assert_eq!(intent.action, "merge_threads");
+    }
+
+    #[test]
+    fn heuristic_combine_threads() {
+        let intent = parse_intent_response("combine threads Research and Dev").unwrap();
+        assert_eq!(intent.action, "merge_threads");
+    }
+
+    #[test]
+    fn heuristic_split_thread() {
+        let intent = parse_intent_response("split thread Research into two").unwrap();
+        assert_eq!(intent.action, "split_thread");
+    }
+
+    #[test]
+    fn heuristic_separate_thread() {
+        let intent = parse_intent_response("separate thread notes from main").unwrap();
+        assert_eq!(intent.action, "split_thread");
+    }
+
+    #[test]
+    fn heuristic_create_milestone() {
+        let intent = parse_intent_response("create milestone Alpha release").unwrap();
+        assert_eq!(intent.action, "create_milestone");
+    }
+
+    #[test]
+    fn heuristic_add_milestone() {
+        let intent = parse_intent_response("add milestone for v2.0").unwrap();
+        assert_eq!(intent.action, "create_milestone");
+    }
+
+    #[test]
+    fn heuristic_list_milestones() {
+        let intent = parse_intent_response("list milestones for this project").unwrap();
+        assert_eq!(intent.action, "list_milestones");
+    }
+
+    #[test]
+    fn heuristic_show_milestones() {
+        let intent = parse_intent_response("show milestones").unwrap();
+        assert_eq!(intent.action, "list_milestones");
     }
 
     #[test]

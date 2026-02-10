@@ -2,12 +2,22 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use sovereign_core::interfaces::{CanvasController, Viewport};
+use crate::state::CanvasFilter;
 
 /// Commands sent from CanvasController to the GTK main loop.
 pub enum CanvasCommand {
     NavigateTo(String),
     Highlight(String, bool),
     ZoomToThread(String),
+    GoHome,
+    /// Jump the camera to the closest timeline marker matching the date string.
+    JumpToDate(String),
+    /// Apply a filter to control which cards are shown.
+    SetFilter(CanvasFilter),
+    /// Toggle the minimap overlay.
+    ToggleMinimap,
+    /// Start the adoption (external→owned) animation for a card.
+    AnimateAdoption(String),
 }
 
 /// Thread-safe CanvasController implementation.

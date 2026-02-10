@@ -52,10 +52,12 @@ pub enum ActionDecision {
 pub fn action_level(action: &str) -> ActionLevel {
     match action {
         "search" | "open" | "navigate" | "history" | "summarize" | "word_count"
-        | "list_models" => ActionLevel::Observe,
+        | "list_models" | "list_milestones" => ActionLevel::Observe,
         "annotate" | "tag" | "bookmark" => ActionLevel::Annotate,
         "create_thread" | "rename_thread" | "move_document" | "restore" | "edit"
-        | "find_replace" | "duplicate" | "import_file" | "swap_model" => ActionLevel::Modify,
+        | "find_replace" | "duplicate" | "import_file" | "swap_model"
+        | "merge_threads" | "split_thread" | "adopt"
+        | "create_milestone" | "delete_milestone" => ActionLevel::Modify,
         "export" | "share" | "transmit" => ActionLevel::Transmit,
         "delete_thread" | "delete_document" | "purge" => ActionLevel::Destruct,
         _ => ActionLevel::Observe,
@@ -79,6 +81,7 @@ pub enum BubbleVisualState {
     ProcessingExternal,
     Proposing,
     Executing,
+    Suggesting,
 }
 
 #[cfg(test)]
@@ -135,6 +138,19 @@ mod tests {
     }
 
     #[test]
+    fn action_level_merge_split_modify() {
+        assert_eq!(action_level("merge_threads"), ActionLevel::Modify);
+        assert_eq!(action_level("split_thread"), ActionLevel::Modify);
+    }
+
+    #[test]
+    fn action_level_milestone_ops() {
+        assert_eq!(action_level("create_milestone"), ActionLevel::Modify);
+        assert_eq!(action_level("delete_milestone"), ActionLevel::Modify);
+        assert_eq!(action_level("list_milestones"), ActionLevel::Observe);
+    }
+
+    #[test]
     fn action_level_unknown_defaults_to_observe() {
         assert_eq!(action_level("something_new"), ActionLevel::Observe);
     }
@@ -168,6 +184,7 @@ mod tests {
             BubbleVisualState::ProcessingExternal,
             BubbleVisualState::Proposing,
             BubbleVisualState::Executing,
+            BubbleVisualState::Suggesting,
         ];
         // Each state is distinct
         for (i, a) in states.iter().enumerate() {

@@ -103,7 +103,7 @@ pub fn build_app(
         let query_rc: Option<Rc<dyn Fn(String)>> =
             query_cb.map(|cb| Rc::new(move |text: String| cb(text)) as Rc<dyn Fn(String)>);
 
-        let (search_box, search_handle) = build_search_overlay(query_rc);
+        let (search_box, search_handle) = build_search_overlay(query_rc.clone());
         overlay.add_overlay(&search_box);
 
         // Shared active document state
@@ -165,11 +165,13 @@ pub fn build_app(
             },
             pinned_docs,
             taskbar_skill_tx,
+            None, // voice_tx: no push-to-talk channel wired yet
         );
         vbox.append(&taskbar);
 
-        // Keyboard shortcut: Ctrl+F for search, Escape to close
+        // Keyboard shortcut: Ctrl+F for search, Ctrl+G for jump-to-date, Escape to close
         let search_box_key = search_box.clone();
+        let query_rc_jump = query_rc.clone();
         let key_controller = gtk4::EventControllerKey::new();
         key_controller.connect_key_pressed(move |_, keyval, _, modifier| {
             let ctrl = modifier.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
@@ -177,6 +179,13 @@ pub fn build_app(
                 search_box_key.set_visible(true);
                 if let Some(entry) = search_box_key.first_child() {
                     entry.grab_focus();
+                }
+                return gtk4::glib::Propagation::Stop;
+            }
+            if ctrl && keyval == gtk4::gdk::Key::g {
+                // Jump-to-date: show a simple dialog
+                if let Some(ref cb) = query_rc_jump {
+                    cb("jump_to_date".to_string());
                 }
                 return gtk4::glib::Propagation::Stop;
             }
@@ -240,6 +249,9 @@ pub fn build_app(
                         }
                         OrchestratorEvent::ActionRejected { ref reason, .. } => {
                             bubble_handle.show_rejection(reason);
+                        }
+                        OrchestratorEvent::Suggestion { ref text, .. } => {
+                            bubble_handle.show_suggestion(text);
                         }
                         OrchestratorEvent::SkillResult { ref kind, ref data, .. } => {
                             let display = match kind.as_str() {

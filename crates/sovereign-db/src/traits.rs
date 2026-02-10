@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::error::DbResult;
 use crate::schema::{
-    Commit, Document, RelatedTo, RelationType, Thread,
+    Commit, Document, Milestone, RelatedTo, RelationType, Thread,
 };
 
 /// Core database abstraction for the Sovereign OS document graph.
@@ -62,6 +62,24 @@ pub trait GraphDB: Send + Sync {
     /// Traverse the graph from a document, returning connected documents up to `depth` hops.
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>>;
 
+    // -- Adopt ---
+
+    /// Mark a document as owned (adopt external content).
+    async fn adopt_document(&self, id: &str) -> DbResult<Document>;
+
+    // -- Thread merge/split ---
+
+    /// Merge source thread into target: move all docs from source to target, soft-delete source.
+    async fn merge_threads(&self, target_id: &str, source_id: &str) -> DbResult<()>;
+
+    /// Split specified docs out of a thread into a new thread with the given name.
+    async fn split_thread(
+        &self,
+        thread_id: &str,
+        doc_ids: &[String],
+        new_name: &str,
+    ) -> DbResult<Thread>;
+
     // -- Soft delete ---
 
     /// Mark a document as deleted (soft delete). Sets deleted_at timestamp.
@@ -92,4 +110,15 @@ pub trait GraphDB: Send + Sync {
 
     /// Restore a document to a previous commit's snapshot.
     async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document>;
+
+    // -- Milestones ---
+
+    /// Create a milestone on a thread's timeline.
+    async fn create_milestone(&self, milestone: Milestone) -> DbResult<Milestone>;
+
+    /// List milestones for a thread, most recent first.
+    async fn list_milestones(&self, thread_id: &str) -> DbResult<Vec<Milestone>>;
+
+    /// Delete a milestone by ID.
+    async fn delete_milestone(&self, id: &str) -> DbResult<()>;
 }

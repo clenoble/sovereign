@@ -41,8 +41,23 @@ pub enum OrchestratorEvent {
     ThreadRenamed { thread_id: String, name: String },
     ThreadDeleted { thread_id: String },
     DocumentMoved { doc_id: String, new_thread_id: String },
+    ThreadMerged { target_id: String, source_id: String },
+    ThreadSplit { new_thread_id: String, name: String, doc_ids: Vec<String> },
+    AdoptionStarted { doc_id: String },
+    MilestoneCreated { milestone_id: String, title: String, thread_id: String },
+    MilestonesListed { thread_id: String, milestones: Vec<MilestoneSummary> },
+    Suggestion { text: String, action: String },
     VersionHistory { doc_id: String, commits: Vec<CommitSummary> },
     SkillResult { skill: String, action: String, kind: String, data: String },
+}
+
+/// Lightweight milestone summary for milestone events.
+#[derive(Debug, Clone)]
+pub struct MilestoneSummary {
+    pub id: String,
+    pub title: String,
+    pub timestamp: String,
+    pub description: String,
 }
 
 /// Lightweight commit summary for version history events.
@@ -71,12 +86,53 @@ pub enum SkillEvent {
     DocumentClosed { doc_id: String },
 }
 
+/// Commands for controlling the voice pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VoiceCommand {
+    StartListening,
+    StopListening,
+}
+
+/// Voice activation mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceMode {
+    WakeWord,
+    PushToTalk,
+}
+
 /// Backend for loading and running LLM inference.
 /// Implemented in Phase 3 by sovereign-ai.
 ///
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_command_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<VoiceCommand>();
+    }
+
+    #[test]
+    fn voice_mode_variants() {
+        assert_ne!(VoiceMode::WakeWord, VoiceMode::PushToTalk);
+    }
+
+    #[test]
+    fn suggestion_event_clone() {
+        let event = OrchestratorEvent::Suggestion {
+            text: "Try organizing your docs".into(),
+            action: "create_thread".into(),
+        };
+        let cloned = event.clone();
+        match cloned {
+            OrchestratorEvent::Suggestion { text, action } => {
+                assert_eq!(text, "Try organizing your docs");
+                assert_eq!(action, "create_thread");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
 
     #[test]
     fn skill_event_is_send_and_clone() {

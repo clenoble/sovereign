@@ -30,6 +30,7 @@ const BUBBLE_STATE_CLASSES: &[&str] = &[
     "bubble-processing-external",
     "bubble-proposing",
     "bubble-executing",
+    "bubble-suggesting",
 ];
 
 /// Swap bubble CSS classes to reflect the current visual state.
@@ -43,6 +44,7 @@ pub fn set_bubble_state(bubble: &Label, state: BubbleVisualState) {
         BubbleVisualState::ProcessingExternal => "bubble-processing-external",
         BubbleVisualState::Proposing => "bubble-proposing",
         BubbleVisualState::Executing => "bubble-executing",
+        BubbleVisualState::Suggesting => "bubble-suggesting",
     };
     bubble.add_css_class(cls);
 }
@@ -55,6 +57,7 @@ pub struct BubbleHandle {
     pub confirmation_label: Label,
     pub rejection_toast: Label,
     pub status_label: Label,
+    pub suggestion_tooltip: Label,
 }
 
 impl BubbleHandle {
@@ -84,6 +87,19 @@ impl BubbleHandle {
     /// Show a skill result in the status label.
     pub fn show_skill_result(&self, text: &str) {
         self.status_label.set_text(text);
+    }
+
+    /// Show a proactive suggestion tooltip near the bubble.
+    pub fn show_suggestion(&self, text: &str) {
+        self.suggestion_tooltip.set_text(text);
+        self.suggestion_tooltip.set_visible(true);
+        set_bubble_state(&self.bubble, BubbleVisualState::Suggesting);
+    }
+
+    /// Dismiss the suggestion tooltip and return to idle.
+    pub fn dismiss_suggestion(&self) {
+        self.suggestion_tooltip.set_visible(false);
+        set_bubble_state(&self.bubble, BubbleVisualState::Idle);
     }
 }
 
@@ -329,12 +345,38 @@ pub fn add_orchestrator_bubble(
     skills_panel.append(&status_label);
     overlay.add_overlay(&skills_panel);
 
+    // Suggestion tooltip — dismissible label for proactive AI suggestions
+    let suggestion_tooltip = Label::new(None);
+    suggestion_tooltip.add_css_class("suggestion-tooltip");
+    suggestion_tooltip.set_halign(gtk4::Align::Start);
+    suggestion_tooltip.set_valign(gtk4::Align::Start);
+    suggestion_tooltip.set_margin_start(80);
+    suggestion_tooltip.set_margin_top(28);
+    suggestion_tooltip.set_wrap(true);
+    suggestion_tooltip.set_max_width_chars(40);
+    suggestion_tooltip.set_visible(false);
+    overlay.add_overlay(&suggestion_tooltip);
+
+    // Click on suggestion tooltip dismisses it
+    {
+        let tooltip_ref = suggestion_tooltip.clone();
+        let bubble_ref = bubble.clone();
+        let dismiss_click = gtk4::GestureClick::new();
+        dismiss_click.set_button(1);
+        dismiss_click.connect_released(move |_, _, _, _| {
+            tooltip_ref.set_visible(false);
+            set_bubble_state(&bubble_ref, BubbleVisualState::Idle);
+        });
+        suggestion_tooltip.add_controller(dismiss_click);
+    }
+
     let handle = BubbleHandle {
         bubble: bubble.clone(),
         confirmation_panel: confirm_panel,
         confirmation_label: confirm_label,
         rejection_toast,
         status_label: status_label.clone(),
+        suggestion_tooltip,
     };
 
     // Track drag vs click

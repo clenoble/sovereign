@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use sovereign_core::config::AiConfig;
-use sovereign_core::interfaces::{CommitSummary, ModelBackend, OrchestratorEvent};
+use sovereign_core::interfaces::{CommitSummary, MilestoneSummary, ModelBackend, OrchestratorEvent};
 use sovereign_core::security::{self, ActionDecision, BubbleVisualState, ProposedAction};
-use sovereign_db::schema::Thread;
+use sovereign_db::schema::{Milestone, Thread};
 use sovereign_db::surreal::SurrealGraphDB;
 use sovereign_db::GraphDB;
 
@@ -483,6 +483,174 @@ impl Orchestrator {
                     });
                 }
             }
+            "merge_threads" => {
+                if let Some(target) = target {
+                    let (target_name, source_name) = parse_move_target(target);
+                    let threads = self.db.list_threads().await?;
+                    let target_thread = threads
+                        .iter()
+                        .find(|t| t.name.to_lowercase().contains(&target_name.to_lowercase()));
+                    let source_thread = threads
+                        .iter()
+                        .find(|t| t.name.to_lowercase().contains(&source_name.to_lowercase()));
+
+                    if let (Some(tt), Some(st)) = (target_thread, source_thread) {
+                        let target_id = tt.id_string().unwrap_or_default();
+                        let source_id = st.id_string().unwrap_or_default();
+                        match self.db.merge_threads(&target_id, &source_id).await {
+                            Ok(()) => {
+                                tracing::info!(
+                                    "Threads merged: {} ← {}",
+                                    target_name,
+                                    source_name
+                                );
+                                self.log_action(
+                                    "merge_threads",
+                                    &format!("{} ← {}", target_name, source_name),
+                                );
+                                let _ = self.event_tx.send(OrchestratorEvent::ThreadMerged {
+                                    target_id,
+                                    source_id,
+                                });
+                            }
+                            Err(e) => tracing::error!("Failed to merge threads: {e}"),
+                        }
+                    }
+                }
+            }
+            "split_thread" => {
+                if let Some(target) = target {
+                    let (thread_name, new_name) = parse_rename_target(target);
+                    let new_name = if new_name == thread_name {
+                        format!("{} (split)", thread_name)
+                    } else {
+                        new_name
+                    };
+                    let threads = self.db.list_threads().await?;
+                    if let Some(thread) = threads
+                        .iter()
+                        .find(|t| t.name.to_lowercase().contains(&thread_name.to_lowercase()))
+                    {
+                        if let Some(tid) = thread.id_string() {
+                            // For now, split with no specific doc_ids — the user will
+                            // refine via UI. Create empty thread as a target.
+                            match self.db.split_thread(&tid, &[], &new_name).await {
+                                Ok(created) => {
+                                    let new_tid = created.id_string().unwrap_or_default();
+                                    tracing::info!("Thread split: {} → {}", thread_name, new_name);
+                                    self.log_action(
+                                        "split_thread",
+                                        &format!("{} → {}", thread_name, new_name),
+                                    );
+                                    let _ = self.event_tx.send(OrchestratorEvent::ThreadSplit {
+                                        new_thread_id: new_tid,
+                                        name: new_name,
+                                        doc_ids: vec![],
+                                    });
+                                }
+                                Err(e) => tracing::error!("Failed to split thread: {e}"),
+                            }
+                        }
+                    }
+                }
+            }
+            "adopt" => {
+                if let Some(target) = target {
+                    let docs = self.db.list_documents(None).await?;
+                    if let Some(doc) = docs
+                        .iter()
+                        .find(|d| d.title.to_lowercase().contains(&target.to_lowercase()))
+                    {
+                        if let Some(doc_id) = doc.id_string() {
+                            // Set is_owned = true via adopt_document
+                            match self.db.adopt_document(&doc_id).await {
+                                Ok(_) => {
+                                    tracing::info!("Adopted: {} ({})", target, doc_id);
+                                    self.log_action(
+                                        "adopt",
+                                        &format!("{} ({})", target, doc_id),
+                                    );
+                                    let _ = self.event_tx.send(
+                                        OrchestratorEvent::AdoptionStarted {
+                                            doc_id,
+                                        },
+                                    );
+                                }
+                                Err(e) => tracing::error!("Failed to adopt: {e}"),
+                            }
+                        }
+                    }
+                }
+            }
+            "create_milestone" => {
+                if let Some(target) = target {
+                    // Parse "title on/for thread_name" or just use default thread
+                    let (title, thread_name) = if let Some(idx) = target.to_lowercase().find(" on ") {
+                        (target[..idx].trim().to_string(), target[idx + 4..].trim().to_string())
+                    } else if let Some(idx) = target.to_lowercase().find(" for ") {
+                        (target[..idx].trim().to_string(), target[idx + 5..].trim().to_string())
+                    } else {
+                        (target.to_string(), String::new())
+                    };
+
+                    let threads = self.db.list_threads().await?;
+                    let thread = if thread_name.is_empty() {
+                        threads.first()
+                    } else {
+                        threads.iter().find(|t| {
+                            t.name.to_lowercase().contains(&thread_name.to_lowercase())
+                        })
+                    };
+
+                    if let Some(thread) = thread {
+                        let tid = thread.id_string().unwrap_or_default();
+                        let ms = Milestone::new(title.clone(), tid.clone(), String::new());
+                        match self.db.create_milestone(ms).await {
+                            Ok(created) => {
+                                let mid = created.id_string().unwrap_or_default();
+                                tracing::info!("Milestone created: {} ({})", title, mid);
+                                self.log_action("create_milestone", &format!("{} on {}", title, tid));
+                                let _ = self.event_tx.send(OrchestratorEvent::MilestoneCreated {
+                                    milestone_id: mid,
+                                    title,
+                                    thread_id: tid,
+                                });
+                            }
+                            Err(e) => tracing::error!("Failed to create milestone: {e}"),
+                        }
+                    }
+                }
+            }
+            "list_milestones" => {
+                let threads = self.db.list_threads().await?;
+                let thread = if let Some(target) = target {
+                    threads.iter().find(|t| {
+                        t.name.to_lowercase().contains(&target.to_lowercase())
+                    })
+                } else {
+                    threads.first()
+                };
+
+                if let Some(thread) = thread {
+                    let tid = thread.id_string().unwrap_or_default();
+                    let milestones = self.db.list_milestones(&tid).await?;
+                    let summaries: Vec<MilestoneSummary> = milestones
+                        .iter()
+                        .map(|m| MilestoneSummary {
+                            id: m.id_string().unwrap_or_default(),
+                            title: m.title.clone(),
+                            timestamp: m.timestamp.to_rfc3339(),
+                            description: m.description.clone(),
+                        })
+                        .collect();
+                    tracing::info!("Listed {} milestones for {}", summaries.len(), tid);
+                    self.log_action("list_milestones", &format!("{} milestones", summaries.len()));
+                    let _ = self.event_tx.send(OrchestratorEvent::MilestonesListed {
+                        thread_id: tid,
+                        milestones: summaries,
+                    });
+                }
+            }
             "word_count" | "find_replace" | "duplicate" | "import_file" => {
                 let _ = self.event_tx.send(OrchestratorEvent::SkillResult {
                     skill: action.to_string(),
@@ -599,6 +767,35 @@ impl Orchestrator {
         }
     }
 
+    /// Generate a proactive suggestion based on current context.
+    /// Called after N seconds of idle time. Never auto-executes.
+    pub async fn idle_suggest(&self) -> Result<()> {
+        let docs = self.db.list_documents(None).await?;
+        let threads = self.db.list_threads().await?;
+
+        // Heuristic suggestions based on context
+        if let Some(suggestion) = self.suggest_from_context(&docs, &threads) {
+            let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                BubbleVisualState::Suggesting,
+            ));
+            let _ = self.event_tx.send(OrchestratorEvent::Suggestion {
+                text: suggestion.0,
+                action: suggestion.1,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Analyze documents and threads to generate contextual suggestions.
+    fn suggest_from_context(
+        &self,
+        docs: &[sovereign_db::schema::Document],
+        threads: &[Thread],
+    ) -> Option<(String, String)> {
+        generate_suggestion(docs, threads)
+    }
+
     fn log_action(&self, action: &str, details: &str) {
         if let Some(ref log) = self.session_log {
             if let Ok(mut log) = log.lock() {
@@ -630,6 +827,51 @@ fn parse_move_target(target: &str) -> (String, String) {
     } else {
         (target.to_string(), String::new())
     }
+}
+
+/// Analyze documents and threads to produce a contextual suggestion.
+/// Returns (text, action) or None if no suggestion is appropriate.
+pub(crate) fn generate_suggestion(
+    docs: &[sovereign_db::schema::Document],
+    threads: &[Thread],
+) -> Option<(String, String)> {
+    // Suggest creating a thread if there are docs but no threads
+    if !docs.is_empty() && threads.is_empty() {
+        return Some((
+            "You have documents but no threads. Create a thread to organize them?".into(),
+            "create_thread".into(),
+        ));
+    }
+
+    // Suggest adopting external content if there are many external docs
+    let external_count = docs.iter().filter(|d| !d.is_owned).count();
+    let total = docs.len();
+    if total >= 3 && external_count as f64 / total as f64 > 0.7 {
+        return Some((
+            format!(
+                "{} of {} documents are external. Adopt some to make them yours?",
+                external_count, total
+            ),
+            "adopt".into(),
+        ));
+    }
+
+    // Suggest creating a milestone if there are many docs in a thread
+    for thread in threads {
+        let tid = thread.id_string().unwrap_or_default();
+        let thread_docs = docs.iter().filter(|d| d.thread_id == tid).count();
+        if thread_docs >= 5 {
+            return Some((
+                format!(
+                    "Thread \"{}\" has {} documents. Create a milestone to mark progress?",
+                    thread.name, thread_docs
+                ),
+                "create_milestone".into(),
+            ));
+        }
+    }
+
+    None
 }
 
 /// Scan a directory for .gguf model files and return (name, size_mb) pairs.
@@ -722,6 +964,54 @@ mod tests {
     fn resolve_model_path_keeps_existing_gguf() {
         let path = resolve_model_path("/models", "Qwen2.5-7B.gguf");
         assert_eq!(path, std::path::PathBuf::from("/models/Qwen2.5-7B.gguf"));
+    }
+
+    #[test]
+    fn suggestion_no_docs_returns_none() {
+        let result = generate_suggestion(&[], &[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn suggestion_docs_without_threads_suggests_create() {
+        use sovereign_db::schema::Document;
+        let docs = vec![
+            Document::new("A".into(), "thread:t".into(), true),
+        ];
+        let result = generate_suggestion(&docs, &[]);
+        assert!(result.is_some());
+        let (text, action) = result.unwrap();
+        assert_eq!(action, "create_thread");
+        assert!(text.contains("no threads"));
+    }
+
+    #[test]
+    fn suggestion_many_external_suggests_adopt() {
+        use sovereign_db::schema::{Document, Thread};
+        let thread = Thread::new("T".into(), "".into());
+        let docs = vec![
+            Document::new("A".into(), "thread:t".into(), false),
+            Document::new("B".into(), "thread:t".into(), false),
+            Document::new("C".into(), "thread:t".into(), false),
+        ];
+        let result = generate_suggestion(&docs, &[thread]);
+        assert!(result.is_some());
+        let (text, action) = result.unwrap();
+        assert_eq!(action, "adopt");
+        assert!(text.contains("external"));
+    }
+
+    #[test]
+    fn suggestion_no_suggestion_for_balanced_docs() {
+        use sovereign_db::schema::{Document, Thread};
+        let thread = Thread::new("T".into(), "".into());
+        let docs = vec![
+            Document::new("A".into(), "thread:t".into(), true),
+            Document::new("B".into(), "thread:t".into(), true),
+            Document::new("C".into(), "thread:t".into(), false),
+        ];
+        let result = generate_suggestion(&docs, &[thread]);
+        assert!(result.is_none());
     }
 
     #[test]

@@ -10,13 +10,14 @@ use gtk4::prelude::*;
 use gtk4::GLArea;
 
 use skia_safe::gpu::SurfaceOrigin;
-use skia_safe::{gpu, Canvas, ColorType, Font, Paint, PaintStyle, Path, Point, RRect, Rect};
+use skia_safe::{gpu, Canvas, Color4f, ColorType, Font, Paint, PaintStyle, Path, Point, RRect, Rect};
 
 use sovereign_core::interfaces::{SkillEvent, Viewport};
 
 use crate::colors::*;
 use crate::gl_loader;
 use crate::layout::{CardLayout, LANE_HEADER_WIDTH};
+use crate::lod::{zoom_level, ZoomLevel};
 use crate::state::{hit_test, CanvasState};
 
 /// Create the GLArea widget with Skia GPU rendering and event controllers.
@@ -176,19 +177,48 @@ fn render(canvas: &Canvas, state: &CanvasState, w: f32, h: f32) {
     canvas.save();
     canvas.concat(&state.camera.to_matrix());
 
+    let lod = zoom_level(state.camera.zoom);
+
     draw_lane_backgrounds(canvas, state, w);
-    draw_lane_headers(canvas, state);
+    draw_branch_edges(canvas, state);
+    draw_timeline_markers(canvas, state, lod);
+    draw_now_marker(canvas, state);
+    if lod != ZoomLevel::Dots {
+        draw_lane_headers(canvas, state);
+    }
     for (i, card) in state.layout.cards.iter().enumerate() {
+        if !state.filter.matches(card) {
+            continue;
+        }
         let hovered = state.hovered == Some(i);
         let selected = state.selected == Some(i);
         let highlighted = state.highlighted.contains(&card.doc_id);
-        draw_card(canvas, card, hovered, selected, highlighted);
+        let anim_t = state
+            .adoption_animations
+            .get(&card.doc_id)
+            .map(|a| a.progress());
+        match lod {
+            ZoomLevel::Dots => draw_dot(canvas, card),
+            ZoomLevel::Simplified => draw_card_simplified(canvas, card, selected, highlighted),
+            ZoomLevel::Full => {
+                if let Some(t) = anim_t {
+                    draw_card_adopting(canvas, card, t);
+                } else {
+                    draw_card(canvas, card, hovered, selected, highlighted);
+                }
+            }
+        }
     }
 
     canvas.restore();
 
     // HUD (screen-space)
     draw_hud(canvas, state, w, h);
+
+    // Minimap (screen-space, after HUD)
+    if state.minimap_visible {
+        crate::minimap::draw_minimap(canvas, state, w, h);
+    }
 }
 
 fn draw_lane_backgrounds(canvas: &Canvas, state: &CanvasState, screen_w: f32) {
@@ -243,6 +273,261 @@ fn draw_lane_headers(canvas: &Canvas, state: &CanvasState) {
             &paint,
         );
     }
+}
+
+fn draw_branch_edges(canvas: &Canvas, state: &CanvasState) {
+    if state.layout.branch_edges.is_empty() {
+        return;
+    }
+
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_color4f(TEXT_DIM, None);
+    paint.set_style(PaintStyle::Stroke);
+    paint.set_stroke_width(1.5);
+    paint.set_path_effect(skia_safe::PathEffect::dash(&[6.0, 4.0], 0.0));
+
+    for edge in &state.layout.branch_edges {
+        let x0 = edge.from_x;
+        let y0 = edge.from_y;
+        let x1 = edge.from_x + 40.0;
+        let y1 = edge.to_y;
+        let mid_x = (x0 + x1) / 2.0;
+
+        let mut builder = skia_safe::PathBuilder::new();
+        builder.move_to(Point::new(x0, y0));
+        builder.cubic_to(
+            Point::new(mid_x, y0),
+            Point::new(mid_x, y1),
+            Point::new(x1, y1),
+        );
+        let path = builder.snapshot();
+
+        canvas.draw_path(&path, &paint);
+    }
+}
+
+fn draw_timeline_markers(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
+    let total_height = state
+        .layout
+        .lanes
+        .last()
+        .map(|l| l.y + l.height)
+        .unwrap_or(400.0);
+
+    let mut line_paint = Paint::default();
+    line_paint.set_anti_alias(true);
+    line_paint.set_color4f(GRID_LINE, None);
+    line_paint.set_style(PaintStyle::Stroke);
+    line_paint.set_stroke_width(1.0);
+
+    let mut text_paint = Paint::default();
+    text_paint.set_anti_alias(true);
+    text_paint.set_color4f(TEXT_DIM, None);
+
+    let font_size = match lod {
+        ZoomLevel::Dots => 16.0,
+        ZoomLevel::Simplified => 12.0,
+        ZoomLevel::Full => 11.0,
+    };
+    let font = Font::default()
+        .with_size(font_size)
+        .unwrap_or_else(|| Font::default());
+
+    for marker in &state.layout.timeline_markers {
+        // Milestones always render with accent color
+        if marker.is_milestone {
+            line_paint.set_color4f(ACCENT, None);
+            text_paint.set_color4f(ACCENT, None);
+        } else {
+            line_paint.set_color4f(GRID_LINE, None);
+            text_paint.set_color4f(TEXT_DIM, None);
+        }
+
+        canvas.draw_line((marker.x, 0.0), (marker.x, total_height), &line_paint);
+
+        // Label detail varies by zoom
+        let label = match lod {
+            ZoomLevel::Dots => {
+                // Year only: extract from "M/YYYY"
+                marker.label.rsplit('/').next().unwrap_or(&marker.label).to_string()
+            }
+            _ => marker.label.clone(),
+        };
+        canvas.draw_str(&label, (marker.x + 4.0, -4.0), &font, &text_paint);
+    }
+}
+
+fn draw_now_marker(canvas: &Canvas, state: &CanvasState) {
+    if state.layout.cards.is_empty() {
+        return;
+    }
+    let max_x = state
+        .layout
+        .cards
+        .iter()
+        .map(|c| c.x + c.w)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let marker_x = max_x + 30.0;
+
+    // Vertical dashed line
+    let total_height = state
+        .layout
+        .lanes
+        .last()
+        .map(|l| l.y + l.height)
+        .unwrap_or(400.0);
+
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_color4f(ACCENT, None);
+    paint.set_style(PaintStyle::Stroke);
+    paint.set_stroke_width(1.5);
+    paint.set_path_effect(skia_safe::PathEffect::dash(&[8.0, 6.0], 0.0));
+
+    canvas.draw_line((marker_x, 0.0), (marker_x, total_height), &paint);
+
+    // "Now" label
+    let font = Font::default()
+        .with_size(13.0)
+        .unwrap_or_else(|| Font::default());
+    let mut tp = Paint::default();
+    tp.set_anti_alias(true);
+    tp.set_color4f(ACCENT, None);
+    canvas.draw_str("Now", (marker_x - 12.0, -8.0), &font, &tp);
+}
+
+fn draw_dot(canvas: &Canvas, card: &CardLayout) {
+    let color = if card.is_owned {
+        OWNED_BORDER
+    } else {
+        EXT_BORDER
+    };
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_color4f(color, None);
+    paint.set_style(PaintStyle::Fill);
+    let (cx, cy) = card.center();
+    canvas.draw_circle((cx, cy), 6.0, &paint);
+}
+
+fn draw_card_simplified(
+    canvas: &Canvas,
+    card: &CardLayout,
+    selected: bool,
+    highlighted: bool,
+) {
+    let (fill, border) = if card.is_owned {
+        (OWNED_FILL, OWNED_BORDER)
+    } else {
+        (EXT_FILL, EXT_BORDER)
+    };
+
+    let mut fp = Paint::default();
+    fp.set_anti_alias(true);
+    fp.set_color4f(fill, None);
+    fp.set_style(PaintStyle::Fill);
+
+    let mut bp = Paint::default();
+    bp.set_anti_alias(true);
+    bp.set_style(PaintStyle::Stroke);
+    if selected || highlighted {
+        bp.set_color4f(ACCENT, None);
+        bp.set_stroke_width(2.5);
+    } else {
+        bp.set_color4f(border, None);
+        bp.set_stroke_width(1.5);
+    }
+
+    if card.is_owned {
+        let rect = Rect::from_xywh(card.x, card.y, card.w, card.h);
+        let rr = RRect::new_rect_xy(rect, 8.0, 8.0);
+        canvas.draw_rrect(rr, &fp);
+        canvas.draw_rrect(rr, &bp);
+    } else {
+        let skew = 14.0_f32;
+        let path = Path::polygon(
+            &[
+                Point::new(card.x + skew, card.y),
+                Point::new(card.x + card.w + skew, card.y),
+                Point::new(card.x + card.w - skew, card.y + card.h),
+                Point::new(card.x - skew, card.y + card.h),
+            ],
+            true,
+            None,
+            None,
+        );
+        canvas.draw_path(&path, &fp);
+        canvas.draw_path(&path, &bp);
+    }
+}
+
+/// Linearly interpolate between two Color4f values.
+pub fn lerp_color(a: Color4f, b: Color4f, t: f32) -> Color4f {
+    Color4f::new(
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+        a.a + (b.a - a.a) * t,
+    )
+}
+
+/// Draw a card undergoing adoption animation (external→owned).
+/// t: 0.0 = fully external, 1.0 = fully owned.
+fn draw_card_adopting(canvas: &Canvas, card: &CardLayout, t: f32) {
+    let fill = lerp_color(EXT_FILL, OWNED_FILL, t);
+    let border = lerp_color(EXT_BORDER, OWNED_BORDER, t);
+    let skew = 14.0 * (1.0 - t); // 14→0 as t→1
+    let radius = 8.0 * t; // 0→8 as t→1
+
+    let mut fp = Paint::default();
+    fp.set_anti_alias(true);
+    fp.set_color4f(fill, None);
+    fp.set_style(PaintStyle::Fill);
+
+    let mut bp = Paint::default();
+    bp.set_anti_alias(true);
+    bp.set_color4f(border, None);
+    bp.set_style(PaintStyle::Stroke);
+    bp.set_stroke_width(2.0);
+
+    if skew < 1.0 {
+        // Close enough to owned — draw rounded rect
+        let rect = Rect::from_xywh(card.x, card.y, card.w, card.h);
+        let rr = RRect::new_rect_xy(rect, radius, radius);
+        canvas.draw_rrect(rr, &fp);
+        canvas.draw_rrect(rr, &bp);
+    } else {
+        // Transitioning parallelogram
+        let path = Path::polygon(
+            &[
+                Point::new(card.x + skew, card.y),
+                Point::new(card.x + card.w + skew, card.y),
+                Point::new(card.x + card.w - skew, card.y + card.h),
+                Point::new(card.x - skew, card.y + card.h),
+            ],
+            true,
+            None,
+            None,
+        );
+        canvas.draw_path(&path, &fp);
+        canvas.draw_path(&path, &bp);
+    }
+
+    // Title
+    let title_font = Font::default()
+        .with_size(13.0)
+        .unwrap_or_else(|| Font::default());
+    let mut tp = Paint::default();
+    tp.set_anti_alias(true);
+    tp.set_color4f(TEXT_PRIMARY, None);
+    let max = (card.w / 8.0) as usize;
+    let label = if card.title.len() > max {
+        format!("{}...", &card.title[..max.saturating_sub(3)])
+    } else {
+        card.title.clone()
+    };
+    canvas.draw_str(&label, (card.x + 14.0, card.y + 26.0), &title_font, &tp);
 }
 
 fn draw_card(
@@ -469,4 +754,32 @@ fn attach_click_select(
         }
     });
     gl_area.add_controller(click);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lerp_color_at_zero() {
+        let c = lerp_color(EXT_FILL, OWNED_FILL, 0.0);
+        assert!((c.r - EXT_FILL.r).abs() < 0.001);
+        assert!((c.g - EXT_FILL.g).abs() < 0.001);
+        assert!((c.b - EXT_FILL.b).abs() < 0.001);
+    }
+
+    #[test]
+    fn lerp_color_at_one() {
+        let c = lerp_color(EXT_FILL, OWNED_FILL, 1.0);
+        assert!((c.r - OWNED_FILL.r).abs() < 0.001);
+        assert!((c.g - OWNED_FILL.g).abs() < 0.001);
+        assert!((c.b - OWNED_FILL.b).abs() < 0.001);
+    }
+
+    #[test]
+    fn lerp_color_at_half() {
+        let c = lerp_color(EXT_FILL, OWNED_FILL, 0.5);
+        let expected_r = (EXT_FILL.r + OWNED_FILL.r) / 2.0;
+        assert!((c.r - expected_r).abs() < 0.001);
+    }
 }

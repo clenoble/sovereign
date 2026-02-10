@@ -1,17 +1,86 @@
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
 use skia_safe::gpu;
 
 use crate::camera::Camera;
-use crate::layout::CanvasLayout;
+use crate::layout::{CardLayout, CanvasLayout};
+
+/// Animation state for a card transitioning from external → owned.
+#[derive(Debug, Clone)]
+pub struct AdoptionAnim {
+    pub start: Instant,
+    pub duration: Duration,
+}
+
+impl AdoptionAnim {
+    pub fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            duration: Duration::from_millis(600),
+        }
+    }
+
+    /// Returns 0.0 at start, 1.0 when complete.
+    pub fn progress(&self) -> f32 {
+        let elapsed = self.start.elapsed().as_secs_f32();
+        let total = self.duration.as_secs_f32();
+        (elapsed / total).clamp(0.0, 1.0)
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.start.elapsed() >= self.duration
+    }
+}
+
+/// Filter criteria for which cards to display.
+#[derive(Debug, Clone)]
+pub struct CanvasFilter {
+    pub show_owned: bool,
+    pub show_external: bool,
+    pub thread_ids: Option<Vec<String>>,
+}
+
+impl Default for CanvasFilter {
+    fn default() -> Self {
+        Self {
+            show_owned: true,
+            show_external: true,
+            thread_ids: None,
+        }
+    }
+}
+
+impl CanvasFilter {
+    /// Returns true if the given card passes this filter.
+    pub fn matches(&self, card: &CardLayout) -> bool {
+        if card.is_owned && !self.show_owned {
+            return false;
+        }
+        if !card.is_owned && !self.show_external {
+            return false;
+        }
+        if let Some(ref ids) = self.thread_ids {
+            if !ids.contains(&card.thread_id) {
+                return false;
+            }
+        }
+        true
+    }
+}
 
 /// All mutable state for the canvas, held in Rc<RefCell<>>.
 pub struct CanvasState {
     pub camera: Camera,
     pub layout: CanvasLayout,
+    pub filter: CanvasFilter,
     pub mouse_x: f64,
     pub mouse_y: f64,
     pub hovered: Option<usize>,
     pub selected: Option<usize>,
     pub highlighted: Vec<String>,
+    pub minimap_visible: bool,
+    pub adoption_animations: HashMap<String, AdoptionAnim>,
     pub frame_times: Vec<f64>,
     pub gr_context: Option<gpu::DirectContext>,
     pub viewport_width: f64,
@@ -23,11 +92,14 @@ impl CanvasState {
         Self {
             camera: Camera::new(),
             layout,
+            filter: CanvasFilter::default(),
             mouse_x: 0.0,
             mouse_y: 0.0,
             hovered: None,
             selected: None,
             highlighted: Vec::new(),
+            minimap_visible: true,
+            adoption_animations: HashMap::new(),
             frame_times: Vec::with_capacity(300),
             gr_context: None,
             viewport_width: 1280.0,
@@ -78,6 +150,8 @@ mod tests {
                     doc_id: "d1".into(),
                     title: "Card 1".into(),
                     is_owned: true,
+                    thread_id: "t1".into(),
+                    created_at_ts: 1000,
                     x: 100.0,
                     y: 100.0,
                     w: 200.0,
@@ -87,6 +161,8 @@ mod tests {
                     doc_id: "d2".into(),
                     title: "Card 2".into(),
                     is_owned: false,
+                    thread_id: "t1".into(),
+                    created_at_ts: 2000,
                     x: 320.0,
                     y: 100.0,
                     w: 200.0,
@@ -99,6 +175,8 @@ mod tests {
                 y: 0.0,
                 height: 110.0,
             }],
+            timeline_markers: vec![],
+            branch_edges: vec![],
         };
         CanvasState::new(layout)
     }
@@ -129,5 +207,77 @@ mod tests {
         // screen = (420 + 200, 140 + 100) = (620, 240)
         let result = hit_test(&state, 620.0, 240.0);
         assert_eq!(result, Some(1));
+    }
+
+    fn make_card(doc_id: &str, is_owned: bool, thread_id: &str) -> CardLayout {
+        CardLayout {
+            doc_id: doc_id.into(),
+            title: "Test".into(),
+            is_owned,
+            thread_id: thread_id.into(),
+            created_at_ts: 0,
+            x: 0.0, y: 0.0, w: 200.0, h: 80.0,
+        }
+    }
+
+    #[test]
+    fn filter_default_shows_all() {
+        let f = CanvasFilter::default();
+        assert!(f.matches(&make_card("d1", true, "t1")));
+        assert!(f.matches(&make_card("d2", false, "t1")));
+    }
+
+    #[test]
+    fn filter_hide_external() {
+        let f = CanvasFilter {
+            show_owned: true,
+            show_external: false,
+            thread_ids: None,
+        };
+        assert!(f.matches(&make_card("d1", true, "t1")));
+        assert!(!f.matches(&make_card("d2", false, "t1")));
+    }
+
+    #[test]
+    fn filter_hide_owned() {
+        let f = CanvasFilter {
+            show_owned: false,
+            show_external: true,
+            thread_ids: None,
+        };
+        assert!(!f.matches(&make_card("d1", true, "t1")));
+        assert!(f.matches(&make_card("d2", false, "t1")));
+    }
+
+    #[test]
+    fn adoption_anim_progress() {
+        let anim = AdoptionAnim {
+            start: Instant::now() - Duration::from_millis(300),
+            duration: Duration::from_millis(600),
+        };
+        let p = anim.progress();
+        assert!(p >= 0.4 && p <= 0.6, "progress was {}", p);
+        assert!(!anim.is_done());
+    }
+
+    #[test]
+    fn adoption_anim_done() {
+        let anim = AdoptionAnim {
+            start: Instant::now() - Duration::from_millis(700),
+            duration: Duration::from_millis(600),
+        };
+        assert_eq!(anim.progress(), 1.0);
+        assert!(anim.is_done());
+    }
+
+    #[test]
+    fn filter_by_thread_ids() {
+        let f = CanvasFilter {
+            show_owned: true,
+            show_external: true,
+            thread_ids: Some(vec!["t1".into()]),
+        };
+        assert!(f.matches(&make_card("d1", true, "t1")));
+        assert!(!f.matches(&make_card("d2", true, "t2")));
     }
 }

@@ -186,6 +186,20 @@ window {
     background: #3ad47a;
 }
 
+.bubble-suggesting {
+    background: #6b5ad4;
+    animation: pulse-blue 2s ease-in-out infinite;
+}
+
+.suggestion-tooltip {
+    background: #1e1e24;
+    border-radius: 8px;
+    padding: 8px 12px;
+    border: 1px solid #6b5ad4;
+    color: #d0d0e0;
+    font-size: 12px;
+}
+
 /* -- Confirmation panel ----------------------------------- */
 .confirmation-panel {
     background: #1e1e24;

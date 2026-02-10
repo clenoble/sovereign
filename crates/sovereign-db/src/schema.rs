@@ -61,6 +61,7 @@ pub enum RelationType {
     Continues,
     Contradicts,
     Supports,
+    BranchesFrom,
 }
 
 impl std::fmt::Display for RelationType {
@@ -71,6 +72,7 @@ impl std::fmt::Display for RelationType {
             Self::Continues => write!(f, "continues"),
             Self::Contradicts => write!(f, "contradicts"),
             Self::Supports => write!(f, "supports"),
+            Self::BranchesFrom => write!(f, "branchesfrom"),
         }
     }
 }
@@ -84,6 +86,7 @@ impl std::str::FromStr for RelationType {
             "continues" => Ok(Self::Continues),
             "contradicts" => Ok(Self::Contradicts),
             "supports" => Ok(Self::Supports),
+            "branchesfrom" | "branches_from" => Ok(Self::BranchesFrom),
             _ => Err(format!("Unknown relation type: {s}")),
         }
     }
@@ -137,6 +140,33 @@ impl Commit {
     }
 }
 
+/// A timeline milestone marking a significant point in a thread's history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Milestone {
+    pub id: Option<Thing>,
+    pub title: String,
+    pub timestamp: DateTime<Utc>,
+    pub thread_id: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+impl Milestone {
+    pub fn new(title: String, thread_id: String, description: String) -> Self {
+        Self {
+            id: None,
+            title,
+            timestamp: Utc::now(),
+            thread_id,
+            description,
+        }
+    }
+
+    pub fn id_string(&self) -> Option<String> {
+        self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+}
+
 impl Thread {
     pub fn new(name: String, description: String) -> Self {
         Self {
@@ -150,5 +180,31 @@ impl Thread {
 
     pub fn id_string(&self) -> Option<String> {
         self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn branches_from_display_and_parse() {
+        let rt = RelationType::BranchesFrom;
+        assert_eq!(rt.to_string(), "branchesfrom");
+
+        let parsed: RelationType = "branchesfrom".parse().unwrap();
+        assert_eq!(parsed, RelationType::BranchesFrom);
+
+        let parsed2: RelationType = "branches_from".parse().unwrap();
+        assert_eq!(parsed2, RelationType::BranchesFrom);
+    }
+
+    #[test]
+    fn branches_from_serde_roundtrip() {
+        let rt = RelationType::BranchesFrom;
+        let json = serde_json::to_string(&rt).unwrap();
+        assert_eq!(json, "\"branchesfrom\"");
+        let back: RelationType = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, RelationType::BranchesFrom);
     }
 }

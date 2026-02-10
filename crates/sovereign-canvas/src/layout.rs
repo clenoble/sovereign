@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use sovereign_db::schema::{Document, Thread};
+use chrono::{Datelike, TimeZone, Utc};
+use sovereign_db::schema::{Document, Milestone, RelatedTo, RelationType, Thread};
 
 // Layout constants
 pub const CARD_WIDTH: f32 = 200.0;
@@ -16,10 +17,19 @@ pub struct CardLayout {
     pub doc_id: String,
     pub title: String,
     pub is_owned: bool,
+    pub thread_id: String,
+    pub created_at_ts: i64,
     pub x: f32,
     pub y: f32,
     pub w: f32,
     pub h: f32,
+}
+
+impl CardLayout {
+    /// Center point of the card in world coordinates.
+    pub fn center(&self) -> (f32, f32) {
+        (self.x + self.w / 2.0, self.y + self.h / 2.0)
+    }
 }
 
 /// A horizontal lane representing a thread.
@@ -31,20 +41,62 @@ pub struct LaneLayout {
     pub height: f32,
 }
 
+/// A vertical date marker on the timeline.
+#[derive(Debug, Clone)]
+pub struct TimelineMarker {
+    pub x: f32,
+    pub label: String,
+    pub is_milestone: bool,
+}
+
+/// A visual edge between two thread lanes, representing a branch.
+#[derive(Debug, Clone)]
+pub struct BranchEdge {
+    pub from_thread_id: String,
+    pub to_thread_id: String,
+    /// X position where the branch starts (from-lane)
+    pub from_x: f32,
+    /// Y center of the from-lane
+    pub from_y: f32,
+    /// Y center of the to-lane
+    pub to_y: f32,
+}
+
 /// Complete canvas layout: all cards and lanes.
 #[derive(Debug, Clone)]
 pub struct CanvasLayout {
     pub cards: Vec<CardLayout>,
     pub lanes: Vec<LaneLayout>,
+    pub timeline_markers: Vec<TimelineMarker>,
+    pub branch_edges: Vec<BranchEdge>,
 }
 
-/// Compute thread-lane layout from documents and threads.
+/// Compute thread-lane layout from documents, threads, and optional relationships.
 ///
 /// Documents are grouped by `thread_id`, placed left-to-right within each lane.
 /// Threads are sorted by creation date. Documents with an unknown thread_id
 /// are placed in an "Uncategorized" lane at the bottom.
 /// Documents with non-zero `spatial_x`/`spatial_y` keep their DB positions.
 pub fn compute_layout(docs: &[Document], threads: &[Thread]) -> CanvasLayout {
+    compute_layout_full(docs, threads, &[], &[])
+}
+
+/// Like `compute_layout`, but also computes branch edges from relationships.
+pub fn compute_layout_with_edges(
+    docs: &[Document],
+    threads: &[Thread],
+    relationships: &[RelatedTo],
+) -> CanvasLayout {
+    compute_layout_full(docs, threads, relationships, &[])
+}
+
+/// Full layout computation with relationships and milestones.
+pub fn compute_layout_full(
+    docs: &[Document],
+    threads: &[Thread],
+    relationships: &[RelatedTo],
+    milestones: &[Milestone],
+) -> CanvasLayout {
     // Group documents by thread_id
     let mut by_thread: HashMap<String, Vec<&Document>> = HashMap::new();
     for doc in docs {
@@ -103,7 +155,104 @@ pub fn compute_layout(docs: &[Document], threads: &[Thread]) -> CanvasLayout {
         place_cards_in_lane(&uncategorized, "", current_y, &mut cards);
     }
 
-    CanvasLayout { cards, lanes }
+    let mut timeline_markers = compute_timeline_markers(&cards);
+    // Add milestone markers at appropriate X positions
+    for ms in milestones {
+        let ms_ts = ms.timestamp.timestamp();
+        // Find the closest card X position for this milestone's timestamp
+        let x = cards
+            .iter()
+            .filter(|c| c.thread_id == ms.thread_id)
+            .min_by_key(|c| (c.created_at_ts - ms_ts).unsigned_abs())
+            .map(|c| c.x)
+            .unwrap_or(0.0);
+        timeline_markers.push(TimelineMarker {
+            x,
+            label: ms.title.clone(),
+            is_milestone: true,
+        });
+    }
+    let branch_edges = compute_branch_edges(relationships, &cards, &lanes);
+    CanvasLayout {
+        cards,
+        lanes,
+        timeline_markers,
+        branch_edges,
+    }
+}
+
+/// Compute branch edges from `BranchesFrom` relationships.
+/// For each BranchesFrom relationship between two documents, we draw an edge
+/// between the lanes of the threads those documents belong to.
+pub fn compute_branch_edges(
+    relationships: &[RelatedTo],
+    cards: &[CardLayout],
+    lanes: &[LaneLayout],
+) -> Vec<BranchEdge> {
+    use sovereign_db::schema::thing_to_raw;
+
+    let mut edges = Vec::new();
+    for rel in relationships {
+        if rel.relation_type != RelationType::BranchesFrom {
+            continue;
+        }
+        let from_id = rel.out.as_ref().map(|t| thing_to_raw(t));
+        let to_id = rel.in_.as_ref().map(|t| thing_to_raw(t));
+
+        if let (Some(from_id), Some(to_id)) = (from_id, to_id) {
+            let from_card = cards.iter().find(|c| c.doc_id == from_id);
+            let to_card = cards.iter().find(|c| c.doc_id == to_id);
+
+            if let (Some(fc), Some(tc)) = (from_card, to_card) {
+                let from_lane = lanes.iter().find(|l| l.thread_id == fc.thread_id);
+                let to_lane = lanes.iter().find(|l| l.thread_id == tc.thread_id);
+
+                if let (Some(fl), Some(tl)) = (from_lane, to_lane) {
+                    edges.push(BranchEdge {
+                        from_thread_id: fc.thread_id.clone(),
+                        to_thread_id: tc.thread_id.clone(),
+                        from_x: fc.x + fc.w,
+                        from_y: fl.y + fl.height / 2.0,
+                        to_y: tl.y + tl.height / 2.0,
+                    });
+                }
+            }
+        }
+    }
+    edges
+}
+
+/// Compute timeline markers by grouping cards by month/year.
+/// Each unique month gets a marker at the average X of its cards.
+pub fn compute_timeline_markers(cards: &[CardLayout]) -> Vec<TimelineMarker> {
+    if cards.is_empty() {
+        return Vec::new();
+    }
+
+    // Group card x-positions by (year, month)
+    let mut by_month: BTreeMap<(i32, u32), Vec<f32>> = BTreeMap::new();
+    for card in cards {
+        let dt = Utc.timestamp_opt(card.created_at_ts, 0).single();
+        if let Some(dt) = dt {
+            by_month
+                .entry((dt.year(), dt.month()))
+                .or_default()
+                .push(card.x);
+        }
+    }
+
+    let mut markers = Vec::new();
+    for ((year, month), xs) in &by_month {
+        let min_x = xs.iter().cloned().fold(f32::INFINITY, f32::min);
+        let label = format!("{}/{}", month, year);
+        markers.push(TimelineMarker {
+            x: min_x - 10.0,
+            label,
+            is_milestone: false,
+        });
+    }
+
+    markers
 }
 
 fn compute_lane_height(docs: &[&Document]) -> f32 {
@@ -139,6 +288,8 @@ fn place_cards_in_lane(
             doc_id: doc.id_string().unwrap_or_default(),
             title: doc.title.clone(),
             is_owned: doc.is_owned,
+            thread_id: doc.thread_id.clone(),
+            created_at_ts: doc.created_at.timestamp(),
             x,
             y,
             w: CARD_WIDTH,
@@ -178,6 +329,33 @@ mod tests {
             head_commit: None,
             deleted_at: None,
         }
+    }
+
+    #[test]
+    fn card_center_calculation() {
+        let card = CardLayout {
+            doc_id: "d1".into(),
+            title: "T".into(),
+            is_owned: true,
+            thread_id: "t1".into(),
+            created_at_ts: 0,
+            x: 100.0,
+            y: 200.0,
+            w: 200.0,
+            h: 80.0,
+        };
+        let (cx, cy) = card.center();
+        assert_eq!(cx, 200.0);
+        assert_eq!(cy, 240.0);
+    }
+
+    #[test]
+    fn card_layout_has_thread_id_and_timestamp() {
+        let thread = make_thread("t1", "Test");
+        let doc = make_doc("d1", "Doc", "thread:t1", true);
+        let layout = compute_layout(&[doc], &[thread]);
+        assert_eq!(layout.cards[0].thread_id, "thread:t1");
+        assert!(layout.cards[0].created_at_ts > 0);
     }
 
     #[test]
@@ -248,5 +426,132 @@ mod tests {
         assert_eq!(layout.lanes.len(), 2);
         assert_eq!(layout.lanes[1].thread_name, "Uncategorized");
         assert_eq!(layout.cards.len(), 2);
+    }
+
+    #[test]
+    fn timeline_markers_empty_cards() {
+        let markers = compute_timeline_markers(&[]);
+        assert!(markers.is_empty());
+    }
+
+    #[test]
+    fn timeline_markers_groups_by_month() {
+        use chrono::TimeZone;
+        let jan = Utc.with_ymd_and_hms(2025, 1, 15, 0, 0, 0).unwrap();
+        let feb = Utc.with_ymd_and_hms(2025, 2, 10, 0, 0, 0).unwrap();
+        let feb2 = Utc.with_ymd_and_hms(2025, 2, 20, 0, 0, 0).unwrap();
+
+        let cards = vec![
+            CardLayout {
+                doc_id: "d1".into(),
+                title: "A".into(),
+                is_owned: true,
+                thread_id: "t1".into(),
+                created_at_ts: jan.timestamp(),
+                x: 100.0, y: 30.0, w: 200.0, h: 80.0,
+            },
+            CardLayout {
+                doc_id: "d2".into(),
+                title: "B".into(),
+                is_owned: true,
+                thread_id: "t1".into(),
+                created_at_ts: feb.timestamp(),
+                x: 320.0, y: 30.0, w: 200.0, h: 80.0,
+            },
+            CardLayout {
+                doc_id: "d3".into(),
+                title: "C".into(),
+                is_owned: true,
+                thread_id: "t1".into(),
+                created_at_ts: feb2.timestamp(),
+                x: 540.0, y: 30.0, w: 200.0, h: 80.0,
+            },
+        ];
+        let markers = compute_timeline_markers(&cards);
+        assert_eq!(markers.len(), 2); // Jan + Feb
+        assert!(markers[0].label.contains("2025"));
+        assert!(markers[1].label.contains("2025"));
+    }
+
+    #[test]
+    fn branch_edges_empty_relationships() {
+        let edges = compute_branch_edges(&[], &[], &[]);
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn branch_edges_non_branch_ignored() {
+        use sovereign_db::schema::RelatedTo;
+        let rel = RelatedTo {
+            id: None,
+            in_: Some(surrealdb::sql::Thing::from(("document", "d1"))),
+            out: Some(surrealdb::sql::Thing::from(("document", "d2"))),
+            relation_type: sovereign_db::schema::RelationType::References,
+            strength: 1.0,
+            created_at: Utc::now(),
+        };
+        let cards = vec![
+            CardLayout {
+                doc_id: "document:d1".into(),
+                title: "A".into(),
+                is_owned: true,
+                thread_id: "thread:t1".into(),
+                created_at_ts: 0,
+                x: 100.0, y: 30.0, w: 200.0, h: 80.0,
+            },
+        ];
+        let lanes = vec![LaneLayout {
+            thread_id: "thread:t1".into(),
+            thread_name: "T1".into(),
+            y: 0.0,
+            height: 110.0,
+        }];
+        let edges = compute_branch_edges(&[rel], &cards, &lanes);
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn milestone_markers_included_in_layout() {
+        let thread = make_thread("t1", "Research");
+        let doc = make_doc("d1", "Doc", "thread:t1", true);
+        let ms = sovereign_db::schema::Milestone {
+            id: None,
+            title: "Alpha Release".into(),
+            timestamp: Utc::now(),
+            thread_id: "thread:t1".into(),
+            description: "First release".into(),
+        };
+        let layout = compute_layout_full(&[doc], &[thread], &[], &[ms]);
+        let milestone_markers: Vec<_> = layout
+            .timeline_markers
+            .iter()
+            .filter(|m| m.is_milestone)
+            .collect();
+        assert_eq!(milestone_markers.len(), 1);
+        assert_eq!(milestone_markers[0].label, "Alpha Release");
+    }
+
+    #[test]
+    fn timeline_markers_same_month_produces_one_marker() {
+        let cards = vec![
+            CardLayout {
+                doc_id: "d1".into(),
+                title: "A".into(),
+                is_owned: true,
+                thread_id: "t1".into(),
+                created_at_ts: 1700000000, // Nov 2023
+                x: 100.0, y: 30.0, w: 200.0, h: 80.0,
+            },
+            CardLayout {
+                doc_id: "d2".into(),
+                title: "B".into(),
+                is_owned: true,
+                thread_id: "t1".into(),
+                created_at_ts: 1700100000, // also Nov 2023
+                x: 320.0, y: 30.0, w: 200.0, h: 80.0,
+            },
+        ];
+        let markers = compute_timeline_markers(&cards);
+        assert_eq!(markers.len(), 1);
     }
 }

@@ -5,7 +5,7 @@ use surrealdb::Surreal;
 
 use crate::error::{DbError, DbResult};
 use crate::schema::{
-    Commit, Document, DocumentSnapshot, RelatedTo, RelationType, Thread,
+    Commit, Document, DocumentSnapshot, Milestone, RelatedTo, RelationType, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -217,6 +217,59 @@ impl GraphDB for SurrealGraphDB {
         updated.ok_or_else(|| DbError::Query("Failed to move document".into()))
     }
 
+    // -- Adopt ---
+
+    async fn adopt_document(&self, id: &str) -> DbResult<Document> {
+        let (table, key) = parse_thing(id)?;
+        if table != "document" {
+            return Err(DbError::InvalidId(format!(
+                "Expected document ID, got table: {table}"
+            )));
+        }
+        let current: Option<Document> = self.db.select((table, key)).await?;
+        let mut doc = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        doc.is_owned = true;
+        doc.modified_at = Utc::now();
+        let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to adopt document".into()))
+    }
+
+    // -- Thread merge/split ---
+
+    async fn merge_threads(&self, target_id: &str, source_id: &str) -> DbResult<()> {
+        // Move all documents from source to target
+        let source_id_str = source_id.to_string();
+        let target_id_str = target_id.to_string();
+        self.db
+            .query("UPDATE document SET thread_id = $target WHERE thread_id = $source")
+            .bind(("target", target_id_str))
+            .bind(("source", source_id_str))
+            .await?;
+
+        // Soft-delete the source thread
+        self.soft_delete_thread(source_id).await?;
+        Ok(())
+    }
+
+    async fn split_thread(
+        &self,
+        _thread_id: &str,
+        doc_ids: &[String],
+        new_name: &str,
+    ) -> DbResult<Thread> {
+        // Create new thread
+        let new_thread = Thread::new(new_name.to_string(), String::new());
+        let created = self.create_thread(new_thread).await?;
+        let new_tid = created.id_string().unwrap_or_default();
+
+        // Move specified docs to the new thread
+        for doc_id in doc_ids {
+            self.move_document_to_thread(doc_id, &new_tid).await?;
+        }
+
+        Ok(created)
+    }
+
     // -- Soft delete ---
 
     async fn soft_delete_document(&self, id: &str) -> DbResult<()> {
@@ -298,6 +351,35 @@ impl GraphDB for SurrealGraphDB {
 
         // SurrealDB DELETE doesn't return count easily; return 0 as placeholder
         Ok(0)
+    }
+
+    // -- Milestones ---
+
+    async fn create_milestone(&self, milestone: Milestone) -> DbResult<Milestone> {
+        let created: Option<Milestone> = self.db.create("milestone").content(milestone).await?;
+        created.ok_or_else(|| DbError::Query("Failed to create milestone".into()))
+    }
+
+    async fn list_milestones(&self, thread_id: &str) -> DbResult<Vec<Milestone>> {
+        let tid = thread_id.to_string();
+        let mut result = self
+            .db
+            .query("SELECT * FROM milestone WHERE thread_id = $tid ORDER BY timestamp DESC")
+            .bind(("tid", tid))
+            .await?;
+        let milestones: Vec<Milestone> = result.take(0)?;
+        Ok(milestones)
+    }
+
+    async fn delete_milestone(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_thing(id)?;
+        if table != "milestone" {
+            return Err(DbError::InvalidId(format!(
+                "Expected milestone ID, got table: {table}"
+            )));
+        }
+        let _: Option<Milestone> = self.db.delete((table, key)).await?;
+        Ok(())
     }
 
     // -- Relationships ---
@@ -784,6 +866,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_merge_threads() {
+        let db = setup_db().await;
+        let t1 = Thread::new("Target".into(), "".into());
+        let t2 = Thread::new("Source".into(), "".into());
+        let ct1 = db.create_thread(t1).await.unwrap();
+        let ct2 = db.create_thread(t2).await.unwrap();
+        let tid1 = ct1.id_string().unwrap();
+        let tid2 = ct2.id_string().unwrap();
+
+        let d1 = Document::new("DocA".into(), tid1.clone(), true);
+        let d2 = Document::new("DocB".into(), tid2.clone(), true);
+        db.create_document(d1).await.unwrap();
+        db.create_document(d2).await.unwrap();
+
+        db.merge_threads(&tid1, &tid2).await.unwrap();
+
+        // All docs should be in target thread
+        let docs = db.list_documents(Some(&tid1)).await.unwrap();
+        assert_eq!(docs.len(), 2);
+
+        // Source thread should be soft-deleted
+        let threads = db.list_threads().await.unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].name, "Target");
+    }
+
+    #[tokio::test]
+    async fn test_split_thread() {
+        let db = setup_db().await;
+        let t = Thread::new("Original".into(), "".into());
+        let ct = db.create_thread(t).await.unwrap();
+        let tid = ct.id_string().unwrap();
+
+        let d1 = Document::new("Keep".into(), tid.clone(), true);
+        let d2 = Document::new("Split".into(), tid.clone(), true);
+        let cd1 = db.create_document(d1).await.unwrap();
+        let cd2 = db.create_document(d2).await.unwrap();
+        let did2 = cd2.id_string().unwrap();
+        let _did1 = cd1.id_string().unwrap();
+
+        let new_thread = db
+            .split_thread(&tid, &[did2.clone()], "New Thread")
+            .await
+            .unwrap();
+        let new_tid = new_thread.id_string().unwrap();
+        assert_eq!(new_thread.name, "New Thread");
+
+        // Original thread should have 1 doc
+        let orig_docs = db.list_documents(Some(&tid)).await.unwrap();
+        assert_eq!(orig_docs.len(), 1);
+        assert_eq!(orig_docs[0].title, "Keep");
+
+        // New thread should have 1 doc
+        let new_docs = db.list_documents(Some(&new_tid)).await.unwrap();
+        assert_eq!(new_docs.len(), 1);
+        assert_eq!(new_docs[0].title, "Split");
+    }
+
+    #[tokio::test]
     async fn test_list_documents_excludes_soft_deleted() {
         let db = setup_db().await;
         let doc1 = Document::new("Active".into(), "thread:t".into(), true);
@@ -813,6 +954,42 @@ mod tests {
         let docs = db.list_documents(Some("thread:alpha")).await.unwrap();
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].title, "A");
+    }
+
+    #[tokio::test]
+    async fn test_create_and_list_milestones() {
+        let db = setup_db().await;
+        let t = Thread::new("Research".into(), "".into());
+        let ct = db.create_thread(t).await.unwrap();
+        let tid = ct.id_string().unwrap();
+
+        let m1 = Milestone::new("Alpha release".into(), tid.clone(), "First release".into());
+        let m2 = Milestone::new("Beta release".into(), tid.clone(), "Second release".into());
+        let cm1 = db.create_milestone(m1).await.unwrap();
+        db.create_milestone(m2).await.unwrap();
+
+        assert!(cm1.id.is_some());
+        assert_eq!(cm1.title, "Alpha release");
+
+        let milestones = db.list_milestones(&tid).await.unwrap();
+        assert_eq!(milestones.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_delete_milestone() {
+        let db = setup_db().await;
+        let t = Thread::new("Dev".into(), "".into());
+        let ct = db.create_thread(t).await.unwrap();
+        let tid = ct.id_string().unwrap();
+
+        let m = Milestone::new("v1.0".into(), tid.clone(), "".into());
+        let created = db.create_milestone(m).await.unwrap();
+        let mid = created.id_string().unwrap();
+
+        db.delete_milestone(&mid).await.unwrap();
+
+        let milestones = db.list_milestones(&tid).await.unwrap();
+        assert!(milestones.is_empty());
     }
 
     #[tokio::test]

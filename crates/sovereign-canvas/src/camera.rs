@@ -1,9 +1,29 @@
+use crate::layout::CanvasLayout;
+
 /// 2-D camera: world_pos = screen_pos / zoom + pan
 #[derive(Debug, Clone)]
 pub struct Camera {
     pub pan_x: f64,
     pub pan_y: f64,
     pub zoom: f64,
+}
+
+/// Compute the "home" position: pan so the newest card (rightmost X) is
+/// visible near the right edge of the viewport.
+/// Returns (pan_x, pan_y). If there are no cards, returns the default pan.
+pub fn home_position(layout: &CanvasLayout) -> (f64, f64) {
+    if layout.cards.is_empty() {
+        return (-200.0, -100.0);
+    }
+    let max_x = layout
+        .cards
+        .iter()
+        .map(|c| c.x + c.w)
+        .fold(f32::NEG_INFINITY, f32::max);
+    // Pan so the rightmost card sits ~400px from the left edge of the viewport
+    let pan_x = (max_x as f64) - 400.0;
+    let pan_y = -100.0;
+    (pan_x, pan_y)
 }
 
 impl Camera {
@@ -43,6 +63,61 @@ impl Default for Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::{CardLayout, CanvasLayout, LaneLayout};
+
+    #[test]
+    fn home_position_empty_layout() {
+        let layout = CanvasLayout {
+            cards: vec![],
+            lanes: vec![],
+            timeline_markers: vec![],
+            branch_edges: vec![],
+        };
+        let (px, py) = home_position(&layout);
+        assert_eq!(px, -200.0);
+        assert_eq!(py, -100.0);
+    }
+
+    #[test]
+    fn home_position_pans_to_rightmost_card() {
+        let layout = CanvasLayout {
+            cards: vec![
+                CardLayout {
+                    doc_id: "d1".into(),
+                    title: "A".into(),
+                    is_owned: true,
+                    thread_id: "t1".into(),
+                    created_at_ts: 1000,
+                    x: 100.0,
+                    y: 30.0,
+                    w: 200.0,
+                    h: 80.0,
+                },
+                CardLayout {
+                    doc_id: "d2".into(),
+                    title: "B".into(),
+                    is_owned: true,
+                    thread_id: "t1".into(),
+                    created_at_ts: 2000,
+                    x: 500.0,
+                    y: 30.0,
+                    w: 200.0,
+                    h: 80.0,
+                },
+            ],
+            lanes: vec![LaneLayout {
+                thread_id: "t1".into(),
+                thread_name: "Test".into(),
+                y: 0.0,
+                height: 110.0,
+            }],
+            timeline_markers: vec![],
+            branch_edges: vec![],
+        };
+        let (px, _py) = home_position(&layout);
+        // rightmost card edge = 500 + 200 = 700. home = 700 - 400 = 300.
+        assert_eq!(px, 300.0);
+    }
 
     #[test]
     fn default_values() {

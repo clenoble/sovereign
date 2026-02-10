@@ -3,6 +3,8 @@ pub mod colors;
 pub mod controller;
 pub mod gl_loader;
 pub mod layout;
+pub mod lod;
+pub mod minimap;
 pub mod renderer;
 pub mod state;
 
@@ -15,6 +17,7 @@ use gtk4::prelude::*;
 use sovereign_core::interfaces::{CanvasController, SkillEvent, Viewport};
 use sovereign_db::schema::{Document, Thread};
 
+use camera::home_position;
 use controller::{CanvasCommand, SovereignCanvasController};
 use layout::compute_layout;
 use renderer::create_gl_area;
@@ -31,16 +34,20 @@ pub fn build_canvas(
     skill_tx: Option<mpsc::Sender<SkillEvent>>,
 ) -> (gtk4::GLArea, Box<dyn CanvasController>) {
     let canvas_layout = compute_layout(&documents, &threads);
+    let (home_x, home_y) = home_position(&canvas_layout);
 
     let viewport = Arc::new(Mutex::new(Viewport {
-        x: -200.0,
-        y: -100.0,
+        x: home_x,
+        y: home_y,
         zoom: 1.0,
         width: 1280.0,
         height: 720.0,
     }));
 
-    let state = Rc::new(RefCell::new(CanvasState::new(canvas_layout)));
+    let mut initial_state = CanvasState::new(canvas_layout);
+    initial_state.camera.pan_x = home_x;
+    initial_state.camera.pan_y = home_y;
+    let state = Rc::new(RefCell::new(initial_state));
 
     let (sender, receiver) = mpsc::channel::<CanvasCommand>();
     let receiver = Rc::new(RefCell::new(receiver));
@@ -87,6 +94,39 @@ pub fn build_canvas(
                             st.camera.pan_y = lane_y as f64 - 50.0;
                             st.camera.zoom = 1.0;
                         }
+                    }
+                    CanvasCommand::GoHome => {
+                        let mut st = state.borrow_mut();
+                        let (hx, hy) = home_position(&st.layout);
+                        st.camera.pan_x = hx;
+                        st.camera.pan_y = hy;
+                        st.camera.zoom = 1.0;
+                    }
+                    CanvasCommand::JumpToDate(ref date_str) => {
+                        let mut st = state.borrow_mut();
+                        let needle = date_str.to_lowercase();
+                        if let Some(marker) = st
+                            .layout
+                            .timeline_markers
+                            .iter()
+                            .find(|m| m.label.to_lowercase().contains(&needle))
+                        {
+                            st.camera.pan_x = marker.x as f64 - 200.0;
+                            st.camera.zoom = 1.0;
+                        }
+                    }
+                    CanvasCommand::SetFilter(filter) => {
+                        let mut st = state.borrow_mut();
+                        st.filter = filter;
+                    }
+                    CanvasCommand::ToggleMinimap => {
+                        let mut st = state.borrow_mut();
+                        st.minimap_visible = !st.minimap_visible;
+                    }
+                    CanvasCommand::AnimateAdoption(doc_id) => {
+                        let mut st = state.borrow_mut();
+                        st.adoption_animations
+                            .insert(doc_id, crate::state::AdoptionAnim::new());
                     }
                 }
                 gl_area_cmd.queue_draw();

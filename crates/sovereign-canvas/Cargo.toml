@@ -12,6 +12,7 @@ skia-safe = { version = "0.91", features = ["gl"] }
 gl = "0.14"
 tracing = { workspace = true }
 anyhow = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true }
