@@ -49,6 +49,22 @@ pub enum OrchestratorEvent {
     Suggestion { text: String, action: String },
     VersionHistory { doc_id: String, commits: Vec<CommitSummary> },
     SkillResult { skill: String, action: String, kind: String, data: String },
+    // P2P sync events
+    SyncStatus { peer_id: String, status: String },
+    SyncConflict { doc_id: String, description: String },
+    DeviceDiscovered { device_id: String, device_name: String },
+    DevicePaired { device_id: String },
+    // Guardian events
+    GuardianEnrolled { guardian_id: String, name: String },
+    GuardianDropped { guardian_id: String, reason: String },
+    ShardRotated { epoch: u32 },
+    RecoveryInitiated { request_id: String },
+    RecoveryCompleted,
+    RecoveryAborted { reason: String },
+    // Encryption events
+    EncryptionEnabled,
+    MigrationProgress { encrypted: u32, total: u32 },
+    MigrationComplete,
 }
 
 /// Lightweight milestone summary for milestone events.

@@ -11,6 +11,10 @@ pub struct AppConfig {
     pub ai: AiConfig,
     #[serde(default)]
     pub voice: VoiceConfig,
+    #[serde(default)]
+    pub crypto: CryptoConfig,
+    #[serde(default)]
+    pub p2p: P2pConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -142,6 +146,69 @@ impl Default for VoiceConfig {
     }
 }
 
+/// Encryption-at-rest configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CryptoConfig {
+    /// Whether encryption is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Days before automatic key rotation (0 = disabled).
+    #[serde(default = "default_key_rotation_days")]
+    pub key_rotation_days: u32,
+    /// Commits before automatic key rotation (0 = disabled).
+    #[serde(default = "default_key_rotation_commits")]
+    pub key_rotation_commits: u32,
+}
+
+fn default_key_rotation_days() -> u32 {
+    90
+}
+fn default_key_rotation_commits() -> u32 {
+    100
+}
+
+impl Default for CryptoConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            key_rotation_days: default_key_rotation_days(),
+            key_rotation_commits: default_key_rotation_commits(),
+        }
+    }
+}
+
+/// P2P networking configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct P2pConfig {
+    /// Whether P2P networking is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Port to listen on (0 = random).
+    #[serde(default)]
+    pub listen_port: u16,
+    /// Optional rendezvous server address for WAN discovery.
+    #[serde(default)]
+    pub rendezvous_server: Option<String>,
+    /// Human-readable device name shown to peers.
+    #[serde(default = "default_device_name")]
+    pub device_name: String,
+}
+
+fn default_device_name() -> String {
+    "Sovereign Device".into()
+}
+
+impl Default for P2pConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen_port: 0,
+            rendezvous_server: None,
+            device_name: default_device_name(),
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -149,6 +216,8 @@ impl Default for AppConfig {
             ui: UiConfig::default(),
             ai: AiConfig::default(),
             voice: VoiceConfig::default(),
+            crypto: CryptoConfig::default(),
+            p2p: P2pConfig::default(),
         }
     }
 }

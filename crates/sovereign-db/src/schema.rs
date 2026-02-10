@@ -26,6 +26,9 @@ pub struct Document {
     /// Soft-delete timestamp (ISO 8601). None means the document is active.
     #[serde(default)]
     pub deleted_at: Option<String>,
+    /// Base64-encoded encryption nonce. None means content is plaintext.
+    #[serde(default)]
+    pub encryption_nonce: Option<String>,
 }
 
 /// Thread (project/topic grouping)
@@ -126,6 +129,7 @@ impl Document {
             spatial_y: 0.0,
             head_commit: None,
             deleted_at: None,
+            encryption_nonce: None,
         }
     }
 

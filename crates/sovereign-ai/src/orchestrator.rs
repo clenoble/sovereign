@@ -35,6 +35,10 @@ pub struct Orchestrator {
     profile_dir: PathBuf,
     model_dir: String,
     n_gpu_layers: i32,
+    #[cfg(feature = "p2p")]
+    p2p_command_tx: Option<tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>>,
+    #[cfg(feature = "p2p")]
+    p2p_event_rx: Option<Mutex<tokio::sync::mpsc::Receiver<sovereign_p2p::P2pEvent>>>,
 }
 
 impl Orchestrator {
@@ -98,6 +102,10 @@ impl Orchestrator {
             profile_dir,
             model_dir,
             n_gpu_layers,
+            #[cfg(feature = "p2p")]
+            p2p_command_tx: None,
+            #[cfg(feature = "p2p")]
+            p2p_event_rx: None,
         })
     }
 
@@ -109,6 +117,70 @@ impl Orchestrator {
     /// Attach a feedback channel for suggestion accept/dismiss events from the UI.
     pub fn set_feedback_rx(&mut self, rx: mpsc::Receiver<FeedbackEvent>) {
         self.feedback_rx = Some(Mutex::new(rx));
+    }
+
+    /// Attach P2P command/event channels for device sync and guardian transport.
+    #[cfg(feature = "p2p")]
+    pub fn set_p2p_channels(
+        &mut self,
+        command_tx: tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>,
+        event_rx: tokio::sync::mpsc::Receiver<sovereign_p2p::P2pEvent>,
+    ) {
+        self.p2p_command_tx = Some(command_tx);
+        self.p2p_event_rx = Some(Mutex::new(event_rx));
+    }
+
+    /// Drain pending P2P events and forward them as OrchestratorEvents.
+    #[cfg(feature = "p2p")]
+    pub fn poll_p2p_events(&self) {
+        if let Some(ref rx_mutex) = self.p2p_event_rx {
+            if let Ok(mut rx) = rx_mutex.lock() {
+                while let Ok(event) = rx.try_recv() {
+                    use sovereign_p2p::P2pEvent;
+                    let orch_event = match event {
+                        P2pEvent::PeerDiscovered { peer_id, device_name } => {
+                            OrchestratorEvent::DeviceDiscovered {
+                                device_id: peer_id,
+                                device_name: device_name.unwrap_or_else(|| "Unknown".into()),
+                            }
+                        }
+                        P2pEvent::SyncStarted { peer_id } => {
+                            OrchestratorEvent::SyncStatus {
+                                peer_id,
+                                status: "started".into(),
+                            }
+                        }
+                        P2pEvent::SyncCompleted { peer_id, docs_synced } => {
+                            OrchestratorEvent::SyncStatus {
+                                peer_id,
+                                status: format!("completed ({} docs)", docs_synced),
+                            }
+                        }
+                        P2pEvent::SyncConflict { doc_id, description } => {
+                            OrchestratorEvent::SyncConflict { doc_id, description }
+                        }
+                        P2pEvent::ShardReceived { shard_id, .. } => {
+                            tracing::info!("Shard received: {}", shard_id);
+                            continue;
+                        }
+                        P2pEvent::PairingCompleted { peer_id, device_name: _ } => {
+                            OrchestratorEvent::DevicePaired { device_id: peer_id }
+                        }
+                        P2pEvent::PeerLost { peer_id } => {
+                            OrchestratorEvent::SyncStatus {
+                                peer_id,
+                                status: "disconnected".into(),
+                            }
+                        }
+                        P2pEvent::PairingRequested { peer_id, device_name } => {
+                            tracing::info!("Pairing requested from {} ({})", peer_id, device_name);
+                            continue;
+                        }
+                    };
+                    let _ = self.event_tx.send(orch_event);
+                }
+            }
+        }
     }
 
     /// Handle a user query: classify intent, gate check, execute or await confirmation.
@@ -695,6 +767,37 @@ impl Orchestrator {
                         milestones: summaries,
                     });
                 }
+            }
+            // P2P actions
+            "sync_device" | "pair_device" | "list_devices" | "list_guardians"
+            | "enroll_guardian" | "revoke_guardian" | "rotate_shards"
+            | "initiate_recovery" | "sync_status" | "encrypt_data" => {
+                #[cfg(feature = "p2p")]
+                {
+                    if let Some(ref tx) = self.p2p_command_tx {
+                        match action {
+                            "sync_device" => {
+                                if let Some(peer_id) = target {
+                                    let _ = tx.try_send(sovereign_p2p::P2pCommand::StartSync {
+                                        peer_id: peer_id.to_string(),
+                                    });
+                                }
+                            }
+                            "pair_device" => {
+                                if let Some(peer_id) = target {
+                                    let _ = tx.try_send(sovereign_p2p::P2pCommand::PairDevice {
+                                        peer_id: peer_id.to_string(),
+                                    });
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let _ = self.event_tx.send(OrchestratorEvent::ActionExecuted {
+                    action: action.to_string(),
+                    success: true,
+                });
             }
             "word_count" | "find_replace" | "duplicate" | "import_file" => {
                 let _ = self.event_tx.send(OrchestratorEvent::SkillResult {

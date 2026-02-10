@@ -25,7 +25,12 @@ ringbuf = { workspace = true }
 # Wake word (optional due to candle-core version conflicts)
 rustpotter = { workspace = true, optional = true }
 
+# Optional P2P deps
+sovereign-crypto = { workspace = true, optional = true }
+sovereign-p2p = { workspace = true, optional = true }
+
 [features]
 default = ["cuda"]
 cuda = ["llama-cpp-2/cuda"]
 wake-word = ["rustpotter"]
+p2p = ["sovereign-crypto", "sovereign-p2p"]

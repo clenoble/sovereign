@@ -4,10 +4,12 @@ exclude = ["spike-1-skia-gtk4"]
 members = [
     "crates/sovereign-core",
     "crates/sovereign-db",
+    "crates/sovereign-crypto",
     "crates/sovereign-skills",
     "crates/sovereign-ui",
     "crates/sovereign-canvas",
     "crates/sovereign-ai",
+    "crates/sovereign-p2p",
     "crates/sovereign-app",
 ]
 
@@ -45,6 +47,8 @@ sovereign-skills = { path = "crates/sovereign-skills" }
 sovereign-ui = { path = "crates/sovereign-ui" }
 sovereign-canvas = { path = "crates/sovereign-canvas" }
 sovereign-ai = { path = "crates/sovereign-ai" }
+sovereign-crypto = { path = "crates/sovereign-crypto" }
+sovereign-p2p = { path = "crates/sovereign-p2p" }
 
 # LLM inference
 llama-cpp-2 = "0.1"

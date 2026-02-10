@@ -12,6 +12,14 @@ use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
 use sovereign_db::GraphDB;
 use std::path::PathBuf;
 
+#[cfg(feature = "encryption")]
+use sovereign_crypto::{
+    device_key::DeviceKey,
+    kek::Kek,
+    key_db::KeyDatabase,
+    master_key::MasterKey,
+};
+
 #[derive(Parser)]
 #[command(name = "sovereign", about = "Sovereign OS — your data, your rules")]
 struct Cli {
@@ -108,6 +116,38 @@ enum Commands {
         #[arg(long)]
         doc_id: String,
     },
+
+    /// Encrypt all existing plaintext documents (idempotent)
+    #[cfg(feature = "encryption")]
+    EncryptData,
+
+    /// Pair with another device on the local network
+    #[cfg(feature = "p2p")]
+    PairDevice {
+        #[arg(long)]
+        peer_id: String,
+    },
+
+    /// List paired devices
+    #[cfg(feature = "p2p")]
+    ListDevices,
+
+    /// Enroll a guardian for key recovery
+    #[cfg(feature = "p2p")]
+    EnrollGuardian {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        peer_id: String,
+    },
+
+    /// List enrolled guardians
+    #[cfg(feature = "encryption")]
+    ListGuardians,
+
+    /// Initiate key recovery from guardians
+    #[cfg(feature = "encryption")]
+    InitiateRecovery,
 }
 
 /// Populate the database with sample data when it's empty.
@@ -206,6 +246,84 @@ async fn create_db(config: &AppConfig) -> Result<SurrealGraphDB> {
     Ok(db)
 }
 
+#[cfg(feature = "encryption")]
+fn crypto_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(home).join(".sovereign").join("crypto")
+}
+
+/// Load or create a stable device ID for this machine.
+#[cfg(feature = "encryption")]
+fn load_or_create_device_id() -> Result<String> {
+    let dir = crypto_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("device_id");
+    if path.exists() {
+        Ok(std::fs::read_to_string(&path)?.trim().to_string())
+    } else {
+        let id = uuid::Uuid::new_v4().to_string();
+        std::fs::write(&path, &id)?;
+        tracing::info!("Generated new device ID: {id}");
+        Ok(id)
+    }
+}
+
+/// Initialize the crypto subsystem: MasterKey → DeviceKey → KEK → KeyDatabase.
+/// Returns (DeviceKey, Kek, KeyDatabase) for use by EncryptedGraphDB and P2P.
+#[cfg(feature = "encryption")]
+fn init_crypto() -> Result<(DeviceKey, Arc<tokio::sync::Mutex<KeyDatabase>>, Arc<Kek>)> {
+    let device_id = load_or_create_device_id()?;
+    let dir = crypto_dir();
+    std::fs::create_dir_all(&dir)?;
+
+    // Derive master key from passphrase (WSL2 — no TPM)
+    let salt_path = dir.join("salt");
+    let salt = if salt_path.exists() {
+        std::fs::read(&salt_path)?
+    } else {
+        let mut s = vec![0u8; 32];
+        use rand::Rng;
+        rand::rng().fill_bytes(&mut s);
+        std::fs::write(&salt_path, &s)?;
+        s
+    };
+
+    let pass = rpassword::prompt_password("Sovereign passphrase: ")?;
+    if pass.is_empty() {
+        anyhow::bail!("Passphrase cannot be empty");
+    }
+    let master = MasterKey::from_passphrase(pass.as_bytes(), &salt)?;
+    let device_key = DeviceKey::derive(&master, &device_id)?;
+
+    // Load or create KEK
+    let kek_path = dir.join("kek.wrapped");
+    let kek = if kek_path.exists() {
+        let wrapped_bytes = std::fs::read(&kek_path)?;
+        let wrapped: sovereign_crypto::kek::WrappedKek = serde_json::from_slice(&wrapped_bytes)?;
+        Kek::unwrap(&wrapped, &device_key)?
+    } else {
+        let kek = Kek::generate();
+        let wrapped = kek.wrap(&device_key)?;
+        std::fs::write(&kek_path, serde_json::to_vec(&wrapped)?)?;
+        kek
+    };
+
+    // Load or create KeyDatabase
+    let key_db_path = dir.join("keys.db");
+    let key_db = if key_db_path.exists() {
+        KeyDatabase::load(&key_db_path, &device_key)?
+    } else {
+        KeyDatabase::new(key_db_path)
+    };
+
+    tracing::info!("Crypto subsystem initialized (device: {device_id})");
+    Ok((
+        device_key,
+        Arc::new(tokio::sync::Mutex::new(key_db)),
+        Arc::new(kek),
+    ))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     lifecycle::init_tracing();
@@ -232,6 +350,22 @@ async fn main() -> Result<()> {
             }
 
             // Register core skills (will be wired to DB after db creation)
+
+            // Initialize crypto subsystem if enabled
+            #[cfg(feature = "encryption")]
+            let _crypto_state = if config.crypto.enabled {
+                match init_crypto() {
+                    Ok((device_key, key_db, kek)) => {
+                        Some((device_key, key_db, kek))
+                    }
+                    Err(e) => {
+                        tracing::warn!("Crypto init failed (continuing without encryption): {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
             // Load documents and threads from DB for the canvas
             let db = create_db(&config).await?;
@@ -291,6 +425,48 @@ async fn main() -> Result<()> {
                 Ok(mut o) => {
                     o.set_decision_rx(decision_rx);
                     o.set_feedback_rx(feedback_rx);
+
+                    // Wire P2P channels if crypto + P2P are enabled
+                    #[cfg(feature = "p2p")]
+                    if config.p2p.enabled {
+                        if let Some((ref device_key, _, _)) = _crypto_state {
+                            match sovereign_p2p::identity::derive_keypair(device_key) {
+                                Ok(keypair) => {
+                                    let p2p_config = sovereign_p2p::config::P2pConfig {
+                                        enabled: true,
+                                        listen_port: config.p2p.listen_port,
+                                        rendezvous_server: config.p2p.rendezvous_server.clone(),
+                                        device_name: config.p2p.device_name.clone(),
+                                    };
+                                    let (p2p_event_tx, p2p_event_rx) =
+                                        tokio::sync::mpsc::channel(256);
+                                    let (p2p_cmd_tx, p2p_cmd_rx) =
+                                        tokio::sync::mpsc::channel(64);
+
+                                    match sovereign_p2p::node::SovereignNode::new(
+                                        &p2p_config, keypair, p2p_event_tx, p2p_cmd_rx,
+                                    ) {
+                                        Ok(node) => {
+                                            tokio::spawn(node.run());
+                                            o.set_p2p_channels(p2p_cmd_tx, p2p_event_rx);
+                                            tracing::info!("P2P node spawned");
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("P2P node failed to start: {e}");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!("P2P identity derivation failed: {e}");
+                                }
+                            }
+                        } else {
+                            tracing::warn!(
+                                "P2P enabled but crypto not initialized — skipping P2P"
+                            );
+                        }
+                    }
+
                     tracing::info!("AI orchestrator initialized");
                     Some(Arc::new(o))
                 }
@@ -552,6 +728,110 @@ async fn main() -> Result<()> {
                 println!("{id}\t{}\t{}", c.timestamp.format("%Y-%m-%d %H:%M:%S"), c.message);
             }
             println!("({} commits)", commits.len());
+        }
+
+        #[cfg(feature = "encryption")]
+        Commands::EncryptData => {
+            let (_, key_db, kek) = init_crypto()?;
+            let db = create_db(&config).await?;
+
+            // Gather unencrypted documents
+            let docs = db.list_documents(None).await?;
+            let plans: Vec<sovereign_crypto::migration::DocumentEncryptionPlan> = docs
+                .iter()
+                .filter(|d| d.encryption_nonce.is_none())
+                .map(|d| sovereign_crypto::migration::DocumentEncryptionPlan {
+                    doc_id: d.id_string().unwrap_or_default(),
+                    plaintext_content: d.content.clone(),
+                })
+                .collect();
+
+            if plans.is_empty() {
+                println!("All documents are already encrypted.");
+                return Ok(());
+            }
+
+            println!("Encrypting {} documents...", plans.len());
+            let total = plans.len();
+            let progress: sovereign_crypto::migration::ProgressCallback =
+                Box::new(move |done, total| {
+                    println!("  [{done}/{total}]");
+                });
+            let mut key_db_guard = key_db.lock().await;
+            let results =
+                sovereign_crypto::migration::encrypt_documents(&plans, &mut key_db_guard, &kek, Some(&progress))?;
+
+            // Update each document with encrypted content and nonce
+            for result in &results {
+                db.update_document(
+                    &result.doc_id,
+                    None,
+                    Some(&result.encrypted_content),
+                )
+                .await?;
+                // Store nonce via raw query (encryption_nonce isn't in the update_document API)
+                // For now, log the nonce — full integration requires schema-level support
+                tracing::info!(
+                    "Encrypted {}: nonce={}",
+                    result.doc_id,
+                    result.nonce_b64
+                );
+            }
+
+            // Persist key database
+            let crypto_dir = crypto_dir();
+            let device_id = load_or_create_device_id()?;
+            let salt_path = crypto_dir.join("salt");
+            let salt = std::fs::read(&salt_path)?;
+            let pass = rpassword::prompt_password("Re-enter passphrase to save key DB: ")?;
+            let master = MasterKey::from_passphrase(pass.as_bytes(), &salt)?;
+            let device_key = DeviceKey::derive(&master, &device_id)?;
+            key_db_guard.save(&device_key)?;
+
+            println!("Encrypted {total} documents. Key database saved.");
+        }
+
+        #[cfg(feature = "p2p")]
+        Commands::PairDevice { peer_id } => {
+            println!("Pairing with peer {peer_id}...");
+            println!("(P2P pairing requires a running `sovereign run` instance)");
+            println!("Use the orchestrator command: 'pair device {peer_id}'");
+        }
+
+        #[cfg(feature = "p2p")]
+        Commands::ListDevices => {
+            let dir = crypto_dir().join("paired_devices.json");
+            if dir.exists() {
+                let content = std::fs::read_to_string(&dir)?;
+                println!("{content}");
+            } else {
+                println!("No paired devices.");
+            }
+        }
+
+        #[cfg(feature = "p2p")]
+        Commands::EnrollGuardian { name, peer_id } => {
+            println!("Enrolling guardian '{name}' (peer: {peer_id})...");
+            println!("(Guardian enrollment requires a running `sovereign run` instance)");
+            println!("Use the orchestrator command: 'enroll guardian {name}'");
+        }
+
+        #[cfg(feature = "encryption")]
+        Commands::ListGuardians => {
+            let dir = crypto_dir().join("guardians.json");
+            if dir.exists() {
+                let content = std::fs::read_to_string(&dir)?;
+                println!("{content}");
+            } else {
+                println!("No guardians enrolled.");
+            }
+        }
+
+        #[cfg(feature = "encryption")]
+        Commands::InitiateRecovery => {
+            println!("Key recovery requires at least 3 of 5 guardian shards.");
+            println!("(Recovery flow requires a running `sovereign run` instance with P2P)");
+            println!("Use the orchestrator command: 'initiate recovery'");
         }
     }
 

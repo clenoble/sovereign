@@ -52,14 +52,17 @@ pub enum ActionDecision {
 pub fn action_level(action: &str) -> ActionLevel {
     match action {
         "search" | "open" | "navigate" | "history" | "summarize" | "word_count"
-        | "list_models" | "list_milestones" => ActionLevel::Observe,
+        | "list_models" | "list_milestones"
+        | "sync_device" | "list_guardians" | "sync_status" | "list_devices" => ActionLevel::Observe,
         "annotate" | "tag" | "bookmark" => ActionLevel::Annotate,
         "create_thread" | "rename_thread" | "move_document" | "restore" | "edit"
         | "find_replace" | "duplicate" | "import_file" | "swap_model"
         | "merge_threads" | "split_thread" | "adopt"
         | "create_milestone" | "delete_milestone" => ActionLevel::Modify,
-        "export" | "share" | "transmit" => ActionLevel::Transmit,
-        "delete_thread" | "delete_document" | "purge" => ActionLevel::Destruct,
+        "export" | "share" | "transmit"
+        | "pair_device" | "enroll_guardian" | "rotate_shards" => ActionLevel::Transmit,
+        "delete_thread" | "delete_document" | "purge"
+        | "initiate_recovery" | "revoke_guardian" => ActionLevel::Destruct,
         _ => ActionLevel::Observe,
     }
 }
@@ -221,6 +224,27 @@ mod tests {
     #[test]
     fn action_level_swap_model_modify() {
         assert_eq!(action_level("swap_model"), ActionLevel::Modify);
+    }
+
+    #[test]
+    fn action_level_p2p_observe() {
+        assert_eq!(action_level("sync_device"), ActionLevel::Observe);
+        assert_eq!(action_level("list_guardians"), ActionLevel::Observe);
+        assert_eq!(action_level("sync_status"), ActionLevel::Observe);
+        assert_eq!(action_level("list_devices"), ActionLevel::Observe);
+    }
+
+    #[test]
+    fn action_level_p2p_transmit() {
+        assert_eq!(action_level("pair_device"), ActionLevel::Transmit);
+        assert_eq!(action_level("enroll_guardian"), ActionLevel::Transmit);
+        assert_eq!(action_level("rotate_shards"), ActionLevel::Transmit);
+    }
+
+    #[test]
+    fn action_level_p2p_destruct() {
+        assert_eq!(action_level("initiate_recovery"), ActionLevel::Destruct);
+        assert_eq!(action_level("revoke_guardian"), ActionLevel::Destruct);
     }
 
     #[test]

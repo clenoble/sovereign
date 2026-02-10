@@ -1,0 +1,32 @@
+[package]
+name = "sovereign-p2p"
+version = "0.1.0"
+edition = "2021"
+description = "P2P device sync and Guardian shard transport for Sovereign OS"
+
+[dependencies]
+sovereign-crypto = { workspace = true }
+
+libp2p = { version = "0.56", features = [
+    "tokio",
+    "quic",
+    "noise",
+    "yamux",
+    "mdns",
+    "rendezvous",
+    "request-response",
+    "cbor",
+    "identify",
+    "macros",
+    "ed25519",
+] }
+
+tokio = { workspace = true }
+hkdf = "0.12"
+sha2 = "0.10"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+base64 = "0.22"

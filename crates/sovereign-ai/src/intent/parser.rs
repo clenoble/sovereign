@@ -97,6 +97,27 @@ fn extract_intent_heuristic(response: &str) -> UserIntent {
         "create_milestone"
     } else if lower.contains("list milestone") || lower.contains("show milestone") {
         "list_milestones"
+    // P2P / Guardian / Encryption intents
+    } else if lower.contains("sync") && (lower.contains("device") || lower.contains("peer")) {
+        "sync_device"
+    } else if lower.contains("pair device") || lower.contains("pair my") || lower.contains("connect device") {
+        "pair_device"
+    } else if lower.contains("list device") || lower.contains("show device") || lower.contains("paired device") {
+        "list_devices"
+    } else if lower.contains("enroll guardian") || lower.contains("add guardian") || lower.contains("new guardian") {
+        "enroll_guardian"
+    } else if lower.contains("list guardian") || lower.contains("show guardian") || lower.contains("my guardian") {
+        "list_guardians"
+    } else if lower.contains("revoke guardian") || lower.contains("remove guardian") {
+        "revoke_guardian"
+    } else if lower.contains("rotate shard") || lower.contains("rotate key") {
+        "rotate_shards"
+    } else if lower.contains("initiate recovery") || lower.contains("recover key") || lower.contains("start recovery") {
+        "initiate_recovery"
+    } else if lower.contains("sync status") || lower.contains("sync state") {
+        "sync_status"
+    } else if lower.contains("encrypt") && (lower.contains("data") || lower.contains("enable") || lower.contains("turn on")) {
+        "encrypt_data"
     } else if lower.contains("search") || lower.contains("find") || lower.contains("look") {
         "search"
     } else if lower.contains("open") || lower.contains("show") {

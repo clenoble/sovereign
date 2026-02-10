@@ -13,3 +13,9 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+sovereign-crypto = { workspace = true, optional = true }
+base64 = { version = "0.22", optional = true }
+tracing = { version = "0.1", optional = true }
+
+[features]
+encryption = ["sovereign-crypto", "base64", "tracing"]

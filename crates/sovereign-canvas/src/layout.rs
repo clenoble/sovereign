@@ -328,6 +328,7 @@ mod tests {
             spatial_y: 0.0,
             head_commit: None,
             deleted_at: None,
+            encryption_nonce: None,
         }
     }
 
