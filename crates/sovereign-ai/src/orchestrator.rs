@@ -26,6 +26,8 @@ pub struct Orchestrator {
     session_log: Option<Mutex<SessionLog>>,
     decision_rx: Option<Mutex<mpsc::Receiver<ActionDecision>>>,
     trust: Mutex<TrustTracker>,
+    model_dir: String,
+    n_gpu_layers: i32,
 }
 
 impl Orchestrator {
@@ -35,6 +37,8 @@ impl Orchestrator {
         db: Arc<SurrealGraphDB>,
         event_tx: mpsc::Sender<OrchestratorEvent>,
     ) -> Result<Self> {
+        let model_dir = config.model_dir.clone();
+        let n_gpu_layers = config.n_gpu_layers;
         let mut classifier = IntentClassifier::new(config);
         classifier.load_router().await?;
 
@@ -58,6 +62,8 @@ impl Orchestrator {
             session_log,
             decision_rx: None,
             trust: Mutex::new(TrustTracker::new()),
+            model_dir,
+            n_gpu_layers,
         })
     }
 
@@ -408,6 +414,75 @@ impl Orchestrator {
                     }
                 }
             }
+            "list_models" => {
+                let found = scan_gguf_models(&self.model_dir);
+                let models: Vec<serde_json::Value> = found
+                    .iter()
+                    .map(|(name, size_mb)| {
+                        serde_json::json!({ "name": name, "size_mb": size_mb })
+                    })
+                    .collect();
+
+                tracing::info!("Listed {} models in {}", models.len(), self.model_dir);
+                self.log_action("list_models", &format!("{} models found", models.len()));
+                let _ = self.event_tx.send(OrchestratorEvent::SkillResult {
+                    skill: "model_manager".into(),
+                    action: "list_models".into(),
+                    kind: "model_list".into(),
+                    data: serde_json::json!({ "models": models }).to_string(),
+                });
+            }
+            "swap_model" => {
+                if let Some(target) = target {
+                    let full_path = resolve_model_path(&self.model_dir, target);
+                    let model_name = full_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+
+                    if !full_path.exists() {
+                        tracing::error!("Model not found: {}", full_path.display());
+                        let _ = self.event_tx.send(OrchestratorEvent::ActionRejected {
+                            action: "swap_model".into(),
+                            reason: format!("Model not found: {model_name}"),
+                        });
+                    } else {
+                        let path_str = full_path.to_string_lossy().to_string();
+                        match self
+                            .classifier
+                            .swap_router(&path_str, self.n_gpu_layers)
+                            .await
+                        {
+                            Ok(()) => {
+                                tracing::info!("Model swapped to: {model_name}");
+                                self.log_action("swap_model", &model_name);
+                                let _ = self.event_tx.send(OrchestratorEvent::SkillResult {
+                                    skill: "model_manager".into(),
+                                    action: "swap_model".into(),
+                                    kind: "model_swapped".into(),
+                                    data: serde_json::json!({
+                                        "model": model_name,
+                                    })
+                                    .to_string(),
+                                });
+                            }
+                            Err(e) => {
+                                tracing::error!("Model swap failed: {e}");
+                                let _ = self.event_tx.send(OrchestratorEvent::ActionRejected {
+                                    action: "swap_model".into(),
+                                    reason: format!("Swap failed: {e}"),
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    let _ = self.event_tx.send(OrchestratorEvent::ActionRejected {
+                        action: "swap_model".into(),
+                        reason: "No model name specified".into(),
+                    });
+                }
+            }
             "word_count" | "find_replace" | "duplicate" | "import_file" => {
                 let _ = self.event_tx.send(OrchestratorEvent::SkillResult {
                     skill: action.to_string(),
@@ -554,5 +629,112 @@ fn parse_move_target(target: &str) -> (String, String) {
         (doc, thread)
     } else {
         (target.to_string(), String::new())
+    }
+}
+
+/// Scan a directory for .gguf model files and return (name, size_mb) pairs.
+/// Extracted for testability.
+pub(crate) fn scan_gguf_models(model_dir: &str) -> Vec<(String, u64)> {
+    let dir = std::path::Path::new(model_dir);
+    let mut models = Vec::new();
+
+    if dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("gguf") {
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let size_mb = std::fs::metadata(&path)
+                        .map(|m| m.len() / (1024 * 1024))
+                        .unwrap_or(0);
+                    models.push((name, size_mb));
+                }
+            }
+        }
+    }
+
+    models
+}
+
+/// Resolve a model target name to a full path, appending .gguf if needed.
+pub(crate) fn resolve_model_path(model_dir: &str, target: &str) -> std::path::PathBuf {
+    let model_name = if target.ends_with(".gguf") {
+        target.to_string()
+    } else {
+        format!("{}.gguf", target)
+    };
+    std::path::Path::new(model_dir).join(model_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("sovereign_test_{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn scan_gguf_finds_models_in_dir() {
+        let dir = make_test_dir("scan_gguf");
+        std::fs::write(dir.join("model-a.gguf"), "fake").unwrap();
+        std::fs::write(dir.join("model-b.gguf"), "fake data longer").unwrap();
+        std::fs::write(dir.join("readme.txt"), "hello").unwrap();
+
+        let models = scan_gguf_models(dir.to_str().unwrap());
+        assert_eq!(models.len(), 2);
+
+        let names: Vec<&str> = models.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"model-a.gguf"));
+        assert!(names.contains(&"model-b.gguf"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_gguf_empty_dir() {
+        let dir = make_test_dir("scan_empty");
+        let models = scan_gguf_models(dir.to_str().unwrap());
+        assert!(models.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_gguf_nonexistent_dir() {
+        let models = scan_gguf_models("/nonexistent/path/that/does/not/exist");
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn resolve_model_path_appends_gguf() {
+        let path = resolve_model_path("/models", "Qwen2.5-7B");
+        assert_eq!(path, std::path::PathBuf::from("/models/Qwen2.5-7B.gguf"));
+    }
+
+    #[test]
+    fn resolve_model_path_keeps_existing_gguf() {
+        let path = resolve_model_path("/models", "Qwen2.5-7B.gguf");
+        assert_eq!(path, std::path::PathBuf::from("/models/Qwen2.5-7B.gguf"));
+    }
+
+    #[test]
+    fn parse_rename_target_splits() {
+        let (old, new) = parse_rename_target("Alpha to Beta");
+        assert_eq!(old, "Alpha");
+        assert_eq!(new, "Beta");
+    }
+
+    #[test]
+    fn parse_move_target_splits() {
+        let (doc, thread) = parse_move_target("Notes to Research");
+        assert_eq!(doc, "Notes");
+        assert_eq!(thread, "Research");
     }
 }

@@ -52,8 +52,21 @@ fn try_parse_json(response: &str) -> Result<UserIntent> {
 fn extract_intent_heuristic(response: &str) -> UserIntent {
     let lower = response.to_lowercase();
 
+    // Model management intents (check early — before generic "show"/"list" catch-alls)
+    let action = if lower.contains("swap model")
+        || lower.contains("switch model")
+        || lower.contains("change model")
+        || lower.contains("use model")
+    {
+        "swap_model"
+    } else if lower.contains("list models")
+        || lower.contains("available models")
+        || lower.contains("what models")
+        || lower.contains("show models")
+    {
+        "list_models"
     // Thread-specific intents (check before generic "create"/"new")
-    let action = if lower.contains("create thread") || lower.contains("new thread") || lower.contains("new project") {
+    } else if lower.contains("create thread") || lower.contains("new thread") || lower.contains("new project") {
         "create_thread"
     } else if lower.contains("rename thread") || lower.contains("rename project") {
         "rename_thread"
@@ -239,5 +252,47 @@ mod tests {
     fn heuristic_import_file() {
         let intent = parse_intent_response("import file from disk").unwrap();
         assert_eq!(intent.action, "import_file");
+    }
+
+    #[test]
+    fn heuristic_swap_model() {
+        let intent = parse_intent_response("swap model to Qwen2.5-7B").unwrap();
+        assert_eq!(intent.action, "swap_model");
+    }
+
+    #[test]
+    fn heuristic_switch_model() {
+        let intent = parse_intent_response("switch model to something bigger").unwrap();
+        assert_eq!(intent.action, "swap_model");
+    }
+
+    #[test]
+    fn heuristic_change_model() {
+        let intent = parse_intent_response("change model to the 7B variant").unwrap();
+        assert_eq!(intent.action, "swap_model");
+    }
+
+    #[test]
+    fn heuristic_use_model() {
+        let intent = parse_intent_response("use model Qwen2.5-3B").unwrap();
+        assert_eq!(intent.action, "swap_model");
+    }
+
+    #[test]
+    fn heuristic_list_models() {
+        let intent = parse_intent_response("list models").unwrap();
+        assert_eq!(intent.action, "list_models");
+    }
+
+    #[test]
+    fn heuristic_available_models() {
+        let intent = parse_intent_response("what models are available").unwrap();
+        assert_eq!(intent.action, "list_models");
+    }
+
+    #[test]
+    fn heuristic_show_models() {
+        let intent = parse_intent_response("show models please").unwrap();
+        assert_eq!(intent.action, "list_models");
     }
 }

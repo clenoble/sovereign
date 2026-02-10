@@ -51,12 +51,11 @@ pub enum ActionDecision {
 /// Map an intent action string to its gravity level.
 pub fn action_level(action: &str) -> ActionLevel {
     match action {
-        "search" | "open" | "navigate" | "history" | "summarize" | "word_count" => {
-            ActionLevel::Observe
-        }
+        "search" | "open" | "navigate" | "history" | "summarize" | "word_count"
+        | "list_models" => ActionLevel::Observe,
         "annotate" | "tag" | "bookmark" => ActionLevel::Annotate,
         "create_thread" | "rename_thread" | "move_document" | "restore" | "edit"
-        | "find_replace" | "duplicate" | "import_file" => ActionLevel::Modify,
+        | "find_replace" | "duplicate" | "import_file" | "swap_model" => ActionLevel::Modify,
         "export" | "share" | "transmit" => ActionLevel::Transmit,
         "delete_thread" | "delete_document" | "purge" => ActionLevel::Destruct,
         _ => ActionLevel::Observe,
@@ -195,6 +194,16 @@ mod tests {
         let json = serde_json::to_string(&pa).unwrap();
         assert!(json.contains("delete_thread"));
         assert!(json.contains("Destruct"));
+    }
+
+    #[test]
+    fn action_level_list_models_observe() {
+        assert_eq!(action_level("list_models"), ActionLevel::Observe);
+    }
+
+    #[test]
+    fn action_level_swap_model_modify() {
+        assert_eq!(action_level("swap_model"), ActionLevel::Modify);
     }
 
     #[test]

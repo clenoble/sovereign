@@ -22,6 +22,23 @@ impl AsyncLlmBackend {
             n_ctx,
         }
     }
+
+    /// Hot-swap the loaded model. Works through `&self` via `Arc<Mutex<>>`.
+    /// Drops the old model (freeing VRAM) before loading the new one.
+    pub async fn swap(&self, model_path: &str, n_gpu_layers: i32) -> Result<()> {
+        let path = model_path.to_string();
+        let n_ctx = self.n_ctx;
+        let inner = self.inner.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let mut guard = inner.lock().unwrap();
+            *guard = None; // drop old model, free VRAM
+            let backend = LlamaCppBackend::load(&path, n_gpu_layers, n_ctx)?;
+            *guard = Some(backend);
+            Ok(())
+        })
+        .await?
+    }
 }
 
 #[async_trait]

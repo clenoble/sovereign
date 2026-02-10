@@ -46,6 +46,14 @@ impl IntentClassifier {
         Ok(())
     }
 
+    /// Hot-swap the router model to a different .gguf file.
+    pub(crate) async fn swap_router(&self, model_path: &str, n_gpu_layers: i32) -> Result<()> {
+        tracing::info!("Swapping router model to: {model_path}");
+        self.router.swap(model_path, n_gpu_layers).await?;
+        tracing::info!("Router model swapped successfully");
+        Ok(())
+    }
+
     /// Classify user text into an intent. Uses 3B router, escalates to 7B if low confidence.
     pub async fn classify(&self, user_text: &str) -> Result<UserIntent> {
         let prompt = qwen_chat_prompt(ROUTER_SYSTEM_PROMPT, user_text);
