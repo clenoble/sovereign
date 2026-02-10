@@ -9,8 +9,8 @@ default_height = 720
 
 [ai]
 model_dir = "models"
-router_model = "qwen2.5-3b-instruct-q4_k_m.gguf"
-reasoning_model = "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+router_model = "Qwen2.5-3B-Instruct-Q4_K_M.gguf"
+reasoning_model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
 n_gpu_layers = 99
 n_ctx = 4096
 
