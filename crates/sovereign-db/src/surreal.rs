@@ -5,7 +5,8 @@ use surrealdb::Surreal;
 
 use crate::error::{DbError, DbResult};
 use crate::schema::{
-    Commit, Document, DocumentSnapshot, Milestone, RelatedTo, RelationType, Thread,
+    ChannelType, Commit, Contact, Conversation, Document, DocumentSnapshot,
+    Message, Milestone, ReadStatus, RelatedTo, RelationType, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -54,6 +55,16 @@ impl GraphDB for SurrealGraphDB {
             "DEFINE INDEX idx_doc_created ON document FIELDS created_at",
             "DEFINE INDEX idx_commit_timestamp ON commit FIELDS timestamp",
             "DEFINE INDEX idx_commit_doc ON commit FIELDS document_id",
+            // Contact indexes
+            "DEFINE INDEX idx_contact_name ON contact FIELDS name",
+            // Message indexes
+            "DEFINE INDEX idx_message_conversation ON message FIELDS conversation_id",
+            "DEFINE INDEX idx_message_sent_at ON message FIELDS sent_at",
+            "DEFINE INDEX idx_message_from ON message FIELDS from_contact_id",
+            "DEFINE INDEX idx_message_external ON message FIELDS external_id",
+            // Conversation indexes
+            "DEFINE INDEX idx_conversation_channel ON conversation FIELDS channel",
+            "DEFINE INDEX idx_conversation_last_msg ON conversation FIELDS last_message_at",
         ];
         for q in queries {
             self.db
@@ -510,6 +521,283 @@ impl GraphDB for SurrealGraphDB {
         self.commit_document(doc_id, &restore_msg).await?;
 
         Ok(restored)
+    }
+
+    // -- Contacts ---
+
+    async fn create_contact(&self, contact: Contact) -> DbResult<Contact> {
+        let created: Option<Contact> = self.db.create("contact").content(contact).await?;
+        created.ok_or_else(|| DbError::Query("Failed to create contact".into()))
+    }
+
+    async fn get_contact(&self, id: &str) -> DbResult<Contact> {
+        let (table, key) = parse_thing(id)?;
+        if table != "contact" {
+            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
+        }
+        let contact: Option<Contact> = self.db.select((table, key)).await?;
+        contact.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn list_contacts(&self) -> DbResult<Vec<Contact>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM contact WHERE deleted_at IS NONE ORDER BY name ASC")
+            .await?;
+        let contacts: Vec<Contact> = result.take(0)?;
+        Ok(contacts)
+    }
+
+    async fn update_contact(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        notes: Option<&str>,
+        avatar: Option<&str>,
+    ) -> DbResult<Contact> {
+        let (table, key) = parse_thing(id)?;
+        if table != "contact" {
+            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
+        }
+        let current: Option<Contact> = self.db.select((table, key)).await?;
+        let mut contact = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+
+        if let Some(n) = name {
+            contact.name = n.to_string();
+        }
+        if let Some(n) = notes {
+            contact.notes = n.to_string();
+        }
+        if let Some(a) = avatar {
+            contact.avatar = Some(a.to_string());
+        }
+        contact.modified_at = Utc::now();
+
+        let updated: Option<Contact> = self.db.update((table, key)).content(contact).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to update contact".into()))
+    }
+
+    async fn delete_contact(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_thing(id)?;
+        if table != "contact" {
+            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
+        }
+        let _: Option<Contact> = self.db.delete((table, key)).await?;
+        Ok(())
+    }
+
+    async fn soft_delete_contact(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_thing(id)?;
+        if table != "contact" {
+            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
+        }
+        let current: Option<Contact> = self.db.select((table, key)).await?;
+        let mut contact = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        contact.deleted_at = Some(Utc::now().to_rfc3339());
+        let _: Option<Contact> = self.db.update((table, key)).content(contact).await?;
+        Ok(())
+    }
+
+    async fn find_contact_by_address(&self, address: &str) -> DbResult<Option<Contact>> {
+        let addr = address.to_string();
+        let mut result = self
+            .db
+            .query("SELECT * FROM contact WHERE deleted_at IS NONE AND addresses[*].address CONTAINS $addr")
+            .bind(("addr", addr))
+            .await?;
+        let contacts: Vec<Contact> = result.take(0)?;
+        Ok(contacts.into_iter().next())
+    }
+
+    async fn add_contact_address(
+        &self,
+        contact_id: &str,
+        address: crate::schema::ChannelAddress,
+    ) -> DbResult<Contact> {
+        let (table, key) = parse_thing(contact_id)?;
+        if table != "contact" {
+            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
+        }
+        let current: Option<Contact> = self.db.select((table, key)).await?;
+        let mut contact = current.ok_or_else(|| DbError::NotFound(contact_id.to_string()))?;
+        contact.addresses.push(address);
+        contact.modified_at = Utc::now();
+
+        let updated: Option<Contact> = self.db.update((table, key)).content(contact).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to add contact address".into()))
+    }
+
+    // -- Messages ---
+
+    async fn create_message(&self, message: Message) -> DbResult<Message> {
+        let created: Option<Message> = self.db.create("message").content(message).await?;
+        created.ok_or_else(|| DbError::Query("Failed to create message".into()))
+    }
+
+    async fn get_message(&self, id: &str) -> DbResult<Message> {
+        let (table, key) = parse_thing(id)?;
+        if table != "message" {
+            return Err(DbError::InvalidId(format!("Expected message ID, got table: {table}")));
+        }
+        let message: Option<Message> = self.db.select((table, key)).await?;
+        message.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn list_messages(
+        &self,
+        conversation_id: &str,
+        before: Option<chrono::DateTime<Utc>>,
+        limit: u32,
+    ) -> DbResult<Vec<Message>> {
+        let cid = conversation_id.to_string();
+        match before {
+            Some(ts) => {
+                let mut result = self
+                    .db
+                    .query("SELECT * FROM message WHERE conversation_id = $cid AND deleted_at IS NONE AND sent_at < $before ORDER BY sent_at DESC LIMIT $limit")
+                    .bind(("cid", cid))
+                    .bind(("before", ts))
+                    .bind(("limit", limit))
+                    .await?;
+                let msgs: Vec<Message> = result.take(0)?;
+                Ok(msgs)
+            }
+            None => {
+                let mut result = self
+                    .db
+                    .query("SELECT * FROM message WHERE conversation_id = $cid AND deleted_at IS NONE ORDER BY sent_at DESC LIMIT $limit")
+                    .bind(("cid", cid))
+                    .bind(("limit", limit))
+                    .await?;
+                let msgs: Vec<Message> = result.take(0)?;
+                Ok(msgs)
+            }
+        }
+    }
+
+    async fn update_message_read_status(
+        &self,
+        id: &str,
+        status: ReadStatus,
+    ) -> DbResult<Message> {
+        let (table, key) = parse_thing(id)?;
+        if table != "message" {
+            return Err(DbError::InvalidId(format!("Expected message ID, got table: {table}")));
+        }
+        let current: Option<Message> = self.db.select((table, key)).await?;
+        let mut message = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        message.read_status = status;
+
+        let updated: Option<Message> = self.db.update((table, key)).content(message).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to update message read status".into()))
+    }
+
+    async fn delete_message(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_thing(id)?;
+        if table != "message" {
+            return Err(DbError::InvalidId(format!("Expected message ID, got table: {table}")));
+        }
+        let _: Option<Message> = self.db.delete((table, key)).await?;
+        Ok(())
+    }
+
+    async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>> {
+        let q = query.to_string();
+        let mut result = self
+            .db
+            .query("SELECT * FROM message WHERE deleted_at IS NONE AND (body CONTAINS $q OR subject CONTAINS $q) ORDER BY sent_at DESC")
+            .bind(("q", q))
+            .await?;
+        let msgs: Vec<Message> = result.take(0)?;
+        Ok(msgs)
+    }
+
+    // -- Conversations ---
+
+    async fn create_conversation(&self, conversation: Conversation) -> DbResult<Conversation> {
+        let created: Option<Conversation> = self.db.create("conversation").content(conversation).await?;
+        created.ok_or_else(|| DbError::Query("Failed to create conversation".into()))
+    }
+
+    async fn get_conversation(&self, id: &str) -> DbResult<Conversation> {
+        let (table, key) = parse_thing(id)?;
+        if table != "conversation" {
+            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
+        }
+        let conv: Option<Conversation> = self.db.select((table, key)).await?;
+        conv.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn list_conversations(
+        &self,
+        channel: Option<&ChannelType>,
+    ) -> DbResult<Vec<Conversation>> {
+        match channel {
+            Some(ch) => {
+                let ch_str = serde_json::to_string(ch)
+                    .map_err(|e| DbError::Serialization(e.to_string()))?;
+                // Remove quotes around the serialized string for SurrealDB comparison
+                let ch_val = ch_str.trim_matches('"').to_string();
+                let mut result = self
+                    .db
+                    .query("SELECT * FROM conversation WHERE deleted_at IS NONE AND channel = $ch ORDER BY last_message_at DESC")
+                    .bind(("ch", ch_val))
+                    .await?;
+                let convs: Vec<Conversation> = result.take(0)?;
+                Ok(convs)
+            }
+            None => {
+                let mut result = self
+                    .db
+                    .query("SELECT * FROM conversation WHERE deleted_at IS NONE ORDER BY last_message_at DESC")
+                    .await?;
+                let convs: Vec<Conversation> = result.take(0)?;
+                Ok(convs)
+            }
+        }
+    }
+
+    async fn update_conversation_unread(
+        &self,
+        id: &str,
+        unread_count: u32,
+    ) -> DbResult<Conversation> {
+        let (table, key) = parse_thing(id)?;
+        if table != "conversation" {
+            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
+        }
+        let current: Option<Conversation> = self.db.select((table, key)).await?;
+        let mut conv = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        conv.unread_count = unread_count;
+
+        let updated: Option<Conversation> = self.db.update((table, key)).content(conv).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to update conversation unread count".into()))
+    }
+
+    async fn delete_conversation(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_thing(id)?;
+        if table != "conversation" {
+            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
+        }
+        let _: Option<Conversation> = self.db.delete((table, key)).await?;
+        Ok(())
+    }
+
+    async fn link_conversation_to_thread(
+        &self,
+        conversation_id: &str,
+        thread_id: &str,
+    ) -> DbResult<Conversation> {
+        let (table, key) = parse_thing(conversation_id)?;
+        if table != "conversation" {
+            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
+        }
+        let current: Option<Conversation> = self.db.select((table, key)).await?;
+        let mut conv = current.ok_or_else(|| DbError::NotFound(conversation_id.to_string()))?;
+        conv.linked_thread_id = Some(thread_id.to_string());
+
+        let updated: Option<Conversation> = self.db.update((table, key)).content(conv).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to link conversation to thread".into()))
     }
 }
 
@@ -1015,5 +1303,324 @@ mod tests {
         // Document should be gone
         let result = db.get_document(&id).await;
         assert!(result.is_err());
+    }
+
+    // -- Contact tests ---
+
+    #[tokio::test]
+    async fn test_create_and_get_contact() {
+        let db = setup_db().await;
+        let contact = Contact::new("Alice".into(), false);
+        let created = db.create_contact(contact).await.unwrap();
+        assert!(created.id.is_some());
+        assert_eq!(created.name, "Alice");
+
+        let id = created.id_string().unwrap();
+        let fetched = db.get_contact(&id).await.unwrap();
+        assert_eq!(fetched.name, "Alice");
+        assert!(!fetched.is_owned);
+    }
+
+    #[tokio::test]
+    async fn test_list_contacts() {
+        let db = setup_db().await;
+        db.create_contact(Contact::new("Alice".into(), false)).await.unwrap();
+        db.create_contact(Contact::new("Bob".into(), false)).await.unwrap();
+
+        let contacts = db.list_contacts().await.unwrap();
+        assert_eq!(contacts.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_update_contact() {
+        let db = setup_db().await;
+        let created = db.create_contact(Contact::new("Alice".into(), false)).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        let updated = db.update_contact(&id, Some("Alicia"), Some("A friend"), None).await.unwrap();
+        assert_eq!(updated.name, "Alicia");
+        assert_eq!(updated.notes, "A friend");
+    }
+
+    #[tokio::test]
+    async fn test_soft_delete_contact() {
+        let db = setup_db().await;
+        let created = db.create_contact(Contact::new("ToDelete".into(), false)).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        db.soft_delete_contact(&id).await.unwrap();
+
+        let contacts = db.list_contacts().await.unwrap();
+        assert!(contacts.is_empty());
+
+        // Still fetchable directly
+        let fetched = db.get_contact(&id).await.unwrap();
+        assert!(fetched.deleted_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_add_contact_address_and_find() {
+        use crate::schema::{ChannelAddress, ChannelType};
+        let db = setup_db().await;
+        let created = db.create_contact(Contact::new("Alice".into(), false)).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        let addr = ChannelAddress {
+            channel: ChannelType::Email,
+            address: "alice@example.com".into(),
+            display_name: Some("Alice".into()),
+            is_primary: true,
+        };
+        let updated = db.add_contact_address(&id, addr).await.unwrap();
+        assert_eq!(updated.addresses.len(), 1);
+        assert_eq!(updated.addresses[0].address, "alice@example.com");
+
+        let found = db.find_contact_by_address("alice@example.com").await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "Alice");
+
+        let not_found = db.find_contact_by_address("nobody@example.com").await.unwrap();
+        assert!(not_found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_contact() {
+        let db = setup_db().await;
+        let created = db.create_contact(Contact::new("Delete".into(), false)).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        db.delete_contact(&id).await.unwrap();
+        assert!(db.get_contact(&id).await.is_err());
+    }
+
+    // -- Message tests ---
+
+    #[tokio::test]
+    async fn test_create_and_get_message() {
+        use crate::schema::{ChannelType, MessageDirection};
+        let db = setup_db().await;
+        let msg = Message::new(
+            "conversation:1".into(),
+            ChannelType::Email,
+            MessageDirection::Inbound,
+            "contact:alice".into(),
+            vec!["contact:me".into()],
+            "Hello!".into(),
+        );
+        let created = db.create_message(msg).await.unwrap();
+        assert!(created.id.is_some());
+        assert_eq!(created.body, "Hello!");
+
+        let id = created.id_string().unwrap();
+        let fetched = db.get_message(&id).await.unwrap();
+        assert_eq!(fetched.body, "Hello!");
+        assert_eq!(fetched.read_status, ReadStatus::Unread);
+    }
+
+    #[tokio::test]
+    async fn test_list_messages_pagination() {
+        use crate::schema::{ChannelType, MessageDirection};
+        let db = setup_db().await;
+
+        for i in 0..5 {
+            let msg = Message::new(
+                "conversation:1".into(),
+                ChannelType::Email,
+                MessageDirection::Inbound,
+                "contact:alice".into(),
+                vec!["contact:me".into()],
+                format!("Message {i}"),
+            );
+            db.create_message(msg).await.unwrap();
+        }
+
+        // List with limit
+        let msgs = db.list_messages("conversation:1", None, 3).await.unwrap();
+        assert_eq!(msgs.len(), 3);
+
+        // List all
+        let all = db.list_messages("conversation:1", None, 100).await.unwrap();
+        assert_eq!(all.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_update_message_read_status() {
+        use crate::schema::{ChannelType, MessageDirection};
+        let db = setup_db().await;
+        let msg = Message::new(
+            "conversation:1".into(),
+            ChannelType::Email,
+            MessageDirection::Inbound,
+            "contact:alice".into(),
+            vec!["contact:me".into()],
+            "Read me".into(),
+        );
+        let created = db.create_message(msg).await.unwrap();
+        let id = created.id_string().unwrap();
+        assert_eq!(created.read_status, ReadStatus::Unread);
+
+        let updated = db.update_message_read_status(&id, ReadStatus::Read).await.unwrap();
+        assert_eq!(updated.read_status, ReadStatus::Read);
+    }
+
+    #[tokio::test]
+    async fn test_search_messages() {
+        use crate::schema::{ChannelType, MessageDirection};
+        let db = setup_db().await;
+
+        let msg1 = Message::new(
+            "conversation:1".into(),
+            ChannelType::Email,
+            MessageDirection::Inbound,
+            "contact:alice".into(),
+            vec!["contact:me".into()],
+            "Meeting tomorrow at 3pm".into(),
+        );
+        let msg2 = Message::new(
+            "conversation:1".into(),
+            ChannelType::Email,
+            MessageDirection::Outbound,
+            "contact:me".into(),
+            vec!["contact:alice".into()],
+            "Sounds good!".into(),
+        );
+        db.create_message(msg1).await.unwrap();
+        db.create_message(msg2).await.unwrap();
+
+        let found = db.search_messages("Meeting").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].body.contains("Meeting"));
+
+        let none = db.search_messages("nonexistent").await.unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_message() {
+        use crate::schema::{ChannelType, MessageDirection};
+        let db = setup_db().await;
+        let msg = Message::new(
+            "conversation:1".into(),
+            ChannelType::Email,
+            MessageDirection::Inbound,
+            "contact:alice".into(),
+            vec!["contact:me".into()],
+            "Delete me".into(),
+        );
+        let created = db.create_message(msg).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        db.delete_message(&id).await.unwrap();
+        assert!(db.get_message(&id).await.is_err());
+    }
+
+    // -- Conversation tests ---
+
+    #[tokio::test]
+    async fn test_create_and_get_conversation() {
+        use crate::schema::ChannelType;
+        let db = setup_db().await;
+        let conv = Conversation::new(
+            "Chat with Alice".into(),
+            ChannelType::Email,
+            vec!["contact:alice".into(), "contact:me".into()],
+        );
+        let created = db.create_conversation(conv).await.unwrap();
+        assert!(created.id.is_some());
+        assert_eq!(created.title, "Chat with Alice");
+
+        let id = created.id_string().unwrap();
+        let fetched = db.get_conversation(&id).await.unwrap();
+        assert_eq!(fetched.title, "Chat with Alice");
+        assert_eq!(fetched.participant_contact_ids.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_list_conversations() {
+        use crate::schema::ChannelType;
+        let db = setup_db().await;
+        db.create_conversation(Conversation::new(
+            "Email chat".into(),
+            ChannelType::Email,
+            vec!["contact:alice".into()],
+        )).await.unwrap();
+        db.create_conversation(Conversation::new(
+            "SMS chat".into(),
+            ChannelType::Sms,
+            vec!["contact:bob".into()],
+        )).await.unwrap();
+
+        let all = db.list_conversations(None).await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        let email_only = db.list_conversations(Some(&ChannelType::Email)).await.unwrap();
+        assert_eq!(email_only.len(), 1);
+        assert_eq!(email_only[0].title, "Email chat");
+    }
+
+    #[tokio::test]
+    async fn test_update_conversation_unread() {
+        use crate::schema::ChannelType;
+        let db = setup_db().await;
+        let conv = Conversation::new(
+            "Test".into(),
+            ChannelType::Email,
+            vec!["contact:alice".into()],
+        );
+        let created = db.create_conversation(conv).await.unwrap();
+        let id = created.id_string().unwrap();
+        assert_eq!(created.unread_count, 0);
+
+        let updated = db.update_conversation_unread(&id, 5).await.unwrap();
+        assert_eq!(updated.unread_count, 5);
+    }
+
+    #[tokio::test]
+    async fn test_link_conversation_to_thread() {
+        use crate::schema::ChannelType;
+        let db = setup_db().await;
+        let thread = db.create_thread(Thread::new("Linked".into(), "".into())).await.unwrap();
+        let tid = thread.id_string().unwrap();
+
+        let conv = Conversation::new(
+            "Linkable".into(),
+            ChannelType::Email,
+            vec!["contact:alice".into()],
+        );
+        let created = db.create_conversation(conv).await.unwrap();
+        let cid = created.id_string().unwrap();
+        assert!(created.linked_thread_id.is_none());
+
+        let linked = db.link_conversation_to_thread(&cid, &tid).await.unwrap();
+        assert_eq!(linked.linked_thread_id.as_deref(), Some(tid.as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_delete_conversation() {
+        use crate::schema::ChannelType;
+        let db = setup_db().await;
+        let conv = Conversation::new(
+            "Delete me".into(),
+            ChannelType::Email,
+            vec!["contact:alice".into()],
+        );
+        let created = db.create_conversation(conv).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        db.delete_conversation(&id).await.unwrap();
+        assert!(db.get_conversation(&id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_relation_type_contactof_attachedto() {
+        let rt1 = RelationType::ContactOf;
+        assert_eq!(rt1.to_string(), "contactof");
+        let parsed: RelationType = "contactof".parse().unwrap();
+        assert_eq!(parsed, RelationType::ContactOf);
+
+        let rt2 = RelationType::AttachedTo;
+        assert_eq!(rt2.to_string(), "attachedto");
+        let parsed2: RelationType = "attached_to".parse().unwrap();
+        assert_eq!(parsed2, RelationType::AttachedTo);
     }
 }

@@ -10,6 +10,7 @@ members = [
     "crates/sovereign-canvas",
     "crates/sovereign-ai",
     "crates/sovereign-p2p",
+    "crates/sovereign-comms",
     "crates/sovereign-app",
 ]
 
@@ -49,6 +50,7 @@ sovereign-canvas = { path = "crates/sovereign-canvas" }
 sovereign-ai = { path = "crates/sovereign-ai" }
 sovereign-crypto = { path = "crates/sovereign-crypto" }
 sovereign-p2p = { path = "crates/sovereign-p2p" }
+sovereign-comms = { path = "crates/sovereign-comms" }
 
 # LLM inference
 llama-cpp-2 = "0.1"

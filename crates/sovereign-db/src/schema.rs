@@ -65,6 +65,8 @@ pub enum RelationType {
     Contradicts,
     Supports,
     BranchesFrom,
+    ContactOf,
+    AttachedTo,
 }
 
 impl std::fmt::Display for RelationType {
@@ -76,6 +78,8 @@ impl std::fmt::Display for RelationType {
             Self::Contradicts => write!(f, "contradicts"),
             Self::Supports => write!(f, "supports"),
             Self::BranchesFrom => write!(f, "branchesfrom"),
+            Self::ContactOf => write!(f, "contactof"),
+            Self::AttachedTo => write!(f, "attachedto"),
         }
     }
 }
@@ -90,6 +94,8 @@ impl std::str::FromStr for RelationType {
             "contradicts" => Ok(Self::Contradicts),
             "supports" => Ok(Self::Supports),
             "branchesfrom" | "branches_from" => Ok(Self::BranchesFrom),
+            "contactof" | "contact_of" => Ok(Self::ContactOf),
+            "attachedto" | "attached_to" => Ok(Self::AttachedTo),
             _ => Err(format!("Unknown relation type: {s}")),
         }
     }
@@ -179,6 +185,217 @@ impl Thread {
             description,
             created_at: Utc::now(),
             deleted_at: None,
+        }
+    }
+
+    pub fn id_string(&self) -> Option<String> {
+        self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+}
+
+// --- Unified Communications types ---
+
+/// Communication channel type
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelType {
+    Email,
+    Sms,
+    Signal,
+    WhatsApp,
+    Matrix,
+    Phone,
+    Custom(String),
+}
+
+impl std::fmt::Display for ChannelType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Email => write!(f, "email"),
+            Self::Sms => write!(f, "sms"),
+            Self::Signal => write!(f, "signal"),
+            Self::WhatsApp => write!(f, "whatsapp"),
+            Self::Matrix => write!(f, "matrix"),
+            Self::Phone => write!(f, "phone"),
+            Self::Custom(s) => write!(f, "custom:{s}"),
+        }
+    }
+}
+
+/// Message read status
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ReadStatus {
+    Unread,
+    Read,
+    Archived,
+}
+
+impl Default for ReadStatus {
+    fn default() -> Self {
+        Self::Unread
+    }
+}
+
+/// Message direction
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageDirection {
+    Inbound,
+    Outbound,
+}
+
+/// A contact's address on a specific channel
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelAddress {
+    pub channel: ChannelType,
+    pub address: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub is_primary: bool,
+}
+
+/// Contact node in the graph
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Contact {
+    pub id: Option<Thing>,
+    pub name: String,
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub notes: String,
+    pub addresses: Vec<ChannelAddress>,
+    pub is_owned: bool,
+    pub created_at: DateTime<Utc>,
+    pub modified_at: DateTime<Utc>,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+    #[serde(default)]
+    pub encryption_nonce: Option<String>,
+}
+
+impl Contact {
+    pub fn new(name: String, is_owned: bool) -> Self {
+        let now = Utc::now();
+        Self {
+            id: None,
+            name,
+            avatar: None,
+            notes: String::new(),
+            addresses: Vec::new(),
+            is_owned,
+            created_at: now,
+            modified_at: now,
+            deleted_at: None,
+            encryption_nonce: None,
+        }
+    }
+
+    pub fn id_string(&self) -> Option<String> {
+        self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+}
+
+/// Message node in the graph
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    pub id: Option<Thing>,
+    pub conversation_id: String,
+    pub channel: ChannelType,
+    pub direction: MessageDirection,
+    pub from_contact_id: String,
+    pub to_contact_ids: Vec<String>,
+    #[serde(default)]
+    pub subject: Option<String>,
+    pub body: String,
+    #[serde(default)]
+    pub body_html: Option<String>,
+    pub sent_at: DateTime<Utc>,
+    #[serde(default)]
+    pub received_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub read_status: ReadStatus,
+    #[serde(default)]
+    pub attachment_doc_ids: Vec<String>,
+    #[serde(default)]
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub headers: Option<String>,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+    #[serde(default)]
+    pub encryption_nonce: Option<String>,
+}
+
+impl Message {
+    pub fn new(
+        conversation_id: String,
+        channel: ChannelType,
+        direction: MessageDirection,
+        from_contact_id: String,
+        to_contact_ids: Vec<String>,
+        body: String,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: None,
+            conversation_id,
+            channel,
+            direction,
+            from_contact_id,
+            to_contact_ids,
+            subject: None,
+            body,
+            body_html: None,
+            sent_at: now,
+            received_at: None,
+            read_status: ReadStatus::Unread,
+            attachment_doc_ids: Vec::new(),
+            external_id: None,
+            headers: None,
+            created_at: now,
+            deleted_at: None,
+            encryption_nonce: None,
+        }
+    }
+
+    pub fn id_string(&self) -> Option<String> {
+        self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+}
+
+/// Conversation node in the graph
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Conversation {
+    pub id: Option<Thing>,
+    pub title: String,
+    pub channel: ChannelType,
+    pub participant_contact_ids: Vec<String>,
+    #[serde(default)]
+    pub last_message_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub unread_count: u32,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+    #[serde(default)]
+    pub linked_thread_id: Option<String>,
+}
+
+impl Conversation {
+    pub fn new(title: String, channel: ChannelType, participant_contact_ids: Vec<String>) -> Self {
+        Self {
+            id: None,
+            title,
+            channel,
+            participant_contact_ids,
+            last_message_at: None,
+            unread_count: 0,
+            created_at: Utc::now(),
+            deleted_at: None,
+            linked_thread_id: None,
         }
     }
 

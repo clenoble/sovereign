@@ -10,6 +10,9 @@ use sovereign_core::lifecycle;
 use sovereign_db::schema::{thing_to_raw, Document, RelationType, Thread};
 use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
 use sovereign_db::GraphDB;
+
+#[cfg(feature = "comms")]
+use sovereign_comms::CommsSync;
 use std::path::PathBuf;
 
 #[cfg(feature = "encryption")]
@@ -148,6 +151,15 @@ enum Commands {
     /// Initiate key recovery from guardians
     #[cfg(feature = "encryption")]
     InitiateRecovery,
+
+    /// List all contacts
+    ListContacts,
+
+    /// List all conversations, optionally filtered by channel
+    ListConversations {
+        #[arg(long)]
+        channel: Option<String>,
+    },
 }
 
 /// Populate the database with sample data when it's empty.
@@ -555,6 +567,155 @@ async fn main() -> Result<()> {
                 }
             };
 
+            // Wire comms sync if enabled
+            #[cfg(feature = "comms")]
+            if config.comms.enabled {
+                let (comms_event_tx, mut comms_event_rx) =
+                    tokio::sync::mpsc::channel::<sovereign_comms::CommsEvent>(256);
+                let mut comms_sync = CommsSync::new(
+                    comms_event_tx,
+                    config.comms.poll_interval_secs,
+                );
+
+                // Add email channel if configured
+                #[cfg(feature = "comms-email")]
+                {
+                    if let Ok(password) = std::env::var("SOVEREIGN_EMAIL_PASSWORD") {
+                        let email_config = sovereign_comms::EmailAccountConfig {
+                            imap_host: std::env::var("SOVEREIGN_IMAP_HOST")
+                                .unwrap_or_default(),
+                            imap_port: std::env::var("SOVEREIGN_IMAP_PORT")
+                                .ok()
+                                .and_then(|p| p.parse().ok())
+                                .unwrap_or(993),
+                            smtp_host: std::env::var("SOVEREIGN_SMTP_HOST")
+                                .unwrap_or_default(),
+                            smtp_port: std::env::var("SOVEREIGN_SMTP_PORT")
+                                .ok()
+                                .and_then(|p| p.parse().ok())
+                                .unwrap_or(587),
+                            username: std::env::var("SOVEREIGN_EMAIL_USER")
+                                .unwrap_or_default(),
+                            display_name: std::env::var("SOVEREIGN_EMAIL_NAME").ok(),
+                        };
+
+                        if !email_config.imap_host.is_empty() {
+                            let email_channel =
+                                sovereign_comms::channels::email::EmailChannel::new(
+                                    email_config,
+                                    db_arc.clone(),
+                                    password,
+                                );
+                            comms_sync.add_channel(Box::new(email_channel));
+                            tracing::info!("Email channel registered");
+                        }
+                    }
+                }
+
+                // Add Signal channel if configured
+                #[cfg(feature = "comms-signal")]
+                {
+                    let signal_phone = std::env::var("SOVEREIGN_SIGNAL_PHONE")
+                        .unwrap_or_default();
+                    if !signal_phone.is_empty() {
+                        let signal_config = sovereign_comms::SignalAccountConfig {
+                            phone_number: signal_phone,
+                            store_path: std::env::var("SOVEREIGN_SIGNAL_STORE")
+                                .unwrap_or_else(|_| {
+                                    let home = std::env::var("HOME")
+                                        .unwrap_or_else(|_| "/tmp".into());
+                                    format!("{home}/.sovereign/signal")
+                                }),
+                            device_name: std::env::var("SOVEREIGN_SIGNAL_NAME").ok(),
+                        };
+                        let signal_channel =
+                            sovereign_comms::channels::signal::SignalChannel::new(
+                                signal_config,
+                                db_arc.clone(),
+                            );
+                        comms_sync.add_channel(Box::new(signal_channel));
+                        tracing::info!("Signal channel registered");
+                    }
+                }
+
+                // Add WhatsApp channel if configured
+                #[cfg(feature = "comms-whatsapp")]
+                {
+                    if let Ok(token) = std::env::var("SOVEREIGN_WHATSAPP_TOKEN") {
+                        let wa_phone_id = std::env::var("SOVEREIGN_WHATSAPP_PHONE_ID")
+                            .unwrap_or_default();
+                        let wa_biz_id = std::env::var("SOVEREIGN_WHATSAPP_BUSINESS_ID")
+                            .unwrap_or_default();
+                        if !wa_phone_id.is_empty() {
+                            let wa_config = sovereign_comms::WhatsAppAccountConfig {
+                                phone_number_id: wa_phone_id,
+                                business_account_id: wa_biz_id,
+                                api_url: std::env::var("SOVEREIGN_WHATSAPP_API_URL")
+                                    .unwrap_or_else(|_| {
+                                        "https://graph.facebook.com".into()
+                                    }),
+                                api_version: std::env::var("SOVEREIGN_WHATSAPP_API_VERSION")
+                                    .unwrap_or_else(|_| "v21.0".into()),
+                                display_name: std::env::var("SOVEREIGN_WHATSAPP_NAME").ok(),
+                            };
+                            let wa_channel =
+                                sovereign_comms::channels::whatsapp::WhatsAppChannel::new(
+                                    wa_config,
+                                    db_arc.clone(),
+                                    token,
+                                );
+                            comms_sync.add_channel(Box::new(wa_channel));
+                            tracing::info!("WhatsApp channel registered");
+                        }
+                    }
+                }
+
+                // Bridge CommsEvent → OrchestratorEvent
+                let orch_tx_comms = orch_tx.clone();
+                tokio::spawn(async move {
+                    while let Some(event) = comms_event_rx.recv().await {
+                        let orch_event = match event {
+                            sovereign_comms::CommsEvent::NewMessages {
+                                channel,
+                                count,
+                                conversation_id,
+                            } => OrchestratorEvent::NewMessagesReceived {
+                                channel: channel.to_string(),
+                                count,
+                                conversation_id,
+                            },
+                            sovereign_comms::CommsEvent::SyncComplete {
+                                channel,
+                                result,
+                            } => OrchestratorEvent::CommsSyncComplete {
+                                channel: channel.to_string(),
+                                new_messages: result.new_messages,
+                            },
+                            sovereign_comms::CommsEvent::SyncError {
+                                channel,
+                                error,
+                            } => OrchestratorEvent::CommsSyncError {
+                                channel: channel.to_string(),
+                                error,
+                            },
+                            sovereign_comms::CommsEvent::ContactDiscovered {
+                                contact_id,
+                                name,
+                            } => OrchestratorEvent::ContactCreated {
+                                contact_id,
+                                name,
+                            },
+                        };
+                        if orch_tx_comms.send(orch_event).is_err() {
+                            break;
+                        }
+                    }
+                });
+
+                tokio::spawn(comms_sync.run());
+                tracing::info!("Communications sync engine spawned");
+            }
+
             // Build query callback for search overlay
             let query_callback: Option<Box<dyn Fn(String) + Send + 'static>> =
                 orchestrator.as_ref().map(|orch| {
@@ -912,6 +1073,41 @@ async fn main() -> Result<()> {
             println!("Key recovery requires at least 3 of 5 guardian shards.");
             println!("(Recovery flow requires a running `sovereign run` instance with P2P)");
             println!("Use the orchestrator command: 'initiate recovery'");
+        }
+
+        Commands::ListContacts => {
+            let db = create_db(&config).await?;
+            let contacts = db.list_contacts().await?;
+            for c in &contacts {
+                let id = c.id_string().unwrap_or_default();
+                let addrs: Vec<&str> = c.addresses.iter().map(|a| a.address.as_str()).collect();
+                println!("{id}\t{}\t[{}]", c.name, addrs.join(", "));
+            }
+            println!("({} contacts)", contacts.len());
+        }
+
+        Commands::ListConversations { channel } => {
+            let db = create_db(&config).await?;
+            let channel_filter = channel.as_ref().and_then(|ch| {
+                match ch.to_lowercase().as_str() {
+                    "email" => Some(sovereign_db::schema::ChannelType::Email),
+                    "sms" => Some(sovereign_db::schema::ChannelType::Sms),
+                    "signal" => Some(sovereign_db::schema::ChannelType::Signal),
+                    "whatsapp" => Some(sovereign_db::schema::ChannelType::WhatsApp),
+                    "matrix" => Some(sovereign_db::schema::ChannelType::Matrix),
+                    "phone" => Some(sovereign_db::schema::ChannelType::Phone),
+                    _ => None,
+                }
+            });
+            let convs = db.list_conversations(channel_filter.as_ref()).await?;
+            for c in &convs {
+                let id = c.id_string().unwrap_or_default();
+                let last = c.last_message_at
+                    .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| "-".into());
+                println!("{id}\t{}\t{}\tunread={}", c.title, last, c.unread_count);
+            }
+            println!("({} conversations)", convs.len());
         }
     }
 

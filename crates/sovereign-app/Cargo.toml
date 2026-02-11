@@ -24,6 +24,7 @@ chrono = { workspace = true }
 # Optional crypto / P2P deps
 sovereign-crypto = { workspace = true, optional = true }
 sovereign-p2p = { workspace = true, optional = true }
+sovereign-comms = { workspace = true, optional = true }
 rpassword = { version = "7.3", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 rand = { version = "0.10", optional = true }
@@ -32,3 +33,7 @@ rand = { version = "0.10", optional = true }
 default = []
 encryption = ["sovereign-crypto", "sovereign-db/encryption", "rpassword", "uuid", "rand"]
 p2p = ["encryption", "sovereign-p2p", "sovereign-ai/p2p"]
+comms = ["sovereign-comms"]
+comms-email = ["comms", "sovereign-comms/email"]
+comms-signal = ["comms", "sovereign-comms/signal"]
+comms-whatsapp = ["comms", "sovereign-comms/whatsapp"]

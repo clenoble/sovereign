@@ -67,6 +67,12 @@ pub enum OrchestratorEvent {
     MigrationComplete,
     // Document creation
     DocumentCreated { doc_id: String, title: String, thread_id: String },
+    // Communications events
+    NewMessagesReceived { channel: String, count: u32, conversation_id: String },
+    MessageSent { channel: String, message_id: String },
+    CommsSyncComplete { channel: String, new_messages: u32 },
+    CommsSyncError { channel: String, error: String },
+    ContactCreated { contact_id: String, name: String },
 }
 
 /// Lightweight milestone summary for milestone events.

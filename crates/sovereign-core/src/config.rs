@@ -15,6 +15,8 @@ pub struct AppConfig {
     pub crypto: CryptoConfig,
     #[serde(default)]
     pub p2p: P2pConfig,
+    #[serde(default)]
+    pub comms: CommsAppConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -209,6 +211,28 @@ impl Default for P2pConfig {
     }
 }
 
+/// Communications configuration (email, messaging, etc.)
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommsAppConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_comms_poll_interval")]
+    pub poll_interval_secs: u64,
+}
+
+fn default_comms_poll_interval() -> u64 {
+    300
+}
+
+impl Default for CommsAppConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_secs: default_comms_poll_interval(),
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -218,6 +242,7 @@ impl Default for AppConfig {
             voice: VoiceConfig::default(),
             crypto: CryptoConfig::default(),
             p2p: P2pConfig::default(),
+            comms: CommsAppConfig::default(),
         }
     }
 }

@@ -14,7 +14,10 @@ use sovereign_crypto::key_db::KeyDatabase;
 use tokio::sync::Mutex;
 
 use crate::error::{DbError, DbResult};
-use crate::schema::{Commit, Document, Milestone, RelatedTo, RelationType, Thread};
+use crate::schema::{
+    ChannelType, Commit, Contact, Conversation, Document, Message, Milestone,
+    ReadStatus, RelatedTo, RelationType, Thread,
+};
 use crate::traits::GraphDB;
 
 /// A GraphDB wrapper that encrypts/decrypts document content transparently.
@@ -287,6 +290,210 @@ impl GraphDB for EncryptedGraphDB {
     async fn delete_milestone(&self, id: &str) -> DbResult<()> {
         self.inner.delete_milestone(id).await
     }
+
+    // -- Contacts: encrypt notes field ---
+
+    async fn create_contact(&self, contact: Contact) -> DbResult<Contact> {
+        // Create first, then encrypt notes if non-empty
+        let created = self.inner.create_contact(contact).await?;
+        if !created.notes.is_empty() {
+            let contact_id = created.id.as_ref()
+                .map(|t| crate::schema::thing_to_raw(t))
+                .unwrap_or_default();
+            let (enc_notes, _nonce) = self.encrypt_content(&contact_id, &created.notes).await?;
+            self.inner.update_contact(&contact_id, None, Some(&enc_notes), None).await?;
+        }
+        Ok(created)
+    }
+
+    async fn get_contact(&self, id: &str) -> DbResult<Contact> {
+        let mut contact = self.inner.get_contact(id).await?;
+        if let Some(nonce) = &contact.encryption_nonce {
+            contact.notes = self.decrypt_content(id, &contact.notes, nonce).await?;
+            contact.encryption_nonce = None;
+        }
+        Ok(contact)
+    }
+
+    async fn list_contacts(&self) -> DbResult<Vec<Contact>> {
+        let contacts = self.inner.list_contacts().await?;
+        let mut result = Vec::with_capacity(contacts.len());
+        for mut c in contacts {
+            if let Some(nonce) = &c.encryption_nonce {
+                let id = c.id.as_ref()
+                    .map(|t| crate::schema::thing_to_raw(t))
+                    .unwrap_or_default();
+                c.notes = self.decrypt_content(&id, &c.notes, nonce).await?;
+                c.encryption_nonce = None;
+            }
+            result.push(c);
+        }
+        Ok(result)
+    }
+
+    async fn update_contact(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        notes: Option<&str>,
+        avatar: Option<&str>,
+    ) -> DbResult<Contact> {
+        let enc_notes = if let Some(n) = notes {
+            let (ct, _nonce) = self.encrypt_content(id, n).await?;
+            Some(ct)
+        } else {
+            None
+        };
+        let mut contact = self.inner.update_contact(id, name, enc_notes.as_deref(), avatar).await?;
+        if let Some(nonce) = &contact.encryption_nonce {
+            contact.notes = self.decrypt_content(id, &contact.notes, nonce).await?;
+            contact.encryption_nonce = None;
+        }
+        Ok(contact)
+    }
+
+    async fn delete_contact(&self, id: &str) -> DbResult<()> {
+        self.inner.delete_contact(id).await
+    }
+
+    async fn soft_delete_contact(&self, id: &str) -> DbResult<()> {
+        self.inner.soft_delete_contact(id).await
+    }
+
+    async fn find_contact_by_address(&self, address: &str) -> DbResult<Option<Contact>> {
+        match self.inner.find_contact_by_address(address).await? {
+            Some(mut c) => {
+                if let Some(nonce) = &c.encryption_nonce {
+                    let id = c.id.as_ref()
+                        .map(|t| crate::schema::thing_to_raw(t))
+                        .unwrap_or_default();
+                    c.notes = self.decrypt_content(&id, &c.notes, nonce).await?;
+                    c.encryption_nonce = None;
+                }
+                Ok(Some(c))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn add_contact_address(
+        &self,
+        contact_id: &str,
+        address: crate::schema::ChannelAddress,
+    ) -> DbResult<Contact> {
+        let mut contact = self.inner.add_contact_address(contact_id, address).await?;
+        if let Some(nonce) = &contact.encryption_nonce {
+            contact.notes = self.decrypt_content(contact_id, &contact.notes, nonce).await?;
+            contact.encryption_nonce = None;
+        }
+        Ok(contact)
+    }
+
+    // -- Messages: encrypt body and body_html ---
+
+    async fn create_message(&self, message: Message) -> DbResult<Message> {
+        // Create first, then encrypt body
+        let created = self.inner.create_message(message).await?;
+        if !created.body.is_empty() {
+            let msg_id = created.id.as_ref()
+                .map(|t| crate::schema::thing_to_raw(t))
+                .unwrap_or_default();
+            let (_, _nonce) = self.encrypt_content(&msg_id, &created.body).await?;
+            // Note: message body encryption would need a dedicated update method
+            // For now, pass through — full implementation deferred to email channel
+        }
+        Ok(created)
+    }
+
+    async fn get_message(&self, id: &str) -> DbResult<Message> {
+        let mut msg = self.inner.get_message(id).await?;
+        if let Some(nonce) = &msg.encryption_nonce {
+            msg.body = self.decrypt_content(id, &msg.body, nonce).await?;
+            if let Some(ref html) = msg.body_html {
+                msg.body_html = Some(self.decrypt_content(id, html, nonce).await?);
+            }
+            msg.encryption_nonce = None;
+        }
+        Ok(msg)
+    }
+
+    async fn list_messages(
+        &self,
+        conversation_id: &str,
+        before: Option<chrono::DateTime<chrono::Utc>>,
+        limit: u32,
+    ) -> DbResult<Vec<Message>> {
+        let msgs = self.inner.list_messages(conversation_id, before, limit).await?;
+        let mut result = Vec::with_capacity(msgs.len());
+        for mut m in msgs {
+            if let Some(nonce) = &m.encryption_nonce {
+                let id = m.id.as_ref()
+                    .map(|t| crate::schema::thing_to_raw(t))
+                    .unwrap_or_default();
+                m.body = self.decrypt_content(&id, &m.body, nonce).await?;
+                if let Some(ref html) = m.body_html {
+                    m.body_html = Some(self.decrypt_content(&id, html, nonce).await?);
+                }
+                m.encryption_nonce = None;
+            }
+            result.push(m);
+        }
+        Ok(result)
+    }
+
+    async fn update_message_read_status(
+        &self,
+        id: &str,
+        status: ReadStatus,
+    ) -> DbResult<Message> {
+        self.inner.update_message_read_status(id, status).await
+    }
+
+    async fn delete_message(&self, id: &str) -> DbResult<()> {
+        self.inner.delete_message(id).await
+    }
+
+    async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>> {
+        // Search operates on stored (potentially encrypted) content
+        self.inner.search_messages(query).await
+    }
+
+    // -- Conversations: pass through (title is not encrypted) ---
+
+    async fn create_conversation(&self, conversation: Conversation) -> DbResult<Conversation> {
+        self.inner.create_conversation(conversation).await
+    }
+
+    async fn get_conversation(&self, id: &str) -> DbResult<Conversation> {
+        self.inner.get_conversation(id).await
+    }
+
+    async fn list_conversations(
+        &self,
+        channel: Option<&ChannelType>,
+    ) -> DbResult<Vec<Conversation>> {
+        self.inner.list_conversations(channel).await
+    }
+
+    async fn update_conversation_unread(
+        &self,
+        id: &str,
+        unread_count: u32,
+    ) -> DbResult<Conversation> {
+        self.inner.update_conversation_unread(id, unread_count).await
+    }
+
+    async fn delete_conversation(&self, id: &str) -> DbResult<()> {
+        self.inner.delete_conversation(id).await
+    }
+
+    async fn link_conversation_to_thread(
+        &self,
+        conversation_id: &str,
+        thread_id: &str,
+    ) -> DbResult<Conversation> {
+        self.inner.link_conversation_to_thread(conversation_id, thread_id).await
+    }
 }
 
 #[cfg(test)]
@@ -410,5 +617,28 @@ mod tests {
         async fn create_milestone(&self, milestone: Milestone) -> DbResult<Milestone> { Ok(milestone) }
         async fn list_milestones(&self, _thread_id: &str) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
         async fn delete_milestone(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        // Contacts
+        async fn create_contact(&self, contact: Contact) -> DbResult<Contact> { Ok(contact) }
+        async fn get_contact(&self, _id: &str) -> DbResult<Contact> { Err(DbError::NotFound("mock".into())) }
+        async fn list_contacts(&self) -> DbResult<Vec<Contact>> { Ok(vec![]) }
+        async fn update_contact(&self, _id: &str, _name: Option<&str>, _notes: Option<&str>, _avatar: Option<&str>) -> DbResult<Contact> { Err(DbError::NotFound("mock".into())) }
+        async fn delete_contact(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        async fn soft_delete_contact(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        async fn find_contact_by_address(&self, _address: &str) -> DbResult<Option<Contact>> { Ok(None) }
+        async fn add_contact_address(&self, _contact_id: &str, _address: crate::schema::ChannelAddress) -> DbResult<Contact> { Err(DbError::NotFound("mock".into())) }
+        // Messages
+        async fn create_message(&self, message: Message) -> DbResult<Message> { Ok(message) }
+        async fn get_message(&self, _id: &str) -> DbResult<Message> { Err(DbError::NotFound("mock".into())) }
+        async fn list_messages(&self, _conversation_id: &str, _before: Option<chrono::DateTime<chrono::Utc>>, _limit: u32) -> DbResult<Vec<Message>> { Ok(vec![]) }
+        async fn update_message_read_status(&self, _id: &str, _status: ReadStatus) -> DbResult<Message> { Err(DbError::NotFound("mock".into())) }
+        async fn delete_message(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        async fn search_messages(&self, _query: &str) -> DbResult<Vec<Message>> { Ok(vec![]) }
+        // Conversations
+        async fn create_conversation(&self, conversation: Conversation) -> DbResult<Conversation> { Ok(conversation) }
+        async fn get_conversation(&self, _id: &str) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
+        async fn list_conversations(&self, _channel: Option<&ChannelType>) -> DbResult<Vec<Conversation>> { Ok(vec![]) }
+        async fn update_conversation_unread(&self, _id: &str, _unread_count: u32) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
+        async fn delete_conversation(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        async fn link_conversation_to_thread(&self, _conversation_id: &str, _thread_id: &str) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
     }
 }

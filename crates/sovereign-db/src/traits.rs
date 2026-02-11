@@ -1,8 +1,10 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::error::DbResult;
 use crate::schema::{
-    Commit, Document, Milestone, RelatedTo, RelationType, Thread,
+    ChannelType, Commit, Contact, Conversation, Document, Message, Milestone,
+    ReadStatus, RelatedTo, RelationType, Thread,
 };
 
 /// Core database abstraction for the Sovereign OS document graph.
@@ -121,4 +123,102 @@ pub trait GraphDB: Send + Sync {
 
     /// Delete a milestone by ID.
     async fn delete_milestone(&self, id: &str) -> DbResult<()>;
+
+    // -- Contacts ---
+
+    /// Create a new contact.
+    async fn create_contact(&self, contact: Contact) -> DbResult<Contact>;
+
+    /// Get a contact by ID.
+    async fn get_contact(&self, id: &str) -> DbResult<Contact>;
+
+    /// List all contacts (excludes soft-deleted).
+    async fn list_contacts(&self) -> DbResult<Vec<Contact>>;
+
+    /// Update a contact's name, notes, or avatar.
+    async fn update_contact(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        notes: Option<&str>,
+        avatar: Option<&str>,
+    ) -> DbResult<Contact>;
+
+    /// Hard-delete a contact.
+    async fn delete_contact(&self, id: &str) -> DbResult<()>;
+
+    /// Soft-delete a contact.
+    async fn soft_delete_contact(&self, id: &str) -> DbResult<()>;
+
+    /// Find a contact by channel address.
+    async fn find_contact_by_address(&self, address: &str) -> DbResult<Option<Contact>>;
+
+    /// Add an address to an existing contact.
+    async fn add_contact_address(
+        &self,
+        contact_id: &str,
+        address: crate::schema::ChannelAddress,
+    ) -> DbResult<Contact>;
+
+    // -- Messages ---
+
+    /// Create a new message.
+    async fn create_message(&self, message: Message) -> DbResult<Message>;
+
+    /// Get a message by ID.
+    async fn get_message(&self, id: &str) -> DbResult<Message>;
+
+    /// List messages in a conversation, ordered by sent_at descending.
+    /// `before` enables cursor-based pagination (messages sent before this time).
+    /// `limit` caps the result count.
+    async fn list_messages(
+        &self,
+        conversation_id: &str,
+        before: Option<DateTime<Utc>>,
+        limit: u32,
+    ) -> DbResult<Vec<Message>>;
+
+    /// Update a message's read status.
+    async fn update_message_read_status(
+        &self,
+        id: &str,
+        status: ReadStatus,
+    ) -> DbResult<Message>;
+
+    /// Hard-delete a message.
+    async fn delete_message(&self, id: &str) -> DbResult<()>;
+
+    /// Search messages by body or subject text.
+    async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>>;
+
+    // -- Conversations ---
+
+    /// Create a new conversation.
+    async fn create_conversation(&self, conversation: Conversation) -> DbResult<Conversation>;
+
+    /// Get a conversation by ID.
+    async fn get_conversation(&self, id: &str) -> DbResult<Conversation>;
+
+    /// List conversations, optionally filtered by channel type.
+    async fn list_conversations(
+        &self,
+        channel: Option<&ChannelType>,
+    ) -> DbResult<Vec<Conversation>>;
+
+    /// Update a conversation's unread count.
+    async fn update_conversation_unread(
+        &self,
+        id: &str,
+        unread_count: u32,
+    ) -> DbResult<Conversation>;
+
+    /// Hard-delete a conversation.
+    async fn delete_conversation(&self, id: &str) -> DbResult<()>;
+
+    /// Link a conversation to a thread.
+    async fn link_conversation_to_thread(
+        &self,
+        conversation_id: &str,
+        thread_id: &str,
+    ) -> DbResult<Conversation>;
 }
