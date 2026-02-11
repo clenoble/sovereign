@@ -8,7 +8,7 @@ use iced::{keyboard, Element, Length, Subscription, Task, Theme};
 
 use sovereign_canvas::controller::CanvasCommand;
 use sovereign_canvas::renderer::CanvasProgram;
-use sovereign_canvas::state::{hit_test, CanvasState};
+use sovereign_canvas::state::CanvasState;
 use sovereign_core::config::UiConfig;
 use sovereign_core::content::ContentFields;
 use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent, SkillEvent};
@@ -39,13 +39,6 @@ pub enum VoiceEvent {
 pub enum Message {
     // Periodic polling
     Tick,
-    // Canvas interactions
-    CanvasScrolled(f32, f64, f64), // dy, mouse_x, mouse_y
-    CanvasDragStart(f64, f64),
-    CanvasDragUpdate(f64, f64),
-    CanvasClicked(f64, f64),
-    CanvasDoubleClicked(f64, f64),
-    CanvasHovered(f64, f64),
     // Search
     SearchToggled,
     SearchQueryChanged(String),
@@ -66,6 +59,10 @@ pub enum Message {
     TaskbarDocClicked(String),
     TaskbarDocPinToggled(String),
     MicToggled,
+    // Panel drag
+    PanelDragStart(usize),
+    PanelDragMove { panel_idx: usize, local: iced::Point },
+    PanelDragEnd(usize),
     // File dialogs
     FileDialogResult { skill_name: String, action_id: String, path: Option<std::path::PathBuf> },
     SaveDialogResult { data: Vec<u8>, path: Option<std::path::PathBuf> },
@@ -81,7 +78,6 @@ pub struct SovereignApp {
     canvas_program: CanvasProgram,
     canvas_state: Arc<Mutex<CanvasState>>,
     canvas_cmd_rx: Option<mpsc::Receiver<CanvasCommand>>,
-    drag_start_pan: Option<(f64, f64)>,
     // UI components
     search: SearchState,
     bubble: BubbleState,
@@ -138,7 +134,6 @@ impl SovereignApp {
             canvas_program,
             canvas_state,
             canvas_cmd_rx: Some(canvas_cmd_rx),
-            drag_start_pan: None,
             search: SearchState::new(),
             bubble: BubbleState::new(),
             taskbar: TaskbarState::new(pinned_docs),
@@ -173,61 +168,6 @@ impl SovereignApp {
                 Task::none()
             }
 
-            // ── Canvas interactions ──────────────────────────────────────
-            Message::CanvasScrolled(dy, mx, my) => {
-                let factor = if dy < 0.0 { 1.15 } else { 1.0 / 1.15 };
-                let mut st = self.canvas_state.lock().unwrap();
-                st.camera.zoom_at(mx, my, factor);
-                Task::none()
-            }
-            Message::CanvasDragStart(_x, _y) => {
-                let st = self.canvas_state.lock().unwrap();
-                self.drag_start_pan = Some((st.camera.pan_x, st.camera.pan_y));
-                drop(st);
-                Task::none()
-            }
-            Message::CanvasDragUpdate(dx, dy) => {
-                if let Some((sx, sy)) = self.drag_start_pan {
-                    let mut st = self.canvas_state.lock().unwrap();
-                    st.camera.pan_x = sx - dx / st.camera.zoom;
-                    st.camera.pan_y = sy - dy / st.camera.zoom;
-                }
-                Task::none()
-            }
-            Message::CanvasClicked(x, y) => {
-                let mut st = self.canvas_state.lock().unwrap();
-                let hit = hit_test(&st, x, y);
-                if st.selected != hit {
-                    st.selected = hit;
-                    if let Some(i) = hit {
-                        let card = &st.layout.cards[i];
-                        tracing::info!(
-                            "Selected: \"{}\" [{}]",
-                            card.title,
-                            if card.is_owned { "owned" } else { "external" }
-                        );
-                    }
-                }
-                Task::none()
-            }
-            Message::CanvasDoubleClicked(x, y) => {
-                let st = self.canvas_state.lock().unwrap();
-                let hit = hit_test(&st, x, y);
-                if let Some(i) = hit {
-                    let doc_id = st.layout.cards[i].doc_id.clone();
-                    drop(st);
-                    return self.update(Message::OpenDocument(doc_id));
-                }
-                Task::none()
-            }
-            Message::CanvasHovered(x, y) => {
-                let mut st = self.canvas_state.lock().unwrap();
-                st.mouse_x = x;
-                st.mouse_y = y;
-                st.hovered = hit_test(&st, x, y);
-                Task::none()
-            }
-
             // ── Search ───────────────────────────────────────────────────
             Message::SearchToggled => {
                 self.search.visible = !self.search.visible;
@@ -253,8 +193,7 @@ impl SovereignApp {
                 Task::none()
             }
             Message::SkillExecuted(skill_name, action_id) => {
-                self.execute_skill(&skill_name, &action_id);
-                Task::none()
+                self.execute_skill(&skill_name, &action_id)
             }
             Message::ApproveAction => {
                 if let Some(ref tx) = self.decision_tx {
@@ -341,6 +280,59 @@ impl SovereignApp {
                 Task::none()
             }
 
+            // ── Panel drag ──────────────────────────────────────────────
+            Message::PanelDragStart(idx) => {
+                if let Some(panel) = self.doc_panels.get_mut(idx) {
+                    // Only start drag if cursor is in the header area (top ~44px)
+                    if panel.last_local_cursor.y < 44.0 {
+                        let screen = iced::Point::new(
+                            panel.position.x + panel.last_local_cursor.x,
+                            panel.position.y + panel.last_local_cursor.y,
+                        );
+                        panel.drag_start_screen = Some(screen);
+                        panel.drag_start_panel = Some(panel.position);
+                    }
+                }
+                Task::none()
+            }
+            Message::PanelDragMove { panel_idx, local } => {
+                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
+                    panel.last_local_cursor = local;
+
+                    if let (Some(start_screen), Some(start_panel)) =
+                        (panel.drag_start_screen, panel.drag_start_panel)
+                    {
+                        let screen = iced::Point::new(
+                            panel.position.x + local.x,
+                            panel.position.y + local.y,
+                        );
+                        let dx = screen.x - start_screen.x;
+                        let dy = screen.y - start_screen.y;
+
+                        // 3px threshold to start drag
+                        if !panel.dragging && (dx.abs() > 3.0 || dy.abs() > 3.0) {
+                            panel.dragging = true;
+                        }
+
+                        if panel.dragging {
+                            panel.position = iced::Point::new(
+                                (start_panel.x + dx).max(0.0),
+                                (start_panel.y + dy).max(0.0),
+                            );
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::PanelDragEnd(idx) => {
+                if let Some(panel) = self.doc_panels.get_mut(idx) {
+                    panel.dragging = false;
+                    panel.drag_start_screen = None;
+                    panel.drag_start_panel = None;
+                }
+                Task::none()
+            }
+
             // ── Taskbar ──────────────────────────────────────────────────
             Message::TaskbarDocClicked(doc_id) => {
                 self.update(Message::OpenDocument(doc_id))
@@ -399,7 +391,7 @@ impl SovereignApp {
     }
 
     pub fn view(&self) -> Element<Message> {
-        // Canvas (full-screen shader)
+        // Canvas: shader handles mouse events directly via Program::update()
         let canvas = shader(&self.canvas_program)
             .width(Length::Fill)
             .height(Length::Fill);
@@ -447,6 +439,28 @@ impl SovereignApp {
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     fn poll_channels(&mut self) {
+        // Check for double-click → open document from the canvas shader
+        {
+            let mut st = self.canvas_state.lock().unwrap();
+            if let Some(doc_id) = st.pending_open.take() {
+                drop(st);
+                // Inline the OpenDocument logic (poll_channels can't return Task)
+                if !self.doc_panels.iter().any(|p| p.doc_id == doc_id) {
+                    if let Some(doc) = self.doc_map.get(&doc_id) {
+                        let content = ContentFields::parse(&doc.content);
+                        let panel = FloatingPanel::new(
+                            doc_id.clone(),
+                            doc.title.clone(),
+                            content.body,
+                            content.images,
+                        );
+                        self.doc_panels.push(panel);
+                        self.taskbar.add_document(&doc_id, &doc.title, doc.is_owned);
+                    }
+                }
+            }
+        }
+
         // Drain orchestrator events first, then process (avoids borrow conflict)
         let orch_events: Vec<_> = self
             .orch_rx
@@ -628,7 +642,7 @@ impl SovereignApp {
         }
     }
 
-    fn execute_skill(&mut self, skill_name: &str, action_id: &str) {
+    fn execute_skill(&mut self, skill_name: &str, action_id: &str) -> Task<Message> {
         // Special cases: file dialogs
         if (skill_name == "image" && action_id == "add")
             || (skill_name == "file-import" && action_id == "import")
@@ -638,8 +652,7 @@ impl SovereignApp {
             let action_id_owned = action_id.to_string();
             let is_image = skill_name_owned == "image";
             tracing::info!("File dialog requested for {}", skill_name_owned);
-            // Spawn async file dialog
-            let _task = Task::perform(
+            return Task::perform(
                 async move {
                     let mut dialog = rfd::AsyncFileDialog::new()
                         .set_title(if is_image { "Select Image" } else { "Import File" });
@@ -654,7 +667,6 @@ impl SovereignApp {
                     path,
                 },
             );
-            return;
         }
 
         // Special case: PDF export
@@ -665,14 +677,13 @@ impl SovereignApp {
                     match skill.execute("export", &doc_data, "") {
                         Ok(SkillOutput::File { name, data: _, .. }) => {
                             tracing::info!("PDF generated: {name}");
-                            // Could spawn save dialog here
                         }
                         Ok(_) => {}
                         Err(e) => tracing::error!("PDF export failed: {e}"),
                     }
                 }
             }
-            return;
+            return Task::none();
         }
 
         // Special case: search/find_replace hint
@@ -680,7 +691,7 @@ impl SovereignApp {
             self.bubble.show_skill_result(
                 &format!("Use search bar for {}", action_id.replace('_', " ")),
             );
-            return;
+            return Task::none();
         }
 
         // Default: immediate execution
@@ -693,7 +704,6 @@ impl SovereignApp {
                         if let Some(ref cb) = self.save_callback {
                             cb(doc_id, title, cf.serialize());
                         }
-                        // Update panel images if changed
                         if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
                             if panel.images != cf.images {
                                 panel.images = cf.images;
@@ -719,6 +729,7 @@ impl SovereignApp {
         } else {
             self.bubble.show_skill_result("Open a document first");
         }
+        Task::none()
     }
 
     fn execute_skill_with_path(

@@ -82,6 +82,8 @@ pub struct CanvasState {
     pub frame_times: Vec<f64>,
     pub viewport_width: f64,
     pub viewport_height: f64,
+    /// Set by shader on double-click; consumed by the app's Tick handler.
+    pub pending_open: Option<String>,
 }
 
 impl CanvasState {
@@ -100,6 +102,7 @@ impl CanvasState {
             frame_times: Vec::with_capacity(300),
             viewport_width: 1280.0,
             viewport_height: 720.0,
+            pending_open: None,
         }
     }
 

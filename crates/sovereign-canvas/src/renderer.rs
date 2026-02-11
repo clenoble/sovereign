@@ -1,8 +1,10 @@
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use iced::widget::shader;
+use iced::mouse::{self, Cursor, ScrollDelta};
+use iced::widget::shader::{self, Action};
 use iced::wgpu;
-use iced::Rectangle;
+use iced::{Event, Rectangle};
 
 use skia_safe::{Canvas, Color4f, ColorType, Font, Paint, PaintStyle, Path, Point, RRect, Rect};
 use skia_safe::AlphaType;
@@ -345,10 +347,132 @@ where
     type State = CanvasWidgetState;
     type Primitive = CanvasPrimitive;
 
+    fn update(
+        &self,
+        wstate: &mut Self::State,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: Cursor,
+    ) -> Option<Action<Message>> {
+        // Only process mouse events when cursor is within the shader bounds.
+        let pos = cursor.position_in(bounds)?;
+        let (x, y) = (pos.x as f64, pos.y as f64);
+
+        match event {
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                let mut st = self.state.lock().unwrap();
+                let old_hovered = st.hovered;
+                st.mouse_x = x;
+                st.mouse_y = y;
+                st.hovered = crate::state::hit_test(&st, x, y);
+
+                let mut changed = old_hovered != st.hovered;
+
+                // Drag panning
+                if let Some((start_x, start_y)) = wstate.drag_start_mouse {
+                    let dx = x - start_x;
+                    let dy = y - start_y;
+                    if !wstate.is_dragging && (dx.abs() > 3.0 || dy.abs() > 3.0) {
+                        wstate.is_dragging = true;
+                    }
+                    if wstate.is_dragging {
+                        if let Some((sx, sy)) = wstate.drag_start_pan {
+                            st.camera.pan_x = sx - dx / st.camera.zoom;
+                            st.camera.pan_y = sy - dy / st.camera.zoom;
+                        }
+                        changed = true;
+                    }
+                }
+
+                if changed {
+                    Some(Action::request_redraw().and_capture())
+                } else {
+                    Some(Action::capture())
+                }
+            }
+
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                let st = self.state.lock().unwrap();
+                wstate.drag_start_mouse = Some((x, y));
+                wstate.drag_start_pan = Some((st.camera.pan_x, st.camera.pan_y));
+                wstate.is_dragging = false;
+                Some(Action::capture())
+            }
+
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if !wstate.is_dragging {
+                    if let Some((cx, cy)) = wstate.drag_start_mouse {
+                        let now = Instant::now();
+                        let is_double = wstate
+                            .last_click_time
+                            .map(|t| now.duration_since(t) < Duration::from_millis(400))
+                            .unwrap_or(false)
+                            && wstate
+                                .last_click_pos
+                                .map(|(lx, ly)| (cx - lx).abs() < 5.0 && (cy - ly).abs() < 5.0)
+                                .unwrap_or(false);
+
+                        let mut st = self.state.lock().unwrap();
+                        if is_double {
+                            if let Some(i) = crate::state::hit_test(&st, cx, cy) {
+                                st.pending_open =
+                                    Some(st.layout.cards[i].doc_id.clone());
+                            }
+                            wstate.last_click_time = None;
+                        } else {
+                            // Single click — select
+                            let hit = crate::state::hit_test(&st, cx, cy);
+                            if st.selected != hit {
+                                st.selected = hit;
+                            }
+                            wstate.last_click_time = Some(now);
+                            wstate.last_click_pos = Some((cx, cy));
+                        }
+                    }
+                }
+                wstate.drag_start_mouse = None;
+                wstate.drag_start_pan = None;
+                wstate.is_dragging = false;
+                Some(Action::request_redraw().and_capture())
+            }
+
+            Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                let dy = match delta {
+                    ScrollDelta::Lines { y, .. } => *y,
+                    ScrollDelta::Pixels { y, .. } => *y,
+                };
+                let mut st = self.state.lock().unwrap();
+                let factor = if dy < 0.0 { 1.15 } else { 1.0 / 1.15 };
+                st.camera.zoom_at(x, y, factor);
+                Some(Action::request_redraw().and_capture())
+            }
+
+            _ => None,
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        _state: &Self::State,
+        bounds: Rectangle,
+        cursor: Cursor,
+    ) -> mouse::Interaction {
+        if cursor.position_in(bounds).is_some() {
+            let st = self.state.lock().unwrap();
+            if st.hovered.is_some() {
+                mouse::Interaction::Pointer
+            } else {
+                mouse::Interaction::Grab
+            }
+        } else {
+            mouse::Interaction::default()
+        }
+    }
+
     fn draw(
         &self,
         _state: &Self::State,
-        _cursor: iced::mouse::Cursor,
+        _cursor: Cursor,
         bounds: Rectangle,
     ) -> Self::Primitive {
         let w = bounds.width.max(1.0) as u32;
@@ -380,9 +504,15 @@ where
     }
 }
 
-/// Widget-local state for the canvas shader.
+/// Widget-local state for the canvas shader (drag, click tracking).
 #[derive(Default)]
-pub struct CanvasWidgetState;
+pub struct CanvasWidgetState {
+    drag_start_mouse: Option<(f64, f64)>,
+    drag_start_pan: Option<(f64, f64)>,
+    is_dragging: bool,
+    last_click_time: Option<Instant>,
+    last_click_pos: Option<(f64, f64)>,
+}
 
 // ── Rendering functions ─────────────────────────────────────────────────────
 

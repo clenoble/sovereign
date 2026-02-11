@@ -1,4 +1,4 @@
-use iced::widget::{button, column, container, row, scrollable, text, text_editor, text_input};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_editor, text_input};
 use iced::{Element, Length, Padding};
 
 use sovereign_core::content::ContentImage;
@@ -15,6 +15,11 @@ pub struct FloatingPanel {
     pub position: iced::Point,
     pub size: iced::Size,
     pub visible: bool,
+    // Drag state
+    pub dragging: bool,
+    pub last_local_cursor: iced::Point,
+    pub drag_start_screen: Option<iced::Point>,
+    pub drag_start_panel: Option<iced::Point>,
 }
 
 impl FloatingPanel {
@@ -32,6 +37,10 @@ impl FloatingPanel {
             position: iced::Point::new(200.0, 100.0),
             size: iced::Size::new(700.0, 500.0),
             visible: true,
+            dragging: false,
+            last_local_cursor: iced::Point::ORIGIN,
+            drag_start_screen: None,
+            drag_start_panel: None,
         }
     }
 
@@ -97,10 +106,23 @@ impl FloatingPanel {
             )));
         }
 
-        container(content)
-            .width(self.size.width)
-            .height(self.size.height)
-            .style(theme::document_panel_style)
+        // Inner: styled panel with mouse_area — captures events (prevents
+        // leaking to the canvas shader) and enables drag-to-reposition.
+        let panel = mouse_area(
+            container(content)
+                .width(self.size.width)
+                .height(self.size.height)
+                .style(theme::document_panel_style),
+        )
+        .on_press(Message::PanelDragStart(index))
+        .on_release(Message::PanelDragEnd(index))
+        .on_move(move |p| Message::PanelDragMove { panel_idx: index, local: p })
+        .on_scroll(|_| Message::Ignore);
+
+        // Outer: transparent full-layer container that positions the panel via padding.
+        container(panel)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .padding(
                 Padding::ZERO
                     .top(self.position.y)
