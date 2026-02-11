@@ -1,247 +1,211 @@
-/// Dark theme CSS for Sovereign OS.
-pub const DARK_THEME_CSS: &str = r#"
-/* ── Window ────────────────────────────────────────── */
-window {
-    background-color: #0e0e10;
-    color: #e0e0e0;
+use iced::widget::{button, container, text_input};
+use iced::{Background, Border, Color, Theme};
+
+// ── Color palette ────────────────────────────────────────────────────────────
+
+pub const BG_WINDOW: Color = Color::from_rgb(0.055, 0.055, 0.063); // #0e0e10
+pub const BG_PANEL: Color = Color::from_rgb(0.102, 0.102, 0.125); // #1a1a20
+pub const BG_TASKBAR: Color = Color::from_rgb(0.078, 0.078, 0.094); // #141418
+pub const BG_SKILL_PANEL: Color = Color::from_rgb(0.118, 0.118, 0.141); // #1e1e24
+pub const BG_BUTTON: Color = Color::from_rgb(0.165, 0.165, 0.196); // #2a2a32
+pub const BG_BUTTON_HOVER: Color = Color::from_rgb(0.227, 0.227, 0.259); // #3a3a42
+
+pub const BORDER_DIM: Color = Color::from_rgb(0.165, 0.165, 0.188); // #2a2a30
+pub const BORDER_ACCENT: Color = Color::from_rgb(0.353, 0.624, 0.831); // #5a9fd4
+
+pub const TEXT_PRIMARY: Color = Color::from_rgb(0.878, 0.878, 0.878); // #e0e0e0
+pub const TEXT_DIM: Color = Color::from_rgb(0.400, 0.400, 0.400); // #666
+pub const TEXT_LABEL: Color = Color::from_rgb(0.816, 0.816, 0.816); // #d0d0d0
+
+pub const BUBBLE_IDLE: Color = Color::from_rgb(0.227, 0.227, 0.957); // #3a3af4
+pub const BUBBLE_PROCESSING_OWNED: Color = Color::from_rgb(0.165, 0.353, 0.957); // #2a5af4
+pub const BUBBLE_PROCESSING_EXT: Color = Color::from_rgb(0.831, 0.627, 0.353); // #d4a05a
+pub const BUBBLE_EXECUTING: Color = Color::from_rgb(0.227, 0.831, 0.478); // #3ad47a
+pub const BUBBLE_SUGGESTING: Color = Color::from_rgb(0.420, 0.353, 0.831); // #6b5ad4
+
+pub const APPROVE_GREEN: Color = Color::from_rgb(0.227, 0.604, 0.290); // #3a9a4a
+pub const REJECT_RED: Color = Color::from_rgb(0.604, 0.227, 0.227); // #9a3a3a
+pub const OWNED_BLUE: Color = Color::from_rgb(0.353, 0.624, 0.831); // #5a9fd4
+pub const EXTERNAL_ORANGE: Color = Color::from_rgb(0.878, 0.486, 0.416); // #e07c6a
+
+// ── Container styles ─────────────────────────────────────────────────────────
+
+pub fn dark_background(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_WINDOW)),
+        text_color: Some(TEXT_PRIMARY),
+        ..Default::default()
+    }
 }
 
-/* ── Canvas placeholder ────────────────────────────── */
-.canvas-placeholder {
-    font-size: 18px;
-    color: #666;
+pub fn taskbar_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_TASKBAR)),
+        border: Border {
+            color: BORDER_DIM,
+            width: 1.0,
+            ..Default::default()
+        },
+        text_color: Some(TEXT_PRIMARY),
+        ..Default::default()
+    }
 }
 
-/* ── Taskbar ───────────────────────────────────────── */
-.taskbar {
-    background-color: #141418;
-    border-top: 1px solid #2a2a30;
-    padding: 6px 12px;
-    min-height: 40px;
+pub fn search_overlay_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgba(0.055, 0.055, 0.063, 0.95))),
+        border: Border {
+            radius: 12.0.into(),
+            ..Default::default()
+        },
+        text_color: Some(TEXT_PRIMARY),
+        ..Default::default()
+    }
 }
 
-.taskbar-item {
-    padding: 4px 12px;
-    border-radius: 6px;
-    font-size: 13px;
-    color: #d0d0d0;
+pub fn skill_panel_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_SKILL_PANEL)),
+        border: Border {
+            color: BORDER_DIM,
+            width: 1.0,
+            radius: 12.0.into(),
+        },
+        text_color: Some(TEXT_PRIMARY),
+        ..Default::default()
+    }
 }
 
-.taskbar-item:hover {
-    background-color: #222228;
+pub fn confirmation_panel_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_SKILL_PANEL)),
+        border: Border {
+            color: BUBBLE_PROCESSING_EXT,
+            width: 1.0,
+            radius: 12.0.into(),
+        },
+        text_color: Some(TEXT_PRIMARY),
+        ..Default::default()
+    }
 }
 
-.owned-badge {
-    color: #5a9fd4;
-    font-weight: bold;
+pub fn suggestion_tooltip_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_SKILL_PANEL)),
+        border: Border {
+            color: BUBBLE_SUGGESTING,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        text_color: Some(TEXT_LABEL),
+        ..Default::default()
+    }
 }
 
-.external-badge {
-    color: #e07c6a;
-    font-weight: bold;
+pub fn document_panel_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_PANEL)),
+        border: Border {
+            color: BORDER_DIM,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        text_color: Some(TEXT_PRIMARY),
+        ..Default::default()
+    }
 }
 
-.search-btn {
-    padding: 4px 12px;
-    border-radius: 6px;
-    font-size: 13px;
-    color: #999;
+pub fn bubble_style(color: Color) -> impl Fn(&Theme) -> container::Style {
+    move |_theme| container::Style {
+        background: Some(Background::Color(color)),
+        border: Border {
+            radius: 28.0.into(),
+            ..Default::default()
+        },
+        text_color: Some(Color::WHITE),
+        ..Default::default()
+    }
 }
 
-.search-btn:hover {
-    background-color: #222228;
-    color: #d0d0d0;
+// ── Button styles ────────────────────────────────────────────────────────────
+
+pub fn skill_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+    let bg = match status {
+        button::Status::Hovered => BG_BUTTON_HOVER,
+        _ => BG_BUTTON,
+    };
+    button::Style {
+        background: Some(Background::Color(bg)),
+        text_color: TEXT_PRIMARY,
+        border: Border {
+            radius: 8.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
-/* ── Search overlay ────────────────────────────────── */
-.search-overlay {
-    background-color: rgba(14, 14, 16, 0.95);
-    border-radius: 12px;
-    padding: 16px;
-    margin-top: 80px;
+pub fn approve_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+    let bg = match status {
+        button::Status::Hovered => Color::from_rgb(0.290, 0.667, 0.353),
+        _ => APPROVE_GREEN,
+    };
+    button::Style {
+        background: Some(Background::Color(bg)),
+        text_color: Color::WHITE,
+        border: Border {
+            radius: 8.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
-.search-entry {
-    font-size: 16px;
-    padding: 10px 16px;
-    background-color: #1a1a20;
-    color: #e0e0e0;
-    border: 1px solid #333;
-    border-radius: 8px;
-    min-width: 400px;
+pub fn reject_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+    let bg = match status {
+        button::Status::Hovered => Color::from_rgb(0.667, 0.290, 0.290),
+        _ => REJECT_RED,
+    };
+    button::Style {
+        background: Some(Background::Color(bg)),
+        text_color: Color::WHITE,
+        border: Border {
+            radius: 8.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
-.search-entry:focus {
-    border-color: #5a9fd4;
+pub fn taskbar_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+    let bg = match status {
+        button::Status::Hovered => Color::from_rgb(0.133, 0.133, 0.157),
+        _ => Color::TRANSPARENT,
+    };
+    button::Style {
+        background: Some(Background::Color(bg)),
+        text_color: TEXT_LABEL,
+        border: Border {
+            radius: 6.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
-.search-hint {
-    color: #666;
-    font-size: 12px;
-    margin-top: 8px;
-}
+// ── Text input styles ────────────────────────────────────────────────────────
 
-/* ── Search results ───────────────────────────────── */
-.search-results {
-    padding: 4px 0;
+pub fn search_input_style(_theme: &Theme, _status: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        background: Background::Color(BG_PANEL),
+        border: Border {
+            color: BORDER_DIM,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        icon: TEXT_DIM,
+        placeholder: TEXT_DIM,
+        value: TEXT_PRIMARY,
+        selection: BORDER_ACCENT,
+    }
 }
-
-.search-result-item {
-    padding: 6px 12px;
-    border-radius: 6px;
-    font-size: 13px;
-    color: #d0d0d0;
-}
-
-.search-result-item:hover {
-    background-color: #222228;
-}
-
-.search-result-empty {
-    padding: 6px 12px;
-    font-size: 13px;
-    color: #666;
-    font-style: italic;
-}
-
-/* ── Voice status ─────────────────────────────────── */
-.voice-status {
-    color: #5a9fd4;
-    font-size: 12px;
-    font-weight: bold;
-}
-
-/* -- Document panel ---------------------------------------- */
-.document-panel {
-    background-color: #1a1a20;
-}
-
-.markdown-editor {
-    background: #1a1a20;
-    color: #e0e0e0;
-}
-
-.image-gallery {
-    padding: 8px;
-}
-
-/* -- Orchestrator bubble ----------------------------------- */
-.orchestrator-bubble {
-    min-width: 56px;
-    min-height: 56px;
-    border-radius: 28px;
-    background: #3a3af4;
-    color: white;
-    font-weight: bold;
-    font-size: 16px;
-    padding: 14px 18px;
-}
-
-.skill-panel {
-    background: #1e1e24;
-    border-radius: 12px;
-    padding: 8px;
-    border: 1px solid #2a2a30;
-}
-
-.skill-button {
-    padding: 8px 16px;
-    border-radius: 8px;
-    color: #e0e0e0;
-    background: #2a2a32;
-    margin: 4px;
-}
-
-.skill-button:hover {
-    background: #3a3a42;
-}
-
-.skill-button:disabled {
-    color: #555;
-}
-
-/* -- Bubble visual states --------------------------------- */
-.bubble-idle {
-    background: #3a3af4;
-}
-
-.bubble-processing-owned {
-    background: #2a5af4;
-    animation: pulse-blue 1.5s ease-in-out infinite;
-}
-
-.bubble-processing-external {
-    background: #d4a05a;
-    animation: pulse-amber 1.5s ease-in-out infinite;
-}
-
-.bubble-proposing {
-    background: #d4a05a;
-    min-width: 64px;
-    min-height: 64px;
-    border-radius: 32px;
-}
-
-.bubble-executing {
-    background: #3ad47a;
-}
-
-.bubble-suggesting {
-    background: #6b5ad4;
-    animation: pulse-blue 2s ease-in-out infinite;
-}
-
-.suggestion-tooltip {
-    background: #1e1e24;
-    border-radius: 8px;
-    padding: 8px 12px;
-    border: 1px solid #6b5ad4;
-    color: #d0d0e0;
-    font-size: 12px;
-}
-
-/* -- Confirmation panel ----------------------------------- */
-.confirmation-panel {
-    background: #1e1e24;
-    border-radius: 12px;
-    padding: 12px;
-    border: 1px solid #d4a05a;
-    margin: 4px;
-}
-
-.confirmation-label {
-    color: #e0e0e0;
-    font-size: 13px;
-    margin-bottom: 8px;
-}
-
-.approve-button {
-    padding: 6px 16px;
-    border-radius: 8px;
-    color: white;
-    background: #3a9a4a;
-    margin: 4px;
-}
-
-.approve-button:hover {
-    background: #4aaa5a;
-}
-
-.reject-button {
-    padding: 6px 16px;
-    border-radius: 8px;
-    color: white;
-    background: #9a3a3a;
-    margin: 4px;
-}
-
-.reject-button:hover {
-    background: #aa4a4a;
-}
-
-.rejection-toast {
-    color: #e07c6a;
-    font-size: 12px;
-    font-style: italic;
-}
-"#;

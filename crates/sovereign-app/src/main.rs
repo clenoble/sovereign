@@ -690,8 +690,8 @@ async fn main() -> Result<()> {
                 })
             };
 
-            // Launch GTK4 UI
-            sovereign_ui::app::build_app(
+            // Launch Iced UI
+            let (app, _boot_task) = sovereign_ui::app::SovereignApp::new(
                 &config.ui,
                 documents,
                 threads,
@@ -705,6 +705,7 @@ async fn main() -> Result<()> {
                 Some(registry),
                 Some(feedback_tx),
             );
+            sovereign_ui::app::run_app(app)?;
         }
 
         Commands::CreateDoc {

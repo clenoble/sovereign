@@ -1,123 +1,76 @@
-use std::rc::Rc;
+use iced::widget::{column, container, scrollable, text, text_input};
+use iced::{Element, Length, Padding};
 
-use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Entry, Label, Orientation, ScrolledWindow};
+use crate::app::Message;
+use crate::theme;
 
-/// Handle to the search overlay for updating results and voice status.
-#[derive(Clone)]
-pub struct SearchHandle {
-    entry: Entry,
-    results_box: GtkBox,
-    _hint_label: Label,
-    voice_label: Label,
+/// State for the search overlay.
+pub struct SearchState {
+    pub visible: bool,
+    pub query: String,
+    pub results: Vec<String>,
+    pub voice_status: Option<String>,
 }
 
-impl SearchHandle {
-    /// Set the search entry text (used by voice transcription).
-    pub fn set_text(&self, text: &str) {
-        self.entry.set_text(text);
-        self.entry.set_position(-1); // cursor to end
+impl SearchState {
+    pub fn new() -> Self {
+        Self {
+            visible: false,
+            query: String::new(),
+            results: Vec::new(),
+            voice_status: None,
+        }
     }
 
-    /// Show search results as a list of document IDs/titles.
-    pub fn show_results(&self, doc_ids: &[String]) {
-        // Clear previous results
-        while let Some(child) = self.results_box.first_child() {
-            self.results_box.remove(&child);
+    pub fn view(&self) -> Element<'_, Message> {
+        let input = text_input("Search documents...", &self.query)
+            .on_input(Message::SearchQueryChanged)
+            .on_submit(Message::SearchSubmitted)
+            .style(theme::search_input_style)
+            .padding(Padding::from([10, 16]))
+            .size(16);
+
+        let mut col = column![input].spacing(8).padding(16).width(450);
+
+        // Voice status
+        if let Some(ref status) = self.voice_status {
+            col = col.push(
+                text(status.as_str())
+                    .size(12)
+                    .color(theme::BORDER_ACCENT),
+            );
         }
 
-        if doc_ids.is_empty() {
-            let label = Label::new(Some("No documents found"));
-            label.add_css_class("search-result-empty");
-            self.results_box.append(&label);
-        } else {
-            for id in doc_ids {
-                let label = Label::new(Some(id));
-                label.add_css_class("search-result-item");
-                label.set_halign(gtk4::Align::Start);
-                self.results_box.append(&label);
+        // Results
+        if !self.results.is_empty() {
+            let mut results_col = column![].spacing(4);
+            for id in &self.results {
+                results_col = results_col.push(
+                    text(id.as_str())
+                        .size(13)
+                        .color(theme::TEXT_LABEL),
+                );
             }
+            col = col.push(scrollable(results_col).height(Length::Shrink));
+        } else if !self.query.is_empty() {
+            col = col.push(
+                text("No documents found")
+                    .size(13)
+                    .color(theme::TEXT_DIM),
+            );
         }
 
-        self.results_box.set_visible(true);
+        // Hint
+        col = col.push(
+            text("Press Enter to search")
+                .size(12)
+                .color(theme::TEXT_DIM),
+        );
+
+        container(col)
+            .style(theme::search_overlay_style)
+            .center_x(Length::Fill)
+            .padding(Padding::ZERO.top(80))
+            .into()
     }
-
-    /// Update voice status indicator.
-    pub fn show_listening(&self) {
-        self.voice_label.set_text("Listening...");
-        self.voice_label.set_visible(true);
-    }
-
-    /// Update voice status to transcribing.
-    pub fn show_transcribing(&self) {
-        self.voice_label.set_text("Transcribing...");
-        self.voice_label.set_visible(true);
-    }
-
-    /// Clear voice status.
-    pub fn hide_voice_status(&self) {
-        self.voice_label.set_visible(false);
-    }
-}
-
-/// Build the search overlay widget and return the overlay box + a SearchHandle.
-pub fn build_search_overlay(
-    query_callback: Option<Rc<dyn Fn(String)>>,
-) -> (GtkBox, SearchHandle) {
-    let overlay_box = GtkBox::new(Orientation::Vertical, 8);
-    overlay_box.add_css_class("search-overlay");
-    overlay_box.set_halign(gtk4::Align::Center);
-    overlay_box.set_valign(gtk4::Align::Start);
-    overlay_box.set_visible(false);
-
-    let entry = Entry::new();
-    entry.set_placeholder_text(Some("Search documents..."));
-    entry.add_css_class("search-entry");
-    overlay_box.append(&entry);
-
-    // Voice status label (hidden by default)
-    let voice_label = Label::new(None);
-    voice_label.add_css_class("search-hint");
-    voice_label.set_visible(false);
-    overlay_box.append(&voice_label);
-
-    // Results box
-    let results_box = GtkBox::new(Orientation::Vertical, 4);
-    results_box.add_css_class("search-results");
-    results_box.set_visible(false);
-
-    let scrolled = ScrolledWindow::new();
-    scrolled.set_child(Some(&results_box));
-    scrolled.set_max_content_height(300);
-    scrolled.set_propagate_natural_height(true);
-    overlay_box.append(&scrolled);
-
-    // Hint label
-    let hint_text = if query_callback.is_some() {
-        "Press Enter to search"
-    } else {
-        "AI unavailable — search not connected"
-    };
-    let hint = Label::new(Some(hint_text));
-    hint.add_css_class("search-hint");
-    overlay_box.append(&hint);
-
-    // Wire up Enter key to submit query
-    if let Some(cb) = query_callback {
-        entry.connect_activate(move |e| {
-            let text = e.text().to_string();
-            if !text.is_empty() {
-                cb(text);
-            }
-        });
-    }
-
-    let handle = SearchHandle {
-        entry,
-        results_box,
-        _hint_label: hint,
-        voice_label,
-    };
-
-    (overlay_box, handle)
 }

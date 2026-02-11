@@ -2,14 +2,14 @@
 name = "sovereign-canvas"
 version = "0.1.0"
 edition = "2021"
-description = "Spatial canvas with Skia rendering (Phase 2)"
+description = "Spatial canvas with Skia rendering via Iced Shader widget"
 
 [dependencies]
 sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
-gtk4 = "0.9"
-skia-safe = { version = "0.91", features = ["gl"] }
-gl = "0.14"
+iced = { workspace = true }
+bytemuck = { workspace = true }
+skia-safe = "0.91"
 tracing = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
@@ -17,6 +17,3 @@ chrono = { workspace = true }
 [dev-dependencies]
 chrono = { workspace = true }
 surrealdb = { workspace = true }
-
-[build-dependencies]
-pkg-config = "0.3"

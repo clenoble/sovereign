@@ -2,7 +2,7 @@
 name = "sovereign-ui"
 version = "0.1.0"
 edition = "2021"
-description = "GTK4 UI shell with dark theme, taskbar, and search overlay"
+description = "Iced UI shell with dark theme, taskbar, and search overlay"
 
 [dependencies]
 sovereign-core = { workspace = true }
@@ -10,5 +10,6 @@ sovereign-db = { workspace = true }
 sovereign-canvas = { workspace = true }
 sovereign-skills = { workspace = true }
 serde_json = { workspace = true }
-gtk4 = { version = "0.9", features = ["v4_10"] }
+iced = { workspace = true }
+rfd = { workspace = true }
 tracing = { workspace = true }

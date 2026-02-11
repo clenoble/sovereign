@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use skia_safe::gpu;
-
 use crate::camera::Camera;
 use crate::layout::{CardLayout, CanvasLayout};
 
@@ -82,7 +80,6 @@ pub struct CanvasState {
     pub minimap_visible: bool,
     pub adoption_animations: HashMap<String, AdoptionAnim>,
     pub frame_times: Vec<f64>,
-    pub gr_context: Option<gpu::DirectContext>,
     pub viewport_width: f64,
     pub viewport_height: f64,
 }
@@ -101,7 +98,6 @@ impl CanvasState {
             minimap_visible: true,
             adoption_animations: HashMap::new(),
             frame_times: Vec::with_capacity(300),
-            gr_context: None,
             viewport_width: 1280.0,
             viewport_height: 720.0,
         }

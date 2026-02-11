@@ -1,177 +1,392 @@
-use std::cell::RefCell;
-use std::ffi::CString;
-use std::rc::Rc;
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
-use gtk4::glib;
-use gtk4::prelude::*;
-use gtk4::GLArea;
+use iced::widget::shader;
+use iced::wgpu;
+use iced::Rectangle;
 
-use skia_safe::gpu::SurfaceOrigin;
-use skia_safe::{gpu, Canvas, Color4f, ColorType, Font, Paint, PaintStyle, Path, Point, RRect, Rect};
-
-use sovereign_core::interfaces::{SkillEvent, Viewport};
+use skia_safe::{Canvas, Color4f, ColorType, Font, Paint, PaintStyle, Path, Point, RRect, Rect};
+use skia_safe::AlphaType;
 
 use crate::colors::*;
-use crate::gl_loader;
 use crate::layout::{CardLayout, LANE_HEADER_WIDTH};
 use crate::lod::{zoom_level, ZoomLevel};
-use crate::state::{hit_test, CanvasState};
+use crate::state::CanvasState;
 
-/// Create the GLArea widget with Skia GPU rendering and event controllers.
-pub fn create_gl_area(
-    state: Rc<RefCell<CanvasState>>,
-    viewport: Arc<Mutex<Viewport>>,
-    skill_tx: Option<mpsc::Sender<SkillEvent>>,
-) -> GLArea {
-    let gl_area = GLArea::new();
-    gl_area.set_hexpand(true);
-    gl_area.set_vexpand(true);
-    gl_area.set_has_stencil_buffer(true);
-
-    // ── Realize: init GL + Skia GPU context ─────────────────────────────
-    {
-        let state = state.clone();
-        gl_area.connect_realize(move |area| {
-            area.make_current();
-            if let Some(err) = area.error() {
-                tracing::error!("GLArea error on realize: {}", err);
-                return;
-            }
-
-            let gl_proc_fn = unsafe { gl_loader::load_gl_proc_address() };
-
-            let interface = if let Some(proc_fn) = gl_proc_fn {
-                gl::load_with(|s| {
-                    let c = CString::new(s).unwrap();
-                    unsafe { proc_fn(c.as_ptr()) as *const _ }
-                });
-
-                gpu::gl::Interface::new_load_with(|name| {
-                    let c = CString::new(name).unwrap();
-                    unsafe { proc_fn(c.as_ptr()) as *const _ }
-                })
-            } else {
-                tracing::warn!("Trying Interface::new_native() as fallback");
-                gpu::gl::Interface::new_native()
-            };
-
-            let interface = match interface {
-                Some(i) => {
-                    tracing::debug!("Skia GL interface created");
-                    i
-                }
-                None => {
-                    tracing::error!("Failed to create Skia GL interface");
-                    return;
-                }
-            };
-
-            match gpu::direct_contexts::make_gl(interface, None) {
-                Some(ctx) => {
-                    tracing::debug!("Skia GPU DirectContext created");
-                    state.borrow_mut().gr_context = Some(ctx);
-                }
-                None => {
-                    tracing::error!("Failed to create Skia DirectContext");
-                }
-            }
-        });
-    }
-
-    // ── Render: Skia GPU → GLArea FBO ───────────────────────────────────
-    {
-        let state = state.clone();
-        let vp = viewport.clone();
-        gl_area.connect_render(move |area, _gl_ctx| {
-            let t0 = Instant::now();
-            let w = area.width();
-            let h = area.height();
-            if w <= 0 || h <= 0 {
-                return glib::Propagation::Stop;
-            }
-
-            let mut st = state.borrow_mut();
-            st.viewport_width = w as f64;
-            st.viewport_height = h as f64;
-
-            // Update shared viewport for CanvasController
-            if let Ok(mut vp) = vp.lock() {
-                vp.x = st.camera.pan_x;
-                vp.y = st.camera.pan_y;
-                vp.zoom = st.camera.zoom;
-                vp.width = w as f64;
-                vp.height = h as f64;
-            }
-
-            // Take context out to avoid RefCell borrow conflict in render()
-            let mut ctx = match st.gr_context.take() {
-                Some(c) => c,
-                None => return glib::Propagation::Stop,
-            };
-
-            let mut fbo: i32 = 0;
-            unsafe {
-                gl::GetIntegerv(gl::DRAW_FRAMEBUFFER_BINDING, &mut fbo);
-            }
-
-            let mut fb_info = gpu::gl::FramebufferInfo::from_fboid(fbo as u32);
-            fb_info.format = gl::RGBA8;
-
-            let target = gpu::backend_render_targets::make_gl((w, h), None, 8, fb_info);
-
-            let surface = gpu::surfaces::wrap_backend_render_target(
-                &mut ctx,
-                &target,
-                SurfaceOrigin::BottomLeft,
-                ColorType::RGBA8888,
-                None,
-                None,
-            );
-
-            if let Some(mut surface) = surface {
-                render(surface.canvas(), &*st, w as f32, h as f32);
-                ctx.flush_and_submit();
-            } else {
-                tracing::error!("Failed to wrap FBO as Skia surface");
-            }
-
-            // Put context back
-            st.gr_context = Some(ctx);
-
-            let ms = t0.elapsed().as_secs_f64() * 1000.0;
-            st.frame_times.push(ms);
-            if st.frame_times.len() > 300 {
-                st.frame_times.drain(0..150);
-            }
-
-            glib::Propagation::Stop
-        });
-    }
-
-    // ── Event controllers (M4) ──────────────────────────────────────────
-    attach_scroll_zoom(&gl_area, state.clone());
-    attach_drag_pan(&gl_area, state.clone());
-    attach_motion_hover(&gl_area, state.clone());
-    attach_click_select(&gl_area, state.clone(), skill_tx);
-
-    // ── Continuous render via tick callback ──────────────────────────────
-    {
-        let a = gl_area.clone();
-        gl_area.add_tick_callback(move |_, _| {
-            a.queue_draw();
-            glib::ControlFlow::Continue
-        });
-    }
-
-    gl_area
+/// WGSL shader for blitting the Skia texture to screen.
+const BLIT_SHADER: &str = r#"
+struct Uniforms {
+    bounds_pos: vec2<f32>,
+    bounds_size: vec2<f32>,
+    viewport_size: vec2<f32>,
+    _pad: vec2<f32>,
 }
+
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var canvas_texture: texture_2d<f32>;
+@group(0) @binding(2) var canvas_sampler: sampler;
+
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> VsOut {
+    var quad_uv = array<vec2<f32>, 6>(
+        vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0),
+        vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
+    );
+    let uv = quad_uv[vi];
+    let pixel = u.bounds_pos + uv * u.bounds_size;
+    var clip: vec2<f32>;
+    clip.x = pixel.x / u.viewport_size.x * 2.0 - 1.0;
+    clip.y = 1.0 - pixel.y / u.viewport_size.y * 2.0;
+
+    var out: VsOut;
+    out.pos = vec4(clip, 0.0, 1.0);
+    out.uv = uv;
+    return out;
+}
+
+@fragment
+fn fs(in: VsOut) -> @location(0) vec4<f32> {
+    return textureSample(canvas_texture, canvas_sampler, in.uv);
+}
+"#;
+
+/// Uniforms for the blit shader.
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Uniforms {
+    bounds_pos: [f32; 2],
+    bounds_size: [f32; 2],
+    viewport_size: [f32; 2],
+    _pad: [f32; 2],
+}
+
+/// The data produced each frame by Skia CPU rendering.
+#[derive(Debug)]
+pub struct CanvasPrimitive {
+    pub pixels: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// GPU resources for blitting the Skia texture.
+pub struct CanvasPipeline {
+    render_pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    uniform_buffer: wgpu::Buffer,
+    texture: Option<wgpu::Texture>,
+    texture_view: Option<wgpu::TextureView>,
+    bind_group: Option<wgpu::BindGroup>,
+    texture_size: (u32, u32),
+}
+
+impl shader::Primitive for CanvasPrimitive {
+    type Pipeline = CanvasPipeline;
+
+    fn prepare(
+        &self,
+        pipeline: &mut Self::Pipeline,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bounds: &Rectangle,
+        viewport: &shader::Viewport,
+    ) {
+        let vp = viewport.physical_size();
+        let w = self.width;
+        let h = self.height;
+
+        if w == 0 || h == 0 {
+            return;
+        }
+
+        // Recreate texture if size changed
+        if pipeline.texture_size != (w, h) {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("canvas_skia"),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("canvas_bind_group"),
+                layout: &pipeline.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: pipeline.uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&pipeline.sampler),
+                    },
+                ],
+            });
+
+            pipeline.texture = Some(texture);
+            pipeline.texture_view = Some(view);
+            pipeline.bind_group = Some(bind_group);
+            pipeline.texture_size = (w, h);
+        }
+
+        // Upload pixel data
+        if let Some(ref texture) = pipeline.texture {
+            if self.pixels.len() == (w * h * 4) as usize {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &self.pixels,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * w),
+                        rows_per_image: None,
+                    },
+                    wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
+
+        // Update uniforms
+        let uniforms = Uniforms {
+            bounds_pos: [bounds.x, bounds.y],
+            bounds_size: [bounds.width, bounds.height],
+            viewport_size: [vp.width as f32, vp.height as f32],
+            _pad: [0.0; 2],
+        };
+        queue.write_buffer(&pipeline.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    fn render(
+        &self,
+        pipeline: &Self::Pipeline,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        clip_bounds: &Rectangle<u32>,
+    ) {
+        let Some(ref bind_group) = pipeline.bind_group else {
+            return;
+        };
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("canvas_blit"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        pass.set_scissor_rect(
+            clip_bounds.x,
+            clip_bounds.y,
+            clip_bounds.width,
+            clip_bounds.height,
+        );
+        pass.set_pipeline(&pipeline.render_pipeline);
+        pass.set_bind_group(0, bind_group, &[]);
+        pass.draw(0..6, 0..1);
+    }
+}
+
+impl shader::Pipeline for CanvasPipeline {
+    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("canvas_blit_shader"),
+            source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("canvas_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("canvas_pipeline_layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("canvas_blit_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader_module,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_module,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("canvas_sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("canvas_uniforms"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        Self {
+            render_pipeline,
+            bind_group_layout,
+            sampler,
+            uniform_buffer,
+            texture: None,
+            texture_view: None,
+            bind_group: None,
+            texture_size: (0, 0),
+        }
+    }
+}
+
+/// Iced Shader Program that renders the canvas via Skia CPU.
+#[derive(Clone)]
+pub struct CanvasProgram {
+    pub state: Arc<Mutex<CanvasState>>,
+}
+
+/// Message type for canvas interactions.
+#[derive(Debug, Clone)]
+pub enum CanvasMessage {
+    Scrolled { dy: f32 },
+    DragStarted,
+    DragUpdate { dx: f32, dy: f32 },
+    Clicked { x: f32, y: f32 },
+    DoubleClicked { x: f32, y: f32 },
+    Hovered { x: f32, y: f32 },
+}
+
+impl<Message> shader::Program<Message> for CanvasProgram
+where
+    Message: 'static,
+{
+    type State = CanvasWidgetState;
+    type Primitive = CanvasPrimitive;
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        _cursor: iced::mouse::Cursor,
+        bounds: Rectangle,
+    ) -> Self::Primitive {
+        let w = bounds.width.max(1.0) as u32;
+        let h = bounds.height.max(1.0) as u32;
+
+        let state = self.state.lock().unwrap();
+
+        let info = skia_safe::ImageInfo::new(
+            (w as i32, h as i32),
+            ColorType::RGBA8888,
+            AlphaType::Premul,
+            None,
+        );
+
+        let row_bytes = (w * 4) as usize;
+        let mut pixels = vec![0u8; row_bytes * h as usize];
+
+        if let Some(mut surface) =
+            skia_safe::surfaces::wrap_pixels(&info, &mut pixels, Some(row_bytes), None)
+        {
+            render(surface.canvas(), &state, w as f32, h as f32);
+        }
+
+        CanvasPrimitive {
+            pixels,
+            width: w,
+            height: h,
+        }
+    }
+}
+
+/// Widget-local state for the canvas shader.
+#[derive(Default)]
+pub struct CanvasWidgetState;
 
 // ── Rendering functions ─────────────────────────────────────────────────────
 
-fn render(canvas: &Canvas, state: &CanvasState, w: f32, h: f32) {
+pub fn render(canvas: &Canvas, state: &CanvasState, w: f32, h: f32) {
     canvas.clear(BG);
 
     canvas.save();
@@ -246,7 +461,6 @@ fn draw_lane_headers(canvas: &Canvas, state: &CanvasState) {
     paint.set_color4f(TEXT_DIM, None);
 
     for (i, lane) in state.layout.lanes.iter().enumerate() {
-        // Header background — match the lane's color but more opaque
         let mut bg = Paint::default();
         let lane_color = LANE_COLORS[i % LANE_COLORS.len()];
         bg.set_color4f(
@@ -264,7 +478,6 @@ fn draw_lane_headers(canvas: &Canvas, state: &CanvasState) {
             &bg,
         );
 
-        // Lane name
         canvas.draw_str(
             &lane.thread_name,
             (state.camera.pan_x as f32, lane.y + 20.0),
@@ -341,7 +554,6 @@ fn draw_timeline_markers(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
         .unwrap_or_else(|| Font::default());
 
     for marker in &state.layout.timeline_markers {
-        // Milestones always render with accent color
         if marker.is_milestone {
             line_paint.set_color4f(ACCENT, None);
             text_paint.set_color4f(ACCENT, None);
@@ -352,10 +564,8 @@ fn draw_timeline_markers(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
 
         canvas.draw_line((marker.x, 0.0), (marker.x, total_height), &line_paint);
 
-        // Label detail varies by zoom
         let label = match lod {
             ZoomLevel::Dots => {
-                // Year only: extract from "M/YYYY"
                 marker.label.rsplit('/').next().unwrap_or(&marker.label).to_string()
             }
             _ => marker.label.clone(),
@@ -376,7 +586,6 @@ fn draw_now_marker(canvas: &Canvas, state: &CanvasState) {
         .fold(f32::NEG_INFINITY, f32::max);
     let marker_x = max_x + 30.0;
 
-    // Vertical dashed line
     let total_height = state
         .layout
         .lanes
@@ -393,7 +602,6 @@ fn draw_now_marker(canvas: &Canvas, state: &CanvasState) {
 
     canvas.draw_line((marker_x, 0.0), (marker_x, total_height), &paint);
 
-    // "Now" label
     let font = Font::default()
         .with_size(13.0)
         .unwrap_or_else(|| Font::default());
@@ -467,7 +675,6 @@ fn draw_card_simplified(
         canvas.draw_path(&path, &bp);
     }
 
-    // Title (smaller font for simplified zoom)
     let title_font = Font::default()
         .with_size(11.0)
         .unwrap_or_else(|| Font::default());
@@ -493,13 +700,11 @@ pub fn lerp_color(a: Color4f, b: Color4f, t: f32) -> Color4f {
     )
 }
 
-/// Draw a card undergoing adoption animation (external→owned).
-/// t: 0.0 = fully external, 1.0 = fully owned.
 fn draw_card_adopting(canvas: &Canvas, card: &CardLayout, t: f32) {
     let fill = lerp_color(EXT_FILL, OWNED_FILL, t);
     let border = lerp_color(EXT_BORDER, OWNED_BORDER, t);
-    let skew = 14.0 * (1.0 - t); // 14→0 as t→1
-    let radius = 8.0 * t; // 0→8 as t→1
+    let skew = 14.0 * (1.0 - t);
+    let radius = 8.0 * t;
 
     let mut fp = Paint::default();
     fp.set_anti_alias(true);
@@ -513,13 +718,11 @@ fn draw_card_adopting(canvas: &Canvas, card: &CardLayout, t: f32) {
     bp.set_stroke_width(2.0);
 
     if skew < 1.0 {
-        // Close enough to owned — draw rounded rect
         let rect = Rect::from_xywh(card.x, card.y, card.w, card.h);
         let rr = RRect::new_rect_xy(rect, radius, radius);
         canvas.draw_rrect(rr, &fp);
         canvas.draw_rrect(rr, &bp);
     } else {
-        // Transitioning parallelogram
         let path = Path::polygon(
             &[
                 Point::new(card.x + skew, card.y),
@@ -535,7 +738,6 @@ fn draw_card_adopting(canvas: &Canvas, card: &CardLayout, t: f32) {
         canvas.draw_path(&path, &bp);
     }
 
-    // Title
     let title_font = Font::default()
         .with_size(13.0)
         .unwrap_or_else(|| Font::default());
@@ -588,13 +790,11 @@ fn draw_card(
     }
 
     if card.is_owned {
-        // Rounded rectangle for owned content
         let rect = Rect::from_xywh(card.x, card.y, card.w, card.h);
         let rr = RRect::new_rect_xy(rect, 8.0, 8.0);
         canvas.draw_rrect(rr, &fp);
         canvas.draw_rrect(rr, &bp);
     } else {
-        // Parallelogram for external content
         let skew = 14.0_f32;
         let path = Path::polygon(
             &[
@@ -611,7 +811,6 @@ fn draw_card(
         canvas.draw_path(&path, &bp);
     }
 
-    // Title
     let title_font = Font::default()
         .with_size(13.0)
         .unwrap_or_else(|| Font::default());
@@ -626,7 +825,6 @@ fn draw_card(
     };
     canvas.draw_str(&label, (card.x + 14.0, card.y + 26.0), &title_font, &tp);
 
-    // Sovereignty indicator
     let badge_font = Font::default()
         .with_size(10.0)
         .unwrap_or_else(|| Font::default());
@@ -651,130 +849,19 @@ fn draw_hud(canvas: &Canvas, state: &CanvasState, w: f32, _h: f32) {
     let fps = state.avg_fps();
     let zoom_pct = (state.camera.zoom * 100.0) as i32;
     let info = format!(
-        "FPS: {:.0}  |  Zoom: {}%  |  Docs: {}  |  Threads: {}  |  GPU",
+        "FPS: {:.0}  |  Zoom: {}%  |  Docs: {}  |  Threads: {}  |  Skia CPU",
         fps,
         zoom_pct,
         state.layout.cards.len(),
         state.layout.lanes.len(),
     );
 
-    // HUD background
     let mut bg = Paint::default();
     bg.set_color4f(LANE_HEADER_BG, None);
     bg.set_style(PaintStyle::Fill);
     canvas.draw_rect(Rect::from_xywh(0.0, 0.0, w, 28.0), &bg);
 
     canvas.draw_str(&info, (10.0, 18.0), &font, &p);
-}
-
-// ── Event controllers (Milestone 4) ─────────────────────────────────────────
-
-fn attach_scroll_zoom(gl_area: &GLArea, state: Rc<RefCell<CanvasState>>) {
-    let area = gl_area.clone();
-    let ctrl =
-        gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
-    ctrl.connect_scroll(move |_, _dx, dy| {
-        let factor = if dy < 0.0 { 1.15 } else { 1.0 / 1.15 };
-        let mut st = state.borrow_mut();
-        let (mx, my) = (st.mouse_x, st.mouse_y);
-        st.camera.zoom_at(mx, my, factor);
-        drop(st);
-        area.queue_draw();
-        glib::Propagation::Stop
-    });
-    gl_area.add_controller(ctrl);
-}
-
-fn attach_drag_pan(gl_area: &GLArea, state: Rc<RefCell<CanvasState>>) {
-    let a = gl_area.clone();
-    let drag = gtk4::GestureDrag::new();
-    drag.set_button(1);
-
-    let start_pan = Rc::new(RefCell::new((0.0_f64, 0.0_f64)));
-
-    {
-        let state = state.clone();
-        let sp = start_pan.clone();
-        drag.connect_drag_begin(move |_, _, _| {
-            let st = state.borrow();
-            *sp.borrow_mut() = (st.camera.pan_x, st.camera.pan_y);
-        });
-    }
-    {
-        let state = state.clone();
-        let a = a.clone();
-        let sp = start_pan.clone();
-        drag.connect_drag_update(move |_, dx, dy| {
-            let (sx, sy) = *sp.borrow();
-            let mut st = state.borrow_mut();
-            st.camera.pan_x = sx - dx / st.camera.zoom;
-            st.camera.pan_y = sy - dy / st.camera.zoom;
-            drop(st);
-            a.queue_draw();
-        });
-    }
-
-    gl_area.add_controller(drag);
-}
-
-fn attach_motion_hover(gl_area: &GLArea, state: Rc<RefCell<CanvasState>>) {
-    let a = gl_area.clone();
-    let motion = gtk4::EventControllerMotion::new();
-    motion.connect_motion(move |_, x, y| {
-        let mut st = state.borrow_mut();
-        st.mouse_x = x;
-        st.mouse_y = y;
-        let prev = st.hovered;
-        st.hovered = hit_test(&st, x, y);
-        if st.hovered != prev {
-            drop(st);
-            a.queue_draw();
-        }
-    });
-    gl_area.add_controller(motion);
-}
-
-fn attach_click_select(
-    gl_area: &GLArea,
-    state: Rc<RefCell<CanvasState>>,
-    skill_tx: Option<mpsc::Sender<SkillEvent>>,
-) {
-    let a = gl_area.clone();
-    let click = gtk4::GestureClick::new();
-    click.set_button(1);
-    click.connect_released(move |_, n, x, y| {
-        let mut st = state.borrow_mut();
-        let hit = hit_test(&st, x, y);
-
-        if n == 1 {
-            // Single click: select
-            if st.selected != hit {
-                st.selected = hit;
-                if let Some(i) = hit {
-                    let card = &st.layout.cards[i];
-                    tracing::info!(
-                        "Selected: \"{}\" [{}]",
-                        card.title,
-                        if card.is_owned { "owned" } else { "external" }
-                    );
-                }
-                drop(st);
-                a.queue_draw();
-            }
-        } else if n == 2 {
-            // Double click: open document
-            if let Some(i) = hit {
-                let card = &st.layout.cards[i];
-                tracing::info!("Opening document: \"{}\"", card.title);
-                if let Some(ref tx) = skill_tx {
-                    let _ = tx.send(SkillEvent::OpenDocument {
-                        doc_id: card.doc_id.clone(),
-                    });
-                }
-            }
-        }
-    });
-    gl_area.add_controller(click);
 }
 
 #[cfg(test)]

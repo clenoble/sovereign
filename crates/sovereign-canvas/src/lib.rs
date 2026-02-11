@@ -1,38 +1,34 @@
 pub mod camera;
 pub mod colors;
 pub mod controller;
-pub mod gl_loader;
 pub mod layout;
 pub mod lod;
 pub mod minimap;
 pub mod renderer;
 pub mod state;
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use gtk4::prelude::*;
-use sovereign_core::interfaces::{CanvasController, SkillEvent, Viewport};
+use sovereign_core::interfaces::{CanvasController, Viewport};
 use sovereign_db::schema::{Document, Thread};
 
 use camera::home_position;
 use controller::{CanvasCommand, SovereignCanvasController};
 use layout::compute_layout;
-use renderer::create_gl_area;
+use renderer::CanvasProgram;
 use state::CanvasState;
 
-/// Build the spatial canvas widget and its controller.
+/// Build the spatial canvas and its controller.
 ///
-/// Call this inside `connect_activate` on the GTK main thread.
-/// Returns the GLArea widget to embed in the UI and a boxed CanvasController
-/// that can be sent to other threads (AI orchestrator, skills).
+/// Returns:
+/// - `CanvasProgram` — the Iced shader program (clone for view())
+/// - `mpsc::Receiver<CanvasCommand>` — polled by the app's update() to apply commands
+/// - `Box<dyn CanvasController>` — thread-safe controller for orchestrator/AI
 pub fn build_canvas(
     documents: Vec<Document>,
     threads: Vec<Thread>,
-    skill_tx: Option<mpsc::Sender<SkillEvent>>,
-) -> (gtk4::GLArea, Box<dyn CanvasController>) {
+) -> (CanvasProgram, mpsc::Receiver<CanvasCommand>, Box<dyn CanvasController>) {
     let canvas_layout = compute_layout(&documents, &threads);
     let (home_x, home_y) = home_position(&canvas_layout);
 
@@ -47,95 +43,76 @@ pub fn build_canvas(
     let mut initial_state = CanvasState::new(canvas_layout);
     initial_state.camera.pan_x = home_x;
     initial_state.camera.pan_y = home_y;
-    let state = Rc::new(RefCell::new(initial_state));
+    let state = Arc::new(Mutex::new(initial_state));
 
     let (sender, receiver) = mpsc::channel::<CanvasCommand>();
-    let receiver = Rc::new(RefCell::new(receiver));
 
-    let gl_area = create_gl_area(state.clone(), viewport.clone(), skill_tx);
-
-    // Poll commands from the tick callback (already runs every frame)
-    {
-        let state = state.clone();
-        let gl_area_cmd = gl_area.clone();
-        let receiver = receiver.clone();
-        gl_area.add_tick_callback(move |_, _| {
-            let rx = receiver.borrow();
-            while let Ok(cmd) = rx.try_recv() {
-                match cmd {
-                    CanvasCommand::NavigateTo(doc_id) => {
-                        let mut st = state.borrow_mut();
-                        if let Some(idx) = st.layout.cards.iter().position(|c| c.doc_id == doc_id)
-                        {
-                            let cx = st.layout.cards[idx].x;
-                            let cy = st.layout.cards[idx].y;
-                            st.camera.pan_x = cx as f64 - 400.0;
-                            st.camera.pan_y = cy as f64 - 200.0;
-                            st.selected = Some(idx);
-                        }
-                    }
-                    CanvasCommand::Highlight(doc_id, on) => {
-                        let mut st = state.borrow_mut();
-                        if on {
-                            if !st.highlighted.contains(&doc_id) {
-                                st.highlighted.push(doc_id);
-                            }
-                        } else {
-                            st.highlighted.retain(|id| id != &doc_id);
-                        }
-                    }
-                    CanvasCommand::ZoomToThread(thread_id) => {
-                        let mut st = state.borrow_mut();
-                        if let Some(lane) =
-                            st.layout.lanes.iter().find(|l| l.thread_id == thread_id)
-                        {
-                            let lane_y = lane.y;
-                            st.camera.pan_x = -100.0;
-                            st.camera.pan_y = lane_y as f64 - 50.0;
-                            st.camera.zoom = 1.0;
-                        }
-                    }
-                    CanvasCommand::GoHome => {
-                        let mut st = state.borrow_mut();
-                        let (hx, hy) = home_position(&st.layout);
-                        st.camera.pan_x = hx;
-                        st.camera.pan_y = hy;
-                        st.camera.zoom = 1.0;
-                    }
-                    CanvasCommand::JumpToDate(ref date_str) => {
-                        let mut st = state.borrow_mut();
-                        let needle = date_str.to_lowercase();
-                        if let Some(marker) = st
-                            .layout
-                            .timeline_markers
-                            .iter()
-                            .find(|m| m.label.to_lowercase().contains(&needle))
-                        {
-                            st.camera.pan_x = marker.x as f64 - 200.0;
-                            st.camera.zoom = 1.0;
-                        }
-                    }
-                    CanvasCommand::SetFilter(filter) => {
-                        let mut st = state.borrow_mut();
-                        st.filter = filter;
-                    }
-                    CanvasCommand::ToggleMinimap => {
-                        let mut st = state.borrow_mut();
-                        st.minimap_visible = !st.minimap_visible;
-                    }
-                    CanvasCommand::AnimateAdoption(doc_id) => {
-                        let mut st = state.borrow_mut();
-                        st.adoption_animations
-                            .insert(doc_id, crate::state::AdoptionAnim::new());
-                    }
-                }
-                gl_area_cmd.queue_draw();
-            }
-            gtk4::glib::ControlFlow::Continue
-        });
-    }
+    let program = CanvasProgram {
+        state: state.clone(),
+    };
 
     let controller = SovereignCanvasController::new(sender, viewport);
 
-    (gl_area, Box::new(controller))
+    (program, receiver, Box::new(controller))
+}
+
+/// Apply a canvas command to the state. Called from the app's update() loop.
+pub fn apply_command(state: &Arc<Mutex<CanvasState>>, cmd: CanvasCommand) {
+    let mut st = state.lock().unwrap();
+    match cmd {
+        CanvasCommand::NavigateTo(doc_id) => {
+            if let Some(idx) = st.layout.cards.iter().position(|c| c.doc_id == doc_id) {
+                let cx = st.layout.cards[idx].x;
+                let cy = st.layout.cards[idx].y;
+                st.camera.pan_x = cx as f64 - 400.0;
+                st.camera.pan_y = cy as f64 - 200.0;
+                st.selected = Some(idx);
+            }
+        }
+        CanvasCommand::Highlight(doc_id, on) => {
+            if on {
+                if !st.highlighted.contains(&doc_id) {
+                    st.highlighted.push(doc_id);
+                }
+            } else {
+                st.highlighted.retain(|id| id != &doc_id);
+            }
+        }
+        CanvasCommand::ZoomToThread(thread_id) => {
+            if let Some(lane) = st.layout.lanes.iter().find(|l| l.thread_id == thread_id) {
+                let lane_y = lane.y;
+                st.camera.pan_x = -100.0;
+                st.camera.pan_y = lane_y as f64 - 50.0;
+                st.camera.zoom = 1.0;
+            }
+        }
+        CanvasCommand::GoHome => {
+            let (hx, hy) = home_position(&st.layout);
+            st.camera.pan_x = hx;
+            st.camera.pan_y = hy;
+            st.camera.zoom = 1.0;
+        }
+        CanvasCommand::JumpToDate(ref date_str) => {
+            let needle = date_str.to_lowercase();
+            if let Some(marker) = st
+                .layout
+                .timeline_markers
+                .iter()
+                .find(|m| m.label.to_lowercase().contains(&needle))
+            {
+                st.camera.pan_x = marker.x as f64 - 200.0;
+                st.camera.zoom = 1.0;
+            }
+        }
+        CanvasCommand::SetFilter(filter) => {
+            st.filter = filter;
+        }
+        CanvasCommand::ToggleMinimap => {
+            st.minimap_visible = !st.minimap_visible;
+        }
+        CanvasCommand::AnimateAdoption(doc_id) => {
+            st.adoption_animations
+                .insert(doc_id, crate::state::AdoptionAnim::new());
+        }
+    }
 }
