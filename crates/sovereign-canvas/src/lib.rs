@@ -115,4 +115,5 @@ pub fn apply_command(state: &Arc<Mutex<CanvasState>>, cmd: CanvasCommand) {
                 .insert(doc_id, crate::state::AdoptionAnim::new());
         }
     }
+    st.mark_dirty();
 }

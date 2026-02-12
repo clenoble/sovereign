@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use iced::mouse::{self, Cursor, ScrollDelta};
@@ -6,7 +6,7 @@ use iced::widget::shader::{self, Action};
 use iced::wgpu;
 use iced::{Event, Rectangle};
 
-use skia_safe::{Canvas, Color4f, ColorType, Font, Paint, PaintStyle, Path, Point, RRect, Rect};
+use skia_safe::{Canvas, Color4f, ColorType, Font, FontMgr, FontStyle, Paint, PaintStyle, Path, Point, RRect, Rect};
 use skia_safe::AlphaType;
 
 use crate::colors::*;
@@ -366,8 +366,6 @@ where
                 st.mouse_y = y;
                 st.hovered = crate::state::hit_test(&st, x, y);
 
-                let mut changed = old_hovered != st.hovered;
-
                 // Drag panning
                 if let Some((start_x, start_y)) = wstate.drag_start_mouse {
                     let dx = x - start_x;
@@ -380,11 +378,14 @@ where
                             st.camera.pan_x = sx - dx / st.camera.zoom;
                             st.camera.pan_y = sy - dy / st.camera.zoom;
                         }
-                        changed = true;
+                        st.mark_dirty();
+                        return Some(Action::request_redraw().and_capture());
                     }
                 }
 
-                if changed {
+                if old_hovered != st.hovered {
+                    // Hover changed — redraw so mouse_interaction() updates the cursor.
+                    // No mark_dirty(): draw() returns cached pixels, no Skia re-render.
                     Some(Action::request_redraw().and_capture())
                 } else {
                     Some(Action::capture())
@@ -428,6 +429,7 @@ where
                             wstate.last_click_time = Some(now);
                             wstate.last_click_pos = Some((cx, cy));
                         }
+                        st.mark_dirty();
                     }
                 }
                 wstate.drag_start_mouse = None;
@@ -444,6 +446,7 @@ where
                 let mut st = self.state.lock().unwrap();
                 let factor = if dy < 0.0 { 1.15 } else { 1.0 / 1.15 };
                 st.camera.zoom_at(x, y, factor);
+                st.mark_dirty();
                 Some(Action::request_redraw().and_capture())
             }
 
@@ -478,8 +481,22 @@ where
         let w = bounds.width.max(1.0) as u32;
         let h = bounds.height.max(1.0) as u32;
 
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
 
+        // Reuse cached pixels if nothing visual changed and size matches.
+        if state.cached_gen == state.render_gen
+            && state.cached_size == (w, h)
+        {
+            if let Some(ref pixels) = state.cached_pixels {
+                return CanvasPrimitive {
+                    pixels: pixels.clone(),
+                    width: w,
+                    height: h,
+                };
+            }
+        }
+
+        // Full Skia render.
         let info = skia_safe::ImageInfo::new(
             (w as i32, h as i32),
             ColorType::RGBA8888,
@@ -495,6 +512,11 @@ where
         {
             render(surface.canvas(), &state, w as f32, h as f32);
         }
+
+        // Store in cache.
+        state.cached_pixels = Some(pixels.clone());
+        state.cached_size = (w, h);
+        state.cached_gen = state.render_gen;
 
         CanvasPrimitive {
             pixels,
@@ -515,6 +537,38 @@ pub struct CanvasWidgetState {
 }
 
 // ── Rendering functions ─────────────────────────────────────────────────────
+
+/// Cached typeface resolved once via FontMgr, reused for every subsequent call.
+static TYPEFACE: OnceLock<Option<skia_safe::Typeface>> = OnceLock::new();
+
+/// Create a font at the given size using the cached system typeface.
+/// The typeface is resolved once on first call; subsequent calls just wrap it at the requested size.
+fn canvas_font(size: f32) -> Font {
+    let typeface = TYPEFACE.get_or_init(|| {
+        let mgr = FontMgr::default();
+        for family in &[
+            "DejaVu Sans",
+            "Liberation Sans",
+            "Noto Sans",
+            "Ubuntu",
+            "Arial",
+            "sans-serif",
+        ] {
+            if let Some(tf) = mgr.match_family_style(family, FontStyle::normal()) {
+                if tf.count_glyphs() > 0 {
+                    return Some(tf);
+                }
+            }
+        }
+        None
+    });
+    match typeface {
+        Some(tf) => Font::from_typeface(tf, size),
+        None => Font::default()
+            .with_size(size)
+            .unwrap_or_else(|| Font::default()),
+    }
+}
 
 pub fn render(canvas: &Canvas, state: &CanvasState, w: f32, h: f32) {
     canvas.clear(BG);
@@ -583,9 +637,7 @@ fn draw_lane_backgrounds(canvas: &Canvas, state: &CanvasState, screen_w: f32) {
 }
 
 fn draw_lane_headers(canvas: &Canvas, state: &CanvasState) {
-    let font = Font::default()
-        .with_size(14.0)
-        .unwrap_or_else(|| Font::default());
+    let font = canvas_font(14.0);
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
     paint.set_color4f(TEXT_DIM, None);
@@ -679,9 +731,7 @@ fn draw_timeline_markers(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
         ZoomLevel::Simplified => 12.0,
         ZoomLevel::Full => 11.0,
     };
-    let font = Font::default()
-        .with_size(font_size)
-        .unwrap_or_else(|| Font::default());
+    let font = canvas_font(font_size);
 
     for marker in &state.layout.timeline_markers {
         if marker.is_milestone {
@@ -732,9 +782,7 @@ fn draw_now_marker(canvas: &Canvas, state: &CanvasState) {
 
     canvas.draw_line((marker_x, 0.0), (marker_x, total_height), &paint);
 
-    let font = Font::default()
-        .with_size(13.0)
-        .unwrap_or_else(|| Font::default());
+    let font = canvas_font(13.0);
     let mut tp = Paint::default();
     tp.set_anti_alias(true);
     tp.set_color4f(ACCENT, None);
@@ -805,9 +853,7 @@ fn draw_card_simplified(
         canvas.draw_path(&path, &bp);
     }
 
-    let title_font = Font::default()
-        .with_size(11.0)
-        .unwrap_or_else(|| Font::default());
+    let title_font = canvas_font(11.0);
     let mut tp = Paint::default();
     tp.set_anti_alias(true);
     tp.set_color4f(TEXT_PRIMARY, None);
@@ -868,9 +914,7 @@ fn draw_card_adopting(canvas: &Canvas, card: &CardLayout, t: f32) {
         canvas.draw_path(&path, &bp);
     }
 
-    let title_font = Font::default()
-        .with_size(13.0)
-        .unwrap_or_else(|| Font::default());
+    let title_font = canvas_font(13.0);
     let mut tp = Paint::default();
     tp.set_anti_alias(true);
     tp.set_color4f(TEXT_PRIMARY, None);
@@ -941,9 +985,7 @@ fn draw_card(
         canvas.draw_path(&path, &bp);
     }
 
-    let title_font = Font::default()
-        .with_size(13.0)
-        .unwrap_or_else(|| Font::default());
+    let title_font = canvas_font(13.0);
     let mut tp = Paint::default();
     tp.set_anti_alias(true);
     tp.set_color4f(TEXT_PRIMARY, None);
@@ -955,9 +997,7 @@ fn draw_card(
     };
     canvas.draw_str(&label, (card.x + 14.0, card.y + 26.0), &title_font, &tp);
 
-    let badge_font = Font::default()
-        .with_size(10.0)
-        .unwrap_or_else(|| Font::default());
+    let badge_font = canvas_font(10.0);
     let ind = if card.is_owned { "owned" } else { "external" };
     tp.set_color4f(border, None);
     canvas.draw_str(
@@ -969,9 +1009,7 @@ fn draw_card(
 }
 
 fn draw_hud(canvas: &Canvas, state: &CanvasState, w: f32, _h: f32) {
-    let font = Font::default()
-        .with_size(12.0)
-        .unwrap_or_else(|| Font::default());
+    let font = canvas_font(12.0);
     let mut p = Paint::default();
     p.set_anti_alias(true);
     p.set_color4f(TEXT_DIM, None);
@@ -1019,5 +1057,45 @@ mod tests {
         let c = lerp_color(EXT_FILL, OWNED_FILL, 0.5);
         let expected_r = (EXT_FILL.r + OWNED_FILL.r) / 2.0;
         assert!((c.r - expected_r).abs() < 0.001);
+    }
+
+    #[test]
+    fn canvas_font_renders_text() {
+        let w = 200i32;
+        let h = 50i32;
+        let info = skia_safe::ImageInfo::new(
+            (w, h),
+            ColorType::RGBA8888,
+            AlphaType::Premul,
+            None,
+        );
+        let row_bytes = (w as usize) * 4;
+        let mut pixels = vec![0u8; row_bytes * h as usize];
+
+        let mut surface =
+            skia_safe::surfaces::wrap_pixels(&info, &mut pixels, Some(row_bytes), None)
+                .expect("surface creation");
+
+        let canvas = surface.canvas();
+        canvas.clear(Color4f::new(0.0, 0.0, 0.0, 1.0));
+
+        let font = canvas_font(16.0);
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_color4f(Color4f::new(1.0, 1.0, 1.0, 1.0), None);
+        paint.set_style(PaintStyle::Fill);
+
+        canvas.draw_str("Hello World", (10.0, 30.0), &font, &paint);
+        drop(surface);
+
+        let has_text = pixels.chunks(4).any(|px| px[0] > 0 || px[1] > 0 || px[2] > 0);
+
+        let typeface = font.typeface();
+        eprintln!("Font family: {:?}", typeface.family_name());
+        eprintln!("Glyph count: {}", typeface.count_glyphs());
+        eprintln!("Font size: {}", font.size());
+        eprintln!("Has visible text pixels: {}", has_text);
+
+        assert!(has_text, "canvas_font() did not render any visible text!");
     }
 }

@@ -67,7 +67,7 @@ impl CanvasFilter {
     }
 }
 
-/// All mutable state for the canvas, held in Rc<RefCell<>>.
+/// All mutable state for the canvas, held in Arc<Mutex<>>.
 pub struct CanvasState {
     pub camera: Camera,
     pub layout: CanvasLayout,
@@ -84,6 +84,16 @@ pub struct CanvasState {
     pub viewport_height: f64,
     /// Set by shader on double-click; consumed by the app's Tick handler.
     pub pending_open: Option<String>,
+
+    // ── Render cache (dirty-flag gating) ───────────────────────────
+    /// Incremented on any visual change; compared against `cached_gen` to detect staleness.
+    pub render_gen: u64,
+    /// Pixel buffer from the last Skia render (RGBA, w*h*4 bytes).
+    pub cached_pixels: Option<Vec<u8>>,
+    /// (width, height) at which the cache was produced.
+    pub cached_size: (u32, u32),
+    /// The `render_gen` value when the cache was last written.
+    pub cached_gen: u64,
 }
 
 impl CanvasState {
@@ -103,7 +113,16 @@ impl CanvasState {
             viewport_width: 1280.0,
             viewport_height: 720.0,
             pending_open: None,
+            render_gen: 1,
+            cached_pixels: None,
+            cached_size: (0, 0),
+            cached_gen: 0,
         }
+    }
+
+    /// Mark the canvas as needing a fresh Skia render on the next draw().
+    pub fn mark_dirty(&mut self) {
+        self.render_gen = self.render_gen.wrapping_add(1);
     }
 
     pub fn avg_fps(&self) -> f64 {

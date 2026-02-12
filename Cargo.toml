@@ -64,7 +64,7 @@ genpdf = "0.2"
 pdf-extract = "0.10"
 
 # UI framework
-iced = { version = "0.14", features = ["tokio", "wgpu"] }
+iced = { version = "0.14", features = ["tokio", "wgpu", "image"] }
 bytemuck = { version = "1.0", features = ["derive"] }
 wgpu = "24"
 rfd = "0.17"

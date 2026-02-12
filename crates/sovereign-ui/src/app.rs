@@ -18,7 +18,7 @@ use sovereign_skills::registry::SkillRegistry;
 use sovereign_skills::traits::SkillOutput;
 
 use crate::orchestrator_bubble::{build_skill_doc, format_structured_data, BubbleState};
-use crate::panels::document_panel::FloatingPanel;
+use crate::panels::document_panel::{FloatingPanel, DEAD_ZONE, DRAG_BAR_HEIGHT};
 use crate::search::SearchState;
 use crate::taskbar::TaskbarState;
 use crate::theme;
@@ -283,11 +283,14 @@ impl SovereignApp {
             // ── Panel drag ──────────────────────────────────────────────
             Message::PanelDragStart(idx) => {
                 if let Some(panel) = self.doc_panels.get_mut(idx) {
-                    // Only start drag if cursor is in the header area (top ~44px)
-                    if panel.last_local_cursor.y < 44.0 {
+                    // Local coords include the DEAD_ZONE padding: panel content
+                    // starts at (DEAD_ZONE, DEAD_ZONE). Only start drag if
+                    // cursor is in the toolbar row (the drag handle).
+                    let local_y = panel.last_local_cursor.y;
+                    if local_y >= DEAD_ZONE && local_y < DEAD_ZONE + DRAG_BAR_HEIGHT {
                         let screen = iced::Point::new(
-                            panel.position.x + panel.last_local_cursor.x,
-                            panel.position.y + panel.last_local_cursor.y,
+                            (panel.position.x - DEAD_ZONE) + panel.last_local_cursor.x,
+                            (panel.position.y - DEAD_ZONE) + panel.last_local_cursor.y,
                         );
                         panel.drag_start_screen = Some(screen);
                         panel.drag_start_panel = Some(panel.position);
@@ -302,9 +305,11 @@ impl SovereignApp {
                     if let (Some(start_screen), Some(start_panel)) =
                         (panel.drag_start_screen, panel.drag_start_panel)
                     {
+                        // Convert local coords to screen coords, accounting
+                        // for the dead-zone offset in the outer container.
                         let screen = iced::Point::new(
-                            panel.position.x + local.x,
-                            panel.position.y + local.y,
+                            (panel.position.x - DEAD_ZONE) + local.x,
+                            (panel.position.y - DEAD_ZONE) + local.y,
                         );
                         let dx = screen.x - start_screen.x;
                         let dy = screen.y - start_screen.y;
@@ -552,6 +557,7 @@ impl SovereignApp {
                         st.highlighted.push(id.clone());
                     }
                 }
+                st.mark_dirty();
             }
             OrchestratorEvent::DocumentOpened { ref doc_id } => {
                 sovereign_canvas::apply_command(

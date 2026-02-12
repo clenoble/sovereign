@@ -1,10 +1,17 @@
-use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_editor, text_input};
-use iced::{Element, Length, Padding};
+use iced::widget::{button, column, container, image, mouse_area, row, scrollable, text, text_editor, text_input, Space};
+use iced::{ContentFit, Element, Length, Padding};
 
 use sovereign_core::content::ContentImage;
 
 use crate::app::Message;
 use crate::theme;
+
+/// Transparent margin around the visible panel that captures mouse events
+/// without triggering any panel action — prevents canvas drag bleed-through.
+pub const DEAD_ZONE: f32 = 10.0;
+
+/// Height of the toolbar row used as a drag handle.
+pub const DRAG_BAR_HEIGHT: f32 = 44.0;
 
 /// A floating document editing panel.
 pub struct FloatingPanel {
@@ -49,17 +56,9 @@ impl FloatingPanel {
     }
 
     pub fn view(&self, index: usize) -> Element<'_, Message> {
-        // Header: title + save + close
-        let header = row![
-            text_input("Document title", &self.title)
-                .on_input(move |t| Message::DocTitleChanged {
-                    panel_idx: index,
-                    title: t,
-                })
-                .style(theme::search_input_style)
-                .padding(Padding::from([8, 12]))
-                .size(14)
-                .width(Length::Fill),
+        // Row 1 (toolbar): right-aligned Save + Close — this row is the drag handle
+        let toolbar = row![
+            Space::new().width(Length::Fill),
             button(text("Save").size(13))
                 .on_press(Message::SaveDocument(index))
                 .style(theme::skill_button_style)
@@ -71,6 +70,19 @@ impl FloatingPanel {
         ]
         .spacing(8)
         .padding(Padding::from([8, 12]));
+
+        // Row 2 (title): full-width title input on its own line
+        let title_row = text_input("Document title", &self.title)
+            .on_input(move |t| Message::DocTitleChanged {
+                panel_idx: index,
+                title: t,
+            })
+            .style(theme::search_input_style)
+            .padding(Padding::from([8, 12]))
+            .size(14)
+            .width(Length::Fill);
+
+        let header = column![toolbar, title_row].spacing(0);
 
         // Body: text editor
         let editor = text_editor(&self.body)
@@ -84,7 +96,7 @@ impl FloatingPanel {
 
         let mut content = column![header, editor].spacing(0);
 
-        // Image gallery (if any)
+        // Image gallery (if any) — thumbnail + caption per image
         if !self.images.is_empty() {
             let mut gallery = row![].spacing(8).padding(8);
             for img in &self.images {
@@ -97,36 +109,50 @@ impl FloatingPanel {
                 } else {
                     filename
                 };
-                gallery = gallery.push(
+                let thumbnail = image(&img.path)
+                    .width(80)
+                    .height(60)
+                    .content_fit(ContentFit::Cover);
+                let card = column![
+                    thumbnail,
                     text(caption).size(11).color(theme::TEXT_DIM),
-                );
+                ]
+                .spacing(2)
+                .width(80);
+                gallery = gallery.push(card);
             }
             content = content.push(scrollable(gallery).direction(scrollable::Direction::Horizontal(
                 scrollable::Scrollbar::default(),
             )));
         }
 
-        // Inner: styled panel with mouse_area — captures events (prevents
-        // leaking to the canvas shader) and enables drag-to-reposition.
+        // mouse_area captures all events in the dead-zone + panel area,
+        // preventing leakthrough to the canvas shader underneath.
         let panel = mouse_area(
-            container(content)
-                .width(self.size.width)
-                .height(self.size.height)
-                .style(theme::document_panel_style),
+            // Dead zone: 10px transparent padding around the visible panel.
+            // Events here are swallowed by mouse_area but don't trigger drag.
+            container(
+                container(content)
+                    .width(self.size.width)
+                    .height(self.size.height)
+                    .style(theme::document_panel_style),
+            )
+            .padding(DEAD_ZONE),
         )
         .on_press(Message::PanelDragStart(index))
         .on_release(Message::PanelDragEnd(index))
         .on_move(move |p| Message::PanelDragMove { panel_idx: index, local: p })
         .on_scroll(|_| Message::Ignore);
 
-        // Outer: transparent full-layer container that positions the panel via padding.
+        // Outer: positions the panel so the *visible* panel sits at self.position
+        // (offset by -DEAD_ZONE to compensate for the dead zone padding).
         container(panel)
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(
                 Padding::ZERO
-                    .top(self.position.y)
-                    .left(self.position.x),
+                    .top((self.position.y - DEAD_ZONE).max(0.0))
+                    .left((self.position.x - DEAD_ZONE).max(0.0)),
             )
             .into()
     }
