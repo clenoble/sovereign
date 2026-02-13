@@ -36,9 +36,13 @@ impl LlamaCppBackend {
 
     /// Generate text from a prompt. Not suitable for direct async use — wrap with spawn_blocking.
     pub fn generate(&mut self, prompt: &str, max_tokens: u32) -> Result<String> {
+        // Disable flash attention to avoid ggml symbol conflict with whisper-rs-sys
+        // (both crates embed ggml; /FORCE:MULTIPLE merges symbols, and the flash-attn
+        // code paths are incompatible between the two versions)
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(self.n_ctx))
-            .with_n_batch(512);
+            .with_n_batch(512)
+            .with_flash_attention_policy(0);
 
         let mut ctx = self
             .model

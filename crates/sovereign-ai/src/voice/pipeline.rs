@@ -34,6 +34,7 @@ impl VoicePipeline {
         query_callback: Box<dyn Fn(String) + Send + 'static>,
     ) -> Result<std::thread::JoinHandle<()>> {
         // Validate config files exist before spawning thread
+        #[cfg(feature = "wake-word")]
         if !Path::new(&config.wake_word_model).exists() {
             anyhow::bail!(
                 "Wake word model not found: {}",

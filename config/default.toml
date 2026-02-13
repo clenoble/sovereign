@@ -9,13 +9,13 @@ default_height = 1440
 
 [ai]
 model_dir = "models"
-router_model = "Qwen2.5-3B-Instruct-Q4_K_M.gguf"
-reasoning_model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
-n_gpu_layers = 99
+router_model = "qwen2.5-3b-instruct-q4_k_m.gguf"
+reasoning_model = "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+n_gpu_layers = 0
 n_ctx = 4096
 
 [voice]
-enabled = false
+enabled = true
 wake_word_model = "models/sovereign.rpw"
 whisper_model = "models/ggml-large-v3-turbo.bin"
 piper_binary = "piper"
