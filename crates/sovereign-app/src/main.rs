@@ -737,6 +737,20 @@ fn main() -> Result<()> {
                         }) as Box<dyn Fn(String) + Send + 'static>
                     });
 
+                // Build chat callback for chat window
+                let chat_callback: Option<Box<dyn Fn(String) + Send + 'static>> =
+                    orchestrator.as_ref().map(|orch| {
+                        let orch = orch.clone();
+                        Box::new(move |text: String| {
+                            let orch = orch.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = orch.handle_chat(&text).await {
+                                    tracing::error!("Chat error: {e}");
+                                }
+                            });
+                        }) as Box<dyn Fn(String) + Send + 'static>
+                    });
+
                 // Initialize voice pipeline (optional)
                 let voice_rx = if config.voice.enabled {
                     let (vtx, vrx) = mpsc::channel();
@@ -864,6 +878,7 @@ fn main() -> Result<()> {
                     documents,
                     threads,
                     query_callback,
+                    chat_callback,
                     Some(orch_rx),
                     ui_voice_rx,
                     None, // skill_rx — canvas creates its own internally

@@ -52,7 +52,7 @@ pub enum ActionDecision {
 pub fn action_level(action: &str) -> ActionLevel {
     match action {
         "search" | "open" | "navigate" | "history" | "summarize" | "word_count"
-        | "list_models" | "list_milestones"
+        | "list_models" | "list_milestones" | "chat"
         | "sync_device" | "list_guardians" | "sync_status" | "list_devices" => ActionLevel::Observe,
         "annotate" | "tag" | "bookmark" => ActionLevel::Annotate,
         "create_thread" | "rename_thread" | "move_document" | "restore" | "edit"

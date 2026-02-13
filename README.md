@@ -4,7 +4,7 @@ Your data, your rules. A local-first personal operating system with AI assistanc
 
 ## Architecture
 
-The project is a Rust workspace with 9 crates:
+The project is a Rust workspace with 10 crates. The codebase is identical across platforms — only the build toolchain differs.
 
 | Crate | Description |
 |---|---|
@@ -13,6 +13,7 @@ The project is a Rust workspace with 9 crates:
 | `sovereign-crypto` | Key hierarchy, XChaCha20-Poly1305, Shamir secret sharing |
 | `sovereign-ai` | LLM orchestrator, intent classification, voice pipeline |
 | `sovereign-p2p` | libp2p networking, device pairing, manifest-based sync |
+| `sovereign-comms` | Communication channels (email, Signal, WhatsApp) |
 | `sovereign-ui` | Iced application shell (cross-platform) |
 | `sovereign-canvas` | Skia-rendered infinite canvas with threads and documents |
 | `sovereign-skills` | Pluggable skill system (editor, search, PDF export, etc.) |
@@ -23,15 +24,16 @@ The project is a Rust workspace with 9 crates:
 **All platforms:**
 - Rust (edition 2021)
 - Python 3 + `huggingface-hub` (for downloading models)
-- CUDA toolkit (for GPU-accelerated inference; optional)
 
 **Linux / WSL2:**
-- No additional dependencies (RocksDB, llama.cpp, whisper.cpp build from source)
+- CUDA toolkit (optional — enables GPU-accelerated inference)
+- No other dependencies (RocksDB, llama.cpp, whisper.cpp build from source)
 
 **Windows:**
 - Visual Studio Build Tools 2022 (with C++ workload)
-- LLVM — `winget install LLVM.LLVM` (provides `libclang.dll` for RocksDB bindgen)
 - CMake — `winget install Kitware.CMake` (builds llama.cpp and whisper.cpp)
+- LLVM — `winget install LLVM.LLVM` (provides `libclang.dll` for RocksDB bindgen)
+- CUDA toolkit (optional — only needed with `--features cuda`)
 
 ## Getting Started
 
@@ -93,8 +95,10 @@ sovereign --config /path/to/custom.toml run
 
 #### Linux / WSL2
 
+Uses GCC/Clang. CUDA is auto-detected when the toolkit is installed.
+
 ```bash
-# Default build (CUDA enabled)
+# Default build (CUDA enabled if toolkit is present)
 cargo build --release -j 4
 
 # CPU-only (no CUDA required)
@@ -111,19 +115,24 @@ Use `-j 4` on WSL2 with 16 GB RAM to avoid OOM. Drop to `-j 2` if builds still c
 
 #### Windows
 
+Uses MSVC + CMake. Builds CPU-only by default — no CUDA toolkit required.
+
 ```powershell
 # Set environment for native dependencies
 $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
 $env:Path += ";C:\Program Files\CMake\bin;C:\Program Files\LLVM\bin"
 
-# Build (CPU inference — no CUDA on Windows by default)
+# Build (CPU inference)
 cargo build --release -p sovereign-app
 
-# With CUDA (requires NVIDIA CUDA Toolkit)
+# With end-to-end encryption
+cargo build --release -p sovereign-app --features encryption
+
+# With CUDA (requires NVIDIA CUDA Toolkit installed separately)
 cargo build --release -p sovereign-app --features cuda
 ```
 
-> **Note:** The debug build artifacts can exceed 17 GB. If your system drive is low on space, redirect the target directory:
+> **Note:** Debug build artifacts can exceed 17 GB. If your system drive is low on space, redirect the target directory:
 > ```powershell
 > $env:CARGO_TARGET_DIR = "D:\cargo-target"
 > ```
@@ -187,20 +196,36 @@ sovereign list-devices
 sovereign enroll-guardian --name "Alice" --peer-id <libp2p-peer-id>
 ```
 
-## GPU Memory
+## Tests
+
+#### Linux / WSL2
+
+```bash
+cargo test -j 4
+```
+
+#### Windows
+
+```powershell
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+$env:Path += ";C:\Program Files\CMake\bin;C:\Program Files\LLVM\bin"
+
+# Run all tests (CPU-only, no CUDA)
+cargo test -j 4 --no-default-features
+```
+
+## Memory Usage
+
+When running with `--features cuda` (GPU inference):
 
 | Configuration | VRAM Usage |
 |---|---|
 | Router only (3B Q4) | ~2 GB |
 | Router + Reasoning (3B + 7B Q4) | ~6 GB |
 
-The 3B router model loads at startup. The 7B reasoning model loads on demand when intent confidence is low. Both stay in VRAM simultaneously. Set `n_gpu_layers = 0` in config to fall back to CPU.
+The 3B router model loads at startup. The 7B reasoning model loads on demand when intent confidence is low. Both stay in VRAM simultaneously.
 
-## Tests
-
-```bash
-cargo test -j 4
-```
+For CPU-only builds (Windows default), the same models use system RAM instead. Set `n_gpu_layers = 0` in config to force CPU inference on any platform.
 
 ## License
 

@@ -12,11 +12,12 @@ use sovereign_canvas::state::CanvasState;
 use sovereign_core::config::UiConfig;
 use sovereign_core::content::ContentFields;
 use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent, SkillEvent};
-use sovereign_core::security::{ActionDecision, BubbleVisualState};
+use sovereign_core::security::ActionDecision;
 use sovereign_db::schema::{Document, Thread};
 use sovereign_skills::registry::SkillRegistry;
 use sovereign_skills::traits::SkillOutput;
 
+use crate::chat::ChatState;
 use crate::orchestrator_bubble::{build_skill_doc, format_structured_data, BubbleState};
 use crate::panels::document_panel::{FloatingPanel, DEAD_ZONE, DRAG_BAR_HEIGHT};
 use crate::search::SearchState;
@@ -59,6 +60,10 @@ pub enum Message {
     TaskbarDocClicked(String),
     TaskbarDocPinToggled(String),
     MicToggled,
+    // Chat
+    ChatToggled,
+    ChatInputChanged(String),
+    ChatSubmitted,
     // Panel drag
     PanelDragStart(usize),
     PanelDragMove { panel_idx: usize, local: iced::Point },
@@ -80,6 +85,7 @@ pub struct SovereignApp {
     canvas_cmd_rx: Option<mpsc::Receiver<CanvasCommand>>,
     // UI components
     search: SearchState,
+    chat: ChatState,
     bubble: BubbleState,
     taskbar: TaskbarState,
     doc_panels: Vec<FloatingPanel>,
@@ -90,6 +96,7 @@ pub struct SovereignApp {
     skill_rx: Option<mpsc::Receiver<SkillEvent>>,
     // Callbacks
     query_callback: Option<Box<dyn Fn(String) + Send>>,
+    chat_callback: Option<Box<dyn Fn(String) + Send>>,
     save_callback: Option<Box<dyn Fn(String, String, String) + Send>>,
     close_callback: Option<Box<dyn Fn(String) + Send>>,
     decision_tx: Option<mpsc::Sender<ActionDecision>>,
@@ -104,6 +111,7 @@ impl SovereignApp {
         documents: Vec<Document>,
         threads: Vec<Thread>,
         query_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
+        chat_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
         orchestrator_rx: Option<mpsc::Receiver<OrchestratorEvent>>,
         voice_rx: Option<mpsc::Receiver<VoiceEvent>>,
         skill_rx: Option<mpsc::Receiver<SkillEvent>>,
@@ -135,6 +143,7 @@ impl SovereignApp {
             canvas_state,
             canvas_cmd_rx: Some(canvas_cmd_rx),
             search: SearchState::new(),
+            chat: ChatState::new(),
             bubble: BubbleState::new(),
             taskbar: TaskbarState::new(pinned_docs),
             doc_panels: Vec::new(),
@@ -143,6 +152,7 @@ impl SovereignApp {
             voice_rx,
             skill_rx,
             query_callback,
+            chat_callback,
             save_callback,
             close_callback,
             decision_tx,
@@ -351,6 +361,27 @@ impl SovereignApp {
                 Task::none()
             }
 
+            // ── Chat ──────────────────────────────────────────────────────
+            Message::ChatToggled => {
+                self.chat.visible = !self.chat.visible;
+                Task::none()
+            }
+            Message::ChatInputChanged(input) => {
+                self.chat.input = input;
+                Task::none()
+            }
+            Message::ChatSubmitted => {
+                let input = self.chat.input.clone();
+                if !input.is_empty() {
+                    self.chat.push_user_message(input.clone());
+                    self.chat.input.clear();
+                    if let Some(ref cb) = self.chat_callback {
+                        cb(input);
+                    }
+                }
+                Task::none()
+            }
+
             // ── File dialogs ─────────────────────────────────────────────
             Message::FileDialogResult { skill_name, action_id, path } => {
                 if let Some(path) = path {
@@ -382,8 +413,12 @@ impl SovereignApp {
                                 cb("jump_to_date".to_string());
                             }
                         }
+                        keyboard::Key::Named(keyboard::key::Named::Space) if ctrl => {
+                            self.chat.visible = !self.chat.visible;
+                        }
                         keyboard::Key::Named(keyboard::key::Named::Escape) => {
                             self.search.visible = false;
+                            self.chat.visible = false;
                         }
                         _ => {}
                     }
@@ -395,7 +430,7 @@ impl SovereignApp {
         }
     }
 
-    pub fn view(&self) -> Element<Message> {
+    pub fn view(&self) -> Element<'_, Message> {
         // Canvas: shader handles mouse events directly via Program::update()
         let canvas = shader(&self.canvas_program)
             .width(Length::Fill)
@@ -413,6 +448,17 @@ impl SovereignApp {
         // Orchestrator bubble
         let has_active_doc = !self.doc_panels.is_empty();
         layers.push(self.bubble.view(&self.skill_registry, has_active_doc));
+
+        // Chat panel (next to bubble)
+        if self.chat.visible {
+            let chat_positioned = container(self.chat.view())
+                .padding(
+                    iced::Padding::ZERO
+                        .top(20.0)
+                        .left(80.0),
+                );
+            layers.push(chat_positioned.into());
+        }
 
         // Search overlay (conditional)
         if self.search.visible {
@@ -495,7 +541,15 @@ impl SovereignApp {
             for event in voice_events {
                 match event {
                     VoiceEvent::TranscriptionReady(ref text) => {
-                        self.search.query = text.clone();
+                        if self.chat.visible {
+                            // Route voice to chat when chat is open
+                            self.chat.push_user_message(text.clone());
+                            if let Some(ref cb) = self.chat_callback {
+                                cb(text.clone());
+                            }
+                        } else {
+                            self.search.query = text.clone();
+                        }
                         self.search.voice_status = None;
                     }
                     VoiceEvent::WakeWordDetected | VoiceEvent::ListeningStarted => {
@@ -617,6 +671,10 @@ impl SovereignApp {
             }
             OrchestratorEvent::VersionHistory { ref doc_id, ref commits } => {
                 tracing::info!("UI: Version history for {}: {} commits", doc_id, commits.len());
+            }
+            OrchestratorEvent::ChatResponse { ref text } => {
+                self.chat.push_assistant_message(text.clone());
+                // TODO: Trigger TTS when cross-platform audio playback is available
             }
             _ => {}
         }

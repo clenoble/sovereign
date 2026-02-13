@@ -76,6 +76,19 @@ pub fn skill_panel_style(_theme: &Theme) -> container::Style {
     }
 }
 
+pub fn chat_panel_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_SKILL_PANEL)),
+        border: Border {
+            color: BORDER_ACCENT,
+            width: 1.0,
+            radius: 12.0.into(),
+        },
+        text_color: Some(TEXT_PRIMARY),
+        ..Default::default()
+    }
+}
+
 pub fn confirmation_panel_style(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(BG_SKILL_PANEL)),

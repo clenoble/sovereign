@@ -1,17 +1,27 @@
-//! Integration tests for LLM inference. Requires GPU + model files.
+//! Integration tests for LLM inference. Requires model files.
 //! Run with: cargo test -p sovereign-ai -- --ignored
 
+use std::path::PathBuf;
+
 use sovereign_core::interfaces::ModelBackend;
+
+/// Resolve a path relative to the workspace root (two levels above this crate).
+fn workspace_path(relative: &str) -> String {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest.parent().unwrap().parent().unwrap();
+    workspace_root.join(relative).to_string_lossy().into_owned()
+}
 
 /// Test loading and generating with the 3B router model.
 /// Requires: models/qwen2.5-3b-instruct-q4_k_m.gguf
 #[tokio::test]
-#[ignore = "Requires GPU and model files"]
+#[ignore = "Requires model files"]
 async fn load_and_generate_3b() {
+    let model_path = workspace_path("models/qwen2.5-3b-instruct-q4_k_m.gguf");
     let mut backend = sovereign_ai::llm::AsyncLlmBackend::new(4096);
 
     backend
-        .load("models/qwen2.5-3b-instruct-q4_k_m.gguf", 99)
+        .load(&model_path, 99)
         .await
         .expect("Failed to load 3B model");
 

@@ -105,6 +105,14 @@ impl TaskbarState {
         // Spacer
         items_row = items_row.push(Space::new().width(Length::Fill));
 
+        // Chat button
+        items_row = items_row.push(
+            button(text("Chat").size(13))
+                .on_press(Message::ChatToggled)
+                .style(theme::taskbar_button_style)
+                .padding(Padding::from([4, 12])),
+        );
+
         // Mic button
         let mic_label = if self.listening { "Listening..." } else { "Mic" };
         items_row = items_row.push(

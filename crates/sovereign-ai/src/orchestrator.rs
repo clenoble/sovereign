@@ -308,6 +308,27 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Handle a chat message directly: skip intent classification, generate a response.
+    pub async fn handle_chat(&self, message: &str) -> Result<()> {
+        if let Some(ref log) = self.session_log {
+            if let Ok(mut log) = log.lock() {
+                log.log_user_input("chat", message, "chat");
+            }
+        }
+
+        let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+            BubbleVisualState::ProcessingOwned,
+        ));
+
+        self.execute_action("chat", None, message).await?;
+
+        let _ = self
+            .event_tx
+            .send(OrchestratorEvent::BubbleState(BubbleVisualState::Idle));
+
+        Ok(())
+    }
+
     /// Wait for a user decision on the decision channel (30s timeout).
     /// If no channel is configured, auto-approve (for backward compatibility/testing).
     fn wait_for_decision(&self) -> ActionDecision {
@@ -890,6 +911,24 @@ impl Orchestrator {
                                 }
                             }
                         }
+                    }
+                }
+            }
+            "chat" => {
+                let system = crate::llm::prompt::CHAT_SYSTEM_PROMPT;
+                let prompt = crate::llm::prompt::qwen_chat_prompt(system, query);
+                match self.classifier.router.generate(&prompt, 512).await {
+                    Ok(response) => {
+                        let text = response.trim().to_string();
+                        tracing::info!("Chat response: {} chars", text.len());
+                        self.log_action("chat", &format!("response: {} chars", text.len()));
+                        let _ = self.event_tx.send(OrchestratorEvent::ChatResponse { text });
+                    }
+                    Err(e) => {
+                        tracing::error!("Chat generation failed: {e}");
+                        let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
+                            text: format!("Sorry, I couldn't generate a response: {e}"),
+                        });
                     }
                 }
             }

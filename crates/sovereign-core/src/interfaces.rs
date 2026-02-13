@@ -73,6 +73,8 @@ pub enum OrchestratorEvent {
     CommsSyncComplete { channel: String, new_messages: u32 },
     CommsSyncError { channel: String, error: String },
     ContactCreated { contact_id: String, name: String },
+    // Chat response from LLM
+    ChatResponse { text: String },
 }
 
 /// Lightweight milestone summary for milestone events.

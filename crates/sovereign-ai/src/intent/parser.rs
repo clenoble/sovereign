@@ -128,6 +128,11 @@ fn extract_intent_heuristic(response: &str) -> UserIntent {
         "navigate"
     } else if lower.contains("summarize") || lower.contains("summary") {
         "summarize"
+    } else if lower.contains("hello") || lower.contains("hi ") || lower.contains("hey ")
+        || lower.contains("what is") || lower.contains("tell me") || lower.contains("explain")
+        || lower.contains("how do") || lower.contains("can you") || lower.contains("help me")
+    {
+        "chat"
     } else {
         "unknown"
     };

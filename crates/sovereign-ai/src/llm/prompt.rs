@@ -11,7 +11,7 @@ pub fn qwen_chat_prompt(system: &str, user: &str) -> String {
 pub const ROUTER_SYSTEM_PROMPT: &str = "\
 You are an intent classifier for a document management OS. \
 Given user input, output JSON only:\n\
-{\"action\": \"search|open|create|navigate|summarize|create_thread|rename_thread|delete_thread|move_document|history|restore|unknown\", \
+{\"action\": \"search|open|create|navigate|summarize|create_thread|rename_thread|delete_thread|move_document|history|restore|chat|unknown\", \
 \"target\": \"...\", \"confidence\": 0.0-1.0, \
 \"entities\": [[\"key\", \"value\"]]}";
 
@@ -19,10 +19,15 @@ Given user input, output JSON only:\n\
 pub const REASONING_SYSTEM_PROMPT: &str = "\
 You are a helpful assistant for a document management OS. \
 Analyze the user's request carefully and output JSON:\n\
-{\"action\": \"search|open|create|navigate|summarize|create_thread|rename_thread|delete_thread|move_document|history|restore|unknown\", \
+{\"action\": \"search|open|create|navigate|summarize|create_thread|rename_thread|delete_thread|move_document|history|restore|chat|unknown\", \
 \"target\": \"...\", \"confidence\": 0.0-1.0, \
 \"entities\": [[\"key\", \"value\"]], \
 \"reasoning\": \"brief explanation\"}";
+
+/// System prompt for conversational chat responses.
+pub const CHAT_SYSTEM_PROMPT: &str = "\
+You are a helpful assistant for Sovereign OS, a personal document management system. \
+Answer the user's question concisely and helpfully.";
 
 #[cfg(test)]
 mod tests {

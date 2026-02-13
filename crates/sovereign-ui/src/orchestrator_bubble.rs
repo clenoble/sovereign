@@ -1,5 +1,5 @@
-use iced::widget::{button, column, container, row, text, Space};
-use iced::{Element, Length, Padding};
+use iced::widget::{button, column, container, row, text};
+use iced::{Element, Padding};
 
 use sovereign_core::content::{ContentFields, ContentImage};
 use sovereign_core::security::BubbleVisualState;
