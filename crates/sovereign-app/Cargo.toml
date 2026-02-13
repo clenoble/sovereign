@@ -13,7 +13,7 @@ sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
 sovereign-ui = { workspace = true }
 sovereign-skills = { workspace = true }
-sovereign-ai = { workspace = true }
+sovereign-ai = { workspace = true, default-features = false }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
@@ -31,6 +31,7 @@ rand = { version = "0.10", optional = true }
 
 [features]
 default = []
+cuda = ["sovereign-ai/cuda"]
 encryption = ["sovereign-crypto", "sovereign-db/encryption", "rpassword", "uuid", "rand"]
 p2p = ["encryption", "sovereign-p2p", "sovereign-ai/p2p"]
 comms = ["sovereign-comms"]

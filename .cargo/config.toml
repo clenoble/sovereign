@@ -1,2 +1,5 @@
-[build]
+[target.x86_64-unknown-linux-gnu]
 rustflags = ["-L", "/usr/lib/x86_64-linux-gnu", "-Clink-arg=-Wl,--allow-multiple-definition"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Clink-arg=/FORCE:MULTIPLE"]

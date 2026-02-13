@@ -23,6 +23,10 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+nul
+
+# Runtime data
+data/
 
 # Build artifacts
 *.o

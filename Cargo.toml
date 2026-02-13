@@ -47,7 +47,7 @@ sovereign-db = { path = "crates/sovereign-db" }
 sovereign-skills = { path = "crates/sovereign-skills" }
 sovereign-ui = { path = "crates/sovereign-ui" }
 sovereign-canvas = { path = "crates/sovereign-canvas" }
-sovereign-ai = { path = "crates/sovereign-ai" }
+sovereign-ai = { path = "crates/sovereign-ai", default-features = false }
 sovereign-crypto = { path = "crates/sovereign-crypto" }
 sovereign-p2p = { path = "crates/sovereign-p2p" }
 sovereign-comms = { path = "crates/sovereign-comms" }

@@ -13,17 +13,25 @@ The project is a Rust workspace with 9 crates:
 | `sovereign-crypto` | Key hierarchy, XChaCha20-Poly1305, Shamir secret sharing |
 | `sovereign-ai` | LLM orchestrator, intent classification, voice pipeline |
 | `sovereign-p2p` | libp2p networking, device pairing, manifest-based sync |
-| `sovereign-ui` | GTK4 application shell |
+| `sovereign-ui` | Iced application shell (cross-platform) |
 | `sovereign-canvas` | Skia-rendered infinite canvas with threads and documents |
 | `sovereign-skills` | Pluggable skill system (editor, search, PDF export, etc.) |
 | `sovereign-app` | Binary entry point — CLI and GUI |
 
 ## Prerequisites
 
+**All platforms:**
 - Rust (edition 2021)
-- GTK4 development libraries
-- CUDA toolkit (for GPU-accelerated inference; optional)
 - Python 3 + `huggingface-hub` (for downloading models)
+- CUDA toolkit (for GPU-accelerated inference; optional)
+
+**Linux / WSL2:**
+- No additional dependencies (RocksDB, llama.cpp, whisper.cpp build from source)
+
+**Windows:**
+- Visual Studio Build Tools 2022 (with C++ workload)
+- LLVM — `winget install LLVM.LLVM` (provides `libclang.dll` for RocksDB bindgen)
+- CMake — `winget install Kitware.CMake` (builds llama.cpp and whisper.cpp)
 
 ## Getting Started
 
@@ -83,6 +91,8 @@ sovereign --config /path/to/custom.toml run
 
 ### 3. Build
 
+#### Linux / WSL2
+
 ```bash
 # Default build (CUDA enabled)
 cargo build --release -j 4
@@ -99,14 +109,34 @@ cargo build --release -j 4 --features p2p
 
 Use `-j 4` on WSL2 with 16 GB RAM to avoid OOM. Drop to `-j 2` if builds still crash.
 
+#### Windows
+
+```powershell
+# Set environment for native dependencies
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+$env:Path += ";C:\Program Files\CMake\bin;C:\Program Files\LLVM\bin"
+
+# Build (CPU inference — no CUDA on Windows by default)
+cargo build --release -p sovereign-app
+
+# With CUDA (requires NVIDIA CUDA Toolkit)
+cargo build --release -p sovereign-app --features cuda
+```
+
+> **Note:** The debug build artifacts can exceed 17 GB. If your system drive is low on space, redirect the target directory:
+> ```powershell
+> $env:CARGO_TARGET_DIR = "D:\cargo-target"
+> ```
+
 ### 4. Run
 
 ```bash
 # Launch the GUI
-cargo run --release -j 4 -- run
+cargo run --release -- run
 
 # Or run the built binary directly
-./target/release/sovereign run
+./target/release/sovereign run        # Linux
+.\target\release\sovereign.exe run    # Windows
 ```
 
 On first launch with an empty database, sample data is seeded automatically.
@@ -115,7 +145,7 @@ On first launch with an empty database, sample data is seeded automatically.
 
 | Flag | Crate | What it enables |
 |---|---|---|
-| `cuda` (default) | sovereign-ai | GPU-accelerated LLM inference |
+| `cuda` | sovereign-app | GPU-accelerated LLM inference via llama.cpp |
 | `wake-word` | sovereign-ai | Rustpotter-based wake word detection |
 | `encryption` | sovereign-app | Document encryption, guardian recovery |
 | `p2p` | sovereign-app | Device pairing, sync engine (implies `encryption`) |
