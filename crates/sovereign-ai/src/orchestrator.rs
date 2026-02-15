@@ -957,6 +957,7 @@ impl Orchestrator {
 
     /// Scan document content for injection attempts. Emits InjectionDetected events.
     /// Returns true if injection was detected (caller should refuse to process).
+    // TODO: integrate into execute_action pipeline — call before processing user-supplied content
     #[allow(dead_code)]
     pub async fn scan_document_for_injection(&self, doc_id: &str) -> bool {
         match self.db.get_document(doc_id).await {

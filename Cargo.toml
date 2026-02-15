@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["spike-1-skia-gtk4"]
+exclude = []
 members = [
     "crates/sovereign-core",
     "crates/sovereign-db",

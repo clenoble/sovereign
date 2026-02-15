@@ -1,14 +1,14 @@
-//! Week 7 cross-phase interface definitions.
+//! Cross-phase interface definitions.
 //!
-//! These are signature-only stubs defining the contracts between phases.
-//! Phase 2 (Canvas), Phase 3 (AI), and Phase 4 (Skills) will implement them.
+//! Traits and types defining the contracts between crates:
+//! sovereign-canvas (CanvasController), sovereign-ai (ModelBackend,
+//! OrchestratorEvent), and sovereign-skills (SkillEvent).
 
 use async_trait::async_trait;
 
 use crate::security::{BubbleVisualState, ProposedAction};
 
 /// Controls the spatial canvas viewport and highlights.
-/// Implemented in Phase 2 by sovereign-canvas.
 pub trait CanvasController: Send + Sync {
     fn navigate_to_document(&self, doc_id: &str);
     fn highlight_card(&self, doc_id: &str, highlight: bool);
@@ -26,8 +26,7 @@ pub struct Viewport {
     pub height: f64,
 }
 
-/// Events emitted by the AI orchestrator.
-/// Phase 3 produces these; the UI and skills consume them.
+/// Events emitted by the AI orchestrator and consumed by the UI and skills.
 #[derive(Debug, Clone)]
 pub enum OrchestratorEvent {
     DocumentOpened { doc_id: String },
@@ -134,9 +133,6 @@ pub enum VoiceMode {
     PushToTalk,
 }
 
-/// Backend for loading and running LLM inference.
-/// Implemented in Phase 3 by sovereign-ai.
-///
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +182,7 @@ mod tests {
     }
 }
 
+/// Backend for loading and running LLM inference.
 #[async_trait]
 pub trait ModelBackend: Send + Sync {
     async fn load(&mut self, model_path: &str, n_gpu_layers: i32) -> anyhow::Result<()>;

@@ -803,41 +803,40 @@ fn draw_dot(canvas: &Canvas, card: &CardLayout) {
     canvas.draw_circle((cx, cy), 6.0, &paint);
 }
 
-fn draw_card_simplified(
-    canvas: &Canvas,
-    card: &CardLayout,
-    selected: bool,
-    highlighted: bool,
-) {
-    let (fill, border) = if card.is_owned {
+// --- Shared card-drawing helpers ---
+
+fn fill_paint(color: Color4f) -> Paint {
+    let mut p = Paint::default();
+    p.set_anti_alias(true);
+    p.set_color4f(color, None);
+    p.set_style(PaintStyle::Fill);
+    p
+}
+
+fn border_paint(color: Color4f, width: f32) -> Paint {
+    let mut p = Paint::default();
+    p.set_anti_alias(true);
+    p.set_color4f(color, None);
+    p.set_style(PaintStyle::Stroke);
+    p.set_stroke_width(width);
+    p
+}
+
+fn card_colors(card: &CardLayout) -> (Color4f, Color4f) {
+    if card.is_owned {
         (OWNED_FILL, OWNED_BORDER)
     } else {
         (EXT_FILL, EXT_BORDER)
-    };
-
-    let mut fp = Paint::default();
-    fp.set_anti_alias(true);
-    fp.set_color4f(fill, None);
-    fp.set_style(PaintStyle::Fill);
-
-    let mut bp = Paint::default();
-    bp.set_anti_alias(true);
-    bp.set_style(PaintStyle::Stroke);
-    if selected || highlighted {
-        bp.set_color4f(ACCENT, None);
-        bp.set_stroke_width(2.5);
-    } else {
-        bp.set_color4f(border, None);
-        bp.set_stroke_width(1.5);
     }
+}
 
-    if card.is_owned {
+fn draw_card_shape(canvas: &Canvas, card: &CardLayout, skew: f32, radius: f32, fp: &Paint, bp: &Paint) {
+    if skew < 1.0 {
         let rect = Rect::from_xywh(card.x, card.y, card.w, card.h);
-        let rr = RRect::new_rect_xy(rect, 8.0, 8.0);
-        canvas.draw_rrect(rr, &fp);
-        canvas.draw_rrect(rr, &bp);
+        let rr = RRect::new_rect_xy(rect, radius, radius);
+        canvas.draw_rrect(rr, fp);
+        canvas.draw_rrect(rr, bp);
     } else {
-        let skew = 14.0_f32;
         let path = Path::polygon(
             &[
                 Point::new(card.x + skew, card.y),
@@ -849,21 +848,48 @@ fn draw_card_simplified(
             None,
             None,
         );
-        canvas.draw_path(&path, &fp);
-        canvas.draw_path(&path, &bp);
+        canvas.draw_path(&path, fp);
+        canvas.draw_path(&path, bp);
     }
+}
 
-    let title_font = canvas_font(11.0);
+fn truncate_title(title: &str, max_chars: usize) -> String {
+    if title.len() > max_chars {
+        format!("{}...", &title[..max_chars.saturating_sub(3)])
+    } else {
+        title.to_string()
+    }
+}
+
+fn draw_title(canvas: &Canvas, card: &CardLayout, font_size: f32, x_off: f32, y_off: f32, char_width: f32) {
+    let font = canvas_font(font_size);
     let mut tp = Paint::default();
     tp.set_anti_alias(true);
     tp.set_color4f(TEXT_PRIMARY, None);
-    let max = (card.w / 9.0) as usize;
-    let label = if card.title.len() > max {
-        format!("{}...", &card.title[..max.saturating_sub(3)])
+    let max = (card.w / char_width) as usize;
+    let label = truncate_title(&card.title, max);
+    canvas.draw_str(&label, (card.x + x_off, card.y + y_off), &font, &tp);
+}
+
+// --- Card drawing functions ---
+
+fn draw_card_simplified(
+    canvas: &Canvas,
+    card: &CardLayout,
+    selected: bool,
+    highlighted: bool,
+) {
+    let (fill, border_color) = card_colors(card);
+    let fp = fill_paint(fill);
+    let (bc, bw) = if selected || highlighted {
+        (ACCENT, 2.5)
     } else {
-        card.title.clone()
+        (border_color, 1.5)
     };
-    canvas.draw_str(&label, (card.x + 10.0, card.y + 20.0), &title_font, &tp);
+    let bp = border_paint(bc, bw);
+    let skew = if card.is_owned { 0.0 } else { 14.0 };
+    draw_card_shape(canvas, card, skew, 8.0, &fp, &bp);
+    draw_title(canvas, card, 11.0, 10.0, 20.0, 9.0);
 }
 
 /// Linearly interpolate between two Color4f values.
@@ -879,52 +905,12 @@ pub fn lerp_color(a: Color4f, b: Color4f, t: f32) -> Color4f {
 fn draw_card_adopting(canvas: &Canvas, card: &CardLayout, t: f32) {
     let fill = lerp_color(EXT_FILL, OWNED_FILL, t);
     let border = lerp_color(EXT_BORDER, OWNED_BORDER, t);
+    let fp = fill_paint(fill);
+    let bp = border_paint(border, 2.0);
     let skew = 14.0 * (1.0 - t);
     let radius = 8.0 * t;
-
-    let mut fp = Paint::default();
-    fp.set_anti_alias(true);
-    fp.set_color4f(fill, None);
-    fp.set_style(PaintStyle::Fill);
-
-    let mut bp = Paint::default();
-    bp.set_anti_alias(true);
-    bp.set_color4f(border, None);
-    bp.set_style(PaintStyle::Stroke);
-    bp.set_stroke_width(2.0);
-
-    if skew < 1.0 {
-        let rect = Rect::from_xywh(card.x, card.y, card.w, card.h);
-        let rr = RRect::new_rect_xy(rect, radius, radius);
-        canvas.draw_rrect(rr, &fp);
-        canvas.draw_rrect(rr, &bp);
-    } else {
-        let path = Path::polygon(
-            &[
-                Point::new(card.x + skew, card.y),
-                Point::new(card.x + card.w + skew, card.y),
-                Point::new(card.x + card.w - skew, card.y + card.h),
-                Point::new(card.x - skew, card.y + card.h),
-            ],
-            true,
-            None,
-            None,
-        );
-        canvas.draw_path(&path, &fp);
-        canvas.draw_path(&path, &bp);
-    }
-
-    let title_font = canvas_font(13.0);
-    let mut tp = Paint::default();
-    tp.set_anti_alias(true);
-    tp.set_color4f(TEXT_PRIMARY, None);
-    let max = (card.w / 8.0) as usize;
-    let label = if card.title.len() > max {
-        format!("{}...", &card.title[..max.saturating_sub(3)])
-    } else {
-        card.title.clone()
-    };
-    canvas.draw_str(&label, (card.x + 14.0, card.y + 26.0), &title_font, &tp);
+    draw_card_shape(canvas, card, skew, radius, &fp, &bp);
+    draw_title(canvas, card, 13.0, 14.0, 26.0, 8.0);
 }
 
 fn draw_card(
@@ -934,72 +920,27 @@ fn draw_card(
     selected: bool,
     highlighted: bool,
 ) {
-    let (fill, border) = if card.is_owned {
-        (OWNED_FILL, OWNED_BORDER)
-    } else {
-        (EXT_FILL, EXT_BORDER)
-    };
-
-    let mut fp = Paint::default();
-    fp.set_anti_alias(true);
-    fp.set_color4f(fill, None);
-    fp.set_style(PaintStyle::Fill);
-
-    let mut bp = Paint::default();
-    bp.set_anti_alias(true);
-    bp.set_style(PaintStyle::Stroke);
-
-    if selected {
-        bp.set_color4f(ACCENT, None);
-        bp.set_stroke_width(3.0);
+    let (fill, border_color) = card_colors(card);
+    let fp = fill_paint(fill);
+    let (bc, bw) = if selected {
+        (ACCENT, 3.0)
     } else if highlighted {
-        bp.set_color4f(ACCENT, None);
-        bp.set_stroke_width(2.5);
+        (ACCENT, 2.5)
     } else if hovered {
-        bp.set_color4f(border, None);
-        bp.set_stroke_width(3.0);
+        (border_color, 3.0)
     } else {
-        bp.set_color4f(border, None);
-        bp.set_stroke_width(1.5);
-    }
-
-    if card.is_owned {
-        let rect = Rect::from_xywh(card.x, card.y, card.w, card.h);
-        let rr = RRect::new_rect_xy(rect, 8.0, 8.0);
-        canvas.draw_rrect(rr, &fp);
-        canvas.draw_rrect(rr, &bp);
-    } else {
-        let skew = 14.0_f32;
-        let path = Path::polygon(
-            &[
-                Point::new(card.x + skew, card.y),
-                Point::new(card.x + card.w + skew, card.y),
-                Point::new(card.x + card.w - skew, card.y + card.h),
-                Point::new(card.x - skew, card.y + card.h),
-            ],
-            true,
-            None,
-            None,
-        );
-        canvas.draw_path(&path, &fp);
-        canvas.draw_path(&path, &bp);
-    }
-
-    let title_font = canvas_font(13.0);
-    let mut tp = Paint::default();
-    tp.set_anti_alias(true);
-    tp.set_color4f(TEXT_PRIMARY, None);
-    let max = (card.w / 8.0) as usize;
-    let label = if card.title.len() > max {
-        format!("{}...", &card.title[..max.saturating_sub(3)])
-    } else {
-        card.title.clone()
+        (border_color, 1.5)
     };
-    canvas.draw_str(&label, (card.x + 14.0, card.y + 26.0), &title_font, &tp);
+    let bp = border_paint(bc, bw);
+    let skew = if card.is_owned { 0.0 } else { 14.0 };
+    draw_card_shape(canvas, card, skew, 8.0, &fp, &bp);
+    draw_title(canvas, card, 13.0, 14.0, 26.0, 8.0);
 
     let badge_font = canvas_font(10.0);
+    let mut tp = Paint::default();
+    tp.set_anti_alias(true);
+    tp.set_color4f(border_color, None);
     let ind = if card.is_owned { "owned" } else { "external" };
-    tp.set_color4f(border, None);
     canvas.draw_str(
         ind,
         (card.x + 14.0, card.y + card.h - 10.0),

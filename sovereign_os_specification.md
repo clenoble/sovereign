@@ -1,8 +1,8 @@
 # Sovereign OS - Complete Technical Specification
 
-**Version:** 1.0  
-**Date:** February 6, 2026  
-**Status:** Architecture Phase
+**Version:** 1.2
+**Date:** February 13, 2026
+**Status:** Working Prototype
 
 ---
 
@@ -88,12 +88,13 @@ From **Application-Centric** (data imprisoned by software) to **Content-Centric*
 
 ### Storage Model
 
-**Distributed architecture:** One JSON file per document + manifest file per Intent Thread.
+**Implementation:** SurrealDB embedded graph database (in-memory for tests, RocksDB for persistent storage). The original per-file JSON design was replaced with a graph DB for relationship traversal, full-text search, and transactional integrity.
 
 **Storage locations:**
-- Documents: `~/.sovereign/documents/`
-- Thread manifests: `~/.sovereign/threads/`
-- P2P swarm: Encrypted copies of both
+- Database: `data/sovereign.db/` (RocksDB directory)
+- P2P swarm: Encrypted copies via manifest-based sync
+
+> **Design note:** The conceptual JSON schemas below remain the logical data model. SurrealDB stores equivalent records as graph nodes with typed edges.
 
 ### Document Node Structure
 
@@ -239,13 +240,17 @@ From **Application-Centric** (data imprisoned by software) to **Content-Centric*
 - B knows it's referenced by A (inbound link) but has no snapshot
 - B may not have access to A (privacy-preserving)
 
-**Relationship Types:**
-- `cites`: Academic citation or reference
-- `derives_from`: Forked or based on another document
-- `workflow_next`: Sequential workflow step
-- `annotation_of`: Comment or note attached to document
-- `cited_by`: Reverse citation (inbound)
-- `parent_of`: Hierarchical relationship
+**Relationship Types (implemented):**
+- `references`: Citation or reference link (strength 0.0–1.0)
+- `derivedfrom`: Forked or based on another document
+- `continues`: Sequential continuation
+- `contradicts`: Conflicting information
+- `supports`: Supporting evidence
+- `branchesfrom`: Version branch point
+- `contactof`: Links a contact to a document
+- `attachedto`: Attachment relationship
+
+Each relationship carries a `strength` field (0.0–1.0) for weighted graph queries.
 
 ### Spatial Positioning
 
@@ -534,7 +539,13 @@ Skills are **trusted, audited components** - closer to kernel modules than app s
 }
 ```
 
-### Skill Execution Environment
+### Current Implementation
+
+Core skills are implemented as Rust traits (`CoreSkill`) compiled directly into the binary. Each skill declares its `name()`, available `actions()`, and an `execute()` method that receives a `SkillDocument` context and returns a `SkillOutput`. The 8 core skills are: text editor, image, PDF export, word count, find & replace, search, file import, and duplicate document.
+
+External skill manifests (`skill.json`) can be loaded from a `skills/` directory via `SkillRegistry::scan_directory()`. The manifest format is described below.
+
+### Skill Execution Environment (Target Architecture)
 
 **Tiered trust model** — execution privileges scale with trust level:
 
@@ -1363,44 +1374,46 @@ Master Key (256-bit, TPM-protected)
 
 ### Architecture
 
-**1. Orchestrator Model Selection**
-- Use Phi-3-mini + Llama 3.1-8B as defaults?
-- Fine-tune on orchestration-specific data, or use off-the-shelf?
-- If fine-tuning: How to generate training dataset? (Synthetic? Human-labeled?)
+**1. Orchestrator Model Selection** — RESOLVED
+- Selected: Qwen2.5-3B-Instruct (router) + Qwen2.5-7B-Instruct (reasoning), both GGUF Q4_K_M
+- Off-the-shelf with heuristic intent classification (no fine-tuning needed for current scope)
+- Heuristic parser handles 30+ intent types; LLM fallback for ambiguous queries
 
-**2. Tech Stack**
-- Language: Rust (performance/safety), Go (simplicity), Python (ML ecosystem)?
-- UI Framework: Qt, GTK, Electron (despite overhead)?
-- GraphDB: SQLite with JSONB, custom JSON parser, or embedded graph DB?
+**2. Tech Stack** — RESOLVED
+- Language: Rust (edition 2021)
+- UI Framework: Iced 0.14 (native, cross-platform, Vulkan/DX12/Metal backends)
+- GraphDB: SurrealDB (embedded, supports in-memory and RocksDB persistent modes)
+- AI Runtime: llama.cpp (LLM), whisper.cpp (STT), Piper (TTS) — all native C/C++ via Rust bindings
 
 ### UX/UI
 
 **3. Spatial Navigation Details**
-- 3D rendering engine? (Three.js, custom OpenGL?)
-- Interaction paradigm: Mouse/keyboard vs. touchscreen vs. VR?
-- How to visualize 500+ documents without clutter?
+- Implemented: 2D infinite canvas with camera (pan/zoom), thread lanes, document cards, LOD rendering, minimap
+- Interaction: mouse/keyboard (click, drag, scroll to zoom)
+- Scaling: LOD system renders dots at very low zoom, simplified cards at mid zoom, full content at high zoom
+- Remaining: VR/touchscreen interaction, semantic clustering
 
-**4. Document Taskbar Design**
-- How many threads visible simultaneously?
-- Switching mechanism (keyboard shortcuts, gestures)?
-- Preview thumbnails vs. text labels?
+**4. Document Taskbar Design** — PARTIALLY RESOLVED
+- Implemented: bottom taskbar with pinned documents, click-to-open panels
+- Thread filtering via canvas sidebar
+- Remaining: keyboard shortcuts, preview thumbnails
 
 **5. Timeline Branching Visualization**
-- How to show multiple branches clearly?
-- Merging UI (conflict resolution interface)?
-- Historical navigation (scrubber, calendar, search)?
+- Implemented: timeline markers grouped by month on the canvas, milestone markers
+- Remaining: branch visualization, merge UI, historical scrubber
 
 ### Implementation
 
-**6. Bootstrap Strategy**
-- Minimal skill set for Day 1 usability?
-- Migration path from existing systems (Windows/macOS/Linux)?
-- How to import existing files at scale?
+**6. Bootstrap Strategy** — PARTIALLY RESOLVED
+- 8 core skills ship with the binary (text editor, search, image, PDF export, word count, find & replace, file import, duplicate document)
+- File import skill handles migration from existing files (text, markdown, binary with lossy conversion)
+- Remaining: bulk import, format-specific importers
 
-**7. Testing Strategy**
-- Unit tests for core components?
-- Integration tests for skill orchestration?
-- User testing (closed beta, public alpha)?
+**7. Testing Strategy** — RESOLVED
+- 367 tests across 10 crates (unit + integration)
+- Unit tests for all core components, DB operations, crypto, skills, AI intent parsing
+- Integration test for CLI round-trip (build binary, run commands as subprocesses)
+- CI: not yet configured
 
 **8. Development Roadmap**
 - MVP features vs. future enhancements?
@@ -1411,18 +1424,23 @@ Master Key (256-bit, TPM-protected)
 
 ## Appendix: Requirements Summary
 
-| Category | Requirement | Status | Engineering Challenge |
-|----------|-------------|--------|----------------------|
-| Architecture | Content-First Design | ✅ Specified | Universal Schema mapping |
-| File System | Local Graph JSON | ✅ Specified | Serialization vs. speed trade-off |
-| UI/UX | Document Taskbar | 🔄 Mockup needed | Visualizing project contexts |
-| UI/UX | Spatial Map | 🔄 Mockup needed | Screen-space optimization |
-| Input | Multimodal AI Agent | ✅ Specified | Local semantic indexing |
-| Security | Identity Firewall | ✅ Specified | Bypassing hard blocks |
-| Security | Distributed Backup | ✅ Specified | Network latency/availability |
-| Recovery | Social Recovery | ✅ Specified | Asynchronous recovery UX |
-| Interoperability | Soft Warning System | ✅ Specified | Compatibility vs. obsolescence |
-| Sovereignty | Sovereignty Halo | ✅ Concept | Defining ingest workflows |
+| Category | Requirement | Status | Notes |
+|----------|-------------|--------|-------|
+| Architecture | Content-First Design | ✅ Implemented | SurrealDB graph, document/thread/relationship model |
+| Storage | Graph Database | ✅ Implemented | SurrealDB (in-memory + RocksDB persistent) |
+| UI/UX | Document Taskbar | ✅ Implemented | Bottom taskbar with pinned documents |
+| UI/UX | Spatial Map | ✅ Implemented | Infinite canvas with thread lanes, LOD, minimap |
+| Input | Multimodal AI Agent | ✅ Implemented | LLM orchestrator + voice pipeline (wake word, STT, TTS) |
+| Input | Voice Pipeline | ✅ Implemented | Rustpotter wake word, whisper.cpp STT, Piper TTS |
+| Skills | Core Skill System | ✅ Implemented | 8 core skills, manifest-based registry |
+| Security | Action Gating | ✅ Implemented | 5-level action gravity, trust tracking, adaptive thresholds |
+| Security | Prompt Injection Defense | ✅ Implemented | Heuristic detection, data/control plane separation |
+| Security | Distributed Backup | ✅ Implemented | libp2p P2P sync, encrypted manifests |
+| Recovery | Social Recovery | ✅ Implemented | Shamir 3-of-5, guardian enrollment, 72h waiting period |
+| Encryption | Key Hierarchy | ✅ Implemented | Master/Device/KEK/Document keys, XChaCha20-Poly1305 |
+| Communications | Unified Comms | ✅ Implemented | Email, Signal, WhatsApp channels with sync engine |
+| Security | Identity Firewall | 🔄 Specified | Not yet implemented |
+| Sovereignty | Sovereignty Halo | 🔄 Partial | Owned/external distinction in data model, visual treatment pending |
 
 ---
 
@@ -1433,8 +1451,8 @@ Master Key (256-bit, TPM-protected)
 
 ---
 
-**Document Status:** Architecture phase complete. Next: UI/UX mockups and build plan.
+**Document Status:** Working prototype. Architecture implemented across 10 Rust crates with 367 tests.
 
-**Last Updated:** February 7, 2026
-**Version:** 1.1 — Security hardening (tiered skill execution, key rotation, guardian auth, data/control plane separation, IPC auth, session log encryption)
+**Last Updated:** February 13, 2026
+**Version:** 1.2 — Implementation status update (resolved tech stack, models, storage, skills, testing; aligned relationship types with code)
 **Contributors:** User + Claude

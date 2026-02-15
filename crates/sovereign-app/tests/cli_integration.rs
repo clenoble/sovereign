@@ -8,9 +8,10 @@ fn sovereign_cmd() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sovereign"));
     // Use a temp directory for the database to isolate tests
     let temp_dir = std::env::temp_dir().join(format!("sovereign-test-{}", std::process::id()));
+    // Use forward slashes so backslashes don't get misinterpreted as TOML escape sequences
+    let db_path = temp_dir.join("test.db").display().to_string().replace('\\', "/");
     let config_content = format!(
-        "[database]\nmode = \"persistent\"\npath = \"{}\"\n",
-        temp_dir.join("test.db").display()
+        "[database]\nmode = \"persistent\"\npath = \"{db_path}\"\n",
     );
     let config_path = temp_dir.join("config.toml");
     std::fs::create_dir_all(&temp_dir).unwrap();

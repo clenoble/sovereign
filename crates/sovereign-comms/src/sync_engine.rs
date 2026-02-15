@@ -63,14 +63,18 @@ impl CommsSync {
 
     /// Run the sync loop. This blocks and should be spawned as a tokio task.
     pub async fn run(mut self) {
+        async fn emit_sync_error(tx: &mpsc::Sender<CommsEvent>, channel: ChannelType, error: &dyn std::fmt::Display) {
+            let _ = tx.send(CommsEvent::SyncError {
+                channel,
+                error: error.to_string(),
+            }).await;
+        }
+
         // Initial connect
         for ch in &mut self.channels {
             if let Err(e) = ch.connect().await {
                 tracing::warn!("Channel {:?} connect failed: {e}", ch.channel_type());
-                let _ = self.event_tx.send(CommsEvent::SyncError {
-                    channel: ch.channel_type(),
-                    error: e.to_string(),
-                }).await;
+                emit_sync_error(&self.event_tx, ch.channel_type(), &e).await;
             }
         }
 
@@ -96,10 +100,7 @@ impl CommsSync {
                     }
                     Err(e) => {
                         tracing::error!("Sync {:?} failed: {e}", ch.channel_type());
-                        let _ = self.event_tx.send(CommsEvent::SyncError {
-                            channel: ch.channel_type(),
-                            error: e.to_string(),
-                        }).await;
+                        emit_sync_error(&self.event_tx, ch.channel_type(), &e).await;
                     }
                 }
             }

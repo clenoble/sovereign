@@ -188,7 +188,7 @@ impl SovereignApp {
                 Task::none()
             }
             Message::SearchSubmitted => {
-                let query = self.search.query.clone();
+                let query = self.search.query.trim().to_string();
                 if !query.is_empty() {
                     if let Some(ref cb) = self.query_callback {
                         cb(query);
@@ -207,14 +207,18 @@ impl SovereignApp {
             }
             Message::ApproveAction => {
                 if let Some(ref tx) = self.decision_tx {
-                    let _ = tx.send(ActionDecision::Approve);
+                    if tx.send(ActionDecision::Approve).is_err() {
+                        tracing::warn!("Decision channel closed — approval not delivered");
+                    }
                 }
                 self.bubble.confirmation = None;
                 Task::none()
             }
             Message::RejectAction => {
                 if let Some(ref tx) = self.decision_tx {
-                    let _ = tx.send(ActionDecision::Reject("User rejected".into()));
+                    if tx.send(ActionDecision::Reject("User rejected".into())).is_err() {
+                        tracing::warn!("Decision channel closed — rejection not delivered");
+                    }
                 }
                 self.bubble.confirmation = None;
                 Task::none()
@@ -222,9 +226,11 @@ impl SovereignApp {
             Message::DismissSuggestion => {
                 if let Some(ref tx) = self.feedback_tx {
                     if let Some((_, ref action)) = self.bubble.suggestion {
-                        let _ = tx.send(FeedbackEvent::SuggestionDismissed {
+                        if tx.send(FeedbackEvent::SuggestionDismissed {
                             action: action.clone(),
-                        });
+                        }).is_err() {
+                            tracing::warn!("Feedback channel closed — dismissal not delivered");
+                        }
                     }
                 }
                 self.bubble.dismiss_suggestion();
@@ -233,21 +239,7 @@ impl SovereignApp {
 
             // ── Document panels ──────────────────────────────────────────
             Message::OpenDocument(doc_id) => {
-                // Don't open duplicates
-                if self.doc_panels.iter().any(|p| p.doc_id == doc_id) {
-                    return Task::none();
-                }
-                if let Some(doc) = self.doc_map.get(&doc_id) {
-                    let content = ContentFields::parse(&doc.content);
-                    let panel = FloatingPanel::new(
-                        doc_id.clone(),
-                        doc.title.clone(),
-                        content.body,
-                        content.images,
-                    );
-                    self.doc_panels.push(panel);
-                    self.taskbar.add_document(&doc_id, &doc.title, doc.is_owned);
-                }
+                self.open_document(&doc_id);
                 Task::none()
             }
             Message::CloseDocument(idx) => {
@@ -371,7 +363,7 @@ impl SovereignApp {
                 Task::none()
             }
             Message::ChatSubmitted => {
-                let input = self.chat.input.clone();
+                let input = self.chat.input.trim().to_string();
                 if !input.is_empty() {
                     self.chat.push_user_message(input.clone());
                     self.chat.input.clear();
@@ -495,20 +487,7 @@ impl SovereignApp {
             let mut st = self.canvas_state.lock().unwrap();
             if let Some(doc_id) = st.pending_open.take() {
                 drop(st);
-                // Inline the OpenDocument logic (poll_channels can't return Task)
-                if !self.doc_panels.iter().any(|p| p.doc_id == doc_id) {
-                    if let Some(doc) = self.doc_map.get(&doc_id) {
-                        let content = ContentFields::parse(&doc.content);
-                        let panel = FloatingPanel::new(
-                            doc_id.clone(),
-                            doc.title.clone(),
-                            content.body,
-                            content.images,
-                        );
-                        self.doc_panels.push(panel);
-                        self.taskbar.add_document(&doc_id, &doc.title, doc.is_owned);
-                    }
-                }
+                self.open_document(&doc_id);
             }
         }
 
@@ -680,22 +659,28 @@ impl SovereignApp {
         }
     }
 
+    /// Open a document in a floating panel (no-op if already open).
+    fn open_document(&mut self, doc_id: &str) {
+        if self.doc_panels.iter().any(|p| p.doc_id == doc_id) {
+            return;
+        }
+        if let Some(doc) = self.doc_map.get(doc_id) {
+            let content = ContentFields::parse(&doc.content);
+            let panel = FloatingPanel::new(
+                doc_id.to_string(),
+                doc.title.clone(),
+                content.body,
+                content.images,
+            );
+            self.doc_panels.push(panel);
+            self.taskbar.add_document(doc_id, &doc.title, doc.is_owned);
+        }
+    }
+
     fn handle_skill_event(&mut self, event: SkillEvent) {
         match event {
             SkillEvent::OpenDocument { ref doc_id } => {
-                if let Some(doc) = self.doc_map.get(doc_id) {
-                    let content = ContentFields::parse(&doc.content);
-                    if !self.doc_panels.iter().any(|p| p.doc_id == *doc_id) {
-                        let panel = FloatingPanel::new(
-                            doc_id.clone(),
-                            doc.title.clone(),
-                            content.body,
-                            content.images,
-                        );
-                        self.doc_panels.push(panel);
-                        self.taskbar.add_document(doc_id, &doc.title, doc.is_owned);
-                    }
-                }
+                self.open_document(doc_id);
             }
             SkillEvent::DocumentClosed { ref doc_id } => {
                 tracing::info!("Document closed: {}", doc_id);
@@ -761,6 +746,7 @@ impl SovereignApp {
         // Default: immediate execution
         if let Some((skill_doc, panel_idx)) = self.get_active_doc_data() {
             if let Some(skill) = self.skill_registry.find_skill(skill_name) {
+                tracing::debug!("Executing skill '{skill_name}' action '{action_id}'");
                 match skill.execute(action_id, &skill_doc, "") {
                     Ok(SkillOutput::ContentUpdate(cf)) => {
                         let doc_id = skill_doc.id.clone();
@@ -789,6 +775,9 @@ impl SovereignApp {
                         self.bubble.show_skill_result(&format!("Error: {e}"));
                     }
                 }
+            } else {
+                tracing::warn!("Skill '{skill_name}' not found in registry");
+                self.bubble.show_skill_result(&format!("Skill '{skill_name}' not available"));
             }
         } else {
             self.bubble.show_skill_result("Open a document first");

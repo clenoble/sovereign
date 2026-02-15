@@ -26,8 +26,6 @@ pub struct InteractionPatterns {
     pub suggestion_receptiveness: f32,
     /// "terse" | "detailed" | "conversational"
     pub command_verbosity: String,
-    /// Informational — not used in logic yet.
-    pub peak_activity_hours: Vec<String>,
 }
 
 /// Per-action suggestion acceptance/dismissal counters.
@@ -115,13 +113,12 @@ impl UserProfile {
     pub fn default_new() -> Self {
         let now = chrono::Utc::now().to_rfc3339();
         Self {
-            user_id: format!("{}", uuid_v4()),
+            user_id: uuid::Uuid::new_v4().to_string(),
             created: now.clone(),
             last_updated: now,
             interaction_patterns: InteractionPatterns {
                 suggestion_receptiveness: 0.5,
                 command_verbosity: "detailed".into(),
-                peak_activity_hours: Vec::new(),
             },
             skill_preferences: HashMap::new(),
             suggestion_feedback: HashMap::new(),
@@ -164,23 +161,6 @@ impl UserProfile {
     }
 }
 
-/// Simple UUID v4 generator (no external dep beyond what's in workspace).
-fn uuid_v4() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    // Pseudo-random hex string — good enough for a local single-user profile ID.
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        (seed & 0xFFFFFFFF) as u32,
-        ((seed >> 32) & 0xFFFF) as u16,
-        ((seed >> 48) & 0x0FFF) as u16,
-        (0x8000 | ((seed >> 60) & 0x3FFF)) as u16,
-        (seed >> 74 ^ seed) & 0xFFFFFFFFFFFF,
-    )
-}
 
 #[cfg(test)]
 mod tests {

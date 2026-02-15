@@ -14,3 +14,4 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+uuid = { version = "1.20", features = ["v4"] }

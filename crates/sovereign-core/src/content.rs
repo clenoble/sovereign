@@ -17,7 +17,15 @@ pub struct ContentImage {
 
 impl ContentFields {
     pub fn parse(json: &str) -> Self {
-        serde_json::from_str(json).unwrap_or_default()
+        match serde_json::from_str(json) {
+            Ok(cf) => cf,
+            Err(e) => {
+                if !json.is_empty() {
+                    tracing::warn!("ContentFields parse failed (falling back to default): {e}");
+                }
+                Self::default()
+            }
+        }
     }
 
     pub fn serialize(&self) -> String {

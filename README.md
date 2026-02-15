@@ -8,16 +8,23 @@ The project is a Rust workspace with 10 crates. The codebase is identical across
 
 | Crate | Description |
 |---|---|
-| `sovereign-core` | Data models, config, security policy, interfaces |
-| `sovereign-db` | SurrealDB graph storage (in-memory and RocksDB) |
-| `sovereign-crypto` | Key hierarchy, XChaCha20-Poly1305, Shamir secret sharing |
-| `sovereign-ai` | LLM orchestrator, intent classification, voice pipeline |
-| `sovereign-p2p` | libp2p networking, device pairing, manifest-based sync |
-| `sovereign-comms` | Communication channels (email, Signal, WhatsApp) |
-| `sovereign-ui` | Iced application shell (cross-platform) |
-| `sovereign-canvas` | Skia-rendered infinite canvas with threads and documents |
-| `sovereign-skills` | Pluggable skill system (editor, search, PDF export, etc.) |
-| `sovereign-app` | Binary entry point — CLI and GUI |
+| `sovereign-core` | Data models, config, security policy (action levels, data/control plane), interfaces |
+| `sovereign-db` | SurrealDB graph storage (in-memory and RocksDB persistent) |
+| `sovereign-crypto` | Key hierarchy (Master/Device/KEK/Document keys), XChaCha20-Poly1305 AEAD, Shamir secret sharing, guardian recovery |
+| `sovereign-ai` | LLM orchestrator (intent classification, action gating, trust tracking), voice pipeline (wake word, whisper, TTS), auto-commit engine |
+| `sovereign-p2p` | libp2p networking, device pairing, encrypted manifest-based sync |
+| `sovereign-comms` | Unified communications — email (IMAP/SMTP), Signal, WhatsApp channels with periodic sync engine |
+| `sovereign-ui` | Iced 0.14 application shell — taskbar, panels (document, chat, search), voice status |
+| `sovereign-canvas` | Infinite canvas with thread lanes, document cards, camera, minimap, LOD rendering |
+| `sovereign-skills` | Pluggable skill system — core skills: text editor, search, image, PDF export, word count, find & replace, file import, duplicate document |
+| `sovereign-app` | Binary entry point — CLI dispatch and GUI bootstrap |
+
+The `sovereign-app` binary crate is structured as:
+- `cli.rs` — Clap CLI definition (commands and arguments)
+- `commands.rs` — Async handler functions for each CLI command
+- `setup.rs` — DB creation, crypto initialization, orchestrator callback wiring
+- `seed.rs` — Sample data seeding on first launch (4 threads, 14 documents with relationships and commits)
+- `main.rs` — Entry point: CLI dispatch + `run_gui()` for the full GUI bootstrap
 
 ## Prerequisites
 
@@ -148,7 +155,7 @@ cargo run --release -- run
 .\target\release\sovereign.exe run    # Windows
 ```
 
-On first launch with an empty database, sample data is seeded automatically.
+On first launch with an empty database, sample data is seeded automatically (4 threads, 14 documents with relationships and commits).
 
 ## Feature Flags
 
@@ -158,6 +165,10 @@ On first launch with an empty database, sample data is seeded automatically.
 | `wake-word` | sovereign-ai | Rustpotter-based wake word detection |
 | `encryption` | sovereign-app | Document encryption, guardian recovery |
 | `p2p` | sovereign-app | Device pairing, sync engine (implies `encryption`) |
+| `comms` | sovereign-app | Communication channel sync engine |
+| `comms-email` | sovereign-app | Email channel (IMAP/SMTP) |
+| `comms-signal` | sovereign-app | Signal channel |
+| `comms-whatsapp` | sovereign-app | WhatsApp Business API channel |
 
 ## CLI Commands
 
@@ -167,18 +178,24 @@ Beyond `run`, the binary exposes data management commands:
 sovereign create-doc --title "My Note" --thread-id "thread:abc"
 sovereign get-doc --id "document:xyz"
 sovereign list-docs [--thread-id "thread:abc"]
-sovereign update-doc --id "document:xyz" --title "New Title"
+sovereign update-doc --id "document:xyz" --title "New Title" [--content "body text"]
 sovereign delete-doc --id "document:xyz"
 
-sovereign create-thread --name "Research" --description "..."
+sovereign create-thread --name "Research" [--description "..."]
 sovereign list-threads
 
-sovereign add-relationship --from "document:a" --to "document:b" --relation-type "references"
+sovereign add-relationship --from "document:a" --to "document:b" \
+  --relation-type "references" [--strength 0.9]
 sovereign list-relationships --doc-id "document:a"
 
 sovereign commit --doc-id "document:xyz" --message "snapshot reason"
 sovereign list-commits --doc-id "document:xyz"
+
+sovereign list-contacts
+sovereign list-conversations [--channel email]
 ```
+
+Relationship strength must be between 0.0 and 1.0. Valid relationship types: `references`, `derivedfrom`, `continues`, `contradicts`, `supports`, `branchesfrom`, `contactof`, `attachedto`.
 
 With `--features encryption`:
 
@@ -198,6 +215,8 @@ sovereign enroll-guardian --name "Alice" --peer-id <libp2p-peer-id>
 
 ## Tests
 
+The test suite contains 367 tests across all crates.
+
 #### Linux / WSL2
 
 ```bash
@@ -210,9 +229,25 @@ cargo test -j 4
 $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
 $env:Path += ";C:\Program Files\CMake\bin;C:\Program Files\LLVM\bin"
 
-# Run all tests (CPU-only, no CUDA)
-cargo test -j 4 --no-default-features
+# All crates except sovereign-ai
+cargo test -j 4
+
+# sovereign-ai (skip CUDA feature)
+cargo test -p sovereign-ai --no-default-features -j 4
 ```
+
+| Crate | Tests |
+|---|---|
+| sovereign-core | 37 |
+| sovereign-db | 48 |
+| sovereign-crypto | 47 |
+| sovereign-ai | 104 |
+| sovereign-skills | 40 |
+| sovereign-canvas | 41 |
+| sovereign-ui | 1 |
+| sovereign-p2p | 25 |
+| sovereign-comms | 9 |
+| sovereign-app | 15 (14 unit + 1 integration) |
 
 ## Memory Usage
 

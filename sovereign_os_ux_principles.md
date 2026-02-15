@@ -373,8 +373,8 @@ When something goes wrong, the AI should be specific, not generic:
 
 ---
 
-**Document Status:** Draft — ready for review.
+**Document Status:** Draft — core principles implemented in `sovereign-core::security` (action levels, authorization) and `sovereign-ai` (action gating, trust tracking, injection detection).
 
-**Last Updated:** February 7, 2026
-**Version:** 1.0
+**Last Updated:** February 13, 2026
+**Version:** 1.1 — Implementation status note
 **Contributors:** User + Claude
