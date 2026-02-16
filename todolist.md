@@ -9,23 +9,10 @@
 
 ---
 
-### 2. NAS target directory intermittent write failures
+### 2. ~~NAS target directory intermittent write failures~~ — MITIGATED
 
-**Status:** Unresolved (retrying usually works)
-**Severity:** Low — only affects builds targeting `Z:\cargo-target`
-
-**Problem:**
-Cargo occasionally fails with `Access is denied (os error 5)` when writing `.rmeta` files to the NAS-mounted `Z:\cargo-target` directory. The NAS itself is writable (test writes succeed). The issue appears to be stale SMB file locks from aborted builds or Windows Defender real-time scanning.
-
-**Workaround:**
-- Kill any orphaned `cargo`/`rustc` processes before retrying
-- Delete the specific locked files: `Remove-Item 'Z:\cargo-target\debug\deps\lib<crate>*' -Force`
-- Retry the build
-
-**Suggested solutions:**
-1. Add a pre-build step to `_build.bat` that kills stale `cargo.exe` processes
-2. Exclude `Z:\cargo-target` from Windows Defender real-time scanning
-3. Free space on C: drive to allow local builds (current: ~3.5 GB free, needs ~17 GB for debug)
+**Status:** Mitigated — all batch scripts now kill stale processes before building
+**Resolution:** `_build.bat`, `_check.bat`, and `_run.bat` now kill orphaned `cargo.exe`/`rustc.exe` processes and clean stale sovereign artifacts before invoking cargo. This addresses the most common cause (stale SMB file locks). Windows Defender exclusion is still recommended for further reliability.
 
 ---
 
@@ -78,3 +65,4 @@ Debug build artifacts require ~17 GB. The C: drive only has ~3.5 GB free, forcin
 - [x] Phase A-D code review and robustness improvements — commit 617ffc5
 - [x] Gate voice/whisper behind `voice-stt` feature flag (ggml symbol conflict fix)
 - [x] Document links on canvas — relationship edges as colored curved arrows
+- [x] NAS pre-build cleanup in batch scripts (kill stale processes, clean artifacts)
