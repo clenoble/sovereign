@@ -572,6 +572,9 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             })
         };
 
+        // Detect first launch for onboarding wizard
+        let first_launch = sovereign_ui::app::is_first_launch();
+
         // Build SovereignApp (but don't launch Iced yet)
         let (app, _boot_task) = sovereign_ui::app::SovereignApp::new(
             &config.ui,
@@ -592,6 +595,7 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             Some(decision_tx),
             Some(registry),
             Some(feedback_tx),
+            first_launch,
         );
         Ok::<_, anyhow::Error>((app, _boot_task))
     })?;

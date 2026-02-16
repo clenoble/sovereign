@@ -51,7 +51,7 @@ Debug build artifacts require ~17 GB. The C: drive only has ~3.5 GB free, forcin
 - [ ] **Rich document format** — Support formatted text (headings, bold, lists, embedded images) beyond plain-text content, with a WYSIWYG or markdown editor
 - [ ] **Video** — Video playback and annotation support (embedded player, video document type, thumbnail previews on canvas)
 - [x] **Light theme** — Dark/light toggle via atomic `ThemeMode` in theme module; all color constants replaced with palette functions (`pick(dark, light)`); taskbar toggle button switches instantly
-- [ ] **Onboarding flow** — First-launch guided experience: passphrase setup, device naming, theme selection, sample data walkthrough
+- [x] **Onboarding flow** — 4-step wizard (Welcome, Device Name, Theme Select, Sample Data) with `~/.sovereign/onboarding_done` marker; full-screen overlay on first launch
 - [ ] **Model management GUI** — Settings panel for AI models: list installed models with size/format/role, assign default model per feature (router, reasoning, STT, TTS), download new GGUF models from Hugging Face (search, pick quantization, progress bar), delete unused models to free disk space
 
 ---
@@ -69,3 +69,4 @@ Debug build artifacts require ~17 GB. The C: drive only has ~3.5 GB free, forcin
 - [x] Version tracking in FloatingPanel — commit history list with timestamp, message, and snapshot preview
 - [x] Communications: seed contacts, messaging data, intent routing, pinned contacts in taskbar, contact panel
 - [x] Light theme: ThemeMode enum, palette functions, taskbar toggle button
+- [x] Onboarding flow: 4-step wizard, first-launch detection, marker file

@@ -18,6 +18,7 @@ use sovereign_skills::registry::SkillRegistry;
 use sovereign_skills::traits::SkillOutput;
 
 use crate::chat::ChatState;
+use crate::onboarding::OnboardingState;
 use crate::orchestrator_bubble::{build_skill_doc, format_structured_data, BubbleState};
 use crate::panels::contact_panel::ContactPanel;
 use crate::panels::document_panel::{FloatingPanel, DEAD_ZONE, DRAG_BAR_HEIGHT};
@@ -86,6 +87,13 @@ pub enum Message {
     KeyEvent(keyboard::Event),
     // Theme
     ThemeToggled,
+    // Onboarding
+    OnboardingNext,
+    OnboardingBack,
+    OnboardingDeviceNameChanged(String),
+    OnboardingThemeToggled,
+    OnboardingSeedToggled,
+    OnboardingComplete,
     // No-op
     Ignore,
 }
@@ -112,6 +120,8 @@ pub struct SovereignApp {
     orch_rx: Option<mpsc::Receiver<OrchestratorEvent>>,
     voice_rx: Option<mpsc::Receiver<VoiceEvent>>,
     skill_rx: Option<mpsc::Receiver<SkillEvent>>,
+    // Onboarding
+    onboarding: Option<OnboardingState>,
     // Callbacks
     query_callback: Option<Box<dyn Fn(String) + Send>>,
     chat_callback: Option<Box<dyn Fn(String) + Send>>,
@@ -143,6 +153,7 @@ impl SovereignApp {
         decision_tx: Option<mpsc::Sender<ActionDecision>>,
         skill_registry: Option<SkillRegistry>,
         feedback_tx: Option<mpsc::Sender<FeedbackEvent>>,
+        first_launch: bool,
     ) -> (Self, Task<Message>) {
         let doc_map: HashMap<String, Document> = documents
             .iter()
@@ -200,6 +211,11 @@ impl SovereignApp {
             save_callback,
             close_callback,
             decision_tx,
+            onboarding: if first_launch {
+                Some(OnboardingState::new())
+            } else {
+                None
+            },
             feedback_tx,
             skill_registry: skill_registry.unwrap_or_default(),
         };
@@ -558,11 +574,54 @@ impl SovereignApp {
                 Task::none()
             }
 
+            // ── Onboarding ────────────────────────────────────────────────
+            Message::OnboardingNext => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.next_step();
+                }
+                Task::none()
+            }
+            Message::OnboardingBack => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.prev_step();
+                }
+                Task::none()
+            }
+            Message::OnboardingDeviceNameChanged(name) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.device_name = name;
+                }
+                Task::none()
+            }
+            Message::OnboardingThemeToggled => {
+                theme::toggle_theme();
+                Task::none()
+            }
+            Message::OnboardingSeedToggled => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.seed_sample_data = !ob.seed_sample_data;
+                }
+                Task::none()
+            }
+            Message::OnboardingComplete => {
+                self.onboarding = None;
+                // Write marker file so onboarding doesn't show again
+                let dir = sovereign_data_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::fs::write(dir.join("onboarding_done"), "1");
+                Task::none()
+            }
+
             Message::Ignore => Task::none(),
         }
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        // Onboarding overlay (full-screen, blocks everything else)
+        if let Some(ref onboarding) = self.onboarding {
+            return onboarding.view();
+        }
+
         // Canvas: shader handles mouse events directly via Program::update()
         let canvas = shader(&self.canvas_program)
             .width(Length::Fill)
@@ -1011,6 +1070,19 @@ impl SovereignApp {
             (doc, 0)
         })
     }
+}
+
+/// Path to the Sovereign data directory (~/.sovereign or %USERPROFILE%/.sovereign).
+pub fn sovereign_data_dir() -> std::path::PathBuf {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home).join(".sovereign")
+}
+
+/// Returns true if this is the first launch (onboarding not yet completed).
+pub fn is_first_launch() -> bool {
+    !sovereign_data_dir().join("onboarding_done").exists()
 }
 
 /// Launch the Iced application.
