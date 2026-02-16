@@ -167,10 +167,12 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         seed::seed_if_empty(&db).await?;
         let threads = db.list_threads().await?;
         let documents = db.list_documents(None).await?;
+        let relationships = db.list_all_relationships().await?;
         tracing::info!(
-            "Loaded {} documents, {} threads for canvas",
+            "Loaded {} documents, {} threads, {} relationships for canvas",
             documents.len(),
-            threads.len()
+            threads.len(),
+            relationships.len()
         );
 
         // Register all core skills
@@ -547,6 +549,7 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             &config.ui,
             documents,
             threads,
+            relationships,
             query_callback,
             chat_callback,
             Some(orch_rx),

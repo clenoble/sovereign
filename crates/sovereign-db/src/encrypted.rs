@@ -216,6 +216,10 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.list_relationships(doc_id).await
     }
 
+    async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>> {
+        self.inner.list_all_relationships().await
+    }
+
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>> {
         let docs = self.inner.traverse(doc_id, depth, limit).await?;
         self.decrypt_documents(docs).await
@@ -601,6 +605,7 @@ mod tests {
         async fn move_document_to_thread(&self, _doc_id: &str, _new_thread_id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn create_relationship(&self, _from_id: &str, _to_id: &str, _relation_type: RelationType, _strength: f32) -> DbResult<RelatedTo> { Err(DbError::NotFound("mock".into())) }
         async fn list_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
+        async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
         async fn traverse(&self, _doc_id: &str, _depth: u32, _limit: u32) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn adopt_document(&self, _id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn merge_threads(&self, _target_id: &str, _source_id: &str) -> DbResult<()> { Ok(()) }

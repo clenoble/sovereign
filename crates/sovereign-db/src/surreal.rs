@@ -436,6 +436,12 @@ impl GraphDB for SurrealGraphDB {
         Ok(rels)
     }
 
+    async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>> {
+        let mut result = self.db.query("SELECT * FROM related_to").await?;
+        let rels: Vec<RelatedTo> = result.take(0)?;
+        Ok(rels)
+    }
+
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>> {
         let arrow_path = "->related_to->document".repeat(depth as usize);
         let query = format!(

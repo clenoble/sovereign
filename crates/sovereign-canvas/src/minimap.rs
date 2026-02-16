@@ -208,6 +208,7 @@ mod tests {
             }],
             timeline_markers: vec![],
             branch_edges: vec![],
+            document_edges: vec![],
         };
         CanvasState::new(layout)
     }

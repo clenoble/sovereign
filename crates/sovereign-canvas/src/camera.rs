@@ -72,6 +72,7 @@ mod tests {
             lanes: vec![],
             timeline_markers: vec![],
             branch_edges: vec![],
+            document_edges: vec![],
         };
         let (px, py) = home_position(&layout);
         assert_eq!(px, -200.0);
@@ -113,6 +114,7 @@ mod tests {
             }],
             timeline_markers: vec![],
             branch_edges: vec![],
+            document_edges: vec![],
         };
         let (px, _py) = home_position(&layout);
         // rightmost card edge = 500 + 200 = 700. home = 700 - 400 = 300.

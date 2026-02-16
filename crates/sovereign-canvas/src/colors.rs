@@ -12,6 +12,15 @@ pub const GRID_LINE: Color4f = Color4f::new(0.15, 0.15, 0.17, 1.0);
 pub const TIMELINE_LINE: Color4f = Color4f::new(0.22, 0.22, 0.25, 1.0);
 pub const LANE_HEADER_BG: Color4f = Color4f::new(0.08, 0.08, 0.10, 0.85);
 
+// Document relationship edge colors (by relation type)
+pub const EDGE_REFERENCES: Color4f = Color4f::new(0.45, 0.65, 0.85, 0.6);  // light blue
+pub const EDGE_DERIVED: Color4f = Color4f::new(0.85, 0.55, 0.30, 0.6);     // orange
+pub const EDGE_CONTINUES: Color4f = Color4f::new(0.40, 0.75, 0.45, 0.6);   // green
+pub const EDGE_CONTRADICTS: Color4f = Color4f::new(0.85, 0.35, 0.35, 0.6); // red
+pub const EDGE_SUPPORTS: Color4f = Color4f::new(0.50, 0.80, 0.60, 0.6);    // light green
+pub const EDGE_CONTACT_OF: Color4f = Color4f::new(0.65, 0.45, 0.80, 0.6);  // purple
+pub const EDGE_ATTACHED: Color4f = Color4f::new(0.55, 0.55, 0.55, 0.5);    // gray
+
 pub const LANE_COLORS: [Color4f; 8] = [
     Color4f::new(0.10, 0.12, 0.18, 0.35), // blue tint
     Color4f::new(0.18, 0.10, 0.12, 0.35), // red tint

@@ -61,6 +61,9 @@ pub trait GraphDB: Send + Sync {
 
     async fn list_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>>;
 
+    /// List all relationships in the database.
+    async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>>;
+
     /// Traverse the graph from a document, returning connected documents up to `depth` hops.
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>>;
 

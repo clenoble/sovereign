@@ -13,7 +13,7 @@ use sovereign_core::config::UiConfig;
 use sovereign_core::content::ContentFields;
 use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent, SkillEvent};
 use sovereign_core::security::ActionDecision;
-use sovereign_db::schema::{Document, Thread};
+use sovereign_db::schema::{Document, RelatedTo, Thread};
 use sovereign_skills::registry::SkillRegistry;
 use sovereign_skills::traits::SkillOutput;
 
@@ -110,6 +110,7 @@ impl SovereignApp {
         _config: &UiConfig,
         documents: Vec<Document>,
         threads: Vec<Thread>,
+        relationships: Vec<RelatedTo>,
         query_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
         chat_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
         orchestrator_rx: Option<mpsc::Receiver<OrchestratorEvent>>,
@@ -134,7 +135,7 @@ impl SovereignApp {
             .collect();
 
         let (canvas_program, canvas_cmd_rx, _controller) =
-            sovereign_canvas::build_canvas(documents, threads);
+            sovereign_canvas::build_canvas(documents, threads, relationships);
 
         let canvas_state = canvas_program.state.clone();
 

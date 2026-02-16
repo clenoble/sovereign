@@ -580,6 +580,7 @@ pub fn render(canvas: &Canvas, state: &CanvasState, w: f32, h: f32) {
 
     draw_lane_backgrounds(canvas, state, w);
     draw_branch_edges(canvas, state);
+    draw_document_edges(canvas, state, lod);
     draw_timeline_markers(canvas, state, lod);
     draw_now_marker(canvas, state);
     if lod != ZoomLevel::Dots {
@@ -698,6 +699,95 @@ fn draw_branch_edges(canvas: &Canvas, state: &CanvasState) {
         let path = builder.snapshot();
 
         canvas.draw_path(&path, &paint);
+    }
+}
+
+fn draw_document_edges(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
+    use sovereign_db::schema::RelationType;
+
+    if state.layout.document_edges.is_empty() {
+        return;
+    }
+
+    // Don't draw relationship lines at the dot zoom level — too cluttered
+    if lod == ZoomLevel::Dots {
+        return;
+    }
+
+    for edge in &state.layout.document_edges {
+        let color = match edge.relation_type {
+            RelationType::References => EDGE_REFERENCES,
+            RelationType::DerivedFrom => EDGE_DERIVED,
+            RelationType::Continues => EDGE_CONTINUES,
+            RelationType::Contradicts => EDGE_CONTRADICTS,
+            RelationType::Supports => EDGE_SUPPORTS,
+            RelationType::ContactOf => EDGE_CONTACT_OF,
+            RelationType::AttachedTo => EDGE_ATTACHED,
+            RelationType::BranchesFrom => continue, // handled by draw_branch_edges
+        };
+
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_color4f(color, None);
+        paint.set_style(PaintStyle::Stroke);
+        paint.set_stroke_width(1.5 * edge.strength.clamp(0.3, 1.0));
+
+        // Dashed for weaker relationships
+        if edge.strength < 0.5 {
+            paint.set_path_effect(skia_safe::PathEffect::dash(&[6.0, 4.0], 0.0));
+        }
+
+        // Draw a quadratic curve between card centers, with vertical offset to
+        // avoid overlapping the cards themselves
+        let dx = edge.to_x - edge.from_x;
+        let dy = edge.to_y - edge.from_y;
+        let dist = (dx * dx + dy * dy).sqrt();
+
+        // Control point offset perpendicular to the line, proportional to distance
+        let bulge = (dist * 0.2).clamp(15.0, 60.0);
+        // Perpendicular direction (normalized)
+        let (nx, ny) = if dist > 0.1 { (-dy / dist, dx / dist) } else { (0.0, -1.0) };
+        let cx = (edge.from_x + edge.to_x) / 2.0 + nx * bulge;
+        let cy = (edge.from_y + edge.to_y) / 2.0 + ny * bulge;
+
+        let mut builder = skia_safe::PathBuilder::new();
+        builder.move_to(Point::new(edge.from_x, edge.from_y));
+        builder.quad_to(Point::new(cx, cy), Point::new(edge.to_x, edge.to_y));
+        let path = builder.snapshot();
+        canvas.draw_path(&path, &paint);
+
+        // Draw arrowhead at the target end
+        let arrow_size = 8.0;
+        // Tangent direction at the endpoint (from control point to end)
+        let tdx = edge.to_x - cx;
+        let tdy = edge.to_y - cy;
+        let tlen = (tdx * tdx + tdy * tdy).sqrt();
+        if tlen > 0.1 {
+            let ux = tdx / tlen;
+            let uy = tdy / tlen;
+            // Two wing points of the arrowhead
+            let ax = edge.to_x - ux * arrow_size + uy * arrow_size * 0.4;
+            let ay = edge.to_y - uy * arrow_size - ux * arrow_size * 0.4;
+            let bx = edge.to_x - ux * arrow_size - uy * arrow_size * 0.4;
+            let by = edge.to_y - uy * arrow_size + ux * arrow_size * 0.4;
+
+            let mut arrow_paint = Paint::default();
+            arrow_paint.set_anti_alias(true);
+            arrow_paint.set_color4f(color, None);
+            arrow_paint.set_style(PaintStyle::Fill);
+
+            let arrow_path = Path::polygon(
+                &[
+                    Point::new(edge.to_x, edge.to_y),
+                    Point::new(ax, ay),
+                    Point::new(bx, by),
+                ],
+                true,
+                None,
+                None,
+            );
+            canvas.draw_path(&arrow_path, &arrow_paint);
+        }
     }
 }
 

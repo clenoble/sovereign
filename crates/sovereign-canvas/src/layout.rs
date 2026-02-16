@@ -62,6 +62,21 @@ pub struct BranchEdge {
     pub to_y: f32,
 }
 
+/// A visual edge between two document cards, representing a relationship.
+#[derive(Debug, Clone)]
+pub struct DocumentEdge {
+    pub from_doc_id: String,
+    pub to_doc_id: String,
+    pub relation_type: RelationType,
+    pub strength: f32,
+    /// Center of the source card.
+    pub from_x: f32,
+    pub from_y: f32,
+    /// Center of the target card.
+    pub to_x: f32,
+    pub to_y: f32,
+}
+
 /// Complete canvas layout: all cards and lanes.
 #[derive(Debug, Clone)]
 pub struct CanvasLayout {
@@ -69,6 +84,7 @@ pub struct CanvasLayout {
     pub lanes: Vec<LaneLayout>,
     pub timeline_markers: Vec<TimelineMarker>,
     pub branch_edges: Vec<BranchEdge>,
+    pub document_edges: Vec<DocumentEdge>,
 }
 
 /// Compute thread-lane layout from documents, threads, and optional relationships.
@@ -173,11 +189,13 @@ pub fn compute_layout_full(
         });
     }
     let branch_edges = compute_branch_edges(relationships, &cards, &lanes);
+    let document_edges = compute_document_edges(relationships, &cards);
     CanvasLayout {
         cards,
         lanes,
         timeline_markers,
         branch_edges,
+        document_edges,
     }
 }
 
@@ -216,6 +234,47 @@ pub fn compute_branch_edges(
                         to_y: tl.y + tl.height / 2.0,
                     });
                 }
+            }
+        }
+    }
+    edges
+}
+
+/// Compute document-to-document edges from all relationships.
+/// Each relationship produces a visual edge connecting the centers of the two document cards.
+pub fn compute_document_edges(
+    relationships: &[RelatedTo],
+    cards: &[CardLayout],
+) -> Vec<DocumentEdge> {
+    use sovereign_db::schema::thing_to_raw;
+
+    let mut edges = Vec::new();
+    for rel in relationships {
+        // Skip BranchesFrom — those are already drawn as lane-to-lane branch edges
+        if rel.relation_type == RelationType::BranchesFrom {
+            continue;
+        }
+
+        let from_id = rel.out.as_ref().map(|t| thing_to_raw(t));
+        let to_id = rel.in_.as_ref().map(|t| thing_to_raw(t));
+
+        if let (Some(from_id), Some(to_id)) = (from_id, to_id) {
+            let from_card = cards.iter().find(|c| c.doc_id == from_id);
+            let to_card = cards.iter().find(|c| c.doc_id == to_id);
+
+            if let (Some(fc), Some(tc)) = (from_card, to_card) {
+                let (fx, fy) = fc.center();
+                let (tx, ty) = tc.center();
+                edges.push(DocumentEdge {
+                    from_doc_id: from_id,
+                    to_doc_id: to_id,
+                    relation_type: rel.relation_type.clone(),
+                    strength: rel.strength,
+                    from_x: fx,
+                    from_y: fy,
+                    to_x: tx,
+                    to_y: ty,
+                });
             }
         }
     }
@@ -554,5 +613,98 @@ mod tests {
         ];
         let markers = compute_timeline_markers(&cards);
         assert_eq!(markers.len(), 1);
+    }
+
+    #[test]
+    fn document_edges_from_references() {
+        use sovereign_db::schema::RelatedTo;
+        let rel = RelatedTo {
+            id: None,
+            in_: Some(surrealdb::sql::Thing::from(("document", "d2"))),
+            out: Some(surrealdb::sql::Thing::from(("document", "d1"))),
+            relation_type: sovereign_db::schema::RelationType::References,
+            strength: 0.8,
+            created_at: Utc::now(),
+        };
+        let cards = vec![
+            CardLayout {
+                doc_id: "document:d1".into(),
+                title: "A".into(),
+                is_owned: true,
+                thread_id: "thread:t1".into(),
+                created_at_ts: 0,
+                x: 100.0, y: 30.0, w: 200.0, h: 80.0,
+            },
+            CardLayout {
+                doc_id: "document:d2".into(),
+                title: "B".into(),
+                is_owned: true,
+                thread_id: "thread:t1".into(),
+                created_at_ts: 0,
+                x: 400.0, y: 30.0, w: 200.0, h: 80.0,
+            },
+        ];
+        let edges = compute_document_edges(&[rel], &cards);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].from_doc_id, "document:d1");
+        assert_eq!(edges[0].to_doc_id, "document:d2");
+        assert_eq!(edges[0].relation_type, RelationType::References);
+        assert!((edges[0].strength - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn document_edges_skip_branches_from() {
+        use sovereign_db::schema::RelatedTo;
+        let rel = RelatedTo {
+            id: None,
+            in_: Some(surrealdb::sql::Thing::from(("document", "d2"))),
+            out: Some(surrealdb::sql::Thing::from(("document", "d1"))),
+            relation_type: sovereign_db::schema::RelationType::BranchesFrom,
+            strength: 1.0,
+            created_at: Utc::now(),
+        };
+        let cards = vec![
+            CardLayout {
+                doc_id: "document:d1".into(),
+                title: "A".into(),
+                is_owned: true,
+                thread_id: "thread:t1".into(),
+                created_at_ts: 0,
+                x: 100.0, y: 30.0, w: 200.0, h: 80.0,
+            },
+            CardLayout {
+                doc_id: "document:d2".into(),
+                title: "B".into(),
+                is_owned: true,
+                thread_id: "thread:t2".into(),
+                created_at_ts: 0,
+                x: 400.0, y: 130.0, w: 200.0, h: 80.0,
+            },
+        ];
+        let edges = compute_document_edges(&[rel], &cards);
+        assert!(edges.is_empty(), "BranchesFrom should be skipped");
+    }
+
+    #[test]
+    fn document_edges_missing_card_ignored() {
+        use sovereign_db::schema::RelatedTo;
+        let rel = RelatedTo {
+            id: None,
+            in_: Some(surrealdb::sql::Thing::from(("document", "d_missing"))),
+            out: Some(surrealdb::sql::Thing::from(("document", "d1"))),
+            relation_type: sovereign_db::schema::RelationType::Supports,
+            strength: 0.5,
+            created_at: Utc::now(),
+        };
+        let cards = vec![CardLayout {
+            doc_id: "document:d1".into(),
+            title: "A".into(),
+            is_owned: true,
+            thread_id: "thread:t1".into(),
+            created_at_ts: 0,
+            x: 100.0, y: 30.0, w: 200.0, h: 80.0,
+        }];
+        let edges = compute_document_edges(&[rel], &cards);
+        assert!(edges.is_empty(), "Missing target card should be ignored");
     }
 }

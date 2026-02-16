@@ -49,7 +49,7 @@ Debug build artifacts require ~17 GB. The C: drive only has ~3.5 GB free, forcin
 
 ### Canvas & Documents
 
-- [ ] **Document links on canvas** — Visualize relationships between documents directly on the canvas (lines/arrows between cards based on `related_to` edges)
+- [x] **Document links on canvas** — Visualize relationships between documents directly on the canvas (lines/arrows between cards based on `related_to` edges)
 - [ ] **Version tracking on canvas** — Show commit history per document card (expand to see snapshots, diff between versions)
 
 ### Communications
@@ -77,3 +77,4 @@ Debug build artifacts require ~17 GB. The C: drive only has ~3.5 GB free, forcin
 - [x] Documentation alignment (README, spec, CLAUDE.md) — commit 617ffc5
 - [x] Phase A-D code review and robustness improvements — commit 617ffc5
 - [x] Gate voice/whisper behind `voice-stt` feature flag (ggml symbol conflict fix)
+- [x] Document links on canvas — relationship edges as colored curved arrows
