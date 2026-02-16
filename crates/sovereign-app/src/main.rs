@@ -181,12 +181,26 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             }
         }
 
+        // Load contacts, conversations, and messages for communication panels
+        let contacts = db.list_contacts().await?;
+        let conversations = db.list_conversations(None).await?;
+        let mut all_messages = Vec::new();
+        for conv in &conversations {
+            if let Some(conv_id) = conv.id_string() {
+                if let Ok(msgs) = db.list_messages(&conv_id, None, 50).await {
+                    all_messages.extend(msgs);
+                }
+            }
+        }
+
         tracing::info!(
-            "Loaded {} documents, {} threads, {} relationships, {} docs with commits",
+            "Loaded {} documents, {} threads, {} relationships, {} contacts, {} conversations, {} messages",
             documents.len(),
             threads.len(),
             relationships.len(),
-            commits_map.len()
+            contacts.len(),
+            conversations.len(),
+            all_messages.len(),
         );
 
         // Register all core skills
@@ -565,6 +579,9 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             threads,
             relationships,
             commits_map,
+            contacts,
+            conversations,
+            all_messages,
             query_callback,
             chat_callback,
             Some(orch_rx),

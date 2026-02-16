@@ -13,12 +13,13 @@ use sovereign_core::config::UiConfig;
 use sovereign_core::content::ContentFields;
 use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent, SkillEvent};
 use sovereign_core::security::ActionDecision;
-use sovereign_db::schema::{Commit, Document, RelatedTo, Thread};
+use sovereign_db::schema::{Commit, Contact, Conversation, Document, Message as DbMessage, RelatedTo, Thread};
 use sovereign_skills::registry::SkillRegistry;
 use sovereign_skills::traits::SkillOutput;
 
 use crate::chat::ChatState;
 use crate::orchestrator_bubble::{build_skill_doc, format_structured_data, BubbleState};
+use crate::panels::contact_panel::ContactPanel;
 use crate::panels::document_panel::{FloatingPanel, DEAD_ZONE, DRAG_BAR_HEIGHT};
 use crate::search::SearchState;
 use crate::taskbar::TaskbarState;
@@ -58,9 +59,17 @@ pub enum Message {
     DocBodyAction { panel_idx: usize, action: text_editor::Action },
     ToggleHistory(usize),
     SelectCommit { panel_idx: usize, commit_idx: usize },
+    // Contact panels
+    OpenContact(String),
+    CloseContactPanel(usize),
+    SelectConversation { panel_idx: usize, conv_idx: usize },
+    ContactPanelDragStart(usize),
+    ContactPanelDragMove { panel_idx: usize, local: iced::Point },
+    ContactPanelDragEnd(usize),
     // Taskbar
     TaskbarDocClicked(String),
     TaskbarDocPinToggled(String),
+    TaskbarContactClicked(String),
     MicToggled,
     // Chat
     ChatToggled,
@@ -91,7 +100,11 @@ pub struct SovereignApp {
     bubble: BubbleState,
     taskbar: TaskbarState,
     doc_panels: Vec<FloatingPanel>,
+    contact_panels: Vec<ContactPanel>,
     doc_map: HashMap<String, Document>,
+    contact_map: HashMap<String, Contact>,
+    conversations: Vec<Conversation>,
+    messages: Vec<DbMessage>,
     commits_map: HashMap<String, Vec<Commit>>,
     // Channels
     orch_rx: Option<mpsc::Receiver<OrchestratorEvent>>,
@@ -115,6 +128,9 @@ impl SovereignApp {
         threads: Vec<Thread>,
         relationships: Vec<RelatedTo>,
         commits_map: HashMap<String, Vec<Commit>>,
+        contacts: Vec<Contact>,
+        conversations: Vec<Conversation>,
+        messages: Vec<DbMessage>,
         query_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
         chat_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
         orchestrator_rx: Option<mpsc::Receiver<OrchestratorEvent>>,
@@ -138,10 +154,26 @@ impl SovereignApp {
             .filter_map(|d| d.id_string().map(|id| (id, d.title.clone(), d.is_owned)))
             .collect();
 
+        let contact_map: HashMap<String, Contact> = contacts
+            .iter()
+            .filter_map(|c| c.id_string().map(|id| (id, c.clone())))
+            .collect();
+
+        // Pin up to 3 non-owned contacts for the taskbar
+        let pinned_contacts: Vec<(String, String)> = contacts
+            .iter()
+            .filter(|c| !c.is_owned)
+            .take(3)
+            .filter_map(|c| c.id_string().map(|id| (id, c.name.clone())))
+            .collect();
+
         let (canvas_program, canvas_cmd_rx, _controller) =
             sovereign_canvas::build_canvas(documents, threads, relationships);
 
         let canvas_state = canvas_program.state.clone();
+
+        let mut taskbar = TaskbarState::new(pinned_docs);
+        taskbar.set_pinned_contacts(pinned_contacts);
 
         let app = Self {
             canvas_program,
@@ -150,9 +182,13 @@ impl SovereignApp {
             search: SearchState::new(),
             chat: ChatState::new(),
             bubble: BubbleState::new(),
-            taskbar: TaskbarState::new(pinned_docs),
+            taskbar,
             doc_panels: Vec::new(),
+            contact_panels: Vec::new(),
             doc_map,
+            contact_map,
+            conversations,
+            messages,
             commits_map,
             orch_rx: orchestrator_rx,
             voice_rx,
@@ -305,6 +341,76 @@ impl SovereignApp {
                 Task::none()
             }
 
+            // ── Contact panels ──────────────────────────────────────────
+            Message::OpenContact(contact_id) => {
+                self.open_contact(&contact_id);
+                Task::none()
+            }
+            Message::CloseContactPanel(idx) => {
+                if idx < self.contact_panels.len() {
+                    self.contact_panels.remove(idx);
+                }
+                Task::none()
+            }
+            Message::SelectConversation { panel_idx, conv_idx } => {
+                if let Some(panel) = self.contact_panels.get_mut(panel_idx) {
+                    if conv_idx == usize::MAX {
+                        // "Back" button
+                        panel.selected_conversation = None;
+                    } else {
+                        panel.selected_conversation = Some(conv_idx);
+                    }
+                }
+                Task::none()
+            }
+            Message::ContactPanelDragStart(idx) => {
+                if let Some(panel) = self.contact_panels.get_mut(idx) {
+                    let local_y = panel.last_local_cursor.y;
+                    if local_y >= DEAD_ZONE && local_y < DEAD_ZONE + DRAG_BAR_HEIGHT {
+                        let screen = iced::Point::new(
+                            (panel.position.x - DEAD_ZONE) + panel.last_local_cursor.x,
+                            (panel.position.y - DEAD_ZONE) + panel.last_local_cursor.y,
+                        );
+                        panel.drag_start_screen = Some(screen);
+                        panel.drag_start_panel = Some(panel.position);
+                    }
+                }
+                Task::none()
+            }
+            Message::ContactPanelDragMove { panel_idx, local } => {
+                if let Some(panel) = self.contact_panels.get_mut(panel_idx) {
+                    panel.last_local_cursor = local;
+                    if let (Some(start_screen), Some(start_panel)) =
+                        (panel.drag_start_screen, panel.drag_start_panel)
+                    {
+                        let screen = iced::Point::new(
+                            (panel.position.x - DEAD_ZONE) + local.x,
+                            (panel.position.y - DEAD_ZONE) + local.y,
+                        );
+                        let dx = screen.x - start_screen.x;
+                        let dy = screen.y - start_screen.y;
+                        if !panel.dragging && (dx.abs() > 3.0 || dy.abs() > 3.0) {
+                            panel.dragging = true;
+                        }
+                        if panel.dragging {
+                            panel.position = iced::Point::new(
+                                (start_panel.x + dx).max(0.0),
+                                (start_panel.y + dy).max(0.0),
+                            );
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::ContactPanelDragEnd(idx) => {
+                if let Some(panel) = self.contact_panels.get_mut(idx) {
+                    panel.dragging = false;
+                    panel.drag_start_screen = None;
+                    panel.drag_start_panel = None;
+                }
+                Task::none()
+            }
+
             // ── Panel drag ──────────────────────────────────────────────
             Message::PanelDragStart(idx) => {
                 if let Some(panel) = self.doc_panels.get_mut(idx) {
@@ -369,6 +475,10 @@ impl SovereignApp {
             }
             Message::TaskbarDocPinToggled(doc_id) => {
                 self.taskbar.toggle_pin(&doc_id);
+                Task::none()
+            }
+            Message::TaskbarContactClicked(contact_id) => {
+                self.open_contact(&contact_id);
                 Task::none()
             }
             Message::MicToggled => {
@@ -455,6 +565,13 @@ impl SovereignApp {
 
         // Floating document panels
         for (i, panel) in self.doc_panels.iter().enumerate() {
+            if panel.visible {
+                layers.push(panel.view(i));
+            }
+        }
+
+        // Floating contact panels
+        for (i, panel) in self.contact_panels.iter().enumerate() {
             if panel.visible {
                 layers.push(panel.view(i));
             }
@@ -699,6 +816,42 @@ impl SovereignApp {
             );
             self.doc_panels.push(panel);
             self.taskbar.add_document(doc_id, &doc.title, doc.is_owned);
+        }
+    }
+
+    /// Open a contact in a floating panel (no-op if already open).
+    fn open_contact(&mut self, contact_id: &str) {
+        if self.contact_panels.iter().any(|p| p.contact_id == contact_id) {
+            return;
+        }
+        if let Some(contact) = self.contact_map.get(contact_id) {
+            // Find conversations this contact participates in
+            let convs: Vec<Conversation> = self
+                .conversations
+                .iter()
+                .filter(|c| c.participant_contact_ids.contains(&contact_id.to_string()))
+                .cloned()
+                .collect();
+
+            // Collect messages for those conversations
+            let conv_ids: Vec<String> = convs
+                .iter()
+                .filter_map(|c| c.id_string())
+                .collect();
+            let msgs: Vec<DbMessage> = self
+                .messages
+                .iter()
+                .filter(|m| conv_ids.contains(&m.conversation_id))
+                .cloned()
+                .collect();
+
+            let panel = ContactPanel::new(
+                contact.clone(),
+                contact_id.to_string(),
+                convs,
+                msgs,
+            );
+            self.contact_panels.push(panel);
         }
     }
 

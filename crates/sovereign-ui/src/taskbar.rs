@@ -14,10 +14,19 @@ pub struct TaskbarItem {
     pub is_owned: bool,
 }
 
+/// A contact item in the taskbar.
+#[derive(Clone)]
+pub struct TaskbarContactItem {
+    pub contact_id: String,
+    pub name: String,
+}
+
 /// State for the taskbar.
 pub struct TaskbarState {
     pub items: Vec<TaskbarItem>,
     pub pinned_ids: HashSet<String>,
+    pub contacts: Vec<TaskbarContactItem>,
+    pub pinned_contact_ids: HashSet<String>,
     pub listening: bool,
 }
 
@@ -39,7 +48,28 @@ impl TaskbarState {
         Self {
             items,
             pinned_ids,
+            contacts: Vec::new(),
+            pinned_contact_ids: HashSet::new(),
             listening: false,
+        }
+    }
+
+    pub fn set_pinned_contacts(&mut self, contacts: Vec<(String, String)>) {
+        for (id, name) in contacts {
+            self.pinned_contact_ids.insert(id.clone());
+            self.contacts.push(TaskbarContactItem {
+                contact_id: id,
+                name,
+            });
+        }
+    }
+
+    pub fn toggle_contact_pin(&mut self, contact_id: &str) {
+        if self.pinned_contact_ids.contains(contact_id) {
+            self.pinned_contact_ids.remove(contact_id);
+            self.contacts.retain(|c| c.contact_id != contact_id);
+        } else {
+            self.pinned_contact_ids.insert(contact_id.to_string());
         }
     }
 
@@ -100,6 +130,25 @@ impl TaskbarState {
             .padding(Padding::from([2, 6]));
 
             items_row = items_row.push(pin_btn);
+        }
+
+        // Pinned contacts
+        if !self.contacts.is_empty() {
+            items_row = items_row.push(
+                text("|").size(13).color(theme::BORDER_DIM),
+            );
+            for contact in &self.contacts {
+                let initial = contact.name.chars().next().unwrap_or('?');
+                let cid = contact.contact_id.clone();
+                let label = text(format!("{} {}", initial, contact.name))
+                    .size(13)
+                    .color(theme::APPROVE_GREEN);
+                let btn = button(label)
+                    .on_press(Message::TaskbarContactClicked(cid))
+                    .style(theme::taskbar_button_style)
+                    .padding(Padding::from([4, 10]));
+                items_row = items_row.push(btn);
+            }
         }
 
         // Spacer

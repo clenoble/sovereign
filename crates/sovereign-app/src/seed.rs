@@ -1,6 +1,9 @@
 use anyhow::Result;
 use sovereign_core::content::ContentFields;
-use sovereign_db::schema::{Document, RelationType, Thread};
+use sovereign_db::schema::{
+    ChannelAddress, ChannelType, Contact, Conversation, Document, Message, MessageDirection,
+    ReadStatus, RelationType, Thread,
+};
 use sovereign_db::surreal::SurrealGraphDB;
 use sovereign_db::GraphDB;
 
@@ -166,10 +169,135 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
         }
     }
 
+    // ── Contacts ───────────────────────────────────────────────────────────
+    let contact_defs: Vec<(&str, bool, Vec<(ChannelType, &str, bool)>)> = vec![
+        ("You", true, vec![
+            (ChannelType::Email, "me@sovereign.local", true),
+            (ChannelType::Signal, "+1-555-0100", false),
+        ]),
+        ("Alice Chen", false, vec![
+            (ChannelType::Email, "alice.chen@example.com", true),
+            (ChannelType::Signal, "+1-555-0101", false),
+        ]),
+        ("Bob Martinez", false, vec![
+            (ChannelType::Email, "bob.m@example.com", true),
+            (ChannelType::WhatsApp, "+1-555-0102", false),
+        ]),
+        ("Carol Nguyen", false, vec![
+            (ChannelType::Email, "carol.n@example.com", true),
+            (ChannelType::Sms, "+1-555-0103", false),
+        ]),
+        ("David Park", false, vec![
+            (ChannelType::Signal, "+1-555-0104", true),
+        ]),
+    ];
+
+    let mut contact_ids = Vec::new();
+    for (name, is_owned, addresses) in &contact_defs {
+        let mut contact = Contact::new(name.to_string(), *is_owned);
+        contact.addresses = addresses
+            .iter()
+            .map(|(ch, addr, primary)| ChannelAddress {
+                channel: ch.clone(),
+                address: addr.to_string(),
+                display_name: None,
+                is_primary: *primary,
+            })
+            .collect();
+        let created = db.create_contact(contact).await?;
+        contact_ids.push(
+            created
+                .id_string()
+                .ok_or_else(|| anyhow::anyhow!("Contact missing ID"))?,
+        );
+    }
+
+    // ── Conversations ────────────────────────────────────────────────────
+    // 0=You, 1=Alice, 2=Bob, 3=Carol, 4=David
+    let conv_defs: Vec<(&str, ChannelType, Vec<usize>, Option<usize>)> = vec![
+        ("Architecture discussion", ChannelType::Email, vec![0, 1], Some(1)),   // linked to Development thread
+        ("Design feedback", ChannelType::Signal, vec![0, 1, 4], Some(2)),       // linked to Design thread
+        ("Budget approval", ChannelType::WhatsApp, vec![0, 2], None),
+        ("Quick check-in", ChannelType::Sms, vec![0, 3], None),
+    ];
+
+    let mut conv_ids = Vec::new();
+    for (title, channel, participant_idxs, linked_thread_idx) in &conv_defs {
+        let participants: Vec<String> = participant_idxs
+            .iter()
+            .map(|&i| contact_ids[i].clone())
+            .collect();
+        let mut conv = Conversation::new(title.to_string(), channel.clone(), participants);
+        if let Some(ti) = linked_thread_idx {
+            conv.linked_thread_id = Some(thread_ids[*ti].clone());
+        }
+        let created = db.create_conversation(conv).await?;
+        conv_ids.push(
+            created
+                .id_string()
+                .ok_or_else(|| anyhow::anyhow!("Conversation missing ID"))?,
+        );
+    }
+
+    // ── Messages ─────────────────────────────────────────────────────────
+    // (conv_idx, from_idx, to_idxs, body, direction, is_read, minutes_offset)
+    let msg_defs: Vec<(usize, usize, Vec<usize>, &str, MessageDirection, bool, i64)> = vec![
+        // Architecture discussion (email, conv 0)
+        (0, 1, vec![0], "Hey, I reviewed the architecture doc. The component separation looks solid. One question — should we keep the DB abstraction as a trait or move to concrete types?", MessageDirection::Inbound, true, 0),
+        (0, 0, vec![1], "Good catch. Let's keep the trait — it lets us swap SurrealDB for SQLite later if needed, and the mock is useful for tests.", MessageDirection::Outbound, true, 15),
+        (0, 1, vec![0], "Makes sense. I'll update the API spec to reference the trait methods. Should be done by Friday.", MessageDirection::Inbound, true, 30),
+        (0, 0, vec![1], "Perfect. I'll set up the integration tests in the meantime.", MessageDirection::Outbound, true, 45),
+        (0, 1, vec![0], "One more thing — can we add a batch insert method? Seeding 14 docs one by one is slow.", MessageDirection::Inbound, false, 120),
+        // Design feedback (Signal, conv 1)
+        (1, 4, vec![0, 1], "Just tested the dark theme on my display. The contrast ratios look good — WCAG AA compliant.", MessageDirection::Inbound, true, 0),
+        (1, 0, vec![1, 4], "Great to hear! Alice, what do you think about adding a light theme option?", MessageDirection::Outbound, true, 10),
+        (1, 1, vec![0, 4], "I'd prioritize it after the canvas is stable. Users definitely expect a light mode though.", MessageDirection::Inbound, true, 25),
+        (1, 4, vec![0, 1], "Agreed. I can mock up light theme colors this week if you want.", MessageDirection::Inbound, false, 40),
+        // Budget approval (WhatsApp, conv 2)
+        (2, 2, vec![0], "Hi! I looked at the budget overview. The $500 for infrastructure seems low — are we accounting for CI/CD costs?", MessageDirection::Inbound, true, 0),
+        (2, 0, vec![2], "Good point. We're self-hosting CI on the NAS for now, but I'll add a line item for cloud CI as a contingency.", MessageDirection::Outbound, true, 20),
+        (2, 2, vec![0], "Sounds good. I'll approve the revised budget once you update the doc.", MessageDirection::Inbound, false, 35),
+        // Quick check-in (SMS, conv 3)
+        (3, 3, vec![0], "Hey, are we still meeting Thursday?", MessageDirection::Inbound, true, 0),
+        (3, 0, vec![3], "Yes! 2pm at the usual spot.", MessageDirection::Outbound, true, 5),
+        (3, 3, vec![0], "See you there", MessageDirection::Inbound, true, 8),
+    ];
+
+    let msg_base = Utc.with_ymd_and_hms(2026, 4, 20, 9, 0, 0).unwrap();
+    for (conv_idx, from_idx, to_idxs, body, direction, is_read, minutes) in &msg_defs {
+        let to_ids: Vec<String> = to_idxs.iter().map(|&i| contact_ids[i].clone()).collect();
+        let channel = conv_defs[*conv_idx].1.clone();
+        let mut msg = Message::new(
+            conv_ids[*conv_idx].clone(),
+            channel,
+            direction.clone(),
+            contact_ids[*from_idx].clone(),
+            to_ids,
+            body.to_string(),
+        );
+        msg.sent_at = msg_base + chrono::Duration::minutes(*minutes);
+        msg.created_at = msg.sent_at;
+        if *is_read {
+            msg.read_status = ReadStatus::Read;
+        }
+        db.create_message(msg).await?;
+    }
+
+    // Update unread counts on conversations
+    let unread_counts = [1u32, 1, 1, 0]; // conv 0-3
+    for (i, &count) in unread_counts.iter().enumerate() {
+        if count > 0 {
+            db.update_conversation_unread(&conv_ids[i], count).await?;
+        }
+    }
+
     tracing::info!(
-        "Seeded {} documents in {} threads with relationships and commits",
+        "Seeded {} documents, {} threads, {} contacts, {} conversations, {} messages",
         owned_docs.len() + external_docs.len(),
         thread_ids.len(),
+        contact_ids.len(),
+        conv_ids.len(),
+        msg_defs.len(),
     );
     Ok(())
 }
@@ -201,6 +329,18 @@ mod tests {
         let external = docs.iter().filter(|d| !d.is_owned).count();
         assert_eq!(owned, 8);
         assert_eq!(external, 6);
+
+        // Contacts
+        let contacts = db.list_contacts().await.unwrap();
+        assert_eq!(contacts.len(), 5, "Should create 5 contacts");
+        let owned_contacts = contacts.iter().filter(|c| c.is_owned).count();
+        assert_eq!(owned_contacts, 1, "1 owned contact (You)");
+
+        // Conversations
+        let convs = db.list_conversations(None).await.unwrap();
+        assert_eq!(convs.len(), 4, "Should create 4 conversations");
+        let linked = convs.iter().filter(|c| c.linked_thread_id.is_some()).count();
+        assert_eq!(linked, 2, "2 conversations linked to threads");
     }
 
     #[tokio::test]

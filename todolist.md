@@ -41,10 +41,10 @@ Debug build artifacts require ~17 GB. The C: drive only has ~3.5 GB free, forcin
 
 ### Communications
 
-- [ ] **Seed contacts & messaging data** — Extend `seed.rs` to populate sample contacts, conversations, and messages on first launch (similar to existing thread/document seeding)
-- [ ] **Include calls and emails in intent threads** — Route incoming emails and call logs into the thread/document model so the orchestrator can reason about them alongside documents
-- [ ] **Pinned contact in taskbar** — Add a pinned-contacts section to the taskbar for quick access to frequently contacted people
-- [ ] **Contact panel** — New side panel (like document/chat/search panels) for viewing contact details, conversation history, and linked documents
+- [x] **Seed contacts & messaging data** — 5 contacts, 4 conversations (Email/Signal/WhatsApp/SMS), 15 messages with mixed read/unread status, 2 conversations linked to threads
+- [x] **Include calls and emails in intent threads** — Conversations linked to threads via `linked_thread_id`, `list_contacts` and `view_messages` intents routed through orchestrator
+- [x] **Pinned contact in taskbar** — Top 3 non-owned contacts auto-pinned with initial + name, click opens contact panel
+- [x] **Contact panel** — Floating panel showing contact info, addresses, conversation list, and message history with back navigation
 
 ### Advanced Features
 
@@ -67,3 +67,4 @@ Debug build artifacts require ~17 GB. The C: drive only has ~3.5 GB free, forcin
 - [x] Document links on canvas — relationship edges as colored curved arrows
 - [x] NAS pre-build cleanup in batch scripts (kill stale processes, clean artifacts)
 - [x] Version tracking in FloatingPanel — commit history list with timestamp, message, and snapshot preview
+- [x] Communications: seed contacts, messaging data, intent routing, pinned contacts in taskbar, contact panel

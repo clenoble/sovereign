@@ -118,6 +118,11 @@ fn extract_intent_heuristic(response: &str) -> UserIntent {
         "sync_status"
     } else if lower.contains("encrypt") && (lower.contains("data") || lower.contains("enable") || lower.contains("turn on")) {
         "encrypt_data"
+    // Communications intents
+    } else if lower.contains("list contact") || lower.contains("show contact") || lower.contains("my contact") {
+        "list_contacts"
+    } else if lower.contains("message") || lower.contains("conversation") || lower.contains("inbox") {
+        "view_messages"
     } else if lower.contains("search") || lower.contains("find") || lower.contains("look") {
         "search"
     } else if lower.contains("open") || lower.contains("show") {
@@ -379,5 +384,29 @@ mod tests {
     fn heuristic_show_models() {
         let intent = parse_intent_response("show models please").unwrap();
         assert_eq!(intent.action, "list_models");
+    }
+
+    #[test]
+    fn heuristic_list_contacts() {
+        let intent = parse_intent_response("list my contacts").unwrap();
+        assert_eq!(intent.action, "list_contacts");
+    }
+
+    #[test]
+    fn heuristic_show_contacts() {
+        let intent = parse_intent_response("show contacts").unwrap();
+        assert_eq!(intent.action, "list_contacts");
+    }
+
+    #[test]
+    fn heuristic_view_messages() {
+        let intent = parse_intent_response("show my messages").unwrap();
+        assert_eq!(intent.action, "view_messages");
+    }
+
+    #[test]
+    fn heuristic_view_conversations() {
+        let intent = parse_intent_response("open conversation with Alice").unwrap();
+        assert_eq!(intent.action, "view_messages");
     }
 }

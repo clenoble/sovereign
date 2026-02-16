@@ -789,6 +789,41 @@ impl Orchestrator {
                     });
                 }
             }
+            // Communications actions
+            "list_contacts" => {
+                let contacts = self.db.list_contacts().await?;
+                let summary: Vec<String> = contacts
+                    .iter()
+                    .map(|c| {
+                        let addrs: Vec<String> = c.addresses
+                            .iter()
+                            .map(|a| format!("{}: {}", a.channel, a.address))
+                            .collect();
+                        format!("{} ({})", c.name, addrs.join(", "))
+                    })
+                    .collect();
+                self.log_action("list_contacts", &format!("{} contacts", summary.len()));
+                let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
+                    text: format!("Contacts:\n{}", summary.join("\n")),
+                });
+            }
+            "view_messages" => {
+                let conversations = self.db.list_conversations(None).await?;
+                let summary: Vec<String> = conversations
+                    .iter()
+                    .map(|c| {
+                        let linked = c.linked_thread_id.as_deref().unwrap_or("none");
+                        format!(
+                            "{} ({}) — {} unread, thread: {}",
+                            c.title, c.channel, c.unread_count, linked
+                        )
+                    })
+                    .collect();
+                self.log_action("view_messages", &format!("{} conversations", summary.len()));
+                let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
+                    text: format!("Conversations:\n{}", summary.join("\n")),
+                });
+            }
             // P2P actions
             "sync_device" | "pair_device" | "list_devices" | "list_guardians"
             | "enroll_guardian" | "revoke_guardian" | "rotate_shards"
