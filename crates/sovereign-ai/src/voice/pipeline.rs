@@ -1,30 +1,16 @@
-use std::path::Path;
 use std::sync::mpsc;
 
 use anyhow::Result;
-use ringbuf::traits::*;
 use sovereign_core::config::VoiceConfig;
 
 use crate::events::VoiceEvent;
-
-use super::capture::AudioCapture;
-use super::stt::SttEngine;
-use super::tts::TtsEngine;
-use super::wake::WakeWordDetector;
-
-/// Voice pipeline state machine.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum PipelineState {
-    Idle,
-    Listening,
-    Transcribing,
-}
 
 /// Runs the voice pipeline on a dedicated std::thread.
 /// Communicates with the UI via VoiceEvent channel
 /// and with the orchestrator via the query callback.
 pub struct VoicePipeline;
 
+#[cfg(feature = "voice-stt")]
 impl VoicePipeline {
     /// Spawn the voice pipeline on a dedicated thread.
     /// Returns the thread handle for cleanup.
@@ -33,6 +19,8 @@ impl VoicePipeline {
         voice_tx: mpsc::Sender<VoiceEvent>,
         query_callback: Box<dyn Fn(String) + Send + 'static>,
     ) -> Result<std::thread::JoinHandle<()>> {
+        use std::path::Path;
+
         // Validate config files exist before spawning thread
         #[cfg(feature = "wake-word")]
         if !Path::new(&config.wake_word_model).exists() {
@@ -58,11 +46,42 @@ impl VoicePipeline {
     }
 }
 
+#[cfg(not(feature = "voice-stt"))]
+impl VoicePipeline {
+    /// Stub: voice-stt feature is not enabled at compile time.
+    pub fn spawn(
+        _config: VoiceConfig,
+        _voice_tx: mpsc::Sender<VoiceEvent>,
+        _query_callback: Box<dyn Fn(String) + Send + 'static>,
+    ) -> Result<std::thread::JoinHandle<()>> {
+        anyhow::bail!(
+            "Voice pipeline unavailable: built without 'voice-stt' feature. \
+             Enable it with --features voice-stt to use speech-to-text."
+        )
+    }
+}
+
+#[cfg(feature = "voice-stt")]
 fn run_pipeline(
     config: VoiceConfig,
     voice_tx: mpsc::Sender<VoiceEvent>,
     query_callback: Box<dyn Fn(String) + Send + 'static>,
 ) -> Result<()> {
+    use ringbuf::traits::*;
+
+    use super::capture::AudioCapture;
+    use super::stt::SttEngine;
+    use super::tts::TtsEngine;
+    use super::wake::WakeWordDetector;
+
+    /// Voice pipeline state machine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum PipelineState {
+        Idle,
+        Listening,
+        Transcribing,
+    }
+
     const TARGET_SAMPLE_RATE: u32 = 16000;
 
     // Initialize components

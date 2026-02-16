@@ -17,10 +17,10 @@ chrono = { workspace = true }
 llama-cpp-2 = { workspace = true }
 encoding_rs = { workspace = true }
 
-# Voice pipeline
-whisper-rs = { workspace = true }
-cpal = { workspace = true }
-ringbuf = { workspace = true }
+# Voice pipeline (optional — whisper-rs embeds ggml which conflicts with llama-cpp on Windows)
+whisper-rs = { workspace = true, optional = true }
+cpal = { workspace = true, optional = true }
+ringbuf = { workspace = true, optional = true }
 
 # Wake word (optional due to candle-core version conflicts)
 rustpotter = { workspace = true, optional = true }
@@ -32,5 +32,6 @@ sovereign-p2p = { workspace = true, optional = true }
 [features]
 default = ["cuda"]
 cuda = ["llama-cpp-2/cuda"]
-wake-word = ["rustpotter"]
+voice-stt = ["whisper-rs", "cpal", "ringbuf"]
+wake-word = ["voice-stt", "rustpotter"]
 p2p = ["sovereign-crypto", "sovereign-p2p"]

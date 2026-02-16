@@ -15,7 +15,7 @@ n_gpu_layers = 0
 n_ctx = 4096
 
 [voice]
-enabled = true
+enabled = false
 wake_word_model = "models/sovereign.rpw"
 whisper_model = "models/ggml-large-v3-turbo.bin"
 piper_binary = "piper"

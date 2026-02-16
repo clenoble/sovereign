@@ -32,6 +32,7 @@ rand = { version = "0.10", optional = true }
 [features]
 default = []
 cuda = ["sovereign-ai/cuda"]
+voice-stt = ["sovereign-ai/voice-stt"]
 encryption = ["sovereign-crypto", "sovereign-db/encryption", "rpassword", "uuid", "rand"]
 p2p = ["encryption", "sovereign-p2p", "sovereign-ai/p2p"]
 comms = ["sovereign-comms"]
