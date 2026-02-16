@@ -57,7 +57,7 @@ impl ChatState {
         // Header
         col = col.push(
             row![
-                text("Chat").size(15).color(theme::TEXT_PRIMARY),
+                text("Chat").size(15).color(theme::text_primary()),
                 Space::new().width(Length::Fill),
                 button(text("X").size(13))
                     .on_press(Message::ChatToggled)
@@ -70,12 +70,12 @@ impl ChatState {
         let mut messages_col = column![].spacing(6);
         for msg in &self.messages {
             let (color, prefix) = match msg.role {
-                ChatRole::User => (theme::OWNED_BLUE, "You"),
-                ChatRole::Assistant => (theme::BORDER_ACCENT, "AI"),
+                ChatRole::User => (theme::owned_blue(), "You"),
+                ChatRole::Assistant => (theme::border_accent(), "AI"),
             };
             messages_col = messages_col.push(
                 column![
-                    text(prefix).size(11).color(theme::TEXT_DIM),
+                    text(prefix).size(11).color(theme::text_dim()),
                     text(msg.text.as_str())
                         .size(13)
                         .color(color)
@@ -89,7 +89,7 @@ impl ChatState {
             messages_col = messages_col.push(
                 text("Thinking...")
                     .size(12)
-                    .color(theme::BUBBLE_SUGGESTING),
+                    .color(theme::bubble_suggesting()),
             );
         }
 

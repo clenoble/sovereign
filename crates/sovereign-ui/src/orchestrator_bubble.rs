@@ -39,12 +39,12 @@ impl BubbleState {
 
     pub fn bubble_color(&self) -> iced::Color {
         match self.visual_state {
-            BubbleVisualState::Idle => theme::BUBBLE_IDLE,
-            BubbleVisualState::ProcessingOwned => theme::BUBBLE_PROCESSING_OWNED,
-            BubbleVisualState::ProcessingExternal => theme::BUBBLE_PROCESSING_EXT,
-            BubbleVisualState::Proposing => theme::BUBBLE_PROCESSING_EXT,
-            BubbleVisualState::Executing => theme::BUBBLE_EXECUTING,
-            BubbleVisualState::Suggesting => theme::BUBBLE_SUGGESTING,
+            BubbleVisualState::Idle => theme::bubble_idle(),
+            BubbleVisualState::ProcessingOwned => theme::bubble_processing_owned(),
+            BubbleVisualState::ProcessingExternal => theme::bubble_processing_ext(),
+            BubbleVisualState::Proposing => theme::bubble_processing_ext(),
+            BubbleVisualState::Executing => theme::bubble_executing(),
+            BubbleVisualState::Suggesting => theme::bubble_suggesting(),
         }
     }
 
@@ -116,14 +116,14 @@ impl BubbleState {
                 skills_col = skills_col.push(
                     text(result.as_str())
                         .size(12)
-                        .color(theme::TEXT_LABEL)
+                        .color(theme::text_label())
                         .wrapping(text::Wrapping::Word),
                 );
             } else if !has_active_doc {
                 skills_col = skills_col.push(
                     text("Open a document to use skills")
                         .size(12)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::text_dim()),
                 );
             }
 
@@ -138,7 +138,7 @@ impl BubbleState {
                 column![
                     text(desc.as_str())
                         .size(13)
-                        .color(theme::TEXT_PRIMARY)
+                        .color(theme::text_primary())
                         .wrapping(text::Wrapping::Word),
                     row![
                         button(text("Approve").size(13))
@@ -165,7 +165,7 @@ impl BubbleState {
             layers = layers.push(
                 text(reason.as_str())
                     .size(12)
-                    .color(theme::EXTERNAL_ORANGE),
+                    .color(theme::external_orange()),
             );
         }
 
@@ -175,7 +175,7 @@ impl BubbleState {
                 column![
                     text(txt.as_str())
                         .size(12)
-                        .color(theme::TEXT_LABEL)
+                        .color(theme::text_label())
                         .wrapping(text::Wrapping::Word),
                     button(text("Dismiss").size(11))
                         .on_press(Message::DismissSuggestion)

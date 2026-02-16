@@ -97,9 +97,9 @@ impl TaskbarState {
 
         for item in &self.items {
             let color = if item.is_owned {
-                theme::OWNED_BLUE
+                theme::owned_blue()
             } else {
-                theme::EXTERNAL_ORANGE
+                theme::external_orange()
             };
             let doc_id = item.doc_id.clone();
             let pin_id = item.doc_id.clone();
@@ -108,7 +108,7 @@ impl TaskbarState {
             let label = row![
                 text(item.title.as_str()).size(13).color(color),
                 if is_pinned {
-                    text(" *").size(11).color(theme::TEXT_DIM)
+                    text(" *").size(11).color(theme::text_dim())
                 } else {
                     text("").size(11)
                 },
@@ -123,7 +123,7 @@ impl TaskbarState {
 
             // Pin/unpin toggle button
             let pin_btn = button(
-                text(if is_pinned { "unpin" } else { "pin" }).size(10).color(theme::TEXT_DIM),
+                text(if is_pinned { "unpin" } else { "pin" }).size(10).color(theme::text_dim()),
             )
             .on_press(Message::TaskbarDocPinToggled(pin_id))
             .style(theme::taskbar_button_style)
@@ -135,14 +135,14 @@ impl TaskbarState {
         // Pinned contacts
         if !self.contacts.is_empty() {
             items_row = items_row.push(
-                text("|").size(13).color(theme::BORDER_DIM),
+                text("|").size(13).color(theme::border_dim()),
             );
             for contact in &self.contacts {
                 let initial = contact.name.chars().next().unwrap_or('?');
                 let cid = contact.contact_id.clone();
                 let label = text(format!("{} {}", initial, contact.name))
                     .size(13)
-                    .color(theme::APPROVE_GREEN);
+                    .color(theme::approve_green());
                 let btn = button(label)
                     .on_press(Message::TaskbarContactClicked(cid))
                     .style(theme::taskbar_button_style)
@@ -153,6 +153,18 @@ impl TaskbarState {
 
         // Spacer
         items_row = items_row.push(Space::new().width(Length::Fill));
+
+        // Theme toggle
+        let theme_label = match theme::current_mode() {
+            theme::ThemeMode::Dark => "Light",
+            theme::ThemeMode::Light => "Dark",
+        };
+        items_row = items_row.push(
+            button(text(theme_label).size(13))
+                .on_press(Message::ThemeToggled)
+                .style(theme::taskbar_button_style)
+                .padding(Padding::from([4, 12])),
+        );
 
         // Chat button
         items_row = items_row.push(

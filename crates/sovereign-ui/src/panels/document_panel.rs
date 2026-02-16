@@ -136,7 +136,7 @@ impl FloatingPanel {
                         .content_fit(ContentFit::Cover);
                     let card = column![
                         thumbnail,
-                        text(caption).size(11).color(theme::TEXT_DIM),
+                        text(caption).size(11).color(theme::text_dim()),
                     ]
                     .spacing(2)
                     .width(80);
@@ -185,7 +185,7 @@ impl FloatingPanel {
     fn view_history(&self, index: usize) -> Element<'_, Message> {
         if self.commits.is_empty() {
             return container(
-                text("No version history yet").size(13).color(theme::TEXT_DIM),
+                text("No version history yet").size(13).color(theme::text_dim()),
             )
             .padding(16)
             .width(Length::Fill)
@@ -200,9 +200,9 @@ impl FloatingPanel {
             let is_selected = self.selected_commit == Some(i);
 
             let header_row = row![
-                text(ts).size(12).color(theme::BORDER_ACCENT),
+                text(ts).size(12).color(theme::border_accent()),
                 Space::new().width(8),
-                text(commit.message.clone()).size(12).color(theme::TEXT_PRIMARY),
+                text(commit.message.clone()).size(12).color(theme::text_primary()),
             ]
             .spacing(0);
 
@@ -212,9 +212,9 @@ impl FloatingPanel {
             if is_selected {
                 let snap_title = text(format!("Title: {}", commit.snapshot.title))
                     .size(11)
-                    .color(theme::TEXT_DIM);
+                    .color(theme::text_dim());
                 let preview: String = commit.snapshot.content.chars().take(200).collect();
-                let snap_body = text(preview).size(11).color(theme::TEXT_DIM);
+                let snap_body = text(preview).size(11).color(theme::text_dim());
                 entry = entry.push(snap_title).push(snap_body);
             }
 

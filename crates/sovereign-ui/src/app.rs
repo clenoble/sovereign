@@ -84,6 +84,8 @@ pub enum Message {
     SaveDialogResult { data: Vec<u8>, path: Option<std::path::PathBuf> },
     // Keyboard
     KeyEvent(keyboard::Event),
+    // Theme
+    ThemeToggled,
     // No-op
     Ignore,
 }
@@ -210,7 +212,7 @@ impl SovereignApp {
     }
 
     pub fn theme(&self) -> Theme {
-        Theme::Dark
+        theme::iced_theme()
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -548,6 +550,11 @@ impl SovereignApp {
                         _ => {}
                     }
                 }
+                Task::none()
+            }
+
+            Message::ThemeToggled => {
+                theme::toggle_theme();
                 Task::none()
             }
 

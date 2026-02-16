@@ -37,7 +37,7 @@ impl SearchState {
             col = col.push(
                 text(status.as_str())
                     .size(12)
-                    .color(theme::BORDER_ACCENT),
+                    .color(theme::border_accent()),
             );
         }
 
@@ -48,7 +48,7 @@ impl SearchState {
                 results_col = results_col.push(
                     text(id.as_str())
                         .size(13)
-                        .color(theme::TEXT_LABEL),
+                        .color(theme::text_label()),
                 );
             }
             col = col.push(scrollable(results_col).height(Length::Shrink));
@@ -56,7 +56,7 @@ impl SearchState {
             col = col.push(
                 text("No documents found")
                     .size(13)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::text_dim()),
             );
         }
 
@@ -64,7 +64,7 @@ impl SearchState {
         col = col.push(
             text("Press Enter to search")
                 .size(12)
-                .color(theme::TEXT_DIM),
+                .color(theme::text_dim()),
         );
 
         container(col)

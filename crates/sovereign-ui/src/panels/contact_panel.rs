@@ -52,14 +52,14 @@ impl ContactPanel {
         let initial = self.contact.name.chars().next().unwrap_or('?');
         let toolbar = row![
             container(
-                text(initial.to_string()).size(18).color(theme::TEXT_PRIMARY),
+                text(initial.to_string()).size(18).color(theme::text_primary()),
             )
             .width(32)
             .height(32)
             .center_x(32)
             .center_y(32)
             .style(theme::skill_panel_style),
-            text(&self.contact.name).size(15).color(theme::TEXT_PRIMARY),
+            text(&self.contact.name).size(15).color(theme::text_primary()),
             Space::new().width(Length::Fill),
             button(text("Close").size(13))
                 .on_press(AppMessage::CloseContactPanel(index))
@@ -75,14 +75,14 @@ impl ContactPanel {
             let ch_label = channel_label(&addr.channel);
             let line = text(format!("{}: {}", ch_label, addr.address))
                 .size(12)
-                .color(theme::TEXT_DIM);
+                .color(theme::text_dim());
             addr_col = addr_col.push(line);
         }
         if !self.contact.notes.is_empty() {
             addr_col = addr_col.push(
                 text(format!("Notes: {}", self.contact.notes))
                     .size(12)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::text_dim()),
             );
         }
 
@@ -126,7 +126,7 @@ impl ContactPanel {
     fn view_conversations(&self, index: usize) -> Element<'_, AppMessage> {
         if self.conversations.is_empty() {
             return container(
-                text("No conversations").size(13).color(theme::TEXT_DIM),
+                text("No conversations").size(13).color(theme::text_dim()),
             )
             .padding(12)
             .width(Length::Fill)
@@ -135,7 +135,7 @@ impl ContactPanel {
         }
 
         let mut list = column![
-            text("Conversations").size(13).color(theme::TEXT_PRIMARY),
+            text("Conversations").size(13).color(theme::text_primary()),
         ]
         .spacing(4)
         .padding(Padding::from([8, 12]));
@@ -154,7 +154,7 @@ impl ContactPanel {
             };
             let label = text(format!("{} {} {}{}", ch_label, conv.title, unread, linked))
                 .size(12)
-                .color(theme::TEXT_PRIMARY);
+                .color(theme::text_primary());
 
             let btn = button(label)
                 .on_press(AppMessage::SelectConversation {
@@ -198,7 +198,7 @@ impl ContactPanel {
             Space::new().width(8),
             text(format!("{} — {}", channel_label(&conv.channel), conv.title))
                 .size(13)
-                .color(theme::TEXT_PRIMARY),
+                .color(theme::text_primary()),
         ]
         .spacing(0)
         .padding(Padding::from([4, 12]));
@@ -207,7 +207,7 @@ impl ContactPanel {
 
         if conv_messages.is_empty() {
             msg_list = msg_list.push(
-                text("No messages yet").size(12).color(theme::TEXT_DIM),
+                text("No messages yet").size(12).color(theme::text_dim()),
             );
         } else {
             for msg in &conv_messages {
@@ -223,7 +223,7 @@ impl ContactPanel {
                 let preview: String = msg.body.chars().take(120).collect();
                 let line = text(format!("{} {} {}{}", ts, dir_indicator, preview, read_mark))
                     .size(11)
-                    .color(theme::TEXT_PRIMARY);
+                    .color(theme::text_primary());
                 msg_list = msg_list.push(line);
             }
         }
