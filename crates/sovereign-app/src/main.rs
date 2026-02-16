@@ -168,11 +168,25 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         let threads = db.list_threads().await?;
         let documents = db.list_documents(None).await?;
         let relationships = db.list_all_relationships().await?;
+
+        // Pre-load commits for all documents (for version history in panels)
+        let mut commits_map = std::collections::HashMap::new();
+        for doc in &documents {
+            if let Some(doc_id) = doc.id_string() {
+                if let Ok(commits) = db.list_document_commits(&doc_id).await {
+                    if !commits.is_empty() {
+                        commits_map.insert(doc_id, commits);
+                    }
+                }
+            }
+        }
+
         tracing::info!(
-            "Loaded {} documents, {} threads, {} relationships for canvas",
+            "Loaded {} documents, {} threads, {} relationships, {} docs with commits",
             documents.len(),
             threads.len(),
-            relationships.len()
+            relationships.len(),
+            commits_map.len()
         );
 
         // Register all core skills
@@ -550,6 +564,7 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             documents,
             threads,
             relationships,
+            commits_map,
             query_callback,
             chat_callback,
             Some(orch_rx),

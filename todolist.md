@@ -37,7 +37,7 @@ Debug build artifacts require ~17 GB. The C: drive only has ~3.5 GB free, forcin
 ### Canvas & Documents
 
 - [x] **Document links on canvas** — Visualize relationships between documents directly on the canvas (lines/arrows between cards based on `related_to` edges)
-- [ ] **Version tracking on canvas** — Show commit history per document card (expand to see snapshots, diff between versions)
+- [x] **Version tracking on canvas** — History button in FloatingPanel toolbar toggles between editor and scrollable commit list with snapshot previews
 
 ### Communications
 
@@ -66,3 +66,4 @@ Debug build artifacts require ~17 GB. The C: drive only has ~3.5 GB free, forcin
 - [x] Gate voice/whisper behind `voice-stt` feature flag (ggml symbol conflict fix)
 - [x] Document links on canvas — relationship edges as colored curved arrows
 - [x] NAS pre-build cleanup in batch scripts (kill stale processes, clean artifacts)
+- [x] Version tracking in FloatingPanel — commit history list with timestamp, message, and snapshot preview

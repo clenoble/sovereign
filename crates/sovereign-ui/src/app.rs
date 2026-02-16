@@ -13,7 +13,7 @@ use sovereign_core::config::UiConfig;
 use sovereign_core::content::ContentFields;
 use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent, SkillEvent};
 use sovereign_core::security::ActionDecision;
-use sovereign_db::schema::{Document, RelatedTo, Thread};
+use sovereign_db::schema::{Commit, Document, RelatedTo, Thread};
 use sovereign_skills::registry::SkillRegistry;
 use sovereign_skills::traits::SkillOutput;
 
@@ -56,6 +56,8 @@ pub enum Message {
     SaveDocument(usize),
     DocTitleChanged { panel_idx: usize, title: String },
     DocBodyAction { panel_idx: usize, action: text_editor::Action },
+    ToggleHistory(usize),
+    SelectCommit { panel_idx: usize, commit_idx: usize },
     // Taskbar
     TaskbarDocClicked(String),
     TaskbarDocPinToggled(String),
@@ -90,6 +92,7 @@ pub struct SovereignApp {
     taskbar: TaskbarState,
     doc_panels: Vec<FloatingPanel>,
     doc_map: HashMap<String, Document>,
+    commits_map: HashMap<String, Vec<Commit>>,
     // Channels
     orch_rx: Option<mpsc::Receiver<OrchestratorEvent>>,
     voice_rx: Option<mpsc::Receiver<VoiceEvent>>,
@@ -111,6 +114,7 @@ impl SovereignApp {
         documents: Vec<Document>,
         threads: Vec<Thread>,
         relationships: Vec<RelatedTo>,
+        commits_map: HashMap<String, Vec<Commit>>,
         query_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
         chat_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
         orchestrator_rx: Option<mpsc::Receiver<OrchestratorEvent>>,
@@ -149,6 +153,7 @@ impl SovereignApp {
             taskbar: TaskbarState::new(pinned_docs),
             doc_panels: Vec::new(),
             doc_map,
+            commits_map,
             orch_rx: orchestrator_rx,
             voice_rx,
             skill_rx,
@@ -279,6 +284,23 @@ impl SovereignApp {
             Message::DocBodyAction { panel_idx, action } => {
                 if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
                     panel.body.perform(action);
+                }
+                Task::none()
+            }
+            Message::ToggleHistory(idx) => {
+                if let Some(panel) = self.doc_panels.get_mut(idx) {
+                    panel.show_history = !panel.show_history;
+                    panel.selected_commit = None;
+                }
+                Task::none()
+            }
+            Message::SelectCommit { panel_idx, commit_idx } => {
+                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
+                    if panel.selected_commit == Some(commit_idx) {
+                        panel.selected_commit = None;
+                    } else {
+                        panel.selected_commit = Some(commit_idx);
+                    }
                 }
                 Task::none()
             }
@@ -667,11 +689,13 @@ impl SovereignApp {
         }
         if let Some(doc) = self.doc_map.get(doc_id) {
             let content = ContentFields::parse(&doc.content);
+            let commits = self.commits_map.get(doc_id).cloned().unwrap_or_default();
             let panel = FloatingPanel::new(
                 doc_id.to_string(),
                 doc.title.clone(),
                 content.body,
                 content.images,
+                commits,
             );
             self.doc_panels.push(panel);
             self.taskbar.add_document(doc_id, &doc.title, doc.is_owned);
