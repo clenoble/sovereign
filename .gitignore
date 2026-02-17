@@ -37,6 +37,9 @@ data/
 # Logs
 *.log
 
+# Test databases (RocksDB artifacts)
+*.db/
+
 # Model files
 models/
 *.gguf
