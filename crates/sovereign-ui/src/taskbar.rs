@@ -166,6 +166,14 @@ impl TaskbarState {
                 .padding(Padding::from([4, 12])),
         );
 
+        // Models button
+        items_row = items_row.push(
+            button(text("Models").size(13))
+                .on_press(Message::ModelPanelToggled)
+                .style(theme::taskbar_button_style)
+                .padding(Padding::from([4, 12])),
+        );
+
         // Chat button
         items_row = items_row.push(
             button(text("Chat").size(13))

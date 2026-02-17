@@ -596,6 +596,9 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             Some(registry),
             Some(feedback_tx),
             first_launch,
+            config.ai.model_dir.clone(),
+            config.ai.router_model.clone(),
+            config.ai.reasoning_model.clone(),
         );
         Ok::<_, anyhow::Error>((app, _boot_task))
     })?;

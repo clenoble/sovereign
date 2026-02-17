@@ -22,6 +22,7 @@ use crate::onboarding::OnboardingState;
 use crate::orchestrator_bubble::{build_skill_doc, format_structured_data, BubbleState};
 use crate::panels::contact_panel::ContactPanel;
 use crate::panels::document_panel::{FloatingPanel, DEAD_ZONE, DRAG_BAR_HEIGHT};
+use crate::panels::model_panel::{ModelPanel, ModelRole};
 use crate::search::SearchState;
 use crate::taskbar::TaskbarState;
 use crate::theme;
@@ -85,6 +86,11 @@ pub enum Message {
     SaveDialogResult { data: Vec<u8>, path: Option<std::path::PathBuf> },
     // Keyboard
     KeyEvent(keyboard::Event),
+    // Model management
+    ModelPanelToggled,
+    ModelRefresh,
+    ModelAssignRole { model_idx: usize, role: ModelRole },
+    ModelDelete(usize),
     // Theme
     ThemeToggled,
     // Onboarding
@@ -120,6 +126,8 @@ pub struct SovereignApp {
     orch_rx: Option<mpsc::Receiver<OrchestratorEvent>>,
     voice_rx: Option<mpsc::Receiver<VoiceEvent>>,
     skill_rx: Option<mpsc::Receiver<SkillEvent>>,
+    // Panels
+    model_panel: ModelPanel,
     // Onboarding
     onboarding: Option<OnboardingState>,
     // Callbacks
@@ -154,6 +162,9 @@ impl SovereignApp {
         skill_registry: Option<SkillRegistry>,
         feedback_tx: Option<mpsc::Sender<FeedbackEvent>>,
         first_launch: bool,
+        model_dir: String,
+        router_model: String,
+        reasoning_model: String,
     ) -> (Self, Task<Message>) {
         let doc_map: HashMap<String, Document> = documents
             .iter()
@@ -210,6 +221,7 @@ impl SovereignApp {
             chat_callback,
             save_callback,
             close_callback,
+            model_panel: ModelPanel::new(model_dir, router_model, reasoning_model),
             decision_tx,
             onboarding: if first_launch {
                 Some(OnboardingState::new())
@@ -569,6 +581,24 @@ impl SovereignApp {
                 Task::none()
             }
 
+            // ── Model management ──────────────────────────────────────────
+            Message::ModelPanelToggled => {
+                self.model_panel.visible = !self.model_panel.visible;
+                Task::none()
+            }
+            Message::ModelRefresh => {
+                self.model_panel.refresh();
+                Task::none()
+            }
+            Message::ModelAssignRole { model_idx, role } => {
+                self.model_panel.assign_role(model_idx, role);
+                Task::none()
+            }
+            Message::ModelDelete(idx) => {
+                self.model_panel.delete_model(idx);
+                Task::none()
+            }
+
             Message::ThemeToggled => {
                 theme::toggle_theme();
                 Task::none()
@@ -656,6 +686,19 @@ impl SovereignApp {
                         .left(80.0),
                 );
             layers.push(chat_positioned.into());
+        }
+
+        // Model management panel (right side)
+        if self.model_panel.visible {
+            let model_positioned = container(self.model_panel.view())
+                .width(Length::Fill)
+                .padding(
+                    iced::Padding::ZERO
+                        .top(20.0)
+                        .right(20.0),
+                )
+                .align_right(Length::Fill);
+            layers.push(model_positioned.into());
         }
 
         // Search overlay (conditional)
