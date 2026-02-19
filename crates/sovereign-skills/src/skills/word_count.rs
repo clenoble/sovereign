@@ -61,7 +61,7 @@ mod tests {
             title: "Test".into(),
             content: ContentFields {
                 body: body.into(),
-                images: vec![],
+                ..Default::default()
             },
         }
     }

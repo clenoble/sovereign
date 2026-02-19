@@ -79,7 +79,7 @@ impl CoreSkill for FileImportSkill {
 
                 let cf = ContentFields {
                     body: text,
-                    images: vec![],
+                    ..Default::default()
                 };
 
                 let mut doc = Document::new(title.clone(), String::new(), true);

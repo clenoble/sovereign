@@ -213,6 +213,7 @@ pub fn build_skill_doc(
         content: ContentFields {
             body: body.to_string(),
             images: images.to_vec(),
+            ..Default::default()
         },
     }
 }

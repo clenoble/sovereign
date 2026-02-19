@@ -50,6 +50,7 @@ impl CoreSkill for FindReplaceSkill {
                 Ok(SkillOutput::ContentUpdate(ContentFields {
                     body: new_body,
                     images: doc.content.images.clone(),
+                    videos: doc.content.videos.clone(),
                 }))
             }
             _ => anyhow::bail!("Unknown action: {action}"),
@@ -71,7 +72,7 @@ mod tests {
             title: "Test".into(),
             content: ContentFields {
                 body: body.into(),
-                images: vec![],
+                ..Default::default()
             },
         }
     }

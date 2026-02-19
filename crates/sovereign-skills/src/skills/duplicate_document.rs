@@ -95,7 +95,7 @@ mod tests {
         let db = setup_db().await;
 
         let mut orig = Document::new("Original".into(), "thread:t".into(), true);
-        let cf = ContentFields { body: "some body text".into(), images: vec![] };
+        let cf = ContentFields { body: "some body text".into(), ..Default::default() };
         orig.content = cf.serialize();
         let created = db.create_document(orig).await.unwrap();
         let orig_id = created.id_string().unwrap();
@@ -141,7 +141,7 @@ mod tests {
     async fn duplicate_preserves_content() {
         let db = setup_db().await;
         let mut orig = Document::new("WithContent".into(), "thread:t".into(), true);
-        let cf = ContentFields { body: "important data".into(), images: vec![] };
+        let cf = ContentFields { body: "important data".into(), ..Default::default() };
         orig.content = cf.serialize();
         let created = db.create_document(orig).await.unwrap();
         let orig_id = created.id_string().unwrap();

@@ -84,7 +84,7 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
         );
         let content = ContentFields {
             body: body.to_string(),
-            images: vec![],
+            ..Default::default()
         };
         doc.content = content.serialize();
         doc.created_at = timestamps[ts_idx % timestamps.len()];
@@ -104,7 +104,7 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
         );
         let content = ContentFields {
             body: body.to_string(),
-            images: vec![],
+            ..Default::default()
         };
         doc.content = content.serialize();
         doc.created_at = timestamps[ts_idx % timestamps.len()];

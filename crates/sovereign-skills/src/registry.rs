@@ -117,8 +117,8 @@ mod tests {
         registry.scan_directory(&skills_dir).unwrap();
         assert_eq!(
             registry.manifests().len(),
-            9,
-            "Expected 9 skill manifests in {:?}, found {}",
+            10,
+            "Expected 10 skill manifests in {:?}, found {}",
             skills_dir,
             registry.manifests().len()
         );
@@ -161,6 +161,8 @@ mod tests {
         use crate::skills::pdf_export::PdfExportSkill;
         use crate::skills::word_count::WordCountSkill;
         use crate::skills::find_replace::FindReplaceSkill;
+        use crate::skills::markdown_editor::MarkdownEditorSkill;
+        use crate::skills::video::VideoSkill;
 
         let mut registry = SkillRegistry::new();
         registry.register(Box::new(TextEditorSkill));
@@ -168,13 +170,17 @@ mod tests {
         registry.register(Box::new(PdfExportSkill));
         registry.register(Box::new(WordCountSkill));
         registry.register(Box::new(FindReplaceSkill));
+        registry.register(Box::new(MarkdownEditorSkill));
+        registry.register(Box::new(VideoSkill));
         // DB-dependent skills would need Arc<SurrealGraphDB>, tested in async tests below
 
-        assert_eq!(registry.all_skills().len(), 5);
+        assert_eq!(registry.all_skills().len(), 7);
         assert!(registry.find_skill("text-editor").is_some());
         assert!(registry.find_skill("image").is_some());
         assert!(registry.find_skill("pdf-export").is_some());
         assert!(registry.find_skill("word-count").is_some());
         assert!(registry.find_skill("find-replace").is_some());
+        assert!(registry.find_skill("markdown-editor").is_some());
+        assert!(registry.find_skill("video").is_some());
     }
 }

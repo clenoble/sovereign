@@ -27,6 +27,7 @@ impl CoreSkill for TextEditorSkill {
                 let updated = ContentFields {
                     body: params.to_string(),
                     images: doc.content.images.clone(),
+                    videos: doc.content.videos.clone(),
                 };
                 Ok(SkillOutput::ContentUpdate(updated))
             }
@@ -49,7 +50,7 @@ mod tests {
             title: "Test Doc".into(),
             content: ContentFields {
                 body: "original body".into(),
-                images: vec![],
+                ..Default::default()
             },
         }
     }

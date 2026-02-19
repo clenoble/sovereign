@@ -104,7 +104,7 @@ mod tests {
     async fn search_finds_matching_title() {
         let db = setup_db().await;
         let mut doc = Document::new("Rust Programming".into(), "thread:t".into(), true);
-        let cf = ContentFields { body: "learning rust".into(), images: vec![] };
+        let cf = ContentFields { body: "learning rust".into(), ..Default::default() };
         doc.content = cf.serialize();
         db.create_document(doc).await.unwrap();
 
@@ -147,7 +147,7 @@ mod tests {
     async fn search_finds_by_content() {
         let db = setup_db().await;
         let mut doc = Document::new("My Notes".into(), "thread:t".into(), true);
-        let cf = ContentFields { body: "important meeting notes about budget".into(), images: vec![] };
+        let cf = ContentFields { body: "important meeting notes about budget".into(), ..Default::default() };
         doc.content = cf.serialize();
         db.create_document(doc).await.unwrap();
 

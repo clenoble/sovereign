@@ -109,6 +109,7 @@ mod tests {
                     path: "/tmp/test.png".into(),
                     caption: "A test image".into(),
                 }],
+                ..Default::default()
             },
         }
     }

@@ -69,6 +69,7 @@ mod tests {
                     path: "/existing.png".into(),
                     caption: "existing".into(),
                 }],
+                ..Default::default()
             },
         }
     }

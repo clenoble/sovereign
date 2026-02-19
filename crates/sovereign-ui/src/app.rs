@@ -21,7 +21,7 @@ use crate::chat::ChatState;
 use crate::onboarding::OnboardingState;
 use crate::orchestrator_bubble::{build_skill_doc, format_structured_data, BubbleState};
 use crate::panels::contact_panel::ContactPanel;
-use crate::panels::document_panel::{FloatingPanel, DEAD_ZONE, DRAG_BAR_HEIGHT};
+use crate::panels::document_panel::{FloatingPanel, FormatKind, DEAD_ZONE, DRAG_BAR_HEIGHT};
 use crate::panels::model_panel::{ModelPanel, ModelRole};
 use crate::search::SearchState;
 use crate::taskbar::TaskbarState;
@@ -86,6 +86,12 @@ pub enum Message {
     SaveDialogResult { data: Vec<u8>, path: Option<std::path::PathBuf> },
     // Keyboard
     KeyEvent(keyboard::Event),
+    // Markdown formatting
+    TogglePreview(usize),
+    FormatAction { panel_idx: usize, kind: FormatKind },
+    MarkdownLinkClicked(String),
+    // Video
+    VideoPlay { panel_idx: usize, video_idx: usize },
     // Model management
     ModelPanelToggled,
     ModelRefresh,
@@ -330,7 +336,8 @@ impl SovereignApp {
                     let title = panel.title.clone();
                     let body = panel.get_body_text();
                     let images = panel.images.clone();
-                    let cf = ContentFields { body, images };
+                    let videos = panel.videos.clone();
+                    let cf = ContentFields { body, images, videos };
                     if let Some(ref cb) = self.save_callback {
                         cb(doc_id.clone(), title, cf.serialize());
                     }
@@ -576,6 +583,41 @@ impl SovereignApp {
                             self.chat.visible = false;
                         }
                         _ => {}
+                    }
+                }
+                Task::none()
+            }
+
+            // ── Markdown formatting ─────────────────────────────────────────
+            Message::TogglePreview(idx) => {
+                if let Some(panel) = self.doc_panels.get_mut(idx) {
+                    panel.preview_mode = !panel.preview_mode;
+                    if panel.preview_mode {
+                        panel.refresh_preview();
+                    }
+                }
+                Task::none()
+            }
+            Message::FormatAction { panel_idx, kind } => {
+                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
+                    panel.apply_format(kind);
+                }
+                Task::none()
+            }
+            Message::MarkdownLinkClicked(url) => {
+                if let Err(e) = open::that(&url) {
+                    tracing::warn!("Failed to open URL {url}: {e}");
+                }
+                Task::none()
+            }
+
+            // ── Video ─────────────────────────────────────────────────────────
+            Message::VideoPlay { panel_idx, video_idx } => {
+                if let Some(panel) = self.doc_panels.get(panel_idx) {
+                    if let Some(video) = panel.videos.get(video_idx) {
+                        if let Err(e) = open::that(&video.path) {
+                            tracing::error!("Failed to open video {}: {e}", video.path);
+                        }
                     }
                 }
                 Task::none()
@@ -921,6 +963,7 @@ impl SovereignApp {
                 doc.title.clone(),
                 content.body,
                 content.images,
+                content.videos,
                 commits,
             );
             self.doc_panels.push(panel);

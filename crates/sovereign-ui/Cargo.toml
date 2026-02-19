@@ -12,4 +12,5 @@ sovereign-skills = { workspace = true }
 serde_json = { workspace = true }
 iced = { workspace = true }
 rfd = { workspace = true }
+open = { workspace = true }
 tracing = { workspace = true }

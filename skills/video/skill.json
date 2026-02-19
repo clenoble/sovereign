@@ -1,0 +1,9 @@
+{
+  "name": "Video",
+  "version": "0.1.0",
+  "description": "Manage video references in documents with external playback",
+  "author": "Sovereign OS",
+  "skill_type": "core",
+  "capabilities": ["add", "remove", "play"],
+  "file_types": ["mp4", "mkv", "avi", "webm", "mov"]
+}

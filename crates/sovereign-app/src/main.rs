@@ -231,6 +231,12 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 db_arc_for_skills.clone(),
             ),
         ));
+        registry.register(Box::new(
+            sovereign_skills::skills::markdown_editor::MarkdownEditorSkill,
+        ));
+        registry.register(Box::new(
+            sovereign_skills::skills::video::VideoSkill,
+        ));
         tracing::info!("Registered {} core skills", registry.all_skills().len());
 
         // Create event channels

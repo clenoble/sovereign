@@ -103,7 +103,7 @@ mod tests {
             title: "Test".into(),
             content: ContentFields {
                 body: "hello".into(),
-                images: vec![],
+                ..Default::default()
             },
         };
         let result = skill.execute("save", &doc, "").unwrap();
