@@ -19,6 +19,8 @@ pub struct TaskbarItem {
 pub struct TaskbarContactItem {
     pub contact_id: String,
     pub name: String,
+    /// Pre-computed display label (e.g. "A Alice") to avoid per-frame allocation.
+    pub display_label: String,
 }
 
 /// State for the taskbar.
@@ -57,9 +59,12 @@ impl TaskbarState {
     pub fn set_pinned_contacts(&mut self, contacts: Vec<(String, String)>) {
         for (id, name) in contacts {
             self.pinned_contact_ids.insert(id.clone());
+            let initial = name.chars().next().unwrap_or('?');
+            let display_label = format!("{initial} {name}");
             self.contacts.push(TaskbarContactItem {
                 contact_id: id,
                 name,
+                display_label,
             });
         }
     }
@@ -138,9 +143,8 @@ impl TaskbarState {
                 text("|").size(13).color(theme::border_dim()),
             );
             for contact in &self.contacts {
-                let initial = contact.name.chars().next().unwrap_or('?');
                 let cid = contact.contact_id.clone();
-                let label = text(format!("{} {}", initial, contact.name))
+                let label = text(contact.display_label.as_str())
                     .size(13)
                     .color(theme::approve_green());
                 let btn = button(label)

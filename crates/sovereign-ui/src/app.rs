@@ -22,7 +22,7 @@ use crate::onboarding::OnboardingState;
 use crate::orchestrator_bubble::{build_skill_doc, format_structured_data, BubbleState};
 use crate::panels::contact_panel::ContactPanel;
 use crate::panels::document_panel::{FloatingPanel, FormatKind, DEAD_ZONE, DRAG_BAR_HEIGHT};
-use crate::panels::model_panel::{ModelPanel, ModelRole};
+use crate::panels::model_panel::{ModelEntry, ModelPanel, ModelRole};
 use crate::search::SearchState;
 use crate::taskbar::TaskbarState;
 use crate::theme;
@@ -95,8 +95,10 @@ pub enum Message {
     // Model management
     ModelPanelToggled,
     ModelRefresh,
+    ModelScanComplete(Vec<ModelEntry>),
     ModelAssignRole { model_idx: usize, role: ModelRole },
     ModelDelete(usize),
+    ModelDeleteComplete,
     // Theme
     ThemeToggled,
     // Onboarding
@@ -141,8 +143,8 @@ pub struct SovereignApp {
     chat_callback: Option<Box<dyn Fn(String) + Send>>,
     save_callback: Option<Box<dyn Fn(String, String, String) + Send>>,
     close_callback: Option<Box<dyn Fn(String) + Send>>,
-    decision_tx: Option<mpsc::Sender<ActionDecision>>,
-    feedback_tx: Option<mpsc::Sender<FeedbackEvent>>,
+    decision_tx: Option<tokio::sync::mpsc::Sender<ActionDecision>>,
+    feedback_tx: Option<tokio::sync::mpsc::Sender<FeedbackEvent>>,
     skill_registry: SkillRegistry,
 }
 
@@ -164,9 +166,9 @@ impl SovereignApp {
         skill_rx: Option<mpsc::Receiver<SkillEvent>>,
         save_callback: Option<Box<dyn Fn(String, String, String) + Send + 'static>>,
         close_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
-        decision_tx: Option<mpsc::Sender<ActionDecision>>,
+        decision_tx: Option<tokio::sync::mpsc::Sender<ActionDecision>>,
         skill_registry: Option<SkillRegistry>,
-        feedback_tx: Option<mpsc::Sender<FeedbackEvent>>,
+        feedback_tx: Option<tokio::sync::mpsc::Sender<FeedbackEvent>>,
         first_launch: bool,
         model_dir: String,
         router_model: String,
@@ -285,7 +287,7 @@ impl SovereignApp {
             }
             Message::ApproveAction => {
                 if let Some(ref tx) = self.decision_tx {
-                    if tx.send(ActionDecision::Approve).is_err() {
+                    if tx.try_send(ActionDecision::Approve).is_err() {
                         tracing::warn!("Decision channel closed — approval not delivered");
                     }
                 }
@@ -294,7 +296,7 @@ impl SovereignApp {
             }
             Message::RejectAction => {
                 if let Some(ref tx) = self.decision_tx {
-                    if tx.send(ActionDecision::Reject("User rejected".into())).is_err() {
+                    if tx.try_send(ActionDecision::Reject("User rejected".into())).is_err() {
                         tracing::warn!("Decision channel closed — rejection not delivered");
                     }
                 }
@@ -304,7 +306,7 @@ impl SovereignApp {
             Message::DismissSuggestion => {
                 if let Some(ref tx) = self.feedback_tx {
                     if let Some((_, ref action)) = self.bubble.suggestion {
-                        if tx.send(FeedbackEvent::SuggestionDismissed {
+                        if tx.try_send(FeedbackEvent::SuggestionDismissed {
                             action: action.clone(),
                         }).is_err() {
                             tracing::warn!("Feedback channel closed — dismissal not delivered");
@@ -338,12 +340,13 @@ impl SovereignApp {
                     let images = panel.images.clone();
                     let videos = panel.videos.clone();
                     let cf = ContentFields { body, images, videos };
+                    let serialized = cf.serialize();
                     if let Some(ref cb) = self.save_callback {
-                        cb(doc_id.clone(), title, cf.serialize());
+                        cb(doc_id.clone(), title, serialized.clone());
                     }
                     // Update local doc map
                     if let Some(doc) = self.doc_map.get_mut(&doc_id) {
-                        doc.content = cf.serialize();
+                        doc.content = serialized;
                     }
                 }
                 Task::none()
@@ -553,13 +556,19 @@ impl SovereignApp {
             }
             Message::SaveDialogResult { data, path } => {
                 if let Some(path) = path {
-                    if let Err(e) = std::fs::write(&path, &data) {
-                        tracing::error!("Failed to write file: {e}");
-                    } else {
-                        tracing::info!("Exported to {}", path.display());
-                    }
+                    Task::perform(
+                        async move {
+                            if let Err(e) = std::fs::write(&path, &data) {
+                                tracing::error!("Failed to write file: {e}");
+                            } else {
+                                tracing::info!("Exported to {}", path.display());
+                            }
+                        },
+                        |_| Message::Ignore,
+                    )
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
 
             // ── Keyboard ─────────────────────────────────────────────────
@@ -626,10 +635,24 @@ impl SovereignApp {
             // ── Model management ──────────────────────────────────────────
             Message::ModelPanelToggled => {
                 self.model_panel.visible = !self.model_panel.visible;
+                if self.model_panel.visible && self.model_panel.models.is_empty() {
+                    let dir = self.model_panel.model_dir.clone();
+                    return Task::perform(
+                        async move { ModelPanel::scan_models(dir) },
+                        Message::ModelScanComplete,
+                    );
+                }
                 Task::none()
             }
             Message::ModelRefresh => {
-                self.model_panel.refresh();
+                let dir = self.model_panel.model_dir.clone();
+                Task::perform(
+                    async move { ModelPanel::scan_models(dir) },
+                    Message::ModelScanComplete,
+                )
+            }
+            Message::ModelScanComplete(models) => {
+                self.model_panel.apply_scan(models);
                 Task::none()
             }
             Message::ModelAssignRole { model_idx, role } => {
@@ -637,7 +660,20 @@ impl SovereignApp {
                 Task::none()
             }
             Message::ModelDelete(idx) => {
-                self.model_panel.delete_model(idx);
+                if let Some(entry) = self.model_panel.models.get(idx) {
+                    let dir = self.model_panel.model_dir.clone();
+                    let filename = entry.filename.clone();
+                    return Task::perform(
+                        async move {
+                            ModelPanel::delete_model_file(dir.clone(), filename);
+                            ModelPanel::scan_models(dir)
+                        },
+                        Message::ModelScanComplete,
+                    );
+                }
+                Task::none()
+            }
+            Message::ModelDeleteComplete => {
                 Task::none()
             }
 
@@ -877,9 +913,7 @@ impl SovereignApp {
                 self.search.results = doc_ids.clone();
                 let mut st = self.canvas_state.lock().unwrap();
                 for id in doc_ids {
-                    if !st.highlighted.contains(id) {
-                        st.highlighted.push(id.clone());
-                    }
+                    st.highlighted.insert(id.clone());
                 }
                 st.mark_dirty();
             }

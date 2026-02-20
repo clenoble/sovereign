@@ -165,33 +165,21 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         // Load documents and threads from DB for the canvas
         let db = create_db(config).await?;
         seed::seed_if_empty(&db).await?;
-        let threads = db.list_threads().await?;
-        let documents = db.list_documents(None).await?;
-        let relationships = db.list_all_relationships().await?;
 
-        // Pre-load commits for all documents (for version history in panels)
-        let mut commits_map = std::collections::HashMap::new();
-        for doc in &documents {
-            if let Some(doc_id) = doc.id_string() {
-                if let Ok(commits) = db.list_document_commits(&doc_id).await {
-                    if !commits.is_empty() {
-                        commits_map.insert(doc_id, commits);
-                    }
-                }
-            }
-        }
+        // Parallelize the 5 independent DB queries.
+        let (threads, documents, relationships, contacts, conversations) = tokio::try_join!(
+            db.list_threads(),
+            db.list_documents(None),
+            db.list_all_relationships(),
+            db.list_contacts(),
+            db.list_conversations(None),
+        )?;
 
-        // Load contacts, conversations, and messages for communication panels
-        let contacts = db.list_contacts().await?;
-        let conversations = db.list_conversations(None).await?;
-        let mut all_messages = Vec::new();
-        for conv in &conversations {
-            if let Some(conv_id) = conv.id_string() {
-                if let Ok(msgs) = db.list_messages(&conv_id, None, 50).await {
-                    all_messages.extend(msgs);
-                }
-            }
-        }
+        // Lazy-load commits: pass empty map, load on demand when user opens version history.
+        let commits_map = std::collections::HashMap::new();
+
+        // Lazy-load messages: pass empty vec, load on demand when user opens a contact panel.
+        let all_messages = Vec::new();
 
         tracing::info!(
             "Loaded {} documents, {} threads, {} relationships, {} contacts, {} conversations, {} messages",
@@ -241,8 +229,8 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
 
         // Create event channels
         let (orch_tx, orch_rx) = mpsc::channel::<OrchestratorEvent>();
-        let (decision_tx, decision_rx) = mpsc::channel::<ActionDecision>();
-        let (feedback_tx, feedback_rx) = mpsc::channel::<FeedbackEvent>();
+        let (decision_tx, decision_rx) = tokio::sync::mpsc::channel::<ActionDecision>(32);
+        let (feedback_tx, feedback_rx) = tokio::sync::mpsc::channel::<FeedbackEvent>(32);
 
         // Try to initialize AI orchestrator
         let db_arc = db_arc_for_skills;

@@ -71,9 +71,12 @@ impl AutoCommitEngine {
     }
 
     /// Force-commit a specific document (e.g., on close or context switch).
+    /// Also removes the document from tracking maps to prevent unbounded growth.
     pub async fn commit_on_close(&mut self, doc_id: &str) {
         let count = self.edit_counts.get(doc_id).copied().unwrap_or(0);
         if count == 0 {
+            self.edit_counts.remove(doc_id);
+            self.last_commit_times.remove(doc_id);
             return;
         }
 
@@ -86,13 +89,14 @@ impl AutoCommitEngine {
                     msg,
                     commit.id_string().unwrap_or_default()
                 );
-                self.edit_counts.insert(doc_id.to_string(), 0);
-                self.last_commit_times.insert(doc_id.to_string(), Instant::now());
             }
             Err(e) => {
                 tracing::error!("Commit on close failed for {}: {e}", doc_id);
             }
         }
+        // Remove stale entries — document is closed, no need to track it
+        self.edit_counts.remove(doc_id);
+        self.last_commit_times.remove(doc_id);
     }
 }
 

@@ -46,6 +46,15 @@ impl Camera {
         (sx / self.zoom + self.pan_x, sy / self.zoom + self.pan_y)
     }
 
+    /// World-space bounding box visible in the viewport: (left, top, right, bottom).
+    pub fn visible_rect(&self, vp_w: f64, vp_h: f64) -> (f64, f64, f64, f64) {
+        let left = self.pan_x;
+        let top = self.pan_y;
+        let right = self.pan_x + vp_w / self.zoom;
+        let bottom = self.pan_y + vp_h / self.zoom;
+        (left, top, right, bottom)
+    }
+
     pub fn zoom_at(&mut self, screen_x: f64, screen_y: f64, factor: f64) {
         let old = self.zoom;
         self.zoom = (self.zoom * factor).clamp(0.02, 20.0);

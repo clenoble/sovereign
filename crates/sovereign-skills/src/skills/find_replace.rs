@@ -37,8 +37,9 @@ impl CoreSkill for FindReplaceSkill {
                     anyhow::bail!("Find string cannot be empty");
                 }
 
-                let count = doc.content.body.matches(&p.find).count();
-                if count == 0 {
+                // Single-pass replace; compare to original to detect no-match
+                let new_body = doc.content.body.replace(&p.find, &p.replace);
+                if new_body == doc.content.body {
                     let json = serde_json::json!({ "replacements": 0 });
                     return Ok(SkillOutput::StructuredData {
                         kind: "find_replace".into(),
@@ -46,7 +47,6 @@ impl CoreSkill for FindReplaceSkill {
                     });
                 }
 
-                let new_body = doc.content.body.replace(&p.find, &p.replace);
                 Ok(SkillOutput::ContentUpdate(ContentFields {
                     body: new_body,
                     images: doc.content.images.clone(),

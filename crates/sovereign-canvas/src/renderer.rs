@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -69,7 +70,7 @@ struct Uniforms {
 /// The data produced each frame by Skia CPU rendering.
 #[derive(Debug)]
 pub struct CanvasPrimitive {
-    pub pixels: Vec<u8>,
+    pub pixels: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
 }
@@ -489,12 +490,15 @@ where
         {
             if let Some(ref pixels) = state.cached_pixels {
                 return CanvasPrimitive {
-                    pixels: pixels.clone(),
+                    pixels: Arc::clone(pixels),
                     width: w,
                     height: h,
                 };
             }
         }
+
+        // Sweep completed adoption animations to avoid accumulating stale entries.
+        state.adoption_animations.retain(|_, a| !a.is_done());
 
         // Full Skia render.
         let info = skia_safe::ImageInfo::new(
@@ -514,7 +518,8 @@ where
         }
 
         // Store in cache.
-        state.cached_pixels = Some(pixels.clone());
+        let pixels = Arc::new(pixels);
+        state.cached_pixels = Some(Arc::clone(&pixels));
         state.cached_size = (w, h);
         state.cached_gen = state.render_gen;
 
@@ -586,7 +591,19 @@ pub fn render(canvas: &Canvas, state: &CanvasState, w: f32, h: f32) {
     if lod != ZoomLevel::Dots {
         draw_lane_headers(canvas, state);
     }
+    // Viewport culling: compute visible world rect once, skip off-screen cards.
+    let (vis_left, vis_top, vis_right, vis_bottom) =
+        state.camera.visible_rect(w as f64, h as f64);
+
     for (i, card) in state.layout.cards.iter().enumerate() {
+        // AABB rejection: skip cards entirely outside the viewport.
+        if (card.x + card.w) < vis_left as f32
+            || card.x > vis_right as f32
+            || (card.y + card.h) < vis_top as f32
+            || card.y > vis_bottom as f32
+        {
+            continue;
+        }
         if !state.filter.matches(card) {
             continue;
         }
@@ -714,16 +731,40 @@ fn draw_document_edges(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
         return;
     }
 
+    // Pre-create stroke & fill paints per relation color (avoid per-edge allocation).
+    let dash_effect = skia_safe::PathEffect::dash(&[6.0, 4.0], 0.0);
+    let edge_colors = [
+        (RelationType::References, EDGE_REFERENCES),
+        (RelationType::DerivedFrom, EDGE_DERIVED),
+        (RelationType::Continues, EDGE_CONTINUES),
+        (RelationType::Contradicts, EDGE_CONTRADICTS),
+        (RelationType::Supports, EDGE_SUPPORTS),
+        (RelationType::ContactOf, EDGE_CONTACT_OF),
+        (RelationType::AttachedTo, EDGE_ATTACHED),
+    ];
+
+    // Build reusable arrow-fill paints per color.
+    let arrow_paints: Vec<_> = edge_colors
+        .iter()
+        .map(|(_, color)| {
+            let mut p = Paint::default();
+            p.set_anti_alias(true);
+            p.set_color4f(*color, None);
+            p.set_style(PaintStyle::Fill);
+            p
+        })
+        .collect();
+
     for edge in &state.layout.document_edges {
-        let color = match edge.relation_type {
-            RelationType::References => EDGE_REFERENCES,
-            RelationType::DerivedFrom => EDGE_DERIVED,
-            RelationType::Continues => EDGE_CONTINUES,
-            RelationType::Contradicts => EDGE_CONTRADICTS,
-            RelationType::Supports => EDGE_SUPPORTS,
-            RelationType::ContactOf => EDGE_CONTACT_OF,
-            RelationType::AttachedTo => EDGE_ATTACHED,
-            RelationType::BranchesFrom => continue, // handled by draw_branch_edges
+        let (color_idx, color) = match edge.relation_type {
+            RelationType::References => (0, EDGE_REFERENCES),
+            RelationType::DerivedFrom => (1, EDGE_DERIVED),
+            RelationType::Continues => (2, EDGE_CONTINUES),
+            RelationType::Contradicts => (3, EDGE_CONTRADICTS),
+            RelationType::Supports => (4, EDGE_SUPPORTS),
+            RelationType::ContactOf => (5, EDGE_CONTACT_OF),
+            RelationType::AttachedTo => (6, EDGE_ATTACHED),
+            RelationType::BranchesFrom => continue,
         };
 
         let mut paint = Paint::default();
@@ -732,20 +773,15 @@ fn draw_document_edges(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
         paint.set_style(PaintStyle::Stroke);
         paint.set_stroke_width(1.5 * edge.strength.clamp(0.3, 1.0));
 
-        // Dashed for weaker relationships
         if edge.strength < 0.5 {
-            paint.set_path_effect(skia_safe::PathEffect::dash(&[6.0, 4.0], 0.0));
+            paint.set_path_effect(dash_effect.clone());
         }
 
-        // Draw a quadratic curve between card centers, with vertical offset to
-        // avoid overlapping the cards themselves
         let dx = edge.to_x - edge.from_x;
         let dy = edge.to_y - edge.from_y;
         let dist = (dx * dx + dy * dy).sqrt();
 
-        // Control point offset perpendicular to the line, proportional to distance
         let bulge = (dist * 0.2).clamp(15.0, 60.0);
-        // Perpendicular direction (normalized)
         let (nx, ny) = if dist > 0.1 { (-dy / dist, dx / dist) } else { (0.0, -1.0) };
         let cx = (edge.from_x + edge.to_x) / 2.0 + nx * bulge;
         let cy = (edge.from_y + edge.to_y) / 2.0 + ny * bulge;
@@ -756,25 +792,18 @@ fn draw_document_edges(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
         let path = builder.snapshot();
         canvas.draw_path(&path, &paint);
 
-        // Draw arrowhead at the target end
+        // Arrowhead
         let arrow_size = 8.0;
-        // Tangent direction at the endpoint (from control point to end)
         let tdx = edge.to_x - cx;
         let tdy = edge.to_y - cy;
         let tlen = (tdx * tdx + tdy * tdy).sqrt();
         if tlen > 0.1 {
             let ux = tdx / tlen;
             let uy = tdy / tlen;
-            // Two wing points of the arrowhead
             let ax = edge.to_x - ux * arrow_size + uy * arrow_size * 0.4;
             let ay = edge.to_y - uy * arrow_size - ux * arrow_size * 0.4;
             let bx = edge.to_x - ux * arrow_size - uy * arrow_size * 0.4;
             let by = edge.to_y - uy * arrow_size + ux * arrow_size * 0.4;
-
-            let mut arrow_paint = Paint::default();
-            arrow_paint.set_anti_alias(true);
-            arrow_paint.set_color4f(color, None);
-            arrow_paint.set_style(PaintStyle::Fill);
 
             let arrow_path = Path::polygon(
                 &[
@@ -786,7 +815,7 @@ fn draw_document_edges(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
                 None,
                 None,
             );
-            canvas.draw_path(&arrow_path, &arrow_paint);
+            canvas.draw_path(&arrow_path, &arrow_paints[color_idx]);
         }
     }
 }
@@ -834,13 +863,13 @@ fn draw_timeline_markers(canvas: &Canvas, state: &CanvasState, lod: ZoomLevel) {
 
         canvas.draw_line((marker.x, 0.0), (marker.x, total_height), &line_paint);
 
-        let label = match lod {
+        let label: Cow<'_, str> = match lod {
             ZoomLevel::Dots => {
-                marker.label.rsplit('/').next().unwrap_or(&marker.label).to_string()
+                Cow::Borrowed(marker.label.rsplit('/').next().unwrap_or(&marker.label))
             }
-            _ => marker.label.clone(),
+            _ => Cow::Borrowed(&marker.label),
         };
-        canvas.draw_str(&label, (marker.x + 4.0, label_y), &font, &text_paint);
+        canvas.draw_str(&*label, (marker.x + 4.0, label_y), &font, &text_paint);
     }
 }
 
@@ -943,11 +972,11 @@ fn draw_card_shape(canvas: &Canvas, card: &CardLayout, skew: f32, radius: f32, f
     }
 }
 
-fn truncate_title(title: &str, max_chars: usize) -> String {
+fn truncate_title(title: &str, max_chars: usize) -> Cow<'_, str> {
     if title.len() > max_chars {
-        format!("{}...", &title[..max_chars.saturating_sub(3)])
+        Cow::Owned(format!("{}...", &title[..max_chars.saturating_sub(3)]))
     } else {
-        title.to_string()
+        Cow::Borrowed(title)
     }
 }
 

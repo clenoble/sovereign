@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -51,17 +52,15 @@ impl WhatsAppChannel {
         )
     }
 
-    /// Get or create a conversation for a WhatsApp chat.
+    /// Get or create a conversation for a WhatsApp chat, using a local cache.
     async fn get_or_create_conversation(
         &self,
         title: &str,
         participant_ids: Vec<String>,
+        cache: &mut HashMap<String, Conversation>,
     ) -> Result<Conversation, CommsError> {
-        let conversations = self.db.list_conversations(Some(&ChannelType::WhatsApp)).await?;
-        for conv in &conversations {
-            if conv.title == title {
-                return Ok(conv.clone());
-            }
+        if let Some(conv) = cache.get(title) {
+            return Ok(conv.clone());
         }
 
         let conv = Conversation::new(
@@ -69,7 +68,9 @@ impl WhatsAppChannel {
             ChannelType::WhatsApp,
             participant_ids,
         );
-        self.db.create_conversation(conv).await.map_err(CommsError::from)
+        let created = self.db.create_conversation(conv).await.map_err(CommsError::from)?;
+        cache.insert(title.to_string(), created.clone());
+        Ok(created)
     }
 
     /// Resolve a phone number to a contact ID, creating a stub if needed.
@@ -368,12 +369,20 @@ pub async fn parse_webhook_payload(
 
     let mut messages = Vec::new();
 
+    // Pre-load conversation cache and own contact ID
+    let conversations = db.list_conversations(Some(&ChannelType::WhatsApp)).await?;
+    let mut conv_cache: HashMap<String, Conversation> = conversations
+        .into_iter()
+        .map(|c| (c.title.clone(), c))
+        .collect();
+    let my_id = channel.resolve_contact_id(own_phone_id, None).await?;
+
     for entry in &webhook.entry {
         for change in &entry.changes {
             let value = &change.value;
 
             // Build a name map from contacts
-            let mut name_map = std::collections::HashMap::new();
+            let mut name_map = HashMap::new();
             for contact in &value.contacts {
                 if let Some(ref profile) = contact.profile {
                     name_map.insert(contact.wa_id.clone(), profile.name.clone());
@@ -382,7 +391,7 @@ pub async fn parse_webhook_payload(
 
             for wa_msg in &value.messages {
                 if wa_msg.msg_type != "text" {
-                    continue; // Only handle text messages for now
+                    continue;
                 }
 
                 let body = wa_msg
@@ -395,16 +404,13 @@ pub async fn parse_webhook_payload(
                 let from_id = channel
                     .resolve_contact_id(&wa_msg.from, display_name.map(|s| s.as_str()))
                     .await?;
-                let my_id = channel
-                    .resolve_contact_id(own_phone_id, None)
-                    .await?;
 
                 let title = display_name
                     .map(|n| format!("WhatsApp: {n}"))
                     .unwrap_or_else(|| format!("WhatsApp: {}", wa_msg.from));
 
                 let conv = channel
-                    .get_or_create_conversation(&title, vec![from_id.clone(), my_id.clone()])
+                    .get_or_create_conversation(&title, vec![from_id.clone(), my_id.clone()], &mut conv_cache)
                     .await?;
                 let conv_id = conv.id_string().unwrap_or_default();
 
@@ -420,7 +426,7 @@ pub async fn parse_webhook_payload(
                     ChannelType::WhatsApp,
                     MessageDirection::Inbound,
                     from_id,
-                    vec![my_id],
+                    vec![my_id.clone()],
                     body,
                 );
                 msg.sent_at = sent_at;

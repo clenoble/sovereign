@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -33,17 +34,15 @@ impl SignalChannel {
         }
     }
 
-    /// Get or create a conversation for a Signal chat.
+    /// Get or create a conversation for a Signal chat, using a local cache.
     async fn get_or_create_conversation(
         &self,
         title: &str,
         participant_ids: Vec<String>,
+        cache: &mut HashMap<String, Conversation>,
     ) -> Result<Conversation, CommsError> {
-        let conversations = self.db.list_conversations(Some(&ChannelType::Signal)).await?;
-        for conv in &conversations {
-            if conv.title == title {
-                return Ok(conv.clone());
-            }
+        if let Some(conv) = cache.get(title) {
+            return Ok(conv.clone());
         }
 
         let conv = Conversation::new(
@@ -51,7 +50,9 @@ impl SignalChannel {
             ChannelType::Signal,
             participant_ids,
         );
-        self.db.create_conversation(conv).await.map_err(CommsError::from)
+        let created = self.db.create_conversation(conv).await.map_err(CommsError::from)?;
+        cache.insert(title.to_string(), created.clone());
+        Ok(created)
     }
 
     /// Resolve a phone number to a contact ID, creating a stub if needed.
@@ -176,24 +177,32 @@ impl CommunicationChannel for SignalChannel {
                 .await
                 .map_err(|e| CommsError::FetchFailed(format!("Receive: {e}")))?;
 
+            // Pre-load conversation cache and own contact ID
+            let conversations = self.db.list_conversations(Some(&ChannelType::Signal)).await?;
+            let mut conv_cache: HashMap<String, Conversation> = conversations
+                .into_iter()
+                .map(|c| (c.title.clone(), c))
+                .collect();
+            let my_id = self.resolve_contact_id(
+                &self.config.phone_number,
+                self.config.device_name.as_deref(),
+            ).await?;
+
             // Collect available messages (non-blocking drain)
             while let Ok(Some(content)) = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 receiving.next(),
             ).await {
                 if let Some(content) = content {
-                    // Extract sender info
                     let sender = content.metadata.sender.uuid.to_string();
                     let from_id = self.resolve_contact_id(&sender, None).await?;
-                    let my_id = self.resolve_contact_id(
-                        &self.config.phone_number,
-                        self.config.device_name.as_deref(),
-                    ).await?;
 
                     if let Some(body) = content.body.as_deref() {
+                        let title = format!("Signal: {sender}");
                         let conv = self.get_or_create_conversation(
-                            &format!("Signal: {sender}"),
+                            &title,
                             vec![from_id.clone(), my_id.clone()],
+                            &mut conv_cache,
                         ).await?;
                         let conv_id = conv.id_string().unwrap_or_default();
 
@@ -202,7 +211,7 @@ impl CommunicationChannel for SignalChannel {
                             ChannelType::Signal,
                             MessageDirection::Inbound,
                             from_id,
-                            vec![my_id],
+                            vec![my_id.clone()],
                             body.to_string(),
                         );
                         msg.received_at = Some(Utc::now());

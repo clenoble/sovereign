@@ -11,7 +11,7 @@ use base64::Engine;
 use sovereign_crypto::aead;
 use sovereign_crypto::kek::Kek;
 use sovereign_crypto::key_db::KeyDatabase;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 use crate::error::{DbError, DbResult};
 use crate::schema::{
@@ -23,14 +23,14 @@ use crate::traits::GraphDB;
 /// A GraphDB wrapper that encrypts/decrypts document content transparently.
 pub struct EncryptedGraphDB {
     inner: Arc<dyn GraphDB>,
-    key_db: Arc<Mutex<KeyDatabase>>,
+    key_db: Arc<RwLock<KeyDatabase>>,
     kek: Arc<Kek>,
 }
 
 impl EncryptedGraphDB {
     pub fn new(
         inner: Arc<dyn GraphDB>,
-        key_db: Arc<Mutex<KeyDatabase>>,
+        key_db: Arc<RwLock<KeyDatabase>>,
         kek: Arc<Kek>,
     ) -> Self {
         Self { inner, key_db, kek }
@@ -38,7 +38,7 @@ impl EncryptedGraphDB {
 
     /// Encrypt document content, returning the encrypted content string and nonce.
     async fn encrypt_content(&self, doc_id: &str, plaintext: &str) -> DbResult<(String, String)> {
-        let mut key_db = self.key_db.lock().await;
+        let mut key_db = self.key_db.write().await;
         let doc_key = if key_db.contains(doc_id) {
             key_db.unwrap_current(doc_id, &self.kek)
                 .map_err(|e| DbError::Query(format!("key unwrap failed: {e}")))?
@@ -75,7 +75,7 @@ impl EncryptedGraphDB {
         let mut nonce = [0u8; 24];
         nonce.copy_from_slice(&nonce_bytes);
 
-        let key_db = self.key_db.lock().await;
+        let key_db = self.key_db.read().await;
         let doc_key = key_db.unwrap_current(doc_id, &self.kek)
             .map_err(|e| DbError::Query(format!("key unwrap failed: {e}")))?;
 
@@ -396,17 +396,8 @@ impl GraphDB for EncryptedGraphDB {
     // -- Messages: encrypt body and body_html ---
 
     async fn create_message(&self, message: Message) -> DbResult<Message> {
-        // Create first, then encrypt body
-        let created = self.inner.create_message(message).await?;
-        if !created.body.is_empty() {
-            let msg_id = created.id.as_ref()
-                .map(|t| crate::schema::thing_to_raw(t))
-                .unwrap_or_default();
-            let (_, _nonce) = self.encrypt_content(&msg_id, &created.body).await?;
-            // Note: message body encryption would need a dedicated update method
-            // For now, pass through — full implementation deferred to email channel
-        }
-        Ok(created)
+        // Pass through — message body encryption deferred to when an update_message method exists.
+        self.inner.create_message(message).await
     }
 
     async fn get_message(&self, id: &str) -> DbResult<Message> {
@@ -524,7 +515,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn encrypt_decrypt_content_roundtrip() {
         let kek = test_kek();
-        let key_db = Arc::new(Mutex::new(test_key_db()));
+        let key_db = Arc::new(RwLock::new(test_key_db()));
 
         // Create a mock "inner" — we just test the encrypt/decrypt helpers
         let encrypted_db = EncryptedGraphDB {
@@ -546,7 +537,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn decrypt_unencrypted_document_passes_through() {
         let kek = test_kek();
-        let key_db = Arc::new(Mutex::new(test_key_db()));
+        let key_db = Arc::new(RwLock::new(test_key_db()));
 
         let encrypted_db = EncryptedGraphDB {
             inner: Arc::new(MockDb),
@@ -564,7 +555,7 @@ mod tests {
     async fn wrong_kek_cannot_decrypt() {
         let kek1 = Kek::generate();
         let kek2 = Kek::generate();
-        let key_db = Arc::new(Mutex::new(test_key_db()));
+        let key_db = Arc::new(RwLock::new(test_key_db()));
 
         let db1 = EncryptedGraphDB {
             inner: Arc::new(MockDb),

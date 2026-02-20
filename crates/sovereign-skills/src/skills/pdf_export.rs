@@ -2,6 +2,24 @@ use std::io::Cursor;
 
 use crate::traits::{CoreSkill, SkillDocument, SkillOutput};
 
+/// Try multiple font paths for cross-platform support.
+fn load_font_family() -> anyhow::Result<genpdf::fonts::FontFamily<genpdf::fonts::FontData>> {
+    let candidates = [
+        // Linux (Debian/Ubuntu)
+        ("/usr/share/fonts/truetype/liberation", "LiberationSans"),
+        // Windows
+        ("C:/Windows/Fonts", "arial"),
+        // macOS
+        ("/System/Library/Fonts/Supplemental", "Arial"),
+    ];
+    for (path, name) in &candidates {
+        if let Ok(family) = genpdf::fonts::from_files(path, name, None) {
+            return Ok(family);
+        }
+    }
+    anyhow::bail!("No suitable font found. Checked: {}", candidates.iter().map(|(p, _)| *p).collect::<Vec<_>>().join(", "))
+}
+
 pub struct PdfExportSkill;
 
 impl CoreSkill for PdfExportSkill {
@@ -25,12 +43,7 @@ impl CoreSkill for PdfExportSkill {
     ) -> anyhow::Result<SkillOutput> {
         match action {
             "export" => {
-                let font_family = genpdf::fonts::from_files(
-                    "/usr/share/fonts/truetype/liberation",
-                    "LiberationSans",
-                    None,
-                )
-                .map_err(|e| anyhow::anyhow!("Failed to load font: {e}"))?;
+                let font_family = load_font_family()?;
 
                 let mut pdf = genpdf::Document::new(font_family);
                 pdf.set_title(&doc.title);

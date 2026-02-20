@@ -72,11 +72,9 @@ pub fn apply_command(state: &Arc<Mutex<CanvasState>>, cmd: CanvasCommand) {
         }
         CanvasCommand::Highlight(doc_id, on) => {
             if on {
-                if !st.highlighted.contains(&doc_id) {
-                    st.highlighted.push(doc_id);
-                }
+                st.highlighted.insert(doc_id);
             } else {
-                st.highlighted.retain(|id| id != &doc_id);
+                st.highlighted.remove(&doc_id);
             }
         }
         CanvasCommand::ZoomToThread(thread_id) => {

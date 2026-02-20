@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::camera::Camera;
@@ -76,10 +77,10 @@ pub struct CanvasState {
     pub mouse_y: f64,
     pub hovered: Option<usize>,
     pub selected: Option<usize>,
-    pub highlighted: Vec<String>,
+    pub highlighted: HashSet<String>,
     pub minimap_visible: bool,
     pub adoption_animations: HashMap<String, AdoptionAnim>,
-    pub frame_times: Vec<f64>,
+    pub frame_times: VecDeque<f64>,
     pub viewport_width: f64,
     pub viewport_height: f64,
     /// Set by shader on double-click; consumed by the app's Tick handler.
@@ -89,7 +90,7 @@ pub struct CanvasState {
     /// Incremented on any visual change; compared against `cached_gen` to detect staleness.
     pub render_gen: u64,
     /// Pixel buffer from the last Skia render (RGBA, w*h*4 bytes).
-    pub cached_pixels: Option<Vec<u8>>,
+    pub cached_pixels: Option<Arc<Vec<u8>>>,
     /// (width, height) at which the cache was produced.
     pub cached_size: (u32, u32),
     /// The `render_gen` value when the cache was last written.
@@ -106,10 +107,10 @@ impl CanvasState {
             mouse_y: 0.0,
             hovered: None,
             selected: None,
-            highlighted: Vec::new(),
+            highlighted: HashSet::new(),
             minimap_visible: true,
             adoption_animations: HashMap::new(),
-            frame_times: Vec::with_capacity(300),
+            frame_times: VecDeque::with_capacity(120),
             viewport_width: 1280.0,
             viewport_height: 720.0,
             pending_open: None,
@@ -130,13 +131,20 @@ impl CanvasState {
             return 0.0;
         }
         let n = self.frame_times.len().min(60);
-        let slice = &self.frame_times[self.frame_times.len() - n..];
-        let avg_ms: f64 = slice.iter().sum::<f64>() / n as f64;
+        let avg_ms: f64 = self.frame_times.iter().rev().take(n).sum::<f64>() / n as f64;
         if avg_ms > 0.0 {
             1000.0 / avg_ms
         } else {
             0.0
         }
+    }
+
+    /// Record a frame time, keeping the deque bounded at 120 entries.
+    pub fn push_frame_time(&mut self, ms: f64) {
+        if self.frame_times.len() >= 120 {
+            self.frame_times.pop_front();
+        }
+        self.frame_times.push_back(ms);
     }
 }
 

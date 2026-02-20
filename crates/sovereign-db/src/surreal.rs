@@ -49,29 +49,26 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn init_schema(&self) -> DbResult<()> {
-        let queries = [
-            "DEFINE INDEX idx_thread_id ON document FIELDS thread_id",
-            "DEFINE INDEX idx_doc_title ON document FIELDS title",
-            "DEFINE INDEX idx_doc_created ON document FIELDS created_at",
-            "DEFINE INDEX idx_commit_timestamp ON commit FIELDS timestamp",
-            "DEFINE INDEX idx_commit_doc ON commit FIELDS document_id",
-            // Contact indexes
-            "DEFINE INDEX idx_contact_name ON contact FIELDS name",
-            // Message indexes
-            "DEFINE INDEX idx_message_conversation ON message FIELDS conversation_id",
-            "DEFINE INDEX idx_message_sent_at ON message FIELDS sent_at",
-            "DEFINE INDEX idx_message_from ON message FIELDS from_contact_id",
-            "DEFINE INDEX idx_message_external ON message FIELDS external_id",
-            // Conversation indexes
-            "DEFINE INDEX idx_conversation_channel ON conversation FIELDS channel",
-            "DEFINE INDEX idx_conversation_last_msg ON conversation FIELDS last_message_at",
-        ];
-        for q in queries {
-            self.db
-                .query(q)
-                .await
-                .map_err(|e| DbError::SchemaInit(e.to_string()))?;
-        }
+        // Batch all index definitions into a single round-trip
+        let schema = "\
+            DEFINE INDEX IF NOT EXISTS idx_thread_id ON document FIELDS thread_id;\
+            DEFINE INDEX IF NOT EXISTS idx_doc_title ON document FIELDS title;\
+            DEFINE INDEX IF NOT EXISTS idx_doc_created ON document FIELDS created_at;\
+            DEFINE INDEX IF NOT EXISTS idx_commit_timestamp ON commit FIELDS timestamp;\
+            DEFINE INDEX IF NOT EXISTS idx_commit_doc ON commit FIELDS document_id;\
+            DEFINE INDEX IF NOT EXISTS idx_contact_name ON contact FIELDS name;\
+            DEFINE INDEX IF NOT EXISTS idx_milestone_thread ON milestone FIELDS thread_id;\
+            DEFINE INDEX IF NOT EXISTS idx_message_conversation ON message FIELDS conversation_id;\
+            DEFINE INDEX IF NOT EXISTS idx_message_sent_at ON message FIELDS sent_at;\
+            DEFINE INDEX IF NOT EXISTS idx_message_from ON message FIELDS from_contact_id;\
+            DEFINE INDEX IF NOT EXISTS idx_message_external ON message FIELDS external_id;\
+            DEFINE INDEX IF NOT EXISTS idx_conversation_channel ON conversation FIELDS channel;\
+            DEFINE INDEX IF NOT EXISTS idx_conversation_last_msg ON conversation FIELDS last_message_at;\
+        ";
+        self.db
+            .query(schema)
+            .await
+            .map_err(|e| DbError::SchemaInit(e.to_string()))?;
         Ok(())
     }
 
@@ -106,7 +103,7 @@ impl GraphDB for SurrealGraphDB {
             None => {
                 let mut result = self
                     .db
-                    .query("SELECT * FROM document WHERE deleted_at IS NONE")
+                    .query("SELECT * FROM document WHERE deleted_at IS NONE ORDER BY created_at DESC")
                     .await?;
                 let docs: Vec<Document> = result.take(0)?;
                 Ok(docs)
@@ -219,13 +216,14 @@ impl GraphDB for SurrealGraphDB {
             return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
         }
 
-        let current: Option<Document> = self.db.select((table, key)).await?;
-        let mut doc = current.ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
-        doc.thread_id = new_thread_id.to_string();
-        doc.modified_at = Utc::now();
-
-        let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
-        updated.ok_or_else(|| DbError::Query("Failed to move document".into()))
+        let updated: Option<Document> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({
+                "thread_id": new_thread_id,
+                "modified_at": Utc::now(),
+            }))
+            .await?;
+        updated.ok_or_else(|| DbError::NotFound(doc_id.to_string()))
     }
 
     // -- Adopt ---
@@ -237,12 +235,14 @@ impl GraphDB for SurrealGraphDB {
                 "Expected document ID, got table: {table}"
             )));
         }
-        let current: Option<Document> = self.db.select((table, key)).await?;
-        let mut doc = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
-        doc.is_owned = true;
-        doc.modified_at = Utc::now();
-        let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
-        updated.ok_or_else(|| DbError::Query("Failed to adopt document".into()))
+        let updated: Option<Document> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({
+                "is_owned": true,
+                "modified_at": Utc::now(),
+            }))
+            .await?;
+        updated.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
 
     // -- Thread merge/split ---
@@ -273,9 +273,18 @@ impl GraphDB for SurrealGraphDB {
         let created = self.create_thread(new_thread).await?;
         let new_tid = created.id_string().unwrap_or_default();
 
-        // Move specified docs to the new thread
-        for doc_id in doc_ids {
-            self.move_document_to_thread(doc_id, &new_tid).await?;
+        // Move each specified doc to the new thread
+        if !doc_ids.is_empty() {
+            let now = Utc::now();
+            for doc_id in doc_ids {
+                let (_, key) = parse_thing(doc_id)?;
+                self.db
+                    .query("UPDATE type::thing('document', $key) SET thread_id = $tid, modified_at = $now")
+                    .bind(("key", key.to_string()))
+                    .bind(("tid", new_tid.clone()))
+                    .bind(("now", now))
+                    .await?;
+            }
         }
 
         Ok(created)
@@ -290,10 +299,13 @@ impl GraphDB for SurrealGraphDB {
                 "Expected document ID, got table: {table}"
             )));
         }
-        let current: Option<Document> = self.db.select((table, key)).await?;
-        let mut doc = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
-        doc.deleted_at = Some(Utc::now().to_rfc3339());
-        let _: Option<Document> = self.db.update((table, key)).content(doc).await?;
+        let result: Option<Document> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
+            .await?;
+        if result.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
         Ok(())
     }
 
@@ -304,11 +316,11 @@ impl GraphDB for SurrealGraphDB {
                 "Expected document ID, got table: {table}"
             )));
         }
-        let current: Option<Document> = self.db.select((table, key)).await?;
-        let mut doc = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
-        doc.deleted_at = None;
-        let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
-        updated.ok_or_else(|| DbError::Query("Failed to restore document".into()))
+        let updated: Option<Document> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "deleted_at": null }))
+            .await?;
+        updated.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
 
     async fn soft_delete_thread(&self, id: &str) -> DbResult<()> {
@@ -318,10 +330,13 @@ impl GraphDB for SurrealGraphDB {
                 "Expected thread ID, got table: {table}"
             )));
         }
-        let current: Option<Thread> = self.db.select((table, key)).await?;
-        let mut thread = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
-        thread.deleted_at = Some(Utc::now().to_rfc3339());
-        let _: Option<Thread> = self.db.update((table, key)).content(thread).await?;
+        let result: Option<Thread> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
+            .await?;
+        if result.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
         Ok(())
     }
 
@@ -332,11 +347,11 @@ impl GraphDB for SurrealGraphDB {
                 "Expected thread ID, got table: {table}"
             )));
         }
-        let current: Option<Thread> = self.db.select((table, key)).await?;
-        let mut thread = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
-        thread.deleted_at = None;
-        let updated: Option<Thread> = self.db.update((table, key)).content(thread).await?;
-        updated.ok_or_else(|| DbError::Query("Failed to restore thread".into()))
+        let updated: Option<Thread> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "deleted_at": null }))
+            .await?;
+        updated.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
 
     async fn purge_deleted(&self, max_age: std::time::Duration) -> DbResult<u64> {
@@ -344,23 +359,15 @@ impl GraphDB for SurrealGraphDB {
             Utc::now() - chrono::Duration::seconds(max_age.as_secs() as i64);
         let cutoff_str = cutoff.to_rfc3339();
 
-        // Delete documents older than cutoff
-        let mut result = self
-            .db
-            .query("DELETE FROM document WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff")
-            .bind(("cutoff", cutoff_str.clone()))
-            .await?;
-        let _: Vec<Document> = result.take(0).unwrap_or_default();
-
-        // Delete threads older than cutoff
-        let mut result = self
-            .db
-            .query("DELETE FROM thread WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff")
+        // Delete documents and threads older than cutoff in a single round-trip.
+        // No need to deserialize the DELETE results.
+        self.db
+            .query("DELETE FROM document WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff;\
+                    DELETE FROM thread WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff")
             .bind(("cutoff", cutoff_str))
-            .await?;
-        let _: Vec<Thread> = result.take(0).unwrap_or_default();
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?;
 
-        // SurrealDB DELETE doesn't return count easily; return 0 as placeholder
         Ok(0)
     }
 
@@ -459,14 +466,14 @@ impl GraphDB for SurrealGraphDB {
 
         let snapshot = DocumentSnapshot {
             document_id: doc_id.to_string(),
-            title: doc.title.clone(),
-            content: doc.content.clone(),
+            title: doc.title,
+            content: doc.content,
         };
 
         let commit = Commit {
             id: None,
             document_id: doc_id.to_string(),
-            parent_commit: doc.head_commit.clone(),
+            parent_commit: doc.head_commit,
             message: message.to_string(),
             timestamp: Utc::now(),
             snapshot,
@@ -475,12 +482,13 @@ impl GraphDB for SurrealGraphDB {
         let created: Option<Commit> = self.db.create("commit").content(commit).await?;
         let created = created.ok_or_else(|| DbError::Query("Failed to create commit".into()))?;
 
-        // Update document's head_commit pointer
+        // Update only the head_commit pointer — no need to rewrite the full document
         let commit_id = created.id_string().unwrap_or_default();
-        let (table, key) = parse_thing(doc_id)?;
-        let mut doc_updated = doc;
-        doc_updated.head_commit = Some(commit_id);
-        let _: Option<Document> = self.db.update((table, key)).content(doc_updated).await?;
+        self.db
+            .query("UPDATE type::thing('document', $key) SET head_commit = $cid")
+            .bind(("key", parse_thing(doc_id)?.1.to_string()))
+            .bind(("cid", commit_id))
+            .await?;
 
         Ok(created)
     }
@@ -597,10 +605,13 @@ impl GraphDB for SurrealGraphDB {
         if table != "contact" {
             return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
         }
-        let current: Option<Contact> = self.db.select((table, key)).await?;
-        let mut contact = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
-        contact.deleted_at = Some(Utc::now().to_rfc3339());
-        let _: Option<Contact> = self.db.update((table, key)).content(contact).await?;
+        let result: Option<Contact> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
+            .await?;
+        if result.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
         Ok(())
     }
 
@@ -690,12 +701,11 @@ impl GraphDB for SurrealGraphDB {
         if table != "message" {
             return Err(DbError::InvalidId(format!("Expected message ID, got table: {table}")));
         }
-        let current: Option<Message> = self.db.select((table, key)).await?;
-        let mut message = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
-        message.read_status = status;
-
-        let updated: Option<Message> = self.db.update((table, key)).content(message).await?;
-        updated.ok_or_else(|| DbError::Query("Failed to update message read status".into()))
+        let updated: Option<Message> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "read_status": status }))
+            .await?;
+        updated.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
 
     async fn delete_message(&self, id: &str) -> DbResult<()> {
@@ -711,7 +721,7 @@ impl GraphDB for SurrealGraphDB {
         let q = query.to_string();
         let mut result = self
             .db
-            .query("SELECT * FROM message WHERE deleted_at IS NONE AND (body CONTAINS $q OR subject CONTAINS $q) ORDER BY sent_at DESC")
+            .query("SELECT * FROM message WHERE deleted_at IS NONE AND (body CONTAINS $q OR subject CONTAINS $q) ORDER BY sent_at DESC LIMIT 50")
             .bind(("q", q))
             .await?;
         let msgs: Vec<Message> = result.take(0)?;
@@ -740,10 +750,7 @@ impl GraphDB for SurrealGraphDB {
     ) -> DbResult<Vec<Conversation>> {
         match channel {
             Some(ch) => {
-                let ch_str = serde_json::to_string(ch)
-                    .map_err(|e| DbError::Serialization(e.to_string()))?;
-                // Remove quotes around the serialized string for SurrealDB comparison
-                let ch_val = ch_str.trim_matches('"').to_string();
+                let ch_val = ch.to_string();
                 let mut result = self
                     .db
                     .query("SELECT * FROM conversation WHERE deleted_at IS NONE AND channel = $ch ORDER BY last_message_at DESC")
@@ -772,12 +779,11 @@ impl GraphDB for SurrealGraphDB {
         if table != "conversation" {
             return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
         }
-        let current: Option<Conversation> = self.db.select((table, key)).await?;
-        let mut conv = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
-        conv.unread_count = unread_count;
-
-        let updated: Option<Conversation> = self.db.update((table, key)).content(conv).await?;
-        updated.ok_or_else(|| DbError::Query("Failed to update conversation unread count".into()))
+        let updated: Option<Conversation> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "unread_count": unread_count }))
+            .await?;
+        updated.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
 
     async fn delete_conversation(&self, id: &str) -> DbResult<()> {
@@ -798,12 +804,11 @@ impl GraphDB for SurrealGraphDB {
         if table != "conversation" {
             return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
         }
-        let current: Option<Conversation> = self.db.select((table, key)).await?;
-        let mut conv = current.ok_or_else(|| DbError::NotFound(conversation_id.to_string()))?;
-        conv.linked_thread_id = Some(thread_id.to_string());
-
-        let updated: Option<Conversation> = self.db.update((table, key)).content(conv).await?;
-        updated.ok_or_else(|| DbError::Query("Failed to link conversation to thread".into()))
+        let updated: Option<Conversation> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "linked_thread_id": thread_id }))
+            .await?;
+        updated.ok_or_else(|| DbError::NotFound(conversation_id.to_string()))
     }
 }
 

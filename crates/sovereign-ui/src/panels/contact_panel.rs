@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use iced::widget::{button, column, container, mouse_area, row, scrollable, text, Space};
 use iced::{Element, Length, Padding};
 
@@ -13,6 +15,8 @@ pub struct ContactPanel {
     pub contact_id: String,
     pub conversations: Vec<Conversation>,
     pub messages: Vec<Message>,
+    /// Messages pre-grouped by conversation_id for O(1) lookup.
+    messages_by_conv: HashMap<String, Vec<usize>>,
     pub selected_conversation: Option<usize>,
     pub position: iced::Point,
     pub size: iced::Size,
@@ -31,11 +35,17 @@ impl ContactPanel {
         conversations: Vec<Conversation>,
         messages: Vec<Message>,
     ) -> Self {
+        // Pre-group message indices by conversation_id.
+        let mut messages_by_conv: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, msg) in messages.iter().enumerate() {
+            messages_by_conv.entry(msg.conversation_id.clone()).or_default().push(i);
+        }
         Self {
             contact,
             contact_id,
             conversations,
             messages,
+            messages_by_conv,
             selected_conversation: None,
             position: iced::Point::new(250.0, 80.0),
             size: iced::Size::new(500.0, 480.0),
@@ -178,12 +188,10 @@ impl ContactPanel {
         let conv = &self.conversations[conv_idx];
         let conv_id = conv.id_string().unwrap_or_default();
 
-        // Filter messages for this conversation
-        let conv_messages: Vec<&Message> = self
-            .messages
-            .iter()
-            .filter(|m| m.conversation_id == conv_id)
-            .collect();
+        // Lookup pre-grouped messages for this conversation (O(1) HashMap lookup).
+        let empty = Vec::new();
+        let msg_indices = self.messages_by_conv.get(&conv_id).unwrap_or(&empty);
+        let conv_messages: Vec<&Message> = msg_indices.iter().map(|&i| &self.messages[i]).collect();
 
         let back_btn = button(text("< Back").size(12))
             .on_press(AppMessage::SelectConversation {

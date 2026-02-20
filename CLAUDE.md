@@ -19,17 +19,46 @@ This is critical — APIs change between versions and stale knowledge causes cas
 - Limit parallel compilation to avoid OOM-crashing WSL: use `-j 4` (confirmed stable with 16 GB `.wslconfig`) or `-j 2` as fallback
 
 ### Windows (MSVC target)
-- Use `build_sov.bat` wrapper — it sets `LIBCLANG_PATH`, `CMAKE`, and `PATH` automatically
-- Typical build: `build_sov.bat build -p sovereign-app --target-dir Z:/cargo-target -j 2`
+
+#### Build scripts (from PowerShell or cmd.exe)
+Three batch wrappers in the project root set `LIBCLANG_PATH`, `CMAKE`, and `PATH` automatically:
+- `_build.bat` — runs `cargo <args>` (pass any cargo subcommand + flags)
+- `_check.bat` — runs `cargo check -p sovereign-app` with `-j 4`
+- `_run.bat` — runs the app
+
+**From a native Windows shell (PowerShell / cmd):**
+```powershell
+# Build a specific crate
+_build.bat build -p sovereign-canvas --target-dir "Z:\cargo-target" -j 2
+
+# Build the whole app
+_build.bat build -p sovereign-app --target-dir "Z:\cargo-target" -j 2
+```
+
+#### From bash (Claude Code / Git Bash / WSL)
+Batch files cannot be invoked directly from bash. Use `cargo.exe` with the required env vars:
+```bash
+# Set env vars and call cargo directly
+LIBCLANG_PATH="C:/Program Files/LLVM/bin" \
+CMAKE="C:/Program Files/CMake/bin/cmake.exe" \
+cargo.exe check -p sovereign-canvas --target-dir "Z:/cargo-target" -j 2
+
+# Build
+LIBCLANG_PATH="C:/Program Files/LLVM/bin" \
+CMAKE="C:/Program Files/CMake/bin/cmake.exe" \
+cargo.exe build -p sovereign-app --target-dir "Z:/cargo-target" -j 2
+```
+
+#### Key notes
 - `sovereign-ai` default feature is `cuda` — disable on machines without CUDA toolkit: `--no-default-features`
-- C: drive is nearly full — always use `--target-dir Z:/cargo-target` to build on NAS
-- Before rebuilding, kill stale processes and clean sovereign artifacts:
+- C: drive is nearly full — always use `--target-dir "Z:/cargo-target"` (forward slashes in bash, backslashes in cmd/PowerShell)
+- Windows needs `/FORCE:MULTIPLE` linker flag (MSVC) because `llama-cpp-sys-2` and `whisper-rs-sys` both embed ggml — this is set in `.cargo/config.toml`
+- Before rebuilding after errors, kill stale processes and clean sovereign artifacts:
   ```powershell
   Get-Process -Name cargo,rustc -ErrorAction SilentlyContinue | Stop-Process -Force
   Remove-Item 'Z:\cargo-target\debug\deps\libsovereign_*' -Force -ErrorAction SilentlyContinue
   Remove-Item 'Z:\cargo-target\debug\.fingerprint\sovereign-*' -Recurse -Force -ErrorAction SilentlyContinue
   ```
-- Windows needs `/FORCE:MULTIPLE` linker flag (MSVC) because `llama-cpp-sys-2` and `whisper-rs-sys` both embed ggml — this is set in `.cargo/config.toml`
 
 ## Testing
 
@@ -38,16 +67,31 @@ This is critical — APIs change between versions and stale knowledge causes cas
 cargo test -j 4
 ```
 
-### Windows
+### Windows (from PowerShell / cmd)
 ```powershell
 # All crates except sovereign-ai (which defaults to CUDA)
-build_sov.bat test --target-dir Z:/cargo-target -j 2
+_build.bat test --target-dir "Z:\cargo-target" -j 2
 
 # sovereign-ai specifically (skip CUDA)
-build_sov.bat test -p sovereign-ai --no-default-features --target-dir Z:/cargo-target -j 2
+_build.bat test -p sovereign-ai --no-default-features --target-dir "Z:\cargo-target" -j 2
 
 # Integration test (builds + runs the binary as subprocess)
-build_sov.bat test -p sovereign-app --test cli_integration --target-dir Z:/cargo-target -j 2
+_build.bat test -p sovereign-app --test cli_integration --target-dir "Z:\cargo-target" -j 2
+```
+
+### Windows (from bash — Claude Code / Git Bash)
+```bash
+# All crates except sovereign-ai
+LIBCLANG_PATH="C:/Program Files/LLVM/bin" CMAKE="C:/Program Files/CMake/bin/cmake.exe" \
+cargo.exe test --target-dir "Z:/cargo-target" -j 2
+
+# sovereign-ai specifically (skip CUDA)
+LIBCLANG_PATH="C:/Program Files/LLVM/bin" CMAKE="C:/Program Files/CMake/bin/cmake.exe" \
+cargo.exe test -p sovereign-ai --no-default-features --target-dir "Z:/cargo-target" -j 2
+
+# Single crate
+LIBCLANG_PATH="C:/Program Files/LLVM/bin" CMAKE="C:/Program Files/CMake/bin/cmake.exe" \
+cargo.exe test -p sovereign-canvas --target-dir "Z:/cargo-target" -j 2
 ```
 
 ### Key gotchas

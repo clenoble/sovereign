@@ -41,14 +41,22 @@ impl SearchState {
             );
         }
 
-        // Results
+        // Results (capped at 50)
         if !self.results.is_empty() {
             let mut results_col = column![].spacing(4);
-            for id in &self.results {
+            let display_count = self.results.len().min(50);
+            for id in self.results.iter().take(display_count) {
                 results_col = results_col.push(
                     text(id.as_str())
                         .size(13)
                         .color(theme::text_label()),
+                );
+            }
+            if self.results.len() > 50 {
+                results_col = results_col.push(
+                    text(format!("...and {} more", self.results.len() - 50))
+                        .size(12)
+                        .color(theme::text_dim()),
                 );
             }
             col = col.push(scrollable(results_col).height(Length::Shrink));

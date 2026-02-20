@@ -35,10 +35,10 @@ impl CoreSkill for ImageSkill {
                 let idx: usize = params
                     .parse()
                     .map_err(|_| anyhow::anyhow!("Invalid image index: {params}"))?;
-                let mut updated = doc.content.clone();
-                if idx >= updated.images.len() {
-                    anyhow::bail!("Image index {idx} out of range ({})", updated.images.len());
+                if idx >= doc.content.images.len() {
+                    anyhow::bail!("Image index {idx} out of range ({})", doc.content.images.len());
                 }
+                let mut updated = doc.content.clone();
                 updated.images.remove(idx);
                 Ok(SkillOutput::ContentUpdate(updated))
             }

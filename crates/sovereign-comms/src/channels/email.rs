@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -35,18 +36,16 @@ impl EmailChannel {
         }
     }
 
-    /// Get or create a conversation for an email thread.
+    /// Get or create a conversation for an email thread, using a local cache
+    /// to avoid repeated full-DB loads.
     async fn get_or_create_conversation(
         &self,
         subject: &str,
         participant_ids: Vec<String>,
+        cache: &mut HashMap<String, Conversation>,
     ) -> Result<Conversation, CommsError> {
-        // Try to find existing conversation by title
-        let conversations = self.db.list_conversations(Some(&ChannelType::Email)).await?;
-        for conv in &conversations {
-            if conv.title == subject {
-                return Ok(conv.clone());
-            }
+        if let Some(conv) = cache.get(subject) {
+            return Ok(conv.clone());
         }
 
         // Create new conversation
@@ -55,7 +54,9 @@ impl EmailChannel {
             ChannelType::Email,
             participant_ids,
         );
-        self.db.create_conversation(conv).await.map_err(CommsError::from)
+        let created = self.db.create_conversation(conv).await.map_err(CommsError::from)?;
+        cache.insert(subject.to_string(), created.clone());
+        Ok(created)
     }
 
     /// Resolve an email address to a contact ID, creating a stub if needed.
@@ -233,11 +234,19 @@ impl CommunicationChannel for EmailChannel {
             let fetched: Vec<_> = messages_stream.collect().await;
             let mut result = Vec::new();
 
+            // Pre-load conversation cache and own contact ID to avoid per-message DB loads
+            let conversations = self.db.list_conversations(Some(&ChannelType::Email)).await?;
+            let mut conv_cache: HashMap<String, Conversation> = conversations
+                .into_iter()
+                .map(|c| (c.title.clone(), c))
+                .collect();
+            let my_id = self.resolve_contact_id(&self.config.username, self.config.display_name.as_deref()).await?;
+
             for fetch_result in fetched {
                 let fetch = fetch_result
                     .map_err(|e| CommsError::FetchFailed(e.to_string()))?;
                 if let Some(body) = fetch.body() {
-                    // Parse the "From" header to resolve contact
+                    // Parse once and extract all needed headers
                     let parsed = mailparse::parse_mail(body)
                         .map_err(|e| CommsError::ParseError(e.to_string()))?;
                     let from_header = parsed.headers.iter()
@@ -249,18 +258,14 @@ impl CommunicationChannel for EmailChannel {
                         .map(|h| h.get_value())
                         .unwrap_or_else(|| "(no subject)".into());
 
-                    // Extract email address from "Name <email>" format
                     let from_addr = extract_email_address(&from_header);
                     let from_name = extract_display_name(&from_header);
                     let from_id = self.resolve_contact_id(&from_addr, from_name.as_deref()).await?;
 
-                    // Get own contact ID
-                    let my_id = self.resolve_contact_id(&self.config.username, self.config.display_name.as_deref()).await?;
-
-                    let conv = self.get_or_create_conversation(&subject, vec![from_id.clone(), my_id.clone()]).await?;
+                    let conv = self.get_or_create_conversation(&subject, vec![from_id.clone(), my_id.clone()], &mut conv_cache).await?;
                     let conv_id = conv.id_string().unwrap_or_default();
 
-                    let msg = self.parse_email(body, &from_id, vec![my_id], &conv_id)?;
+                    let msg = self.parse_email(body, &from_id, vec![my_id.clone()], &conv_id)?;
                     result.push(msg);
                 }
             }

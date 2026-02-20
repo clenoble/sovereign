@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{Datelike, TimeZone, Utc};
 use sovereign_db::schema::{Document, Milestone, RelatedTo, RelationType, Thread};
@@ -126,7 +126,7 @@ pub fn compute_layout_full(
     let mut sorted_threads: Vec<&Thread> = threads.iter().collect();
     sorted_threads.sort_by_key(|t| t.created_at);
 
-    let known_thread_ids: Vec<String> = sorted_threads
+    let known_thread_ids: HashSet<String> = sorted_threads
         .iter()
         .filter_map(|t| t.id_string())
         .collect();
@@ -209,6 +209,18 @@ pub fn compute_branch_edges(
 ) -> Vec<BranchEdge> {
     use sovereign_db::schema::thing_to_raw;
 
+    // Build O(1) lookup indexes instead of O(n) .find() per relationship.
+    let card_idx: HashMap<&str, usize> = cards
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.doc_id.as_str(), i))
+        .collect();
+    let lane_idx: HashMap<&str, usize> = lanes
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (l.thread_id.as_str(), i))
+        .collect();
+
     let mut edges = Vec::new();
     for rel in relationships {
         if rel.relation_type != RelationType::BranchesFrom {
@@ -218,12 +230,12 @@ pub fn compute_branch_edges(
         let to_id = rel.in_.as_ref().map(|t| thing_to_raw(t));
 
         if let (Some(from_id), Some(to_id)) = (from_id, to_id) {
-            let from_card = cards.iter().find(|c| c.doc_id == from_id);
-            let to_card = cards.iter().find(|c| c.doc_id == to_id);
+            let from_card = card_idx.get(from_id.as_str()).map(|&i| &cards[i]);
+            let to_card = card_idx.get(to_id.as_str()).map(|&i| &cards[i]);
 
             if let (Some(fc), Some(tc)) = (from_card, to_card) {
-                let from_lane = lanes.iter().find(|l| l.thread_id == fc.thread_id);
-                let to_lane = lanes.iter().find(|l| l.thread_id == tc.thread_id);
+                let from_lane = lane_idx.get(fc.thread_id.as_str()).map(|&i| &lanes[i]);
+                let to_lane = lane_idx.get(tc.thread_id.as_str()).map(|&i| &lanes[i]);
 
                 if let (Some(fl), Some(tl)) = (from_lane, to_lane) {
                     edges.push(BranchEdge {
@@ -248,6 +260,13 @@ pub fn compute_document_edges(
 ) -> Vec<DocumentEdge> {
     use sovereign_db::schema::thing_to_raw;
 
+    // Build O(1) lookup index instead of O(n) .find() per relationship.
+    let card_idx: HashMap<&str, usize> = cards
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.doc_id.as_str(), i))
+        .collect();
+
     let mut edges = Vec::new();
     for rel in relationships {
         // Skip BranchesFrom — those are already drawn as lane-to-lane branch edges
@@ -259,8 +278,8 @@ pub fn compute_document_edges(
         let to_id = rel.in_.as_ref().map(|t| thing_to_raw(t));
 
         if let (Some(from_id), Some(to_id)) = (from_id, to_id) {
-            let from_card = cards.iter().find(|c| c.doc_id == from_id);
-            let to_card = cards.iter().find(|c| c.doc_id == to_id);
+            let from_card = card_idx.get(from_id.as_str()).map(|&i| &cards[i]);
+            let to_card = card_idx.get(to_id.as_str()).map(|&i| &cards[i]);
 
             if let (Some(fc), Some(tc)) = (from_card, to_card) {
                 let (fx, fy) = fc.center();

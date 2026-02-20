@@ -66,9 +66,10 @@ impl ChatState {
             ],
         );
 
-        // Message history
+        // Message history (cap at last 200 to avoid rendering unbounded lists)
         let mut messages_col = column![].spacing(6);
-        for msg in &self.messages {
+        let skip = self.messages.len().saturating_sub(200);
+        for msg in self.messages.iter().skip(skip) {
             let (color, prefix) = match msg.role {
                 ChatRole::User => (theme::owned_blue(), "You"),
                 ChatRole::Assistant => (theme::border_accent(), "AI"),

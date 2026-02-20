@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,12 +23,12 @@ use crate::trust::TrustTracker;
 /// Receives queries (text from search overlay or voice pipeline),
 /// classifies intent, executes actions, and emits events to the UI.
 pub struct Orchestrator {
-    classifier: IntentClassifier,
+    classifier: tokio::sync::Mutex<IntentClassifier>,
     db: Arc<SurrealGraphDB>,
-    event_tx: mpsc::Sender<OrchestratorEvent>,
+    event_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
     session_log: Option<Mutex<SessionLog>>,
-    decision_rx: Option<Mutex<mpsc::Receiver<ActionDecision>>>,
-    feedback_rx: Option<Mutex<mpsc::Receiver<FeedbackEvent>>>,
+    decision_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ActionDecision>>>,
+    feedback_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<FeedbackEvent>>>,
     trust: Mutex<TrustTracker>,
     profile: Mutex<UserProfile>,
     profile_dir: PathBuf,
@@ -46,7 +45,7 @@ impl Orchestrator {
     pub async fn new(
         config: AiConfig,
         db: Arc<SurrealGraphDB>,
-        event_tx: mpsc::Sender<OrchestratorEvent>,
+        event_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
     ) -> Result<Self> {
         let model_dir = config.model_dir.clone();
         let n_gpu_layers = config.n_gpu_layers;
@@ -91,7 +90,7 @@ impl Orchestrator {
         };
 
         Ok(Self {
-            classifier,
+            classifier: tokio::sync::Mutex::new(classifier),
             db,
             event_tx,
             session_log,
@@ -110,13 +109,13 @@ impl Orchestrator {
     }
 
     /// Attach a decision channel for user confirmations of Level 3+ actions.
-    pub fn set_decision_rx(&mut self, rx: mpsc::Receiver<ActionDecision>) {
-        self.decision_rx = Some(Mutex::new(rx));
+    pub fn set_decision_rx(&mut self, rx: tokio::sync::mpsc::Receiver<ActionDecision>) {
+        self.decision_rx = Some(tokio::sync::Mutex::new(rx));
     }
 
     /// Attach a feedback channel for suggestion accept/dismiss events from the UI.
-    pub fn set_feedback_rx(&mut self, rx: mpsc::Receiver<FeedbackEvent>) {
-        self.feedback_rx = Some(Mutex::new(rx));
+    pub fn set_feedback_rx(&mut self, rx: tokio::sync::mpsc::Receiver<FeedbackEvent>) {
+        self.feedback_rx = Some(tokio::sync::Mutex::new(rx));
     }
 
     /// Attach P2P command/event channels for device sync and guardian transport.
@@ -185,7 +184,7 @@ impl Orchestrator {
 
     /// Handle a user query: classify intent, gate check, execute or await confirmation.
     pub async fn handle_query(&self, query: &str) -> Result<()> {
-        let intent = self.classifier.classify(query).await?;
+        let intent = self.classifier.lock().await.classify(query).await?;
         tracing::info!(
             "Intent: action={}, confidence={:.2}, target={:?}, origin={:?}",
             intent.action,
@@ -249,7 +248,7 @@ impl Orchestrator {
                 });
 
                 // Wait for user decision (with timeout)
-                let decision = self.wait_for_decision();
+                let decision = self.wait_for_decision().await;
                 match decision {
                     ActionDecision::Approve => {
                         // Record approval in trust tracker + persist
@@ -331,15 +330,18 @@ impl Orchestrator {
 
     /// Wait for a user decision on the decision channel (30s timeout).
     /// If no channel is configured, auto-approve (for backward compatibility/testing).
-    fn wait_for_decision(&self) -> ActionDecision {
+    async fn wait_for_decision(&self) -> ActionDecision {
         if let Some(ref rx_mutex) = self.decision_rx {
-            if let Ok(rx) = rx_mutex.lock() {
-                match rx.recv_timeout(Duration::from_secs(30)) {
-                    Ok(decision) => return decision,
-                    Err(_) => {
-                        tracing::warn!("Decision timeout — rejecting action");
-                        return ActionDecision::Reject("Timeout waiting for user decision".into());
-                    }
+            let mut rx = rx_mutex.lock().await;
+            match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
+                Ok(Some(decision)) => return decision,
+                Ok(None) => {
+                    tracing::warn!("Decision channel closed — rejecting action");
+                    return ActionDecision::Reject("Decision channel closed".into());
+                }
+                Err(_) => {
+                    tracing::warn!("Decision timeout — rejecting action");
+                    return ActionDecision::Reject("Timeout waiting for user decision".into());
                 }
             }
         }
@@ -533,7 +535,7 @@ impl Orchestrator {
                             "You are a concise summarizer. Summarize the following document in 2-3 sentences.",
                             content,
                         );
-                        match self.classifier.router.generate(&prompt, 200).await {
+                        match self.classifier.lock().await.router.generate(&prompt, 200).await {
                             Ok(summary) => {
                                 let summary_text: &str = summary.trim();
                                 let json = serde_json::json!({
@@ -553,7 +555,10 @@ impl Orchestrator {
                 }
             }
             "list_models" => {
-                let found = scan_gguf_models(&self.model_dir);
+                let dir = self.model_dir.clone();
+                let found = tokio::task::spawn_blocking(move || scan_gguf_models(&dir))
+                    .await
+                    .unwrap_or_default();
                 let models: Vec<serde_json::Value> = found
                     .iter()
                     .map(|(name, size_mb)| {
@@ -588,7 +593,7 @@ impl Orchestrator {
                     } else {
                         let path_str = full_path.to_string_lossy().to_string();
                         match self
-                            .classifier
+                            .classifier.lock().await
                             .swap_router(&path_str, self.n_gpu_layers)
                             .await
                         {
@@ -952,7 +957,7 @@ impl Orchestrator {
             "chat" => {
                 let system = crate::llm::prompt::CHAT_SYSTEM_PROMPT;
                 let prompt = crate::llm::prompt::qwen_chat_prompt(system, query);
-                match self.classifier.router.generate(&prompt, 512).await {
+                match self.classifier.lock().await.router.generate(&prompt, 512).await {
                     Ok(response) => {
                         let text = response.trim().to_string();
                         tracing::info!("Chat response: {} chars", text.len());
@@ -1027,7 +1032,7 @@ impl Orchestrator {
     /// Uses adaptive thresholds from the user profile to decide whether to show.
     pub async fn idle_suggest(&self) -> Result<()> {
         // Drain any pending feedback events first
-        self.poll_feedback();
+        self.poll_feedback().await;
 
         let docs = self.db.list_documents(None).await?;
         let threads = self.db.list_threads().await?;
@@ -1078,37 +1083,42 @@ impl Orchestrator {
     }
 
     /// Drain pending feedback events from the UI and update the profile.
-    fn poll_feedback(&self) {
+    /// Saves the profile once after processing all events (batch).
+    async fn poll_feedback(&self) {
         if let Some(ref rx_mutex) = self.feedback_rx {
-            if let Ok(rx) = rx_mutex.lock() {
-                while let Ok(event) = rx.try_recv() {
-                    match event {
-                        FeedbackEvent::SuggestionAccepted { action } => {
-                            if let Ok(mut profile) = self.profile.lock() {
-                                profile
-                                    .suggestion_feedback
-                                    .entry(action.clone())
-                                    .or_insert_with(SuggestionFeedback::new)
-                                    .record_accepted();
-                                if let Err(e) = profile.save(&self.profile_dir) {
-                                    tracing::warn!("Failed to save profile: {e}");
-                                }
-                            }
-                            tracing::info!("Suggestion accepted: {action}");
+            let mut rx = rx_mutex.lock().await;
+            let mut profile_dirty = false;
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    FeedbackEvent::SuggestionAccepted { action } => {
+                        if let Ok(mut profile) = self.profile.lock() {
+                            profile
+                                .suggestion_feedback
+                                .entry(action.clone())
+                                .or_insert_with(SuggestionFeedback::new)
+                                .record_accepted();
+                            profile_dirty = true;
                         }
-                        FeedbackEvent::SuggestionDismissed { action } => {
-                            if let Ok(mut profile) = self.profile.lock() {
-                                profile
-                                    .suggestion_feedback
-                                    .entry(action.clone())
-                                    .or_insert_with(SuggestionFeedback::new)
-                                    .record_dismissed();
-                                if let Err(e) = profile.save(&self.profile_dir) {
-                                    tracing::warn!("Failed to save profile: {e}");
-                                }
-                            }
-                            tracing::info!("Suggestion dismissed: {action}");
+                        tracing::info!("Suggestion accepted: {action}");
+                    }
+                    FeedbackEvent::SuggestionDismissed { action } => {
+                        if let Ok(mut profile) = self.profile.lock() {
+                            profile
+                                .suggestion_feedback
+                                .entry(action.clone())
+                                .or_insert_with(SuggestionFeedback::new)
+                                .record_dismissed();
+                            profile_dirty = true;
                         }
+                        tracing::info!("Suggestion dismissed: {action}");
+                    }
+                }
+            }
+            // Save profile once after draining all events.
+            if profile_dirty {
+                if let Ok(mut profile) = self.profile.lock() {
+                    if let Err(e) = profile.save(&self.profile_dir) {
+                        tracing::warn!("Failed to save profile: {e}");
                     }
                 }
             }

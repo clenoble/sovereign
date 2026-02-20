@@ -29,21 +29,19 @@ pub struct ModelPanel {
 
 impl ModelPanel {
     pub fn new(model_dir: String, router_model: String, reasoning_model: String) -> Self {
-        let mut panel = Self {
+        Self {
             visible: false,
             model_dir,
             models: Vec::new(),
             router_model,
             reasoning_model,
-        };
-        panel.refresh();
-        panel
+        }
     }
 
-    /// Scan the model directory for .gguf files.
-    pub fn refresh(&mut self) {
-        self.models.clear();
-        let dir = std::path::Path::new(&self.model_dir);
+    /// Scan a model directory for .gguf files (runs on a background thread).
+    pub fn scan_models(model_dir: String) -> Vec<ModelEntry> {
+        let dir = std::path::Path::new(&model_dir);
+        let mut models = Vec::new();
         if dir.is_dir() {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
@@ -57,25 +55,28 @@ impl ModelPanel {
                         let size_mb = std::fs::metadata(&path)
                             .map(|m| m.len() / (1024 * 1024))
                             .unwrap_or(0);
-                        self.models.push(ModelEntry { filename, size_mb });
+                        models.push(ModelEntry { filename, size_mb });
                     }
                 }
             }
         }
-        self.models.sort_by(|a, b| a.filename.cmp(&b.filename));
+        models.sort_by(|a, b| a.filename.cmp(&b.filename));
+        models
     }
 
-    /// Delete a model file by index.
-    pub fn delete_model(&mut self, idx: usize) {
-        if let Some(entry) = self.models.get(idx) {
-            let path = std::path::Path::new(&self.model_dir).join(&entry.filename);
-            if let Err(e) = std::fs::remove_file(&path) {
-                tracing::error!("Failed to delete model {}: {e}", entry.filename);
-            } else {
-                tracing::info!("Deleted model: {}", entry.filename);
-            }
+    /// Apply scan results from background task.
+    pub fn apply_scan(&mut self, models: Vec<ModelEntry>) {
+        self.models = models;
+    }
+
+    /// Delete a model file by name (runs on a background thread).
+    pub fn delete_model_file(model_dir: String, filename: String) {
+        let path = std::path::Path::new(&model_dir).join(&filename);
+        if let Err(e) = std::fs::remove_file(&path) {
+            tracing::error!("Failed to delete model {filename}: {e}");
+        } else {
+            tracing::info!("Deleted model: {filename}");
         }
-        self.refresh();
     }
 
     /// Assign a model to a role.

@@ -5,6 +5,11 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use chrono::Utc;
 
+/// Max log size before rotation (10 MB).
+const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024;
+/// Number of rotated files to keep.
+const MAX_ROTATED: usize = 3;
+
 /// Append-only session log in JSONL format.
 ///
 /// Records user inputs and orchestrator actions for auditing and context.
@@ -16,10 +21,20 @@ pub struct SessionLog {
 
 impl SessionLog {
     /// Open or create the session log file.
-    /// Creates parent directories if needed.
+    /// Creates parent directories if needed. Rotates if the log exceeds 10 MB.
     pub fn open(dir: &Path) -> Result<Self> {
         fs::create_dir_all(dir)?;
         let path = dir.join("session_log.jsonl");
+
+        // Rotate if the current log exceeds the size limit
+        if path.exists() {
+            if let Ok(meta) = fs::metadata(&path) {
+                if meta.len() > MAX_LOG_SIZE {
+                    Self::rotate(&path);
+                }
+            }
+        }
+
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -29,6 +44,23 @@ impl SessionLog {
             writer: BufWriter::new(file),
             path,
         })
+    }
+
+    /// Rotate log files: .jsonl -> .1.jsonl -> .2.jsonl -> .3.jsonl (oldest deleted).
+    fn rotate(path: &Path) {
+        let stem = path.with_extension("");
+        // Delete oldest
+        let oldest = format!("{}.{MAX_ROTATED}.jsonl", stem.display());
+        let _ = fs::remove_file(&oldest);
+        // Shift existing rotated files
+        for i in (1..MAX_ROTATED).rev() {
+            let from = format!("{}.{i}.jsonl", stem.display());
+            let to = format!("{}.{}.jsonl", stem.display(), i + 1);
+            let _ = fs::rename(&from, &to);
+        }
+        // Move current to .1
+        let first = format!("{}.1.jsonl", stem.display());
+        let _ = fs::rename(path, &first);
     }
 
     /// Log a user input event.
