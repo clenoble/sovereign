@@ -5,7 +5,7 @@ use anyhow::Result;
 use sovereign_core::config::AiConfig;
 use sovereign_core::interfaces::{ModelBackend, UserIntent};
 
-use crate::llm::prompt::{qwen_chat_prompt, REASONING_SYSTEM_PROMPT, ROUTER_SYSTEM_PROMPT};
+use crate::llm::prompt::{build_reasoning_system_prompt, build_router_system_prompt, qwen_chat_prompt};
 use crate::llm::AsyncLlmBackend;
 
 use super::parser::parse_intent_response;
@@ -77,7 +77,8 @@ impl IntentClassifier {
             }
         }
 
-        let prompt = qwen_chat_prompt(ROUTER_SYSTEM_PROMPT, user_text);
+        let system = build_router_system_prompt();
+        let prompt = qwen_chat_prompt(&system, user_text);
         let response = self.router.generate(&prompt, 200).await?;
         tracing::debug!("Router response: {response}");
 
@@ -124,7 +125,8 @@ impl IntentClassifier {
         let reasoning = self.reasoning.as_ref().unwrap();
         self.last_escalation = Some(Instant::now());
 
-        let prompt = qwen_chat_prompt(REASONING_SYSTEM_PROMPT, user_text);
+        let system = build_reasoning_system_prompt();
+        let prompt = qwen_chat_prompt(&system, user_text);
         let response = reasoning.generate(&prompt, 300).await?;
         tracing::debug!("Reasoning response: {response}");
 

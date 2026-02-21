@@ -12,6 +12,8 @@ const PROFILE_FILENAME: &str = "user_profile.json";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserProfile {
     pub user_id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub created: String,
     pub last_updated: String,
     pub interaction_patterns: InteractionPatterns,
@@ -114,6 +116,7 @@ impl UserProfile {
         let now = chrono::Utc::now().to_rfc3339();
         Self {
             user_id: uuid::Uuid::new_v4().to_string(),
+            display_name: None,
             created: now.clone(),
             last_updated: now,
             interaction_patterns: InteractionPatterns {

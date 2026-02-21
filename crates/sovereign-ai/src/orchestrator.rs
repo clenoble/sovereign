@@ -307,8 +307,14 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Handle a chat message directly: skip intent classification, generate a response.
+    /// Maximum iterations for the agent loop per chat message.
+    const MAX_AGENT_ITERATIONS: usize = 5;
+    /// Maximum character budget for history in the prompt (~1800 tokens * 3.5 chars/token).
+    const MAX_HISTORY_CHARS: usize = 6300;
+
+    /// Handle a chat message: load context, run agent loop with tool calling.
     pub async fn handle_chat(&self, message: &str) -> Result<()> {
+        // 1. Log user input
         if let Some(ref log) = self.session_log {
             if let Ok(mut log) = log.lock() {
                 log.log_user_input("chat", message, "chat");
@@ -319,13 +325,145 @@ impl Orchestrator {
             BubbleVisualState::ProcessingOwned,
         ));
 
-        self.execute_action("chat", None, message).await?;
+        // 2. Load conversation history from persistent session log
+        let session_entries = crate::session_log::SessionLog::load_recent(
+            &self.profile_dir,
+            50,
+        );
+        let mut turns = crate::llm::context::session_entries_to_chat_turns(&session_entries);
+
+        // 3. Gather workspace context
+        let workspace_ctx =
+            crate::llm::context::gather_workspace_context(self.db.as_ref()).await;
+
+        // 4. Read user profile for verbosity + name
+        let (verbosity, user_name) = {
+            if let Ok(profile) = self.profile.lock() {
+                (
+                    profile.interaction_patterns.command_verbosity.clone(),
+                    profile.display_name.clone(),
+                )
+            } else {
+                ("detailed".into(), None)
+            }
+        };
+
+        // 5. Build system prompt with context and UX principles
+        let system_prompt = crate::llm::prompt::build_chat_system_prompt(
+            Some(&workspace_ctx),
+            &verbosity,
+            user_name.as_deref(),
+        );
+
+        // 6. Append current user message to turns
+        turns.push(crate::llm::context::ChatTurn {
+            role: crate::llm::context::ChatRole::User,
+            content: message.to_string(),
+        });
+
+        // 7. Agent loop
+        let mut iterations = 0;
+        loop {
+            iterations += 1;
+            if iterations > Self::MAX_AGENT_ITERATIONS {
+                let fallback =
+                    "I had trouble processing that request. Could you rephrase it?";
+                self.log_chat_response(fallback);
+                let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
+                    text: fallback.into(),
+                });
+                break;
+            }
+
+            // Build prompt from full history
+            let full_prompt = crate::llm::context::build_prompt_from_full_history(
+                &system_prompt,
+                &turns,
+                Self::MAX_HISTORY_CHARS,
+            );
+
+            // Generate
+            let response = match self
+                .classifier
+                .lock()
+                .await
+                .router
+                .generate(&full_prompt, 512)
+                .await
+            {
+                Ok(r) => r.trim().to_string(),
+                Err(e) => {
+                    tracing::error!("Chat generation failed: {e}");
+                    let error_msg = format!("Sorry, I couldn't generate a response: {e}");
+                    self.log_chat_response(&error_msg);
+                    let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
+                        text: error_msg,
+                    });
+                    break;
+                }
+            };
+
+            // Check for tool calls
+            if crate::tools::has_tool_call(&response) {
+                let calls = crate::tools::parse_tool_calls(&response);
+                if let Some(call) = calls.first() {
+                    tracing::info!("Tool call: {} (iteration {})", call.name, iterations);
+
+                    // Execute tool
+                    let result =
+                        crate::tools::execute_tool(call, self.db.as_ref()).await;
+
+                    // Append assistant turn (tool call) and tool result to history
+                    turns.push(crate::llm::context::ChatTurn {
+                        role: crate::llm::context::ChatRole::Assistant,
+                        content: response.clone(),
+                    });
+                    turns.push(crate::llm::context::ChatTurn {
+                        role: crate::llm::context::ChatRole::Tool,
+                        content: format!("[{}] {}", result.tool_name, result.output),
+                    });
+
+                    // Continue loop — model will see tool result and generate again
+                    continue;
+                }
+            }
+
+            // No tool call — this is the final response
+            let text_response = crate::tools::extract_text_response(&response);
+            tracing::info!(
+                "Chat response: {} chars, {} iterations",
+                text_response.len(),
+                iterations
+            );
+            self.log_action(
+                "chat",
+                &format!(
+                    "response: {} chars, {} iterations",
+                    text_response.len(),
+                    iterations
+                ),
+            );
+            self.log_chat_response(&text_response);
+            let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
+                text: text_response,
+            });
+            break;
+        }
 
         let _ = self
             .event_tx
             .send(OrchestratorEvent::BubbleState(BubbleVisualState::Idle));
 
         Ok(())
+    }
+
+    /// Log a chat response to the session log for persistent conversation history.
+    fn log_chat_response(&self, response: &str) {
+        if let Some(ref log) = self.session_log {
+            if let Ok(mut log) = log.lock() {
+                log.log_chat_response(response);
+            }
+        }
     }
 
     /// Wait for a user decision on the decision channel (30s timeout).
@@ -955,22 +1093,8 @@ impl Orchestrator {
                 }
             }
             "chat" => {
-                let system = crate::llm::prompt::CHAT_SYSTEM_PROMPT;
-                let prompt = crate::llm::prompt::qwen_chat_prompt(system, query);
-                match self.classifier.lock().await.router.generate(&prompt, 512).await {
-                    Ok(response) => {
-                        let text = response.trim().to_string();
-                        tracing::info!("Chat response: {} chars", text.len());
-                        self.log_action("chat", &format!("response: {} chars", text.len()));
-                        let _ = self.event_tx.send(OrchestratorEvent::ChatResponse { text });
-                    }
-                    Err(e) => {
-                        tracing::error!("Chat generation failed: {e}");
-                        let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
-                            text: format!("Sorry, I couldn't generate a response: {e}"),
-                        });
-                    }
-                }
+                // Delegate to the agent loop which handles context, tools, and history
+                self.handle_chat(query).await?;
             }
             _ => {
                 let level = security::action_level(action);

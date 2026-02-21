@@ -6,6 +6,7 @@ pub mod intent;
 pub mod llm;
 pub mod orchestrator;
 pub mod session_log;
+pub mod tools;
 pub mod trust;
 pub mod voice;
 

@@ -166,6 +166,17 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         let db = create_db(config).await?;
         seed::seed_if_empty(&db).await?;
 
+        // Seed user profile and session log history for testing
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "/tmp".into());
+        let profile_dir = std::path::PathBuf::from(home)
+            .join(".sovereign")
+            .join("orchestrator");
+        if let Err(e) = seed::seed_profile_and_history(&profile_dir) {
+            tracing::warn!("Profile/history seed failed: {e}");
+        }
+
         // Parallelize the 5 independent DB queries.
         let (threads, documents, relationships, contacts, conversations) = tokio::try_join!(
             db.list_threads(),

@@ -9,7 +9,57 @@ Before writing or modifying any code that uses an external library (crate, pip p
 
 This is critical — APIs change between versions and stale knowledge causes cascading build failures.
 
+## Workspace Architecture
+
+10-crate Rust workspace (~16k lines):
+
+| Crate | Role |
+|-------|------|
+| `sovereign-core` | Shared types, config, interfaces, user profile, security primitives |
+| `sovereign-db` | SurrealDB graph database — documents, threads, relationships, contacts, conversations |
+| `sovereign-crypto` | Encryption (AES-256-GCM), key management, content signing |
+| `sovereign-ai` | LLM orchestrator, intent classification, chat agent loop, tools, trust, voice pipeline |
+| `sovereign-ui` | Iced 0.14 GUI — panels, chat, search bar, theming |
+| `sovereign-canvas` | Spatial canvas — document cards, thread zones, drag-and-drop |
+| `sovereign-skills` | Skill registry and built-in skills (markdown editor, PDF export, video) |
+| `sovereign-p2p` | libp2p peer-to-peer sync (experimental) |
+| `sovereign-comms` | Communications — email (IMAP/SMTP), Signal (via presage) |
+| `sovereign-app` | Binary crate — CLI, GUI bootstrap, setup, seeding |
+
+### AI Orchestrator Architecture (`sovereign-ai`)
+
+The orchestrator uses local Qwen2.5 models via llama-cpp-2 (no cloud, no external servers):
+- **Router (3B)**: Fast intent classification — classifies user input into ~20 action types
+- **Reasoning (7B)**: Escalation model for complex/ambiguous queries (loaded on demand, unloaded after 5min idle)
+- **Chat agent loop**: Multi-turn with tool calling — loads session history, gathers workspace context, iterates up to 5 rounds of generate → tool call → execute → feed back
+- **6 read-only tools**: `search_documents`, `list_threads`, `get_document`, `list_documents`, `search_messages`, `list_contacts` — all Observe level (Level 0), no confirmation needed
+- **Prompt format**: ChatML (`<|im_start|>role\n...\n<|im_end|>`)
+- **Tool call format**: `<tool_call>{"name":"...","arguments":{...}}</tool_call>` — learned via few-shot
+
+Key modules: `intent/` (classifier + parser), `llm/` (backend, prompts, context), `orchestrator.rs`, `tools.rs`, `action_gate.rs`, `trust.rs`, `injection.rs`, `session_log.rs`, `voice/`
+
+### UX Principles (from `sovereign_os_ux_principles.md`)
+
+These 8 principles are implemented across the codebase — respect them when modifying AI behavior:
+
+1. **Action Gravity** — Friction scales with irreversibility (5 levels: Observe → Destruct). Enforced in `action_gate.rs`.
+2. **Conversational Confirmation** — AI proposes with specifics, user confirms naturally. Encoded in chat system prompt.
+3. **Sovereignty Halo / Provenance** — Label content as "(owned)" or "(external)". Tool results include provenance markers.
+4. **Plan Visibility** — Multi-step plans shown before execution. Encoded in chat system prompt.
+5. **Trust Calibration** — Per-workflow trust, never global. Implemented in `trust.rs` with persistent tracking.
+6. **Hard Barriers** — Critical constraints enforced by code, not prompts. Chat tools are read-only regardless of model output.
+7. **Injection Surfacing** — Detected attacks shown to user. Implemented in `injection.rs`.
+8. **Error & Uncertainty** — Rank matches, explain failures, suggest alternatives. Encoded in chat system prompt.
+
 ## Build & Development
+
+### Toolchain Prerequisites (Windows)
+
+Install via `winget` if missing:
+- **Visual Studio 2022 Build Tools** with C++ workload: `winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"`
+- **LLVM** (for `libclang.dll` needed by bindgen): `winget install LLVM.LLVM`
+- **CMake**: `winget install Kitware.CMake`
+- **Rust** (stable MSVC): `winget install Rustlang.Rustup`
 
 ### WSL2 / Linux
 - Source lives on NAS mount (`/mnt/nas/Current/Projets/03 - user-centered OS/`)
@@ -35,29 +85,33 @@ _build.bat build -p sovereign-canvas --target-dir "Z:\cargo-target" -j 2
 _build.bat build -p sovereign-app --target-dir "Z:\cargo-target" -j 2
 ```
 
-#### From bash (Claude Code / Git Bash / WSL)
-Batch files cannot be invoked directly from bash. Use `cargo.exe` with the required env vars:
-```bash
-# Set env vars and call cargo directly
-LIBCLANG_PATH="C:/Program Files/LLVM/bin" \
-CMAKE="C:/Program Files/CMake/bin/cmake.exe" \
-cargo.exe check -p sovereign-canvas --target-dir "Z:/cargo-target" -j 2
+#### From bash (Claude Code / Git Bash)
 
-# Build
-LIBCLANG_PATH="C:/Program Files/LLVM/bin" \
-CMAKE="C:/Program Files/CMake/bin/cmake.exe" \
-cargo.exe build -p sovereign-app --target-dir "Z:/cargo-target" -j 2
+**Critical: Git Bash `link.exe` conflict.** Git Bash ships `/usr/bin/link.exe` (GNU hard-link utility) which shadows the MSVC `link.exe` (linker). You MUST prepend the MSVC bin directory to PATH, otherwise linking fails with `link: extra operand`.
+
+Full environment setup for bash:
+```bash
+# MSVC toolchain paths (adjust version numbers if MSVC updates)
+export PATH="/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64:/c/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64:/c/Program Files/CMake/bin:$PATH:/c/Users/celin/.cargo/bin"
+export LIBCLANG_PATH="C:/Program Files/LLVM/bin"
+export CMAKE="C:/Program Files/CMake/bin/cmake.exe"
+export LIB="C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/lib/x64;C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/um/x64;C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64"
+export INCLUDE="C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/include;C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/ucrt;C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um;C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/shared"
+
+# Then run cargo as usual
+cargo.exe check -p sovereign-ai --no-default-features --target-dir "C:/cargo-target" -j 2
+cargo.exe build -p sovereign-app --target-dir "C:/cargo-target" -j 2
 ```
 
 #### Key notes
 - `sovereign-ai` default feature is `cuda` — disable on machines without CUDA toolkit: `--no-default-features`
-- C: drive is nearly full — always use `--target-dir "Z:/cargo-target"` (forward slashes in bash, backslashes in cmd/PowerShell)
+- Use `--target-dir` to control where build artifacts go. Use `"Z:/cargo-target"` if Z: drive (NAS) is available, otherwise `"C:/cargo-target"`. Forward slashes in bash, backslashes in cmd/PowerShell.
 - Windows needs `/FORCE:MULTIPLE` linker flag (MSVC) because `llama-cpp-sys-2` and `whisper-rs-sys` both embed ggml — this is set in `.cargo/config.toml`
 - Before rebuilding after errors, kill stale processes and clean sovereign artifacts:
   ```powershell
   Get-Process -Name cargo,rustc -ErrorAction SilentlyContinue | Stop-Process -Force
-  Remove-Item 'Z:\cargo-target\debug\deps\libsovereign_*' -Force -ErrorAction SilentlyContinue
-  Remove-Item 'Z:\cargo-target\debug\.fingerprint\sovereign-*' -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item '<target-dir>\debug\deps\libsovereign_*' -Force -ErrorAction SilentlyContinue
+  Remove-Item '<target-dir>\debug\.fingerprint\sovereign-*' -Recurse -Force -ErrorAction SilentlyContinue
   ```
 
 ## Testing
@@ -80,18 +134,16 @@ _build.bat test -p sovereign-app --test cli_integration --target-dir "Z:\cargo-t
 ```
 
 ### Windows (from bash — Claude Code / Git Bash)
+Set the full environment from the bash section above, then:
 ```bash
-# All crates except sovereign-ai
-LIBCLANG_PATH="C:/Program Files/LLVM/bin" CMAKE="C:/Program Files/CMake/bin/cmake.exe" \
-cargo.exe test --target-dir "Z:/cargo-target" -j 2
-
-# sovereign-ai specifically (skip CUDA)
-LIBCLANG_PATH="C:/Program Files/LLVM/bin" CMAKE="C:/Program Files/CMake/bin/cmake.exe" \
-cargo.exe test -p sovereign-ai --no-default-features --target-dir "Z:/cargo-target" -j 2
+# sovereign-ai (skip CUDA)
+cargo.exe test -p sovereign-ai --no-default-features --target-dir "C:/cargo-target" -j 2
 
 # Single crate
-LIBCLANG_PATH="C:/Program Files/LLVM/bin" CMAKE="C:/Program Files/CMake/bin/cmake.exe" \
-cargo.exe test -p sovereign-canvas --target-dir "Z:/cargo-target" -j 2
+cargo.exe test -p sovereign-canvas --target-dir "C:/cargo-target" -j 2
+
+# All crates except sovereign-ai
+cargo.exe test --target-dir "C:/cargo-target" -j 2
 ```
 
 ### Key gotchas
@@ -139,5 +191,5 @@ The binary crate (`sovereign-app`) is split into focused modules:
 - `cli.rs` — Clap CLI struct and Commands enum
 - `commands.rs` — Async CLI handler functions (create/get/list/update/delete for docs, threads, relationships, commits, contacts, conversations)
 - `setup.rs` — DB creation, crypto initialization, orchestrator callback wiring
-- `seed.rs` — Sample data seeding on first launch
+- `seed.rs` — Sample data seeding on first launch (DB data + user profile + session log history)
 - `main.rs` — Entry point: CLI dispatch + GUI bootstrap (`run_gui`)

@@ -1,5 +1,9 @@
+use std::io::Write;
+use std::path::Path;
+
 use anyhow::Result;
 use sovereign_core::content::ContentFields;
+use sovereign_core::profile::{SuggestionFeedback, UserProfile};
 use sovereign_db::schema::{
     ChannelAddress, ChannelType, Contact, Conversation, Document, Message, MessageDirection,
     ReadStatus, RelationType, Thread,
@@ -299,6 +303,91 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
         conv_ids.len(),
         msg_defs.len(),
     );
+    Ok(())
+}
+
+/// Seed the user profile and session log with realistic multi-day history.
+/// Called once during first launch so the orchestrator has context for testing.
+pub fn seed_profile_and_history(profile_dir: &Path) -> Result<()> {
+    // Seed UserProfile if it doesn't exist
+    let profile_path = profile_dir.join("user_profile.json");
+    if !profile_path.exists() {
+        std::fs::create_dir_all(profile_dir)?;
+
+        let mut profile = UserProfile::default_new();
+        profile.display_name = Some("Alex".into());
+        profile.interaction_patterns.command_verbosity = "detailed".into();
+        profile
+            .skill_preferences
+            .insert("text".into(), "markdown-editor".into());
+        profile
+            .skill_preferences
+            .insert("export".into(), "pdf-export".into());
+
+        // Simulate suggestion feedback history
+        let mut adopt_fb = SuggestionFeedback::new();
+        adopt_fb.accepted = 4;
+        adopt_fb.dismissed = 1;
+        adopt_fb.shown = 5;
+        profile
+            .suggestion_feedback
+            .insert("adopt".into(), adopt_fb);
+
+        let mut thread_fb = SuggestionFeedback::new();
+        thread_fb.accepted = 2;
+        thread_fb.shown = 2;
+        profile
+            .suggestion_feedback
+            .insert("create_thread".into(), thread_fb);
+
+        profile.save(profile_dir)?;
+        tracing::info!("Seeded user profile: display_name=Alex");
+    }
+
+    // Seed session log if it doesn't exist
+    let log_path = profile_dir.join("session_log.jsonl");
+    if !log_path.exists() {
+        let mut file = std::fs::File::create(&log_path)?;
+
+        // 3 days of realistic interaction history (Feb 18-20, 2026)
+        // Consistent with the DB seed data (documents, contacts, conversations)
+        let entries = [
+            // Day 1: Feb 18 — initial exploration
+            r#"{"ts":"2026-02-18T09:15:00Z","type":"user_input","mode":"text","content":"search meeting notes","intent":"search"}"#,
+            r#"{"ts":"2026-02-18T09:15:01Z","type":"orchestrator_action","action":"search","details":"found 1 match: Meeting Notes Q1"}"#,
+            r#"{"ts":"2026-02-18T09:20:00Z","type":"user_input","mode":"text","content":"open project plan","intent":"open"}"#,
+            r#"{"ts":"2026-02-18T09:20:01Z","type":"orchestrator_action","action":"open","details":"opened Project Plan"}"#,
+            r#"{"ts":"2026-02-18T14:30:00Z","type":"user_input","mode":"chat","content":"what threads do I have?","intent":"chat"}"#,
+            r#"{"ts":"2026-02-18T14:30:03Z","type":"chat_response","content":"You have 4 threads: Research, Development, Design, and Admin. Development has the most documents with 7, followed by Research with 3."}"#,
+            r#"{"ts":"2026-02-18T14:31:00Z","type":"user_input","mode":"chat","content":"how many documents are in Development?","intent":"chat"}"#,
+            r#"{"ts":"2026-02-18T14:31:02Z","type":"chat_response","content":"The Development thread has 7 documents: Project Plan, Architecture Diagram, API Specification, and Test Results (all owned), plus 3 external references — a Stack Overflow Q&A on GTK4 bindings, GitHub Issue #42, and an API Response Log."}"#,
+            // Day 2: Feb 19 — deeper work
+            r#"{"ts":"2026-02-19T10:00:00Z","type":"user_input","mode":"text","content":"find architecture","intent":"search"}"#,
+            r#"{"ts":"2026-02-19T10:00:01Z","type":"orchestrator_action","action":"search","details":"found 1 match: Architecture Diagram"}"#,
+            r#"{"ts":"2026-02-19T11:15:00Z","type":"user_input","mode":"chat","content":"summarize the design document","intent":"chat"}"#,
+            r#"{"ts":"2026-02-19T11:15:04Z","type":"chat_response","content":"From your Design Document (owned): it defines the visual system for Sovereign OS — dark background (#0e0e10), accent blue (#5a9fd4), with system font at 13-16px. It references the Architecture Diagram for component structure."}"#,
+            r#"{"ts":"2026-02-19T14:00:00Z","type":"user_input","mode":"chat","content":"who are my contacts?","intent":"chat"}"#,
+            r#"{"ts":"2026-02-19T14:00:03Z","type":"chat_response","content":"You have 4 contacts: Alice Chen (email, Signal), Bob Martinez (email, WhatsApp), Carol Nguyen (email, SMS), and David Park (Signal)."}"#,
+            r#"{"ts":"2026-02-19T15:00:00Z","type":"user_input","mode":"text","content":"create thread Prototyping","intent":"create_thread"}"#,
+            r#"{"ts":"2026-02-19T15:00:01Z","type":"orchestrator_action","action":"create_thread","details":"created thread Prototyping"}"#,
+            // Day 3: Feb 20 — conversations and follow-ups
+            r#"{"ts":"2026-02-20T09:00:00Z","type":"user_input","mode":"chat","content":"what did Alice say about the architecture?","intent":"chat"}"#,
+            r#"{"ts":"2026-02-20T09:00:05Z","type":"chat_response","content":"In your email conversation 'Architecture discussion' with Alice Chen: she reviewed the architecture doc and asked about keeping the DB abstraction as a trait. You agreed to keep it for future flexibility. She said she'd update the API spec by Friday. Her latest message (unread) asks about adding a batch insert method for seeding."}"#,
+            r#"{"ts":"2026-02-20T10:30:00Z","type":"user_input","mode":"text","content":"open budget overview","intent":"open"}"#,
+            r#"{"ts":"2026-02-20T10:30:01Z","type":"orchestrator_action","action":"open","details":"opened Budget Overview"}"#,
+            r#"{"ts":"2026-02-20T14:00:00Z","type":"user_input","mode":"chat","content":"what are my unread messages?","intent":"chat"}"#,
+            r#"{"ts":"2026-02-20T14:00:04Z","type":"chat_response","content":"You have 3 unread messages across 3 conversations:\n1. Alice Chen in 'Architecture discussion' (email) — asks about adding a batch insert method\n2. David Park in 'Design feedback' (Signal) — offers to mock up light theme colors this week\n3. Bob Martinez in 'Budget approval' (WhatsApp) — waiting for the revised budget doc"}"#,
+            r#"{"ts":"2026-02-20T16:00:00Z","type":"user_input","mode":"text","content":"search test results","intent":"search"}"#,
+            r#"{"ts":"2026-02-20T16:00:01Z","type":"orchestrator_action","action":"search","details":"found 1 match: Test Results"}"#,
+        ];
+
+        for entry in &entries {
+            writeln!(file, "{entry}")?;
+        }
+
+        tracing::info!("Seeded session log with {} entries", entries.len());
+    }
+
     Ok(())
 }
 
