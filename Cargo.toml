@@ -75,3 +75,6 @@ whisper-rs = "0.15"
 cpal = "0.17"
 rustpotter = "3.0"
 ringbuf = "0.4"
+
+# HTTP client (for Jiminy bridge)
+reqwest = { version = "0.13", features = ["json"] }

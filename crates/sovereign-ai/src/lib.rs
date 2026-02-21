@@ -3,6 +3,8 @@ pub mod autocommit;
 pub mod events;
 pub mod injection;
 pub mod intent;
+#[cfg(feature = "jiminy")]
+pub mod jiminy;
 pub mod llm;
 pub mod orchestrator;
 pub mod session_log;

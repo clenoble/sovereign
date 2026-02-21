@@ -243,6 +243,32 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         let (decision_tx, decision_rx) = tokio::sync::mpsc::channel::<ActionDecision>(32);
         let (feedback_tx, feedback_rx) = tokio::sync::mpsc::channel::<FeedbackEvent>(32);
 
+        // Jiminy bridge: fan-out orchestrator events to both UI and robot
+        #[cfg(feature = "jiminy")]
+        let (orch_rx, _jiminy_handle) = {
+            let (ui_tx, ui_rx) = mpsc::channel::<OrchestratorEvent>();
+            let (jiminy_tx, jiminy_rx) = mpsc::channel::<OrchestratorEvent>();
+
+            // Fan-out thread: clone each event to both UI and Jiminy
+            std::thread::Builder::new()
+                .name("jiminy-fanout".into())
+                .spawn(move || {
+                    while let Ok(event) = orch_rx.recv() {
+                        let _ = ui_tx.send(event.clone());
+                        let _ = jiminy_tx.send(event);
+                    }
+                })
+                .expect("Failed to spawn jiminy-fanout thread");
+
+            let jiminy_url = std::env::var("JIMINY_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:9100".into());
+            let bridge = sovereign_ai::jiminy::JiminyBridge::new(&jiminy_url);
+            let handle = bridge.spawn(jiminy_rx);
+            tracing::info!("Jiminy bridge started (sidecar at {jiminy_url})");
+
+            (ui_rx, handle)
+        };
+
         // Try to initialize AI orchestrator
         let db_arc = db_arc_for_skills;
         let orchestrator = match sovereign_ai::Orchestrator::new(
