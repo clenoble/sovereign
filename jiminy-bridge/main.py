@@ -9,6 +9,12 @@ Usage:
     python main.py                    # Auto-detect (sim or hardware)
     python main.py --sim              # Force simulation mode
     python main.py --port 9100        # Custom port
+
+Simulation:
+    Start daemon with gold-themed scene:
+        reachy-mini-daemon --sim --scene sovereign
+    (Install scene first: copy scenes/sovereign.xml into
+     .venv/Lib/site-packages/reachy_mini/descriptions/reachy_mini/mjcf/scenes/)
 """
 
 from __future__ import annotations
