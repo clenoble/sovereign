@@ -1240,7 +1240,15 @@ pub fn run_app(app: SovereignApp) -> iced::Result {
     .title(SovereignApp::title)
     .subscription(SovereignApp::subscription)
     .theme(SovereignApp::theme)
-    .window_size(iced::Size::new(1280.0, 800.0))
+    .window(iced::window::Settings {
+        size: iced::Size::new(1280.0, 800.0),
+        icon: iced::window::icon::from_file_data(
+            include_bytes!("../assets/icon.png"),
+            None,
+        )
+        .ok(),
+        ..Default::default()
+    })
     .antialiasing(true)
     .run()
 }
