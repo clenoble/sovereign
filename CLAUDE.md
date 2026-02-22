@@ -157,8 +157,27 @@ cargo.exe test --target-dir "C:/cargo-target" -j 2
 
 ## Git & NAS Push/Merge Workflow
 
-The bare repo lives on the NAS. From WSL:
+The repo on the NAS is at `\\nas\home\Current\Projets\03 - user-centered OS` (bare repo).
 
+### Windows (from bash — Claude Code / Git Bash)
+
+Remote URL uses UNC path (already configured):
+```bash
+# Remote should be set to:
+git remote set-url origin '//nas/home/Current/Projets/03 - user-centered OS'
+
+# Safe directory exceptions (one-time, already configured):
+git config --global --add safe.directory '//nas/home/Current/Projets/03 - user-centered OS'
+git config --global --add safe.directory '//nas/home/Current/Projets/03 - user-centered OS/.git'
+
+# Push / pull
+git push origin main
+git pull origin main
+```
+
+### WSL2 / Linux
+
+WSL cannot use UNC paths — mount the NAS first:
 ```bash
 # 1. Mount the NAS (if not already mounted — requires sudo, ask user)
 sudo mount -t drvfs 'Z:' /mnt/nas
@@ -167,18 +186,11 @@ sudo mount -t drvfs 'Z:' /mnt/nas
 git config --global --add safe.directory '/mnt/nas/03 - user-centered OS'
 git config --global --add safe.directory '/mnt/nas/03 - user-centered OS/.git'
 
-# 3. Set remote to WSL-accessible path (if still set to Z:\)
+# 3. Set remote to WSL-accessible path
 git remote set-url origin '/mnt/nas/03 - user-centered OS'
 
 # 4. Push
 git push origin main
-```
-
-The remote URL is stored as a WSL path (`/mnt/nas/03 - user-centered OS`), not the Windows `Z:\` path, because WSL git cannot resolve Windows drive letters.
-
-To pull updates back to the working copy after editing on the NAS side:
-```bash
-git pull origin main
 ```
 
 ## Code Style
