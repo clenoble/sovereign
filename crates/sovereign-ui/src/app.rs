@@ -20,6 +20,7 @@ use sovereign_skills::traits::SkillOutput;
 use crate::chat::ChatState;
 use crate::onboarding::OnboardingState;
 use crate::orchestrator_bubble::{build_skill_doc, format_structured_data, BubbleState};
+use crate::panels::camera_panel::{CameraPanel, SharedFrame};
 use crate::panels::contact_panel::ContactPanel;
 use crate::panels::document_panel::{FloatingPanel, FormatKind, DEAD_ZONE, DRAG_BAR_HEIGHT};
 use crate::panels::model_panel::{ModelEntry, ModelPanel, ModelRole};
@@ -99,6 +100,8 @@ pub enum Message {
     ModelAssignRole { model_idx: usize, role: ModelRole },
     ModelDelete(usize),
     ModelDeleteComplete,
+    // Camera
+    CameraToggled,
     // Theme
     ThemeToggled,
     // Onboarding
@@ -136,6 +139,7 @@ pub struct SovereignApp {
     skill_rx: Option<mpsc::Receiver<SkillEvent>>,
     // Panels
     model_panel: ModelPanel,
+    camera_panel: CameraPanel,
     // Onboarding
     onboarding: Option<OnboardingState>,
     // Callbacks
@@ -173,6 +177,7 @@ impl SovereignApp {
         model_dir: String,
         router_model: String,
         reasoning_model: String,
+        camera_frame: Option<SharedFrame>,
     ) -> (Self, Task<Message>) {
         let doc_map: HashMap<String, Document> = documents
             .iter()
@@ -230,6 +235,9 @@ impl SovereignApp {
             save_callback,
             close_callback,
             model_panel: ModelPanel::new(model_dir, router_model, reasoning_model),
+            camera_panel: CameraPanel::new(
+                camera_frame.unwrap_or_else(|| Arc::new(Mutex::new(None))),
+            ),
             decision_tx,
             onboarding: if first_launch {
                 Some(OnboardingState::new())
@@ -633,6 +641,11 @@ impl SovereignApp {
             }
 
             // ── Model management ──────────────────────────────────────────
+            Message::CameraToggled => {
+                self.camera_panel.visible = !self.camera_panel.visible;
+                Task::none()
+            }
+
             Message::ModelPanelToggled => {
                 self.model_panel.visible = !self.model_panel.visible;
                 if self.model_panel.visible && self.model_panel.models.is_empty() {
@@ -779,6 +792,11 @@ impl SovereignApp {
             layers.push(model_positioned.into());
         }
 
+        // Camera panel (bottom-right)
+        if self.camera_panel.visible {
+            layers.push(self.camera_panel.view());
+        }
+
         // Search overlay (conditional)
         if self.search.visible {
             layers.push(self.search.view());
@@ -905,6 +923,9 @@ impl SovereignApp {
         for cmd in cmds {
             sovereign_canvas::apply_command(&self.canvas_state, cmd);
         }
+
+        // Poll camera frame
+        self.camera_panel.poll_frame();
     }
 
     fn handle_orchestrator_event(&mut self, event: OrchestratorEvent) {
@@ -1219,7 +1240,15 @@ pub fn run_app(app: SovereignApp) -> iced::Result {
     .title(SovereignApp::title)
     .subscription(SovereignApp::subscription)
     .theme(SovereignApp::theme)
-    .window_size(iced::Size::new(1280.0, 800.0))
+    .window(iced::window::Settings {
+        size: iced::Size::new(1280.0, 800.0),
+        icon: iced::window::icon::from_file_data(
+            include_bytes!("../assets/icon.png"),
+            None,
+        )
+        .ok(),
+        ..Default::default()
+    })
     .antialiasing(true)
     .run()
 }
