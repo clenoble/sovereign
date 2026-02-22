@@ -43,3 +43,4 @@ data/
 # Model files
 models/
 *.gguf
+jiminy-bridge/.venv/
