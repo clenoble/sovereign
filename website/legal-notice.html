@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Legal Notice — Sovereign OS</title>
+    <meta name="description" content="Legal notice and project information for Sovereign OS, an open-source local-first personal operating system under AGPL-3.0.">
+    <link rel="canonical" href="https://sovereign-os.org/legal-notice.html">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://sovereign-os.org/legal-notice.html">
+    <meta property="og:title" content="Legal Notice — Sovereign OS">
+    <meta property="og:description" content="Legal notice and project information for Sovereign OS, an open-source local-first personal operating system under AGPL-3.0.">
+    <meta property="og:image" content="https://sovereign-os.org/logo-static.svg">
+    <meta property="og:site_name" content="Sovereign OS">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Legal Notice — Sovereign OS">
+    <meta name="twitter:description" content="Legal notice and project information for Sovereign OS, an open-source local-first personal operating system under AGPL-3.0.">
+    <meta name="twitter:image" content="https://sovereign-os.org/logo-static.svg">
+    <style>
+        :root {
+            --c-bg: #0c0e13;
+            --c-bg-alt: #13161d;
+            --c-bg-card: #181c25;
+            --c-border: #2a2f3a;
+            --c-border-subtle: #1e222c;
+            --c-text: #e2e4e9;
+            --c-text-dim: #a1a5b2;
+            --c-text-bright: #ffffff;
+            --c-accent: #4a9eff;
+            --c-accent-dim: #2d6ab3;
+            --c-owned: #3ecf8e;
+            --c-external: #f59e42;
+            --c-danger: #ef5350;
+            --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+            --font-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+            --radius: 6px;
+            --radius-lg: 10px;
+            --max-w: 860px;
+            --header-h: 60px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            background-color: var(--c-bg);
+            color: var(--c-text);
+            font-family: var(--font-sans);
+            line-height: 1.7;
+            font-size: 16px;
+        }
+
+        a {
+            color: var(--c-accent);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        a:hover {
+            color: var(--c-text-bright);
+            text-decoration: underline;
+        }
+        /* External link indicator (WCAG 3.2.4) */
+        footer a[target="_blank"]::after,
+        main a[target="_blank"]::after { content: " ↗"; font-size: 0.75em; }
+
+        a:focus-visible {
+            outline: 2px solid var(--c-accent);
+            outline-offset: 2px;
+        }
+
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0,0,0,0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* Header */
+        header {
+            height: var(--header-h);
+            background-color: var(--c-bg-alt);
+            border-bottom: 1px solid var(--c-border-subtle);
+            display: flex;
+            align-items: center;
+            padding: 0 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--c-accent);
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .back-link:hover {
+            color: var(--c-text-bright);
+        }
+
+        .back-link::before {
+            content: "←";
+            font-size: 18px;
+        }
+
+        /* Main content */
+        main {
+            max-width: var(--max-w);
+            margin: 0 auto;
+            padding: 3rem 2rem;
+        }
+
+        h1 {
+            font-size: 2.2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            color: var(--c-text-bright);
+            letter-spacing: -0.5px;
+        }
+
+        .subtitle {
+            font-size: 1rem;
+            color: var(--c-text-dim);
+            margin-bottom: 3rem;
+            line-height: 1.6;
+        }
+
+        section {
+            margin-bottom: 3rem;
+            scroll-margin-top: var(--header-h);
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--c-text-bright);
+            margin-bottom: 1rem;
+            margin-top: 2rem;
+        }
+
+        h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--c-accent);
+            margin-bottom: 0.75rem;
+            margin-top: 1.5rem;
+        }
+
+        p {
+            margin-bottom: 1rem;
+            color: var(--c-text);
+        }
+
+        .legal-box {
+            background-color: var(--c-bg-card);
+            border: 1px solid var(--c-border);
+            border-radius: var(--radius-lg);
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            font-size: 0.95rem;
+            line-height: 1.75;
+        }
+
+        .legal-box strong {
+            color: var(--c-text-bright);
+        }
+
+        ul, ol {
+            margin-left: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+        }
+
+        code {
+            background-color: var(--c-bg-card);
+            border: 1px solid var(--c-border);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            font-size: 0.9em;
+            color: var(--c-accent);
+        }
+
+        .highlight {
+            background-color: rgba(62, 207, 142, 0.08);
+            border-left: 3px solid var(--c-owned);
+            padding-left: 1rem;
+            margin: 1rem 0;
+        }
+
+        @media (max-width: 768px) {
+            main {
+                padding: 2rem 1.5rem;
+            }
+
+            h1 {
+                font-size: 1.8rem;
+            }
+
+            h2 {
+                font-size: 1.3rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <a href="#main-content" class="sr-only">Skip to main content</a>
+
+    <header>
+        <a href="index.html" class="back-link">Back to Overview</a>
+    </header>
+
+    <main id="main-content">
+        <h1>Legal Notice</h1>
+        <p class="subtitle">Full legal terms, disclaimers, and regulatory information for Sovereign OS.</p>
+
+        <section>
+            <h2>License</h2>
+            <p>Sovereign OS is distributed under the <strong>GNU Affero General Public License v3.0 (AGPL-3.0)</strong>. The full license text is included in the <code>LICENSE</code> file in the repository.</p>
+            <p>Key rights and obligations:</p>
+            <ul>
+                <li><strong>Freedom to use:</strong> You may run the software for any purpose.</li>
+                <li><strong>Freedom to modify:</strong> You may inspect and modify the source code.</li>
+                <li><strong>Freedom to share:</strong> You may distribute copies under the same license.</li>
+                <li><strong>Network copyleft:</strong> If you modify Sovereign OS and operate it as a network service, you must make the modified source available to users (Section 13).</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Warranty Disclaimer</h2>
+            <div class="legal-box">
+                <strong>THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.</strong>
+                <br><br>
+                IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+            </div>
+            <p>This software is provided on a best-effort basis. We make no guarantee that it will work correctly, securely, or at all. Use at your own risk.</p>
+        </section>
+
+        <section>
+            <h2>Limitation of Liability</h2>
+            <p>To the fullest extent permitted by law, in no event shall the Sovereign OS project, its maintainers, contributors, or any related parties be liable for:</p>
+            <ul>
+                <li>Any indirect, incidental, special, consequential, or punitive damages;</li>
+                <li>Loss of profits, revenue, data, or use;</li>
+                <li>Business interruption;</li>
+                <li>Any damages arising from use or inability to use the software, even if advised of the possibility of such damages.</li>
+            </ul>
+            <p>This limitation applies regardless of the legal theory (contract, tort, strict liability, etc.) and even if a remedy fails of its essential purpose.</p>
+        </section>
+
+        <section>
+            <h2>Nature of the Project</h2>
+            <p>Sovereign OS is a <strong>distributed, open-source software project</strong>. It is not a hosted service. Key characteristics:</p>
+            <ul>
+                <li><strong>No servers operated:</strong> The Sovereign OS project does not operate or maintain any servers.</li>
+                <li><strong>No user data collection:</strong> The software does not send data to any service operated by the project.</li>
+                <li><strong>No accounts maintained:</strong> There is no account system operated by the Sovereign OS project.</li>
+                <li><strong>No capability to intercept, access, or modify user data:</strong> By design, the project has no technical means to access, intercept, modify, or delete user data stored on your device.</li>
+                <li><strong>Decentralized:</strong> All data is stored locally or synchronized peer-to-peer (if enabled) without central storage.</li>
+            </ul>
+            <div class="highlight">
+                <strong>What this means:</strong> If you are concerned about data privacy and control, Sovereign OS cannot access your data by design. We have no ability to surveil, audit, recover, or restore your information.
+            </div>
+        </section>
+
+        <section>
+            <h2>Encryption Notice</h2>
+            <p>Sovereign OS includes cryptographic functionality (AES-256-GCM, HKDF, key derivation). Export, import, possession, and use of cryptographic software may be regulated under:</p>
+            <ul>
+                <li><strong>United States:</strong> Export Administration Regulations (EAR), controlled by the Bureau of Industry and Security (BIS).</li>
+                <li><strong>European Union:</strong> Dual-Use Regulation (EU 2021/821).</li>
+                <li><strong>Multinational:</strong> Wassenaar Arrangement restrictions.</li>
+            </ul>
+            <p>You are responsible for ensuring your possession and use of Sovereign OS complies with all applicable laws in your jurisdiction. Consult local legal counsel if unsure.</p>
+        </section>
+
+        <section>
+            <h2>No Professional Advice</h2>
+            <p>Sovereign OS includes AI assistance powered by large language models. <strong>The AI's output does not constitute legal, financial, medical, or other professional advice.</strong></p>
+            <p>AI models can make mistakes, hallucinate facts, or provide misleading information. Never rely on AI output for:</p>
+            <ul>
+                <li>Legal interpretation or compliance guidance;</li>
+                <li>Financial, investment, or trading decisions;</li>
+                <li>Medical diagnosis or treatment;</li>
+                <li>Any decision with significant consequences.</li>
+            </ul>
+            <p>Always consult qualified professionals (lawyers, doctors, accountants) for important matters.</p>
+        </section>
+
+        <section>
+            <h2>Third-Party Components</h2>
+            <p>Sovereign OS depends on many open-source libraries, models, and tools. Full licensing information, including compatibility analysis, is available in <a href="third-party-licenses.html">Third-Party Licenses</a>.</p>
+            <p>Notable licenses:</p>
+            <ul>
+                <li><strong>AGPL-3.0:</strong> Sovereign OS core crates.</li>
+                <li><strong>Business Source License (BSL):</strong> SurrealDB (converts to AGPL-3.0 after 4 years).</li>
+                <li><strong>Llama 3.1 Community License:</strong> AI models (personal use, no production without approval).</li>
+                <li><strong>Proprietary:</strong> CUDA Toolkit (optional, required for GPU acceleration).</li>
+                <li><strong>Apache 2.0, MIT, and others:</strong> Supporting libraries (compatible with AGPL-3.0).</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Trademark</h2>
+            <p>"Sovereign OS" is not a registered trademark. The name is descriptive and used in this project and documentation. You may use the name if you comply with the AGPL-3.0 license.</p>
+        </section>
+
+        <section>
+            <h2>AGPL-3.0 Network Interaction Clause (Section 13)</h2>
+            <p>If you modify Sovereign OS and operate it as a network service (e.g., host it on a server accessible over a network), you must provide users with a way to download or view the complete modified source code. This is called the "network copyleft" clause and ensures that anyone using your modified version has the right to inspect and modify it.</p>
+            <p><strong>Examples of when Section 13 applies:</strong></p>
+            <ul>
+                <li>Running a modified Sovereign OS backend as a web service;</li>
+                <li>Hosting a modified version in the cloud;</li>
+                <li>Operating a network-accessible server based on modified code.</li>
+            </ul>
+            <p><strong>Examples of when Section 13 does not apply:</strong></p>
+            <ul>
+                <li>Using unmodified Sovereign OS locally on your own device;</li>
+                <li>Modifying code for your own private use without distributing it;</li>
+                <li>Distributing modified source code directly (not as a service).</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Contact & Security</h2>
+            <p>For legal questions, privacy concerns, or general inquiries:</p>
+            <p><strong>Email:</strong> <a href="mailto:hello@sovereignos.org">hello@sovereignos.org</a></p>
+            <p>For security vulnerabilities, see the <a href="security-policy.html">Security Policy</a>.</p>
+        </section>
+
+        <section>
+            <h2>Changes to This Notice</h2>
+            <p>This legal notice may be updated at any time. Material changes will be announced in release notes or via the project's communication channels. Continued use of Sovereign OS after changes indicates acceptance of the updated notice.</p>
+        </section>
+    </main>
+</body>
+</html>

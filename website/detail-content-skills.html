@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Content + Skills Architecture — Sovereign OS</title>
+<meta name="description" content="Data ownership through composable tools and typed relationships in a graph database. How Sovereign OS lets you own your data and switch tools freely.">
+<link rel="canonical" href="https://sovereign-os.org/detail-content-skills.html">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://sovereign-os.org/detail-content-skills.html">
+<meta property="og:title" content="Content + Skills Architecture — Sovereign OS">
+<meta property="og:description" content="Data ownership through composable tools and typed relationships in a graph database. How Sovereign OS lets you own your data and switch tools freely.">
+<meta property="og:image" content="https://sovereign-os.org/logo-static.svg">
+<meta property="og:site_name" content="Sovereign OS">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Content + Skills Architecture — Sovereign OS">
+<meta name="twitter:description" content="Data ownership through composable tools and typed relationships in a graph database. How Sovereign OS lets you own your data and switch tools freely.">
+<meta name="twitter:image" content="https://sovereign-os.org/logo-static.svg">
+<style>
+/* ========== RESET & BASE ========== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --c-bg: #0c0e13;
+  --c-bg-alt: #13161d;
+  --c-bg-card: #181c25;
+  --c-border: #2a2f3a;
+  --c-border-subtle: #1e222c;
+  --c-text: #e2e4e9;
+  --c-text-dim: #a1a5b2;
+  --c-text-bright: #ffffff;
+  --c-accent: #60A5FA;
+  --c-accent-dim: #3b82f6;
+  --c-accent-glow: rgba(96, 165, 250, 0.15);
+  --c-gold: #F59E0B;
+  --c-gold-light: #FCD34D;
+  --c-violet: #8B5CF6;
+  --c-owned: #3ecf8e;
+  --c-owned-dim: rgba(62, 207, 142, 0.12);
+  --c-external: #f59e42;
+  --c-external-dim: rgba(245, 158, 66, 0.12);
+  --c-danger: #ef5350;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --max-w: 1120px;
+  --header-h: 60px;
+}
+
+html { scroll-behavior: smooth; font-size: 16px; }
+body {
+  font-family: var(--font-sans);
+  background: var(--c-bg);
+  color: var(--c-text);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--c-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+/* External link indicator (WCAG 3.2.4) */
+footer a[target="_blank"]::after,
+main a[target="_blank"]::after { content: " ↗"; font-size: 0.75em; }
+a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+
+img { max-width: 100%; display: block; }
+button { cursor: pointer; font-family: inherit; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+/* ========== SKIP LINK (WCAG) ========== */
+.skip-link {
+  position: absolute; top: -100%; left: 50%; transform: translateX(-50%);
+  background: var(--c-accent); color: #000; padding: 8px 20px;
+  border-radius: var(--radius); font-weight: 600; z-index: 9999;
+}
+.skip-link:focus { top: 10px; }
+
+/* ========== HEADER ========== */
+header {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  height: var(--header-h);
+  background: rgba(12, 14, 19, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--c-border-subtle);
+  display: flex; align-items: center;
+}
+.header-inner {
+  max-width: var(--max-w); margin: 0 auto; padding: 0 24px;
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+}
+.logo {
+  font-size: 1.15rem; font-weight: 700; color: var(--c-text-bright);
+  display: flex; align-items: center; gap: 10px; letter-spacing: -0.02em;
+}
+.logo-mark {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+}
+.logo-mark img { width: 28px; height: 28px; }
+
+nav { display: flex; align-items: center; gap: 6px; }
+nav a {
+  color: var(--c-text-dim); padding: 6px 14px; border-radius: var(--radius);
+  font-size: 0.875rem; font-weight: 500; transition: color 0.15s, background 0.15s;
+}
+nav a:hover, nav a:focus-visible {
+  color: var(--c-text); background: rgba(255,255,255,0.05); text-decoration: none;
+}
+.nav-cta {
+  background: var(--c-accent) !important; color: #000 !important;
+  font-weight: 600; margin-left: 8px;
+}
+.nav-cta:hover { background: #7ab8ff !important; }
+
+.nav-toggle {
+  display: none; background: none; border: none; color: var(--c-text);
+  padding: 8px; font-size: 1.4rem; line-height: 1;
+}
+
+.back-link {
+  color: var(--c-accent); padding: 6px 14px; border-radius: var(--radius);
+  font-size: 0.875rem; font-weight: 500; transition: color 0.15s, background 0.15s;
+  display: flex; align-items: center; gap: 6px;
+}
+.back-link:hover, .back-link:focus-visible {
+  background: rgba(255,255,255,0.05); text-decoration: none;
+}
+
+/* ========== MAIN CONTENT ========== */
+main {
+  padding: calc(var(--header-h) + 40px) 24px 80px;
+}
+
+.content-inner {
+  max-width: var(--max-w); margin: 0 auto;
+}
+
+/* ========== PAGE HEADER ========== */
+.page-header {
+  margin-bottom: 60px;
+}
+
+.page-header h1 {
+  font-size: clamp(2rem, 4vw, 2.8rem); font-weight: 800;
+  color: var(--c-text-bright); letter-spacing: -0.03em; margin-bottom: 12px;
+  line-height: 1.15;
+}
+
+.page-header .subtitle {
+  color: var(--c-text-dim); font-size: 1.05rem; max-width: 700px;
+  line-height: 1.7;
+}
+
+/* ========== TIER SYSTEM ========== */
+.tier-section {
+  margin-bottom: 80px;
+}
+
+.tier-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+}
+
+.tier-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%;
+  font-weight: 700; font-size: 0.8rem;
+}
+
+.tier-1 .tier-badge {
+  background: var(--c-accent-glow); color: var(--c-accent);
+}
+
+.tier-2 .tier-badge {
+  background: var(--c-owned-dim); color: var(--c-owned);
+}
+
+.tier-3 .tier-badge {
+  background: rgba(168, 130, 255, 0.12); color: #a882ff;
+}
+
+.tier-label {
+  font-weight: 700; color: var(--c-text-bright); font-size: 1.1rem;
+}
+
+.tier-subtext {
+  color: var(--c-text-dim); font-size: 0.85rem;
+}
+
+/* ========== COLLAPSIBLE DETAILS ========== */
+details {
+  margin-bottom: 32px;
+}
+
+details > summary {
+  cursor: pointer; padding: 16px 20px; border-radius: var(--radius-lg);
+  background: var(--c-bg-card); border: 1px solid var(--c-border-subtle);
+  display: flex; align-items: center; gap: 12px;
+  font-weight: 600; color: var(--c-text-bright);
+  transition: border-color 0.2s, background 0.2s;
+  user-select: none;
+}
+
+details > summary:hover {
+  border-color: var(--c-border);
+  background: rgba(255,255,255,0.02);
+}
+
+details > summary::marker { color: var(--c-accent); }
+
+details[open] > summary {
+  border-color: var(--c-accent);
+  background: rgba(96, 165, 250, 0.05);
+}
+
+details > summary::before {
+  content: "▶";
+  display: inline-block;
+  font-size: 0.8rem;
+  transition: transform 0.2s;
+  width: 16px; text-align: center;
+}
+
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details > summary::-webkit-details-marker { display: none; }
+
+.details-content {
+  padding: 0 20px 20px 20px;
+  animation: expandDown 0.25s ease-out;
+}
+
+@keyframes expandDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+    overflow: hidden;
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+  }
+}
+
+/* ========== TIER 1: ELEVATOR PITCH ========== */
+.tier-1-content {
+  background: var(--c-accent-glow); border: 1px solid rgba(96, 165, 250, 0.2);
+  border-radius: var(--radius-lg); padding: 32px;
+  margin-bottom: 32px;
+}
+
+.tier-1-content p {
+  font-size: 1.05rem; color: var(--c-text); line-height: 1.75;
+  margin-bottom: 0;
+}
+
+/* ========== TIER 2: HOW IT WORKS ========== */
+.tier-2-content {
+  display: flex; flex-direction: column; gap: 24px;
+}
+
+.concept-block {
+  background: var(--c-bg-card); border-left: 4px solid var(--c-owned);
+  border-radius: var(--radius); padding: 24px;
+}
+
+.concept-block h3 {
+  font-size: 1rem; font-weight: 700; color: var(--c-text-bright);
+  margin-bottom: 8px; letter-spacing: -0.01em;
+}
+
+.concept-block p {
+  color: var(--c-text-dim); font-size: 0.95rem; line-height: 1.7;
+  margin-bottom: 12px;
+}
+
+.concept-block p:last-child { margin-bottom: 0; }
+
+.concept-list {
+  list-style: none; margin: 12px 0 0 0; padding-left: 0;
+}
+
+.concept-list li {
+  padding-left: 24px; position: relative; margin-bottom: 10px;
+  color: var(--c-text-dim); font-size: 0.9rem;
+}
+
+.concept-list li::before {
+  content: "▪"; position: absolute; left: 4px; color: var(--c-owned);
+}
+
+/* ========== TIER 3: DEEP DIVE ========== */
+.tier-3-content {
+  display: flex; flex-direction: column; gap: 32px;
+}
+
+.deep-section {
+  background: var(--c-bg-alt); border: 1px solid var(--c-border-subtle);
+  border-radius: var(--radius-lg); padding: 28px;
+}
+
+.deep-section h3 {
+  font-size: 1.05rem; font-weight: 700; color: var(--c-text-bright);
+  margin-bottom: 16px; letter-spacing: -0.01em;
+}
+
+.code-block {
+  background: var(--c-bg); border: 1px solid var(--c-border-subtle);
+  border-radius: var(--radius); padding: 16px;
+  overflow-x: auto; margin: 16px 0;
+  font-family: var(--font-mono);
+  font-size: 0.8rem; line-height: 1.6;
+  color: var(--c-text-dim);
+}
+
+.code-block code {
+  display: block; color: var(--c-text-dim);
+}
+
+.const-table {
+  width: 100%; border-collapse: collapse; margin: 16px 0;
+  font-size: 0.9rem;
+}
+
+.const-table th, .const-table td {
+  padding: 12px; text-align: left; border-bottom: 1px solid var(--c-border-subtle);
+}
+
+.const-table th {
+  background: rgba(255,255,255,0.03); font-weight: 700; color: var(--c-text-bright);
+}
+
+.const-table code {
+  background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 3px;
+  font-family: var(--font-mono); font-size: 0.85em;
+}
+
+.action-mapping {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 16px; margin: 16px 0;
+}
+
+@media (max-width: 640px) {
+  .action-mapping { grid-template-columns: 1fr; }
+}
+
+.action-item {
+  background: rgba(255,255,255,0.02); padding: 12px; border-radius: var(--radius);
+  border-left: 3px solid var(--c-border);
+  font-size: 0.85rem;
+}
+
+.action-item code {
+  background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 2px;
+  font-family: var(--font-mono);
+  color: var(--c-accent);
+}
+
+.action-item .level {
+  display: inline-block; font-weight: 700; margin-right: 8px;
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+}
+
+.level-observe { color: var(--c-text-dim); }
+.level-annotate { color: var(--c-accent); }
+.level-modify { color: var(--c-owned); }
+.level-transmit { color: var(--c-external); }
+.level-destruct { color: var(--c-danger); }
+
+.flow-diagram {
+  background: rgba(255,255,255,0.02); padding: 20px;
+  border-radius: var(--radius); border: 1px solid var(--c-border-subtle);
+  font-family: var(--font-mono); font-size: 0.85rem;
+  color: var(--c-text-dim); line-height: 2;
+  overflow-x: auto;
+  margin: 16px 0;
+}
+
+.hardware-specs {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px; margin: 16px 0;
+}
+
+.spec-card {
+  background: rgba(255,255,255,0.02); padding: 12px;
+  border-radius: var(--radius); border: 1px solid var(--c-border-subtle);
+  text-align: center; font-size: 0.85rem;
+}
+
+.spec-card .value {
+  font-weight: 700; color: var(--c-text-bright);
+  font-size: 1.1rem; margin-bottom: 4px;
+}
+
+.spec-card .label {
+  color: var(--c-text-dim); font-size: 0.8rem;
+}
+
+/* ========== RESPONSIVE ========== */
+@media (max-width: 900px) {
+  .page-header h1 { font-size: 1.8rem; }
+}
+
+@media (max-width: 640px) {
+  main { padding: calc(var(--header-h) + 24px) 16px 60px; }
+  nav { display: none; }
+  nav.open {
+    display: flex; flex-direction: column;
+    position: absolute; top: var(--header-h); left: 0; right: 0;
+    background: var(--c-bg); border-bottom: 1px solid var(--c-border);
+    padding: 12px;
+  }
+  .nav-toggle { display: block; }
+  .page-header { margin-bottom: 40px; }
+  .tier-1-content { padding: 20px; }
+  .concept-block { padding: 16px; }
+  .deep-section { padding: 16px; }
+}
+
+/* ========== REDUCED MOTION ========== */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  details, .details-content { animation: none; transition: none; }
+}
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<!-- ========== HEADER ========== -->
+<header role="banner">
+  <div class="header-inner">
+    <a href="index.html" class="back-link" aria-label="Back to homepage">
+      ← Back to Overview
+    </a>
+    <a href="index.html" class="logo" aria-label="Sovereign OS home">
+      <span class="logo-mark" aria-hidden="true"><img src="logo-icon.svg" alt=""></span>
+      Sovereign OS
+    </a>
+    <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="document.querySelector('nav').classList.toggle('open'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">☰</button>
+    <nav role="navigation" aria-label="Main navigation">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#architecture">Architecture</a>
+      <a href="index.html#security">Security</a>
+      <a href="index.html#recovery">Recovery</a>
+      <a href="https://github.com/sovereign-os/sovereign" class="nav-cta" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ========== MAIN CONTENT ========== -->
+<main id="main" role="main">
+<div class="content-inner">
+
+<!-- ========== PAGE HEADER ========== -->
+<div class="page-header">
+  <h1>Content + Skills Architecture</h1>
+  <p class="subtitle">
+    Data ownership through composable tools and typed relationships in a graph database.
+  </p>
+</div>
+
+<!-- ========== TIER 1: ELEVATOR PITCH ========== -->
+<section class="tier-section tier-1">
+  <div class="tier-header">
+    <span class="tier-badge">1</span>
+    <div>
+      <div class="tier-label">Tier 1: The Elevator Pitch</div>
+      <div class="tier-subtext">10-second read</div>
+    </div>
+  </div>
+
+  <div class="tier-1-content">
+    <p>
+      In traditional apps, Notion owns your notes, Google owns your sheets. In Sovereign OS, the graph database owns your data.
+      Documents live in a persistent, queryable store with typed relationships. Skills are lightweight tools—markdown editor, PDF exporter—that operate on your data without owning it.
+      You switch tools freely. You never migrate data.
+    </p>
+  </div>
+</section>
+
+<!-- ========== TIER 2: HOW IT WORKS ========== -->
+<section class="tier-section tier-2">
+  <div class="tier-header">
+    <span class="tier-badge">2</span>
+    <div>
+      <div class="tier-label">Tier 2: How It Works</div>
+      <div class="tier-subtext">1–3 minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-2-content">
+
+    <details open>
+      <summary>Graph Database (SurrealDB)</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Everything is Nodes or Edges with Typed Relationships</h3>
+          <p>
+            The graph database is the single source of truth for all your data. Nodes represent entities; edges represent relationships.
+          </p>
+          <ul class="concept-list">
+            <li><strong>Nodes:</strong> Document, Thread, Contact, Conversation (typed entities).</li>
+            <li><strong>8 Relationship Types:</strong> References, DerivedFrom, Continues, Contradicts, Supports, BranchesFrom, ContactOf, AttachedTo.</li>
+            <li><strong>Queries:</strong> "Find all docs referencing this paper." "Show me conversations with Alice about project X." Relationships are first-class and queryable.</li>
+            <li><strong>Persistence:</strong> All data lives in a single SurrealDB instance with full ACID guarantees and full-text search indexing.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Documents & Threads</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Atomic Units in a Flat Structure</h3>
+          <p>
+            Documents are the atomic content unit in Sovereign OS. Threads organize documents into named project lanes (flat, no nesting).
+          </p>
+          <ul class="concept-list">
+            <li><strong>Document:</strong> Title, body (markdown or structured JSON), images, thread assignment, ownership flag (is_owned), spatial coordinates (for canvas), encryption nonce, soft-delete marker.</li>
+            <li><strong>Thread:</strong> Named container (e.g., "2026 Q1 Strategy"). Flat—no nested folders. Documents reference their thread. A document can relate to documents in other threads via relationships.</li>
+            <li><strong>Spatial Metadata:</strong> Each document has (spatial_x, spatial_y) for the canvas view. Thread lanes auto-organize documents visually.</li>
+            <li><strong>Ownership:</strong> is_owned field marks whether content is yours or imported. Guides encryption and export behavior.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Relationships: The Magic</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Directed Typed Edges Replace Folders</h3>
+          <p>
+            Instead of nesting documents in folders, relationships connect them across threads. This enables powerful queries and prevents organizational lock-in.
+          </p>
+          <ul class="concept-list">
+            <li><strong>Directed:</strong> A references B, but B doesn't automatically reference A (unless you add a symmetric edge).</li>
+            <li><strong>Typed:</strong> Each edge has a type (References, DerivedFrom, Contradicts, etc.), encoding semantic meaning.</li>
+            <li><strong>Strength:</strong> Optional weight (0.0–1.0) for ranking relevance in search results.</li>
+            <li><strong>Cross-Thread Visibility:</strong> Relationships make connections visible across thread boundaries. Query: "Show me everything this doc derives from."</li>
+            <li><strong>Traversal:</strong> Walk relationship chains. Detect cycles. Find knowledge gaps.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Skills: Composable Tools</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Sandboxed, Stateless Tools Operating on Your Data</h3>
+          <p>
+            Skills are lightweight tools that read from or write to the graph database without storing state themselves. You own the data; skills are interchangeable views/editors.
+          </p>
+          <ul class="concept-list">
+            <li><strong>Built-In Skills:</strong> Markdown editor, PDF export, word counter, find/replace, duplicate, import.</li>
+            <li><strong>Manifest:</strong> Each skill declares its name, version, capabilities, and supported file types.</li>
+            <li><strong>Sandboxing:</strong> Landlock filesystem isolation + seccomp-bpf syscall filtering ensure a skill cannot escape its scope.</li>
+            <li><strong>No Lock-In:</strong> Export your data, open it in any skill. Skills are read from the same store, so switching is instant—no migration.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Soft Delete & Action Gravity</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Nothing Destroyed Until Purged</h3>
+          <p>
+            Every node in the database has a deleted_at field. Deletion is not immediate destruction; it's a soft flag. Aligns with Action Gravity level 4 (Destruct).
+          </p>
+          <ul class="concept-list">
+            <li><strong>Soft Delete:</strong> When you "delete" a document, deleted_at is set to the current timestamp. The doc is hidden from normal queries but remains in the database.</li>
+            <li><strong>Recovery:</strong> Within a configurable retention window (default 30 days), you can restore any soft-deleted document with a single click.</li>
+            <li><strong>Purge:</strong> After the retention window or on explicit purge, the document is permanently removed. This action requires Level 4 confirmation (irreversible).</li>
+            <li><strong>Audit Trail:</strong> Every soft delete and purge is logged in the audit chain, enabling forensic recovery and accountability.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ========== TIER 3: DEEP DIVE ========== -->
+<section class="tier-section tier-3">
+  <div class="tier-header">
+    <span class="tier-badge">3</span>
+    <div>
+      <div class="tier-label">Tier 3: Deep Dive</div>
+      <div class="tier-subtext">5+ minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-3-content">
+
+    <div class="deep-section">
+      <h3>Document Schema</h3>
+      <p>
+        Every document is a row in the document table with the following fields:
+      </p>
+      <table class="const-table">
+        <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+        <tr><td><code>id</code></td><td>Thing</td><td>Unique identifier (generated by SurrealDB).</td></tr>
+        <tr><td><code>title</code></td><td>String</td><td>Document title, user-facing.</td></tr>
+        <tr><td><code>content</code></td><td>String (JSON)</td><td>Markdown or structured content. Can include embedded images as base64-encoded JSON.</td></tr>
+        <tr><td><code>thread_id</code></td><td>Thing</td><td>Reference to the parent thread.</td></tr>
+        <tr><td><code>is_owned</code></td><td>Bool</td><td>true if you created it, false if imported. Guides encryption and export.</td></tr>
+        <tr><td><code>created_at</code></td><td>DateTime</td><td>ISO 8601 timestamp.</td></tr>
+        <tr><td><code>modified_at</code></td><td>DateTime</td><td>Last modification time.</td></tr>
+        <tr><td><code>spatial_x</code></td><td>Float</td><td>Canvas position (horizontal).</td></tr>
+        <tr><td><code>spatial_y</code></td><td>Float</td><td>Canvas position (vertical).</td></tr>
+        <tr><td><code>head_commit</code></td><td>Thing</td><td>Reference to the latest commit in this document's version history.</td></tr>
+        <tr><td><code>deleted_at</code></td><td>DateTime (nullable)</td><td>Soft delete timestamp. null = not deleted.</td></tr>
+        <tr><td><code>encryption_nonce</code></td><td>String</td><td>IV/nonce for AES-256-GCM encryption (hex-encoded).</td></tr>
+      </table>
+    </div>
+
+    <div class="deep-section">
+      <h3>Thread Schema</h3>
+      <p>
+        Threads group documents into named project lanes. Simple and flat.
+      </p>
+      <table class="const-table">
+        <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+        <tr><td><code>id</code></td><td>Thing</td><td>Unique identifier.</td></tr>
+        <tr><td><code>name</code></td><td>String</td><td>Display name (e.g., "2026 Q1 Strategy").</td></tr>
+        <tr><td><code>description</code></td><td>String (nullable)</td><td>Optional description of the thread's purpose.</td></tr>
+        <tr><td><code>created_at</code></td><td>DateTime</td><td>When the thread was created.</td></tr>
+        <tr><td><code>deleted_at</code></td><td>DateTime (nullable)</td><td>Soft delete timestamp.</td></tr>
+      </table>
+    </div>
+
+    <div class="deep-section">
+      <h3>RelationType Enum</h3>
+      <p>
+        Eight relationship types express semantic connections between documents:
+      </p>
+      <div class="code-block"><code>pub enum RelationType {
+    References,      // A cites B
+    DerivedFrom,     // A is built on B
+    Continues,       // A is the next version/chapter of B
+    Contradicts,     // A challenges B
+    Supports,        // A provides evidence for B
+    BranchesFrom,    // A is a fork/alternate path from B
+    ContactOf,       // A is a contact associated with B
+    AttachedTo,      // A is a file/asset attached to B
+}</code></div>
+    </div>
+
+    <div class="deep-section">
+      <h3>RelatedTo (Edge) Schema</h3>
+      <p>
+        Edges in the graph connecting documents via relationships:
+      </p>
+      <table class="const-table">
+        <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+        <tr><td><code>id</code></td><td>Thing</td><td>Edge identifier.</td></tr>
+        <tr><td><code>in_</code></td><td>Thing</td><td>Target document (incoming).</td></tr>
+        <tr><td><code>out</code></td><td>Thing</td><td>Source document (outgoing).</td></tr>
+        <tr><td><code>relation_type</code></td><td>RelationType</td><td>Type of connection.</td></tr>
+        <tr><td><code>strength</code></td><td>Float (0.0–1.0)</td><td>Optional weight for ranking relevance. Default 1.0.</td></tr>
+        <tr><td><code>created_at</code></td><td>DateTime</td><td>When the relationship was created.</td></tr>
+      </table>
+    </div>
+
+    <div class="deep-section">
+      <h3>SurrealDB Tables & Indexes</h3>
+      <p>
+        Core schema tables and their indexes for fast queries:
+      </p>
+      <ul class="concept-list">
+        <li><strong>document</strong> — Primary content store. Indexes: (thread_id), (deleted_at), full-text search on title + content.</li>
+        <li><strong>thread</strong> — Project lanes. Indexes: (created_at), (deleted_at).</li>
+        <li><strong>related_to</strong> — Relationship edges. Indexes: (out), (in_), (relation_type).</li>
+        <li><strong>commit</strong> — Version history snapshots. Indexes: (document_id), (created_at).</li>
+        <li><strong>milestone</strong> — Tagged points in version history. Indexes: (commit_id).</li>
+        <li><strong>contact</strong> — Address book. Indexes: (email), (name).</li>
+        <li><strong>conversation</strong> — Email/Signal threads. Indexes: (contact_id), (created_at).</li>
+        <li><strong>message</strong> — Individual emails/messages. Indexes: (conversation_id), (created_at), full-text search on body.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>SkillManifest Structure</h3>
+      <p>
+        Skills declare their interface via a manifest:
+      </p>
+      <div class="code-block"><code>pub struct SkillManifest {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub author: String,
+    pub skill_type: SkillType,
+    pub capabilities: Vec&lt;String&gt;,  // "read", "write", "export"
+    pub file_types: Vec&lt;String&gt;,    // "markdown", "pdf", "json"
+}</code></div>
+      <p>
+        Example manifest for the PDF export skill:
+      </p>
+      <div class="code-block"><code>{
+  "name": "PDF Export",
+  "version": "1.0.0",
+  "description": "Export documents to PDF with formatting.",
+  "author": "Sovereign Team",
+  "skill_type": "Exporter",
+  "capabilities": ["read"],
+  "file_types": ["pdf"]
+}</code></div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Skill Sandboxing</h3>
+      <p>
+        Skills run in a restricted environment to prevent data exfiltration or unintended side effects:
+      </p>
+      <ul class="concept-list">
+        <li><strong>Landlock Filesystem:</strong> Skills see only the documents they're asked to operate on. No access to user's home directory, /etc, or system files.</li>
+        <li><strong>seccomp-bpf Syscall Filter:</strong> Skills can only call safe syscalls (read, write, mmap, etc.). Blocked: network I/O, exec, fork, ptrace.</li>
+        <li><strong>Capability Grants:</strong> The manifest lists what the skill can do. The sandbox enforces these limits. A read-only skill cannot write to the database.</li>
+        <li><strong>No Network:</strong> Skills cannot reach the internet. Prevents data exfiltration or phoning home.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>Core Trait Methods</h3>
+      <p>
+        The standard interface for working with documents and relationships:
+      </p>
+      <div class="code-block"><code>pub trait DocumentStore {
+    async fn create_document(&mut self, doc: Document) -> Result&lt;DocumentId&gt;;
+    async fn get_document(&self, id: DocumentId) -> Result&lt;Document&gt;;
+    async fn list_documents(&self, thread_id: ThreadId) -> Result&lt;Vec&lt;Document&gt;&gt;;
+    async fn update_document(&mut self, id: DocumentId, patch: DocumentPatch) -> Result&lt;()&gt;;
+    async fn delete_document(&mut self, id: DocumentId) -> Result&lt;()&gt;;  // Soft delete
+    async fn purge_document(&mut self, id: DocumentId) -> Result&lt;()&gt;;    // Hard delete
+
+    async fn relate(&mut self, from: DocumentId, to: DocumentId, rel: RelationType, strength: f32) -> Result&lt;()&gt;;
+    async fn list_relations(&self, doc_id: DocumentId) -> Result&lt;Vec&lt;Relation&gt;&gt;;
+    async fn traverse(&self, start: DocumentId, depth: usize) -> Result&lt;Graph&gt;;
+
+    async fn search_documents(&self, query: &str) -> Result&lt;Vec&lt;SearchResult&gt;&gt;;
+    async fn commit(&mut self, doc_id: DocumentId, message: String) -> Result&lt;CommitId&gt;;
+    async fn list_commits(&self, doc_id: DocumentId) -> Result&lt;Vec&lt;Commit&gt;&gt;;
+}</code></div>
+    </div>
+
+  </div>
+</section>
+
+  </div>
+</main>
+
+<!-- ========== FOOTER ========== -->
+<footer role="contentinfo" style="border-top: 1px solid var(--c-border-subtle); padding: 40px 24px; font-size: 0.82rem; color: var(--c-text-dim);">
+  <div style="max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+    <span>&copy; 2026 Sovereign OS. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <div style="display: flex; gap: 20px;">
+      <a href="https://github.com/sovereign-os/sovereign" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/sovereign-os/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
+      <a href="https://github.com/sovereign-os/sovereign/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+</footer>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Sovereign OS",
+      "item": "https://sovereign-os.org/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": "Content + Skills Architecture",
+      "item": "https://sovereign-os.org/detail-content-skills.html"
+    }
+  ]
+}
+</script>
+
+</body>
+</html>

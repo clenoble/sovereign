@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Local AI Orchestrator — Sovereign OS</title>
+<meta name="description" content="How Sovereign OS runs AI entirely on your machine with a fast intent classifier, reasoning model, and multi-turn chat loop. No cloud. No API keys.">
+<link rel="canonical" href="https://sovereign-os.org/detail-ai-orchestrator.html">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://sovereign-os.org/detail-ai-orchestrator.html">
+<meta property="og:title" content="Local AI Orchestrator — Sovereign OS">
+<meta property="og:description" content="How Sovereign OS runs AI entirely on your machine with a fast intent classifier, reasoning model, and multi-turn chat loop. No cloud. No API keys.">
+<meta property="og:image" content="https://sovereign-os.org/logo-static.svg">
+<meta property="og:site_name" content="Sovereign OS">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Local AI Orchestrator — Sovereign OS">
+<meta name="twitter:description" content="How Sovereign OS runs AI entirely on your machine with a fast intent classifier, reasoning model, and multi-turn chat loop. No cloud. No API keys.">
+<meta name="twitter:image" content="https://sovereign-os.org/logo-static.svg">
+<style>
+/* ========== RESET & BASE ========== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --c-bg: #0c0e13;
+  --c-bg-alt: #13161d;
+  --c-bg-card: #181c25;
+  --c-border: #2a2f3a;
+  --c-border-subtle: #1e222c;
+  --c-text: #e2e4e9;
+  --c-text-dim: #a1a5b2;
+  --c-text-bright: #ffffff;
+  --c-accent: #4a9eff;
+  --c-accent-dim: #2d6ab3;
+  --c-accent-glow: rgba(74, 158, 255, 0.15);
+  --c-owned: #3ecf8e;
+  --c-owned-dim: rgba(62, 207, 142, 0.12);
+  --c-external: #f59e42;
+  --c-external-dim: rgba(245, 158, 66, 0.12);
+  --c-danger: #ef5350;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --max-w: 1120px;
+  --header-h: 60px;
+}
+
+html { scroll-behavior: smooth; font-size: 16px; }
+body {
+  font-family: var(--font-sans);
+  background: var(--c-bg);
+  color: var(--c-text);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--c-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+/* External link indicator (WCAG 3.2.4) */
+footer a[target="_blank"]::after,
+main a[target="_blank"]::after { content: " ↗"; font-size: 0.75em; }
+a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+
+img { max-width: 100%; display: block; }
+button { cursor: pointer; font-family: inherit; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+/* ========== SKIP LINK (WCAG) ========== */
+.skip-link {
+  position: absolute; top: -100%; left: 50%; transform: translateX(-50%);
+  background: var(--c-accent); color: #000; padding: 8px 20px;
+  border-radius: var(--radius); font-weight: 600; z-index: 9999;
+}
+.skip-link:focus { top: 10px; }
+
+/* ========== HEADER ========== */
+header {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  height: var(--header-h);
+  background: rgba(12, 14, 19, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--c-border-subtle);
+  display: flex; align-items: center;
+}
+.header-inner {
+  max-width: var(--max-w); margin: 0 auto; padding: 0 24px;
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+}
+.logo {
+  font-size: 1.15rem; font-weight: 700; color: var(--c-text-bright);
+  display: flex; align-items: center; gap: 10px; letter-spacing: -0.02em;
+}
+.logo-mark {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+}
+.logo-mark img { width: 28px; height: 28px; }
+
+nav { display: flex; align-items: center; gap: 6px; }
+nav a {
+  color: var(--c-text-dim); padding: 6px 14px; border-radius: var(--radius);
+  font-size: 0.875rem; font-weight: 500; transition: color 0.15s, background 0.15s;
+}
+nav a:hover, nav a:focus-visible {
+  color: var(--c-text); background: rgba(255,255,255,0.05); text-decoration: none;
+}
+.nav-cta {
+  background: var(--c-accent) !important; color: #000 !important;
+  font-weight: 600; margin-left: 8px;
+}
+.nav-cta:hover { background: #5eadff !important; }
+
+.nav-toggle {
+  display: none; background: none; border: none; color: var(--c-text);
+  padding: 8px; font-size: 1.4rem; line-height: 1;
+}
+
+.back-link {
+  color: var(--c-accent); padding: 6px 14px; border-radius: var(--radius);
+  font-size: 0.875rem; font-weight: 500; transition: color 0.15s, background 0.15s;
+  display: flex; align-items: center; gap: 6px;
+}
+.back-link:hover, .back-link:focus-visible {
+  background: rgba(255,255,255,0.05); text-decoration: none;
+}
+
+/* ========== MAIN CONTENT ========== */
+main {
+  padding: calc(var(--header-h) + 40px) 24px 80px;
+}
+
+.content-inner {
+  max-width: var(--max-w); margin: 0 auto;
+}
+
+/* ========== PAGE HEADER ========== */
+.page-header {
+  margin-bottom: 60px;
+}
+
+.page-header h1 {
+  font-size: clamp(2rem, 4vw, 2.8rem); font-weight: 800;
+  color: var(--c-text-bright); letter-spacing: -0.03em; margin-bottom: 12px;
+  line-height: 1.15;
+}
+
+.page-header .subtitle {
+  color: var(--c-text-dim); font-size: 1.05rem; max-width: 700px;
+  line-height: 1.7;
+}
+
+/* ========== TIER SYSTEM ========== */
+.tier-section {
+  margin-bottom: 80px;
+}
+
+.tier-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+}
+
+.tier-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%;
+  font-weight: 700; font-size: 0.8rem;
+}
+
+.tier-1 .tier-badge {
+  background: var(--c-accent-glow); color: var(--c-accent);
+}
+
+.tier-2 .tier-badge {
+  background: var(--c-owned-dim); color: var(--c-owned);
+}
+
+.tier-3 .tier-badge {
+  background: rgba(168, 130, 255, 0.12); color: #a882ff;
+}
+
+.tier-label {
+  font-weight: 700; color: var(--c-text-bright); font-size: 1.1rem;
+}
+
+.tier-subtext {
+  color: var(--c-text-dim); font-size: 0.85rem;
+}
+
+/* ========== COLLAPSIBLE DETAILS ========== */
+details {
+  margin-bottom: 32px;
+}
+
+details > summary {
+  cursor: pointer; padding: 16px 20px; border-radius: var(--radius-lg);
+  background: var(--c-bg-card); border: 1px solid var(--c-border-subtle);
+  display: flex; align-items: center; gap: 12px;
+  font-weight: 600; color: var(--c-text-bright);
+  transition: border-color 0.2s, background 0.2s;
+  user-select: none;
+}
+
+details > summary:hover {
+  border-color: var(--c-border);
+  background: rgba(255,255,255,0.02);
+}
+
+details > summary::marker { color: var(--c-accent); }
+
+details[open] > summary {
+  border-color: var(--c-accent);
+  background: rgba(74, 158, 255, 0.05);
+}
+
+details > summary::before {
+  content: "▶";
+  display: inline-block;
+  font-size: 0.8rem;
+  transition: transform 0.2s;
+  width: 16px; text-align: center;
+}
+
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details > summary::-webkit-details-marker { display: none; }
+
+.details-content {
+  padding: 0 20px 20px 20px;
+  animation: expandDown 0.25s ease-out;
+}
+
+@keyframes expandDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+    overflow: hidden;
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+  }
+}
+
+/* ========== TIER 1: ELEVATOR PITCH ========== */
+.tier-1-content {
+  background: var(--c-accent-glow); border: 1px solid rgba(74, 158, 255, 0.2);
+  border-radius: var(--radius-lg); padding: 32px;
+  margin-bottom: 32px;
+}
+
+.tier-1-content p {
+  font-size: 1.05rem; color: var(--c-text); line-height: 1.75;
+  margin-bottom: 0;
+}
+
+/* ========== TIER 2: HOW IT WORKS ========== */
+.tier-2-content {
+  display: flex; flex-direction: column; gap: 24px;
+}
+
+.concept-block {
+  background: var(--c-bg-card); border-left: 4px solid var(--c-owned);
+  border-radius: var(--radius); padding: 24px;
+}
+
+.concept-block h3 {
+  font-size: 1rem; font-weight: 700; color: var(--c-text-bright);
+  margin-bottom: 8px; letter-spacing: -0.01em;
+}
+
+.concept-block p {
+  color: var(--c-text-dim); font-size: 0.95rem; line-height: 1.7;
+  margin-bottom: 12px;
+}
+
+.concept-block p:last-child { margin-bottom: 0; }
+
+.concept-list {
+  list-style: none; margin: 12px 0 0 0; padding-left: 0;
+}
+
+.concept-list li {
+  padding-left: 24px; position: relative; margin-bottom: 10px;
+  color: var(--c-text-dim); font-size: 0.9rem;
+}
+
+.concept-list li::before {
+  content: "▪"; position: absolute; left: 4px; color: var(--c-owned);
+}
+
+/* ========== TIER 3: DEEP DIVE ========== */
+.tier-3-content {
+  display: flex; flex-direction: column; gap: 32px;
+}
+
+.deep-section {
+  background: var(--c-bg-alt); border: 1px solid var(--c-border-subtle);
+  border-radius: var(--radius-lg); padding: 28px;
+}
+
+.deep-section h3 {
+  font-size: 1.05rem; font-weight: 700; color: var(--c-text-bright);
+  margin-bottom: 16px; letter-spacing: -0.01em;
+}
+
+.code-block {
+  background: var(--c-bg); border: 1px solid var(--c-border-subtle);
+  border-radius: var(--radius); padding: 16px;
+  overflow-x: auto; margin: 16px 0;
+  font-family: var(--font-mono);
+  font-size: 0.8rem; line-height: 1.6;
+  color: var(--c-text-dim);
+}
+
+.code-block code {
+  display: block; color: var(--c-text-dim);
+}
+
+.const-table {
+  width: 100%; border-collapse: collapse; margin: 16px 0;
+  font-size: 0.9rem;
+}
+
+.const-table th, .const-table td {
+  padding: 12px; text-align: left; border-bottom: 1px solid var(--c-border-subtle);
+}
+
+.const-table th {
+  background: rgba(255,255,255,0.03); font-weight: 700; color: var(--c-text-bright);
+}
+
+.const-table code {
+  background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 3px;
+  font-family: var(--font-mono); font-size: 0.85em;
+}
+
+.action-mapping {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 16px; margin: 16px 0;
+}
+
+@media (max-width: 640px) {
+  .action-mapping { grid-template-columns: 1fr; }
+}
+
+.action-item {
+  background: rgba(255,255,255,0.02); padding: 12px; border-radius: var(--radius);
+  border-left: 3px solid var(--c-border);
+  font-size: 0.85rem;
+}
+
+.action-item code {
+  background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 2px;
+  font-family: var(--font-mono);
+  color: var(--c-accent);
+}
+
+.action-item .level {
+  display: inline-block; font-weight: 700; margin-right: 8px;
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+}
+
+.level-observe { color: var(--c-text-dim); }
+.level-annotate { color: var(--c-accent); }
+.level-modify { color: var(--c-owned); }
+.level-transmit { color: var(--c-external); }
+.level-destruct { color: var(--c-danger); }
+
+.flow-diagram {
+  background: rgba(255,255,255,0.02); padding: 20px;
+  border-radius: var(--radius); border: 1px solid var(--c-border-subtle);
+  font-family: var(--font-mono); font-size: 0.85rem;
+  color: var(--c-text-dim); line-height: 2;
+  overflow-x: auto;
+  margin: 16px 0;
+}
+
+.hardware-specs {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px; margin: 16px 0;
+}
+
+.spec-card {
+  background: rgba(255,255,255,0.02); padding: 12px;
+  border-radius: var(--radius); border: 1px solid var(--c-border-subtle);
+  text-align: center; font-size: 0.85rem;
+}
+
+.spec-card .value {
+  font-weight: 700; color: var(--c-text-bright);
+  font-size: 1.1rem; margin-bottom: 4px;
+}
+
+.spec-card .label {
+  color: var(--c-text-dim); font-size: 0.8rem;
+}
+
+/* ========== RESPONSIVE ========== */
+@media (max-width: 900px) {
+  .page-header h1 { font-size: 1.8rem; }
+}
+
+@media (max-width: 640px) {
+  main { padding: calc(var(--header-h) + 24px) 16px 60px; }
+  nav { display: none; }
+  nav.open {
+    display: flex; flex-direction: column;
+    position: absolute; top: var(--header-h); left: 0; right: 0;
+    background: var(--c-bg); border-bottom: 1px solid var(--c-border);
+    padding: 12px;
+  }
+  .nav-toggle { display: block; }
+  .page-header { margin-bottom: 40px; }
+  .tier-1-content { padding: 20px; }
+  .concept-block { padding: 16px; }
+  .deep-section { padding: 16px; }
+}
+
+/* ========== REDUCED MOTION ========== */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  details, .details-content { animation: none; transition: none; }
+}
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<!-- ========== HEADER ========== -->
+<header role="banner">
+  <div class="header-inner">
+    <a href="index.html" class="back-link" aria-label="Back to homepage">
+      ← Back to Overview
+    </a>
+    <a href="index.html" class="logo" aria-label="Sovereign OS home">
+      <span class="logo-mark" aria-hidden="true"><img src="logo-icon.svg" alt=""></span>
+      Sovereign OS
+    </a>
+    <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="document.querySelector('nav').classList.toggle('open'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">☰</button>
+    <nav role="navigation" aria-label="Main navigation">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#architecture">Architecture</a>
+      <a href="index.html#security">Security</a>
+      <a href="index.html#recovery">Recovery</a>
+      <a href="https://github.com/sovereign-os/sovereign" class="nav-cta" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ========== MAIN CONTENT ========== -->
+<main id="main" role="main">
+<div class="content-inner">
+
+<!-- ========== PAGE HEADER ========== -->
+<div class="page-header">
+  <h1>Local AI Orchestrator</h1>
+  <p class="subtitle">
+    How Sovereign OS runs AI entirely on your machine with a fast intent classifier, reasoning model,
+    and multi-turn chat agent. No cloud. No API keys. No subscription.
+  </p>
+</div>
+
+<!-- ========== TIER 1: ELEVATOR PITCH ========== -->
+<section class="tier-section tier-1">
+  <div class="tier-header">
+    <span class="tier-badge">1</span>
+    <div>
+      <div class="tier-label">Tier 1: The Elevator Pitch</div>
+      <div class="tier-subtext">10-second read</div>
+    </div>
+  </div>
+
+  <div class="tier-1-content">
+    <p>
+      Sovereign OS runs AI entirely on your machine. A fast 3B router classifies your intent in milliseconds;
+      a larger 7B model loads on demand for complex queries. No cloud, no API key, no subscription.
+      Your prompts never leave your device.
+    </p>
+  </div>
+</section>
+
+<!-- ========== TIER 2: HOW IT WORKS ========== -->
+<section class="tier-section tier-2">
+  <div class="tier-header">
+    <span class="tier-badge">2</span>
+    <div>
+      <div class="tier-label">Tier 2: How It Works</div>
+      <div class="tier-subtext">1–3 minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-2-content">
+
+    <details open>
+      <summary>Two-Model Architecture</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Always-On Router + On-Demand Reasoning</h3>
+          <p>
+            The system uses two Qwen2.5 models running via llama.cpp (quantized, on your hardware):
+          </p>
+          <ul class="concept-list">
+            <li><strong>Router (3B):</strong> Always loaded (~2 GB VRAM). Classifies user input into ~20 action types in milliseconds. Examples: "search", "open document", "create thread", "delete", "export".</li>
+            <li><strong>Reasoning (7B):</strong> Loaded on demand when router confidence is below 0.7. Handles ambiguous or complex queries. Auto-unloads after 5 minutes idle to free VRAM.</li>
+          </ul>
+          <p style="margin-top: 12px;">
+            This hybrid approach balances speed (fast intent classification) with capability (reasoning power when needed).
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Multi-Turn Chat Agent Loop</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Up to 5 Rounds of Generate → Tool Call → Execute → Feedback</h3>
+          <p>
+            Once intent is classified, the system enters a chat loop:
+          </p>
+          <ul class="concept-list">
+            <li><strong>Load history:</strong> Up to 50 prior exchanges (capped at 6,300 characters total).</li>
+            <li><strong>Gather context:</strong> Documents, threads, contacts relevant to the intent.</li>
+            <li><strong>Build prompt:</strong> ChatML format (<code>&lt;|im_start|&gt;role...&lt;|im_end|&gt;</code>). System prompt includes UX principles (Action Gravity, plan visibility, conversational confirmation).</li>
+            <li><strong>Generate:</strong> Model outputs text + optional tool calls formatted as <code>&lt;tool_call&gt;{...}&lt;/tool_call&gt;</code>.</li>
+            <li><strong>Parse & execute:</strong> Extract tool calls, verify action gravity level, execute (if approved), append result to history.</li>
+            <li><strong>Loop or return:</strong> If model generated more tool calls or needs clarification, loop (max 5 iterations). Otherwise, return response.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Six Read-Only Tools (Observe Level)</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>AI Can Browse, Never Modify</h3>
+          <p>
+            The AI has access to exactly 6 tools, all at Observe level (Level 0 in Action Gravity):
+          </p>
+          <ul class="concept-list">
+            <li><code>search_documents</code> — Full-text search across your documents.</li>
+            <li><code>list_threads</code> — Get all thread names and metadata.</li>
+            <li><code>get_document</code> — Retrieve full text of a document by title.</li>
+            <li><code>list_documents</code> — Filtered list (optionally by thread).</li>
+            <li><code>search_messages</code> — Search in email/Signal/WhatsApp conversations.</li>
+            <li><code>list_contacts</code> — Get contact list (no private data).</li>
+          </ul>
+          <p style="margin-top: 12px;">
+            These tools can never modify, delete, or export data. The AI can propose actions (e.g., "Should I export this to PDF?"),
+            but execution requires explicit user confirmation and goes through the Action Gravity gate.
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Voice Pipeline</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Wake Word → Speech-to-Text → Chat → Text-to-Speech</h3>
+          <ul class="concept-list">
+            <li><strong>Wake Word Detection:</strong> Rustpotter listening for "sovereign" (threshold 0.4). Runs on a rolling 10-second buffer that never leaves your device.</li>
+            <li><strong>Speech-to-Text:</strong> Whisper (OpenAI's model, quantized via llama.cpp). Converts speech at 16 kHz sample rate in real-time.</li>
+            <li><strong>Chat:</strong> Text from Whisper feeds into the intent classification and agent loop.</li>
+            <li><strong>Text-to-Speech:</strong> Piper TTS with multiple voice options. Fully local, natural-sounding responses.</li>
+          </ul>
+          <p style="margin-top: 12px;">
+            All audio processing happens on-device. No audio ever leaves your machine.
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Prompt Format & Tool Calls</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>ChatML + Structured Tool Call Format</h3>
+          <p>Conversation uses the ChatML format for clarity:</p>
+          <div class="code-block"><code>&lt;|im_start|&gt;system
+You are Sovereign OS AI. Help the user with their documents, contacts, and tasks.
+&lt;|im_end|&gt;
+&lt;|im_start|&gt;user
+Find documents about machine learning
+&lt;|im_end|&gt;
+&lt;|im_start|&gt;assistant
+I'll search for that.
+&lt;tool_call&gt;{"name":"search_documents","arguments":{"query":"machine learning"}}&lt;/tool_call&gt;
+&lt;|im_end|&gt;</code></div>
+          <p>
+            The model learns to emit tool calls in this structured format via few-shot examples during training.
+            This ensures reliable parsing and prevents prompt injection attacks from modifying tool invocation.
+          </p>
+        </div>
+      </div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ========== TIER 3: DEEP DIVE ========== -->
+<section class="tier-section tier-3">
+  <div class="tier-header">
+    <span class="tier-badge">3</span>
+    <div>
+      <div class="tier-label">Tier 3: Deep Dive</div>
+      <div class="tier-subtext">5+ minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-3-content">
+
+    <div class="deep-section">
+      <h3>IntentClassifier (sovereign-ai/src/intent/classifier.rs)</h3>
+      <p>
+        The intent classification layer is the front door to the AI system. It runs continuously and routes all user input.
+      </p>
+      <div class="code-block"><code>pub struct IntentClassifier {
+    router: Model,  // Qwen2.5-3B, always loaded
+    reasoning: Option&lt;Model&gt;,  // Qwen2.5-7B, loaded on demand
+}
+
+impl IntentClassifier {
+    pub fn classify(&amp;self, input: &amp;str) -&gt; Intent {
+        let logits = self.router.forward(input);
+        let confidence = softmax(logits).max();
+
+        if confidence &gt;= 0.7 {
+            Intent::from_logits(logits)  // Fast path
+        } else {
+            self.escalate_to_reasoning(input)  // Load 7B model
+        }
+    }
+
+    fn escalate_to_reasoning(&amp;mut self, input: &amp;str) -&gt; Intent {
+        if self.reasoning.is_none() {
+            self.reasoning = Some(Model::load("qwen2.5-7b-q4"));
+            self.last_reasoning_use = now();
+        }
+        self.reasoning.as_ref().unwrap().classify(input)
+    }
+}</code></div>
+      <div class="const-table">
+        <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+        <tr><td><code>CONFIDENCE_THRESHOLD</code></td><td>0.7</td><td>If router score ≥ 0.7, use router result. Otherwise escalate.</td></tr>
+        <tr><td><code>REASONING_IDLE_TIMEOUT</code></td><td>300 seconds (5 min)</td><td>Auto-unload 7B model after idle to free VRAM.</td></tr>
+        <tr><td><code>ROUTER_VRAM</code></td><td>~2 GB</td><td>3B model footprint (quantized).</td></tr>
+        <tr><td><code>REASONING_VRAM</code></td><td>~6–8 GB</td><td>7B model footprint (quantized). Swapped to disk if needed.</td></tr>
+      </div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Action Types & Gravity Mapping (sovereign-core/src/security.rs:52–67)</h3>
+      <p>
+        Every user intent maps to an action type, which maps to an Action Gravity level. The AI sees this mapping
+        and adjusts how it proposes actions.
+      </p>
+      <div class="action-mapping">
+        <div class="action-item">
+          <span class="level level-observe">Level 0</span>
+          <code>search</code>, <code>open</code>, <code>navigate</code>, <code>history</code>
+        </div>
+        <div class="action-item">
+          <span class="level level-annotate">Level 1</span>
+          <code>annotate</code>, <code>tag</code>, <code>bookmark</code>
+        </div>
+        <div class="action-item">
+          <span class="level level-modify">Level 2</span>
+          <code>create_thread</code>, <code>rename_thread</code>, <code>move_document</code>, <code>restore</code>, <code>edit</code>
+        </div>
+        <div class="action-item">
+          <span class="level level-transmit">Level 3</span>
+          <code>export</code>, <code>share</code>, <code>transmit</code>, <code>pair_device</code>, <code>enroll_guardian</code>
+        </div>
+        <div class="action-item">
+          <span class="level level-destruct">Level 4</span>
+          <code>delete_thread</code>, <code>delete_document</code>, <code>purge</code>, <code>revoke_guardian</code>
+        </div>
+      </div>
+      <p>
+        The chat system prompt encodes this: "For Level 2+ actions, propose with specifics and ask for confirmation."
+        This ensures the AI doesn't accidentally delete or export without explicit user approval.
+      </p>
+    </div>
+
+    <div class="deep-section">
+      <h3>Chat Agent Loop (orchestrator.rs:315–458)</h3>
+      <p>
+        The orchestrator manages multi-turn interaction. Here's the core state machine:
+      </p>
+      <div class="flow-diagram">
+Load Session History (50 entries, 6300 chars max)
+         ↓
+Gather Workspace Context (documents, threads, contacts)
+         ↓
+Build ChatML Prompt (system + history + current input)
+         ↓
+Generate (max_tokens=1024, temperature=0.7)
+         ↓
+Extract &lt;tool_call&gt; blocks
+         ↓
+For each tool call:
+  ├─ Verify action_gravity_level(action)
+  ├─ If Level 0–1: execute silently, append to history
+  ├─ If Level 2–3: propose to user, wait for confirmation, execute
+  └─ If Level 4: show modal, wait for approval, record audit log
+         ↓
+Append result to history
+         ↓
+Has output remaining? OR user needs more info?
+  ├─ Yes (iteration &lt; 5): loop back to "Generate"
+  └─ No: return final response
+      </div>
+      <div class="const-table">
+        <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+        <tr><td><code>MAX_ITERATIONS</code></td><td>5</td><td>Prevent infinite loops. Safeguard against runaway generation.</td></tr>
+        <tr><td><code>MAX_HISTORY_CHARS</code></td><td>6,300</td><td>Keep context window manageable (~30–40 exchanges).</td></tr>
+        <tr><td><code>MAX_HISTORY_ENTRIES</code></td><td>50</td><td>Hard limit on conversation history size.</td></tr>
+        <tr><td><code>GENERATION_TIMEOUT</code></td><td>30 seconds</td><td>Abort generation if model doesn't respond. Prevents hangs.</td></tr>
+      </div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Tool Definitions (tools.rs:34–65)</h3>
+      <p>
+        Each tool has a strict signature and return type. The orchestrator validates arguments before execution.
+      </p>
+      <div class="code-block"><code>pub enum Tool {
+    SearchDocuments { query: String },
+    ListThreads {},
+    GetDocument { title: String },
+    ListDocuments { thread: Option&lt;String&gt; },
+    SearchMessages { query: String },
+    ListContacts {},
+}
+
+pub fn execute_tool(tool: Tool, db: &amp;Surreal) -&gt; Result&lt;String&gt; {
+    match tool {
+        Tool::SearchDocuments { query } =&gt; {
+            db.search_documents(&amp;query).await?
+        },
+        Tool::ListThreads {} =&gt; {
+            db.list_all_threads().await?
+        },
+        // ... others
+    }
+}</code></div>
+      <table class="const-table">
+        <tr><th>Tool</th><th>Input Signature</th><th>Output</th><th>Gravity Level</th></tr>
+        <tr><td><code>search_documents</code></td><td><code>{"query": string}</code></td><td>List of matching document titles + snippets</td><td>0</td></tr>
+        <tr><td><code>list_threads</code></td><td><code>{}</code></td><td>Array of thread names</td><td>0</td></tr>
+        <tr><td><code>get_document</code></td><td><code>{"title": string}</code></td><td>Full document text</td><td>0</td></tr>
+        <tr><td><code>list_documents</code></td><td><code>{"thread": ?string}</code></td><td>Filtered list of documents</td><td>0</td></tr>
+        <tr><td><code>search_messages</code></td><td><code>{"query": string}</code></td><td>Matching messages with context</td><td>0</td></tr>
+        <tr><td><code>list_contacts</code></td><td><code>{}</code></td><td>Array of contact names + emails</td><td>0</td></tr>
+      </table>
+    </div>
+
+    <div class="deep-section">
+      <h3>Voice Pipeline Components</h3>
+      <p>
+        Voice input is handled as a parallel data flow, eventually feeding into the chat agent loop.
+      </p>
+      <div class="code-block"><code>// wake.rs
+pub struct WakeWordDetector {
+    model: RustpotterModel,
+    threshold: f32,  // 0.4 for "sovereign"
+    rolling_buffer: RingBuffer&lt;f32&gt;,  // 16kHz, 10 sec
+}
+
+// capture.rs
+pub struct AudioCapture {
+    device: cpal::Device,
+    stream: cpal::Stream,
+    tx: mpsc::Sender&lt;Vec&lt;f32&gt;&gt;,
+}
+
+// stt.rs
+pub struct SttEngine {
+    model: WhisperModel,  // large-v3-turbo
+}
+
+// tts.rs
+pub struct TtsEngine {
+    model: PiperModel,
+    voices: Vec&lt;Voice&gt;,
+}
+
+// pipeline.rs
+pub enum VoiceState {
+    Idle,
+    Listening,
+    Transcribing,
+}
+
+pub struct VoicePipeline {
+    state: VoiceState,
+    detector: WakeWordDetector,
+    capture: AudioCapture,
+    stt: SttEngine,
+    tts: TtsEngine,
+}</code></div>
+      <div class="const-table">
+        <tr><th>Component</th><th>Model / Library</th><th>Input</th><th>Output</th><th>Latency</th></tr>
+        <tr><td>Wake Word</td><td>Rustpotter</td><td>16 kHz audio</td><td>Binary (detected / not)</td><td>~100 ms</td></tr>
+        <tr><td>STT</td><td>Whisper large-v3-turbo</td><td>16 kHz audio</td><td>Text</td><td>~500–1000 ms</td></tr>
+        <tr><td>TTS</td><td>Piper</td><td>Text</td><td>16 kHz audio</td><td>~200–500 ms</td></tr>
+      </div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Hardware Requirements</h3>
+      <p>
+        Sovereign OS is designed for mid-range modern hardware. The quantized models (4-bit or 8-bit) minimize VRAM usage
+        compared to full-precision inference.
+      </p>
+      <div class="hardware-specs">
+        <div class="spec-card">
+          <div class="value">6-core</div>
+          <div class="label">CPU (Intel i5 / Ryzen 5)</div>
+        </div>
+        <div class="spec-card">
+          <div class="value">16 GB</div>
+          <div class="label">RAM (12 GB minimum)</div>
+        </div>
+        <div class="spec-card">
+          <div class="value">RTX 3060</div>
+          <div class="label">GPU (optional, CPU fallback)</div>
+        </div>
+        <div class="spec-card">
+          <div class="value">512 GB</div>
+          <div class="label">NVMe SSD</div>
+        </div>
+      </div>
+      <p style="margin-top: 16px;">
+        With GPU (CUDA or Metal): 3B model runs in ~50–100 ms, 7B model in ~300–500 ms per token.
+        CPU fallback (llama.cpp with AVX2): ~10–20x slower but still interactive (2–3 second response time on modern CPUs).
+      </p>
+    </div>
+
+    <div class="deep-section">
+      <h3>Control vs. Data Plane Separation</h3>
+      <p>
+        The architectural safeguard against prompt injection: external content (documents, emails, web content)
+        lives in the <strong>data plane</strong>, which has zero ability to invoke actions.
+      </p>
+      <div class="code-block"><code>// Control Plane
+// Receives: user instructions, chat history
+// Can: invoke skills, modify docs, navigate
+// Tool access: full read+write via action_gate
+
+pub async fn control_plane(input: &amp;str, orchestrator: &amp;Orchestrator) {
+    let intent = orchestrator.classify(input).await;
+    orchestrator.chat_loop(intent).await;  // May invoke tools
+}
+
+// Data Plane
+// Receives: documents, email content, external data
+// Can: summarize, extract metadata, embed
+// Tool access: read-only, no skills, no side effects
+
+pub async fn data_plane(content: &amp;str) -&gt; Summary {
+    let summary = MODEL.summarize(content);
+    // No tool calls possible here
+    summary
+}</code></div>
+      <p>
+        This separation means that even if a malicious PDF says "delete everything", the data plane processing
+        that PDF has no <code>delete</code> capability. It can only return text/metadata to the control plane,
+        which then requires user confirmation to act.
+      </p>
+    </div>
+
+  </div>
+</section>
+
+  </div>
+</main>
+
+<!-- ========== FOOTER ========== -->
+<footer role="contentinfo" style="border-top: 1px solid var(--c-border-subtle); padding: 40px 24px; font-size: 0.82rem; color: var(--c-text-dim);">
+  <div style="max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+    <span>&copy; 2026 Sovereign OS. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <div style="display: flex; gap: 20px;">
+      <a href="https://github.com/sovereign-os/sovereign" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/sovereign-os/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
+      <a href="https://github.com/sovereign-os/sovereign/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+</footer>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Sovereign OS",
+      "item": "https://sovereign-os.org/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": "Local AI Orchestrator",
+      "item": "https://sovereign-os.org/detail-ai-orchestrator.html"
+    }
+  ]
+}
+</script>
+
+</body>
+</html>

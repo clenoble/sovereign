@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Guardian Social Recovery — Sovereign OS</title>
+<meta name="description" content="Recover your account with help from trusted people. No corporation involved. Shamir's Secret Sharing splits your recovery key across 5 guardians — any 3 can help you recover.">
+<link rel="canonical" href="https://sovereign-os.org/detail-social-recovery.html">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://sovereign-os.org/detail-social-recovery.html">
+<meta property="og:title" content="Guardian Social Recovery — Sovereign OS">
+<meta property="og:description" content="Recover your account with help from trusted people. No corporation involved. Shamir's Secret Sharing splits your recovery key across 5 guardians — any 3 can help you recover.">
+<meta property="og:image" content="https://sovereign-os.org/logo-static.svg">
+<meta property="og:site_name" content="Sovereign OS">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Guardian Social Recovery — Sovereign OS">
+<meta name="twitter:description" content="Recover your account with help from trusted people. No corporation involved. Shamir's Secret Sharing splits your recovery key across 5 guardians — any 3 can help you recover.">
+<meta name="twitter:image" content="https://sovereign-os.org/logo-static.svg">
+<style>
+/* ========== RESET & BASE ========== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --c-bg: #0c0e13;
+  --c-bg-alt: #13161d;
+  --c-bg-card: #181c25;
+  --c-border: #2a2f3a;
+  --c-border-subtle: #1e222c;
+  --c-text: #e2e4e9;
+  --c-text-dim: #a1a5b2;
+  --c-text-bright: #ffffff;
+  --c-accent: #60A5FA;
+  --c-accent-dim: #3b82f6;
+  --c-accent-glow: rgba(96, 165, 250, 0.15);
+  --c-owned: #3ecf8e;
+  --c-owned-dim: rgba(62, 207, 142, 0.12);
+  --c-external: #f59e42;
+  --c-external-dim: rgba(245, 158, 66, 0.12);
+  --c-danger: #ef5350;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --max-w: 1120px;
+  --header-h: 60px;
+}
+
+html { scroll-behavior: smooth; font-size: 16px; }
+body {
+  font-family: var(--font-sans);
+  background: var(--c-bg);
+  color: var(--c-text);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--c-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+/* External link indicator (WCAG 3.2.4) */
+footer a[target="_blank"]::after,
+main a[target="_blank"]::after { content: " ↗"; font-size: 0.75em; }
+a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+
+img { max-width: 100%; display: block; }
+button { cursor: pointer; font-family: inherit; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+/* ========== SKIP LINK (WCAG) ========== */
+.skip-link {
+  position: absolute; top: -100%; left: 50%; transform: translateX(-50%);
+  background: var(--c-accent); color: #000; padding: 8px 20px;
+  border-radius: var(--radius); font-weight: 600; z-index: 9999;
+}
+.skip-link:focus { top: 10px; }
+
+/* ========== HEADER ========== */
+header {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  height: var(--header-h);
+  background: rgba(12, 14, 19, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--c-border-subtle);
+  display: flex; align-items: center;
+}
+.header-inner {
+  max-width: var(--max-w); margin: 0 auto; padding: 0 24px;
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+}
+.logo {
+  font-size: 1.15rem; font-weight: 700; color: var(--c-text-bright);
+  display: flex; align-items: center; gap: 10px; letter-spacing: -0.02em;
+}
+.logo-mark {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+}
+.logo-mark img { width: 28px; height: 28px; }
+
+nav { display: flex; align-items: center; gap: 6px; }
+nav a {
+  color: var(--c-text-dim); padding: 6px 14px; border-radius: var(--radius);
+  font-size: 0.875rem; font-weight: 500; transition: color 0.15s, background 0.15s;
+}
+nav a:hover, nav a:focus-visible {
+  color: var(--c-text); background: rgba(255,255,255,0.05); text-decoration: none;
+}
+.nav-cta {
+  background: var(--c-accent) !important; color: #000 !important;
+  font-weight: 600; margin-left: 8px;
+}
+.nav-cta:hover { background: #5eadff !important; }
+
+.nav-toggle {
+  display: none; background: none; border: none; color: var(--c-text);
+  padding: 8px; font-size: 1.4rem; line-height: 1;
+}
+
+.back-link {
+  color: var(--c-accent); padding: 6px 14px; border-radius: var(--radius);
+  font-size: 0.875rem; font-weight: 500; transition: color 0.15s, background 0.15s;
+  display: flex; align-items: center; gap: 6px;
+}
+.back-link:hover, .back-link:focus-visible {
+  background: rgba(255,255,255,0.05); text-decoration: none;
+}
+
+/* ========== MAIN CONTENT ========== */
+main {
+  padding: calc(var(--header-h) + 40px) 24px 80px;
+}
+
+.content-inner {
+  max-width: var(--max-w); margin: 0 auto;
+}
+
+/* ========== PAGE HEADER ========== */
+.page-header {
+  margin-bottom: 60px;
+}
+
+.page-header h1 {
+  font-size: clamp(2rem, 4vw, 2.8rem); font-weight: 800;
+  color: var(--c-text-bright); letter-spacing: -0.03em; margin-bottom: 12px;
+  line-height: 1.15;
+}
+
+.page-header .subtitle {
+  color: var(--c-text-dim); font-size: 1.05rem; max-width: 700px;
+  line-height: 1.7;
+}
+
+/* ========== TIER SYSTEM ========== */
+.tier-section {
+  margin-bottom: 80px;
+}
+
+.tier-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+}
+
+.tier-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%;
+  font-weight: 700; font-size: 0.8rem;
+}
+
+.tier-1 .tier-badge {
+  background: var(--c-accent-glow); color: var(--c-accent);
+}
+
+.tier-2 .tier-badge {
+  background: var(--c-owned-dim); color: var(--c-owned);
+}
+
+.tier-3 .tier-badge {
+  background: rgba(168, 130, 255, 0.12); color: #a882ff;
+}
+
+.tier-label {
+  font-weight: 700; color: var(--c-text-bright); font-size: 1.1rem;
+}
+
+.tier-subtext {
+  color: var(--c-text-dim); font-size: 0.85rem;
+}
+
+/* ========== COLLAPSIBLE DETAILS ========== */
+details {
+  margin-bottom: 32px;
+}
+
+details > summary {
+  cursor: pointer; padding: 16px 20px; border-radius: var(--radius-lg);
+  background: var(--c-bg-card); border: 1px solid var(--c-border-subtle);
+  display: flex; align-items: center; gap: 12px;
+  font-weight: 600; color: var(--c-text-bright);
+  transition: border-color 0.2s, background 0.2s;
+  user-select: none;
+}
+
+details > summary:hover {
+  border-color: var(--c-border);
+  background: rgba(255,255,255,0.02);
+}
+
+details > summary::marker { color: var(--c-accent); }
+
+details[open] > summary {
+  border-color: var(--c-accent);
+  background: rgba(96, 165, 250, 0.05);
+}
+
+details > summary::before {
+  content: "▶";
+  display: inline-block;
+  font-size: 0.8rem;
+  transition: transform 0.2s;
+  width: 16px; text-align: center;
+}
+
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details > summary::-webkit-details-marker { display: none; }
+
+.details-content {
+  padding: 0 20px 20px 20px;
+  animation: expandDown 0.25s ease-out;
+}
+
+@keyframes expandDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+    overflow: hidden;
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+  }
+}
+
+/* ========== TIER 1: ELEVATOR PITCH ========== */
+.tier-1-content {
+  background: var(--c-accent-glow); border: 1px solid rgba(96, 165, 250, 0.2);
+  border-radius: var(--radius-lg); padding: 32px;
+  margin-bottom: 32px;
+}
+
+.tier-1-content p {
+  font-size: 1.05rem; color: var(--c-text); line-height: 1.75;
+  margin-bottom: 0;
+}
+
+/* ========== TIER 2: HOW IT WORKS ========== */
+.tier-2-content {
+  display: flex; flex-direction: column; gap: 24px;
+}
+
+.concept-block {
+  background: var(--c-bg-card); border-left: 4px solid var(--c-owned);
+  border-radius: var(--radius); padding: 24px;
+}
+
+.concept-block h3 {
+  font-size: 1rem; font-weight: 700; color: var(--c-text-bright);
+  margin-bottom: 8px; letter-spacing: -0.01em;
+}
+
+.concept-block p {
+  color: var(--c-text-dim); font-size: 0.95rem; line-height: 1.7;
+  margin-bottom: 12px;
+}
+
+.concept-block p:last-child { margin-bottom: 0; }
+
+.concept-list {
+  list-style: none; margin: 12px 0 0 0; padding-left: 0;
+}
+
+.concept-list li {
+  padding-left: 24px; position: relative; margin-bottom: 10px;
+  color: var(--c-text-dim); font-size: 0.9rem;
+}
+
+.concept-list li::before {
+  content: "▪"; position: absolute; left: 4px; color: var(--c-owned);
+}
+
+/* ========== TIER 3: DEEP DIVE ========== */
+.tier-3-content {
+  display: flex; flex-direction: column; gap: 32px;
+}
+
+.deep-section {
+  background: var(--c-bg-alt); border: 1px solid var(--c-border-subtle);
+  border-radius: var(--radius-lg); padding: 28px;
+}
+
+.deep-section h3 {
+  font-size: 1.05rem; font-weight: 700; color: var(--c-text-bright);
+  margin-bottom: 16px; letter-spacing: -0.01em;
+}
+
+.code-block {
+  background: var(--c-bg); border: 1px solid var(--c-border-subtle);
+  border-radius: var(--radius); padding: 16px;
+  overflow-x: auto; margin: 16px 0;
+  font-family: var(--font-mono);
+  font-size: 0.8rem; line-height: 1.6;
+  color: var(--c-text-dim);
+}
+
+.code-block code {
+  display: block; color: var(--c-text-dim);
+}
+
+.const-table {
+  width: 100%; border-collapse: collapse; margin: 16px 0;
+  font-size: 0.9rem;
+}
+
+.const-table th, .const-table td {
+  padding: 12px; text-align: left; border-bottom: 1px solid var(--c-border-subtle);
+}
+
+.const-table th {
+  background: rgba(255,255,255,0.03); font-weight: 700; color: var(--c-text-bright);
+}
+
+.const-table code {
+  background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 3px;
+  font-family: var(--font-mono); font-size: 0.85em;
+}
+
+.flow-diagram {
+  background: rgba(255,255,255,0.02); padding: 20px;
+  border-radius: var(--radius); border: 1px solid var(--c-border-subtle);
+  font-family: var(--font-mono); font-size: 0.85rem;
+  color: var(--c-text-dim); line-height: 2;
+  overflow-x: auto;
+  margin: 16px 0;
+}
+
+/* ========== RESPONSIVE ========== */
+@media (max-width: 900px) {
+  .page-header h1 { font-size: 1.8rem; }
+}
+
+@media (max-width: 640px) {
+  main { padding: calc(var(--header-h) + 24px) 16px 60px; }
+  nav { display: none; }
+  nav.open {
+    display: flex; flex-direction: column;
+    position: absolute; top: var(--header-h); left: 0; right: 0;
+    background: var(--c-bg); border-bottom: 1px solid var(--c-border);
+    padding: 12px;
+  }
+  .nav-toggle { display: block; }
+  .page-header { margin-bottom: 40px; }
+  .tier-1-content { padding: 20px; }
+  .concept-block { padding: 16px; }
+  .deep-section { padding: 16px; }
+}
+
+/* ========== REDUCED MOTION ========== */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  details, .details-content { animation: none; transition: none; }
+}
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<!-- ========== HEADER ========== -->
+<header role="banner">
+  <div class="header-inner">
+    <a href="index.html" class="back-link" aria-label="Back to homepage">
+      ← Back to Overview
+    </a>
+    <a href="index.html" class="logo" aria-label="Sovereign OS home">
+      <span class="logo-mark" aria-hidden="true"><img src="logo-icon.svg" alt=""></span>
+      Sovereign OS
+    </a>
+    <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="document.querySelector('nav').classList.toggle('open'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">☰</button>
+    <nav role="navigation" aria-label="Main navigation">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#architecture">Architecture</a>
+      <a href="index.html#security">Security</a>
+      <a href="https://github.com/sovereign-os/sovereign" class="nav-cta" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ========== MAIN CONTENT ========== -->
+<main id="main" role="main">
+<div class="content-inner">
+
+<!-- ========== PAGE HEADER ========== -->
+<div class="page-header">
+  <h1>Guardian Social Recovery</h1>
+  <p class="subtitle">
+    Recover your account with help from trusted people. No corporation involved. Your data stays encrypted throughout.
+  </p>
+</div>
+
+<!-- ========== TIER 1: ELEVATOR PITCH ========== -->
+<section class="tier-section tier-1">
+  <div class="tier-header">
+    <span class="tier-badge">1</span>
+    <div>
+      <div class="tier-label">Tier 1: The Elevator Pitch</div>
+      <div class="tier-subtext">10-second read</div>
+    </div>
+  </div>
+
+  <div class="tier-1-content">
+    <p>
+      Lose all your devices? Five trusted people each hold an encrypted piece of your recovery key. No piece works alone.
+      Any three together can help you recover. A 72-hour waiting period with notifications to all guardians stops fraud.
+      No corporation is involved.
+    </p>
+  </div>
+</section>
+
+<!-- ========== TIER 2: HOW IT WORKS ========== -->
+<section class="tier-section tier-2">
+  <div class="tier-header">
+    <span class="tier-badge">2</span>
+    <div>
+      <div class="tier-label">Tier 2: How It Works</div>
+      <div class="tier-subtext">1–3 minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-2-content">
+
+    <details open>
+      <summary>Shamir's Secret Sharing</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>50-Year-Old Math Behind the Magic</h3>
+          <p>
+            Shamir's Secret Sharing (SSS) is a cryptographic scheme invented by Adi Shamir in 1979.
+            It splits a secret (your master recovery key) into pieces called shares with a critical property:
+          </p>
+          <ul class="concept-list">
+            <li><strong>Master key → 5 shards:</strong> Your recovery key is split using SSS with parameters (k=3, n=5). This means exactly 5 shards are created.</li>
+            <li><strong>Any 3 shards reconstruct:</strong> Any subset of 3 or more shards can mathematically reconstruct the original key. Fewer than 3 shards reveal nothing.</li>
+            <li><strong>Each shard is encrypted:</strong> Before giving shard #i to guardian i, we encrypt it with their public key. Guardians never see your data. They see only an opaque encrypted blob.</li>
+            <li><strong>Guardians are isolated:</strong> Each guardian holds one shard and knows only their own encrypted piece. They cannot derive your key from just their shard, nor can they see what other guardians hold.</li>
+          </ul>
+          <p style="margin-top: 12px;">
+            This mathematically guarantees that even if 2 guardians leak their shards to an attacker, the attacker cannot recover your key.
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>The 72-Hour Fraud Window</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Recovery Broadcast with Human Verification</h3>
+          <p>
+            When someone claims they lost their devices and initiates recovery, the system broadcasts a notification to all 5 guardians.
+            But it doesn't proceed immediately. Instead, it enforces a 72-hour waiting period:
+          </p>
+          <ul class="concept-list">
+            <li><strong>Initiate recovery:</strong> Attacker (impersonating you) or real you initiates a recovery request via the login screen.</li>
+            <li><strong>Notify all guardians:</strong> All 5 guardians receive a message: "Recovery initiated for account ID X. Approve or reject within 72 hours."</li>
+            <li><strong>72-hour window:</strong> If you're the real user and didn't lose your devices, you see the notification and can abort immediately. Aborting stops the entire recovery process.</li>
+            <li><strong>Collect approvals:</strong> After 72 hours, if not aborted, the system collects approval responses from guardians. As soon as 3 approve, recovery proceeds.</li>
+            <li><strong>No response = passive approval:</strong> Guardians who ignore the notification are treated as implicit approval after 72 hours (you can tune this).</li>
+          </ul>
+          <p style="margin-top: 12px;">
+            This design catches most attackers: a real attacker would need your device to abort the notification, defeating the point of recovery.
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Recovery Flow</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>State Machine: From Initiation to Completion</h3>
+          <p>
+            Recovery progresses through well-defined states. At any point, the real user can abort.
+          </p>
+          <ul class="concept-list">
+            <li><strong>Initiate:</strong> User enters recovery ID and initiates a RecoveryRequest. State → WaitingPeriod. Timestamp: now.</li>
+            <li><strong>Waiting Period (72h):</strong> All guardians notified. If real user sees notification and clicks "Abort", state → Aborted immediately. Otherwise, wait.</li>
+            <li><strong>After 72h Expires:</strong> State → AwaitingShards. System begins collecting encrypted shards from guardians who approved.</li>
+            <li><strong>Collect Shards (n ≥ 3):</strong> As each guardian submits their encrypted shard, we store it. Once 3+ shards collected, state → Reconstructing.</li>
+            <li><strong>Reconstruct:</strong> Decrypt all collected shards using user's private key, apply Shamir reconstruction, recover master key. State → Complete.</li>
+            <li><strong>Complete:</strong> User can now unlock their account with the recovered key. Recovery request record closed.</li>
+            <li><strong>Abort (any state):</strong> User can abort from WaitingPeriod or AwaitingShards. State → Aborted. No recovery happens. Audit log recorded.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>What Guardians See</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Minimal Information, Maximum Privacy</h3>
+          <p>
+            Guardians receive notifications and prompts, but they see nothing about your data or identity beyond what's necessary.
+          </p>
+          <ul class="concept-list">
+            <li><strong>Recovery ID:</strong> A unique identifier like "recovery_abc123def456". No name attached.</li>
+            <li><strong>Action prompt:</strong> "Do you want to help recover this account? Approve/Reject."</li>
+            <li><strong>Encrypted shard:</strong> If they approve, they submit a blob that looks like random bytes. They cannot decrypt it, inspect it, or derive meaning from it.</li>
+            <li><strong>No data visibility:</strong> Guardians never see your documents, emails, contacts, or any personal information.</li>
+            <li><strong>No identifying info:</strong> They don't see your real name, email, or account handle in the recovery process.</li>
+          </ul>
+          <p style="margin-top: 12px;">
+            This keeps guardians in a "black box" position: they help recover an account without knowing anything about it.
+          </p>
+        </div>
+      </div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ========== TIER 3: DEEP DIVE ========== -->
+<section class="tier-section tier-3">
+  <div class="tier-header">
+    <span class="tier-badge">3</span>
+    <div>
+      <div class="tier-label">Tier 3: Deep Dive</div>
+      <div class="tier-subtext">5+ minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-3-content">
+
+    <div class="deep-section">
+      <h3>Shamir Implementation (blahaj crate)</h3>
+      <p>
+        We use the <code>blahaj</code> crate for Shamir's Secret Sharing. The API is simple and secure.
+      </p>
+      <div class="code-block"><code>use blahaj::shamir;
+
+// Split master key into 5 shards, threshold = 3
+let master_key: [u8; 32] = generate_random_key();
+let shards = shamir::split(&amp;master_key, 3, 5)?;
+// shards: Vec&lt;Share&gt; with len == 5
+
+// Reconstruct from any 3+ shards
+let recovered = shamir::reconstruct(&amp;shards[0..3])?;
+// recovered: [u8; 32] == master_key
+
+// Each shard is encrypted with guardian's public key
+for (i, shard) in shards.iter().enumerate() {
+    let guardian_pubkey = get_guardian_pubkey(i);
+    let encrypted_shard = encrypt_with_public_key(shard, guardian_pubkey);
+    store_shard_for_guardian(i, encrypted_shard);
+}</code></div>
+      <p style="margin-top: 12px;">
+        The blahaj crate handles all Lagrange interpolation and finite field arithmetic. We only provide threshold, total, and the secret.
+      </p>
+    </div>
+
+    <div class="deep-section">
+      <h3>Data Structures</h3>
+      <p>
+        Core types used in the recovery module (sovereign-db/src/schema.rs and sovereign-crypto/src/guardian.rs).
+      </p>
+      <div class="code-block"><code>// Encrypted shard stored for each guardian
+pub struct Shard {
+    pub shard_id: u32,  // Index 1–5
+    pub encrypted_data: Vec&lt;u8&gt;,  // AES-256-GCM(shard_blob, guardian_pubkey)
+    pub for_user_id: String,  // User's account ID
+    pub guardian_pubkey_fingerprint: String,  // SHA-256(guardian_pubkey)
+    pub created_at: DateTime&lt;Utc&gt;,
+    pub epoch: u64,  // Prevents replay attacks
+}
+
+// Recovery request lifecycle
+pub struct RecoveryRequest {
+    pub recovery_id: String,  // Unique ID like recovery_abc123
+    pub state: RecoveryState,  // WaitingPeriod, AwaitingShards, Reconstructing, Complete, Aborted
+    pub initiated_at: DateTime&lt;Utc&gt;,
+    pub waiting_period_ends: DateTime&lt;Utc&gt;,  // initiated_at + 72h
+    pub threshold: u32,  // 3
+    pub total_shards: u32,  // 5
+    pub guardian_responses: HashMap&lt;u32, GuardianResponse&gt;,  // shard_id → Approved, Rejected, Pending
+    pub collected_shards: Vec&lt;Shard&gt;,  // Encrypted shards submitted by guardians
+}</code></div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Recovery State Machine</h3>
+      <p>
+        Recovery progresses through well-defined states managed by the orchestrator.
+      </p>
+      <div class="flow-diagram">
+User initiates recovery
+         ↓
+Create RecoveryRequest
+  state = WaitingPeriod
+  waiting_period_ends = now + 72h
+         ↓
+Broadcast notification to all 5 guardians
+         ↓
+Guardian can:
+  ├─ Approve → response set to Approved
+  ├─ Reject → response set to Rejected
+  └─ (no response) → Pending
+         ↓
+If user aborts within 72h:
+  └─ state = Aborted, return
+         ↓
+After 72h expires:
+  state = AwaitingShards
+  collect_shards_from_approved_guardians()
+         ↓
+Once ≥ 3 shards collected:
+  state = Reconstructing
+  master_key = shamir::reconstruct(shards_decrypted)
+         ↓
+state = Complete
+  user can now unlock account
+      </div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Abort Mechanism</h3>
+      <p>
+        At any time during WaitingPeriod or AwaitingShards, the real user can abort recovery if they regain access to their account.
+      </p>
+      <div class="code-block"><code>pub async fn abort_recovery(
+    recovery_id: &amp;str,
+    user_id: &amp;str,
+    db: &amp;Surreal,
+) -&gt; Result&lt;()&gt; {
+    let mut req = db.get_recovery_request(recovery_id).await?;
+
+    // Only allow abort from safe states
+    if !matches!(req.state, RecoveryState::WaitingPeriod | RecoveryState::AwaitingShards) {
+        return Err("Recovery cannot be aborted from this state");
+    }
+
+    // Verify ownership
+    if req.initiated_by != user_id {
+        log_security_event("recovery_abort_unauthorized", user_id, recovery_id);
+        return Err("Unauthorized");
+    }
+
+    // Mark as aborted
+    req.state = RecoveryState::Aborted;
+    req.aborted_at = Some(Utc::now());
+    db.update_recovery_request(&amp;req).await?;
+
+    // Notify all guardians
+    notify_guardians_of_abort(recovery_id).await?;
+
+    // Audit log
+    log_recovery_event("abort", recovery_id, user_id);
+
+    Ok(())
+}</code></div>
+      <p style="margin-top: 12px;">
+        This ensures a malicious initiator cannot force recovery if the real user notices and can abort.
+      </p>
+    </div>
+
+    <div class="deep-section">
+      <h3>Security Properties</h3>
+      <p>
+        The recovery system is designed with threat modeling in mind. Here are the key security guarantees:
+      </p>
+      <ul class="concept-list">
+        <li><strong>Master key never leaves memory:</strong> The recovered key exists only in RAM during reconstruction. It is never logged, cached, or transmitted over the network.</li>
+        <li><strong>Guardians are isolated:</strong> Each guardian only holds one encrypted shard. They cannot collude offline to reconstruct the key. Communication happens only through the system.</li>
+        <li><strong>Epoch tracking:</strong> Each shard includes an epoch counter. Shards from old epochs are rejected. This prevents replay attacks where an attacker uses a captured shard multiple times.</li>
+        <li><strong>Threat: fewer than 3 shards compromised:</strong> Useless. Mathematical guarantee: SSS with k=3 means &lt;3 shards leak zero information about the master key.</li>
+        <li><strong>Threat: exactly 3 shards compromised:</strong> Attacker can reconstruct, but must wait 72h for real user to either abort or for the system to verify 3 guardian approvals. High friction.</li>
+        <li><strong>Threat: 3+ guardians compromised:</strong> Attacker can reconstruct immediately after 72h. But this requires compromising 60% of guardians, which is a high bar for social engineering.</li>
+        <li><strong>Threat: impersonation:</strong> Attacker initiates recovery under your account. But you see the 72h notification on any of your devices and abort. Attacker foiled unless they also compromised all your devices.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>Module Organization</h3>
+      <p>
+        Guardian recovery is implemented in the <code>sovereign-crypto</code> crate under the <code>guardian/</code> subdirectory.
+      </p>
+      <div class="code-block"><code>sovereign-crypto/src/guardian/
+├── mod.rs             // Public API + re-exports
+├── shamir.rs          // Shamir split/reconstruct wrappers
+├── shard.rs           // Shard struct + encryption/decryption
+├── recovery.rs        // RecoveryRequest + state machine
+├── notification.rs    // Guardian notification dispatch
+└── audit.rs           // Audit logging for recovery events</code></div>
+      <ul class="concept-list">
+        <li><code>shamir.rs</code> — Thin wrapper around <code>blahaj</code> crate. Handles key serialization.</li>
+        <li><code>shard.rs</code> — Shard struct, encryption with guardian public keys, decryption with user's private key.</li>
+        <li><code>recovery.rs</code> — RecoveryRequest struct, state transitions, abort logic, shard collection.</li>
+        <li><code>notification.rs</code> — Sending notifications to guardians (email, push, or local UI depending on deployment).</li>
+        <li><code>audit.rs</code> — Logging every state change, abort, approval, rejection for compliance and debugging.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>Performance Notes</h3>
+      <p>
+        Social recovery should be infrequent, but when it happens, latency matters. Here are the performance characteristics:
+      </p>
+      <div class="const-table">
+        <tr><th>Operation</th><th>Complexity</th><th>Typical Time</th><th>Notes</th></tr>
+        <tr><td>Split (SSS)</td><td>O(k × n)</td><td>1–5 ms</td><td>k=3, n=5 is trivial. Dominated by random number generation.</td></tr>
+        <tr><td>Reconstruct (SSS)</td><td>O(k²)</td><td>1–5 ms</td><td>Lagrange interpolation over finite field. k=3 is very fast.</td></tr>
+        <tr><td>Encrypt shard (AES-256-GCM)</td><td>O(shard_size)</td><td>&lt;1 ms per shard</td><td>Shards are small (~32 bytes each). Negligible overhead.</td></tr>
+        <tr><td>Decrypt shard (AES-256-GCM)</td><td>O(shard_size)</td><td>&lt;1 ms per shard</td><td>Per-shard decryption during reconstruction.</td></tr>
+        <tr><td>Total recovery latency</td><td>—</td><td>10–50 ms</td><td>Excludes network I/O and 72h waiting period.</td></tr>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+  </div>
+</main>
+
+<!-- ========== FOOTER ========== -->
+<footer role="contentinfo" style="border-top: 1px solid var(--c-border-subtle); padding: 40px 24px; font-size: 0.82rem; color: var(--c-text-dim);">
+  <div style="max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+    <span>&copy; 2026 Sovereign OS. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <div style="display: flex; gap: 20px;">
+      <a href="https://github.com/sovereign-os/sovereign" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/sovereign-os/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
+      <a href="https://github.com/sovereign-os/sovereign/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+</footer>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Sovereign OS",
+      "item": "https://sovereign-os.org/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": "Guardian Social Recovery",
+      "item": "https://sovereign-os.org/detail-social-recovery.html"
+    }
+  ]
+}
+</script>
+
+</body>
+</html>

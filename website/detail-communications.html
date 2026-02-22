@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Unified Communications — Sovereign OS</title>
+<meta name="description" content="One inbox for everything. Email, Signal, WhatsApp — organized by person, not by app.">
+<link rel="canonical" href="https://sovereign-os.org/detail-communications.html">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://sovereign-os.org/detail-communications.html">
+<meta property="og:title" content="Unified Communications — Sovereign OS">
+<meta property="og:description" content="One inbox for everything. Email, Signal, WhatsApp — organized by person, not by app.">
+<meta property="og:image" content="https://sovereign-os.org/logo-static.svg">
+<meta property="og:site_name" content="Sovereign OS">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Unified Communications — Sovereign OS">
+<meta name="twitter:description" content="One inbox for everything. Email, Signal, WhatsApp — organized by person, not by app.">
+<meta name="twitter:image" content="https://sovereign-os.org/logo-static.svg">
+<style>
+/* ========== RESET & BASE ========== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --c-bg: #0c0e13;
+  --c-bg-alt: #13161d;
+  --c-bg-card: #181c25;
+  --c-border: #2a2f3a;
+  --c-border-subtle: #1e222c;
+  --c-text: #e2e4e9;
+  --c-text-dim: #a1a5b2;
+  --c-text-bright: #ffffff;
+  --c-accent: #60A5FA;
+  --c-accent-dim: #3b82f6;
+  --c-accent-glow: rgba(96, 165, 250, 0.15);
+  --c-owned: #3ecf8e;
+  --c-owned-dim: rgba(62, 207, 142, 0.12);
+  --c-external: #f59e42;
+  --c-external-dim: rgba(245, 158, 66, 0.12);
+  --c-danger: #ef5350;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --max-w: 1120px;
+  --header-h: 60px;
+}
+
+html { scroll-behavior: smooth; font-size: 16px; }
+body {
+  font-family: var(--font-sans);
+  background: var(--c-bg);
+  color: var(--c-text);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--c-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+/* External link indicator (WCAG 3.2.4) */
+footer a[target="_blank"]::after,
+main a[target="_blank"]::after { content: " ↗"; font-size: 0.75em; }
+a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+
+img { max-width: 100%; display: block; }
+button { cursor: pointer; font-family: inherit; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+/* ========== SKIP LINK (WCAG) ========== */
+.skip-link {
+  position: absolute; top: -100%; left: 50%; transform: translateX(-50%);
+  background: var(--c-accent); color: #000; padding: 8px 20px;
+  border-radius: var(--radius); font-weight: 600; z-index: 9999;
+}
+.skip-link:focus { top: 10px; }
+
+/* ========== HEADER ========== */
+header {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  height: var(--header-h);
+  background: rgba(12, 14, 19, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--c-border-subtle);
+  display: flex; align-items: center;
+}
+.header-inner {
+  max-width: var(--max-w); margin: 0 auto; padding: 0 24px;
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+}
+.logo {
+  font-size: 1.15rem; font-weight: 700; color: var(--c-text-bright);
+  display: flex; align-items: center; gap: 10px; letter-spacing: -0.02em;
+}
+.logo-mark {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+}
+.logo-mark img { width: 28px; height: 28px; }
+
+nav { display: flex; align-items: center; gap: 6px; }
+nav a {
+  color: var(--c-text-dim); padding: 6px 14px; border-radius: var(--radius);
+  font-size: 0.875rem; font-weight: 500; transition: color 0.15s, background 0.15s;
+}
+nav a:hover, nav a:focus-visible {
+  color: var(--c-text); background: rgba(255,255,255,0.05); text-decoration: none;
+}
+.nav-cta {
+  background: var(--c-accent) !important; color: #000 !important;
+  font-weight: 600; margin-left: 8px;
+}
+.nav-cta:hover { background: #5eadff !important; }
+
+.nav-toggle {
+  display: none; background: none; border: none; color: var(--c-text);
+  padding: 8px; font-size: 1.4rem; line-height: 1;
+}
+
+.back-link {
+  color: var(--c-accent); padding: 6px 14px; border-radius: var(--radius);
+  font-size: 0.875rem; font-weight: 500; transition: color 0.15s, background 0.15s;
+  display: flex; align-items: center; gap: 6px;
+}
+.back-link:hover, .back-link:focus-visible {
+  background: rgba(255,255,255,0.05); text-decoration: none;
+}
+
+/* ========== MAIN CONTENT ========== */
+main {
+  padding: calc(var(--header-h) + 40px) 24px 80px;
+}
+
+.content-inner {
+  max-width: var(--max-w); margin: 0 auto;
+}
+
+/* ========== PAGE HEADER ========== */
+.page-header {
+  margin-bottom: 60px;
+}
+
+.page-header h1 {
+  font-size: clamp(2rem, 4vw, 2.8rem); font-weight: 800;
+  color: var(--c-text-bright); letter-spacing: -0.03em; margin-bottom: 12px;
+  line-height: 1.15;
+}
+
+.page-header .subtitle {
+  color: var(--c-text-dim); font-size: 1.05rem; max-width: 700px;
+  line-height: 1.7;
+}
+
+/* ========== TIER SYSTEM ========== */
+.tier-section {
+  margin-bottom: 80px;
+}
+
+.tier-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+}
+
+.tier-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%;
+  font-weight: 700; font-size: 0.8rem;
+}
+
+.tier-1 .tier-badge {
+  background: var(--c-accent-glow); color: var(--c-accent);
+}
+
+.tier-2 .tier-badge {
+  background: var(--c-owned-dim); color: var(--c-owned);
+}
+
+.tier-3 .tier-badge {
+  background: rgba(168, 130, 255, 0.12); color: #a882ff;
+}
+
+.tier-label {
+  font-weight: 700; color: var(--c-text-bright); font-size: 1.1rem;
+}
+
+.tier-subtext {
+  color: var(--c-text-dim); font-size: 0.85rem;
+}
+
+/* ========== COLLAPSIBLE DETAILS ========== */
+details {
+  margin-bottom: 32px;
+}
+
+details > summary {
+  cursor: pointer; padding: 16px 20px; border-radius: var(--radius-lg);
+  background: var(--c-bg-card); border: 1px solid var(--c-border-subtle);
+  display: flex; align-items: center; gap: 12px;
+  font-weight: 600; color: var(--c-text-bright);
+  transition: border-color 0.2s, background 0.2s;
+  user-select: none;
+}
+
+details > summary:hover {
+  border-color: var(--c-border);
+  background: rgba(255,255,255,0.02);
+}
+
+details > summary::marker { color: var(--c-accent); }
+
+details[open] > summary {
+  border-color: var(--c-accent);
+  background: rgba(96, 165, 250, 0.05);
+}
+
+details > summary::before {
+  content: "▶";
+  display: inline-block;
+  font-size: 0.8rem;
+  transition: transform 0.2s;
+  width: 16px; text-align: center;
+}
+
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details > summary::-webkit-details-marker { display: none; }
+
+.details-content {
+  padding: 0 20px 20px 20px;
+  animation: expandDown 0.25s ease-out;
+}
+
+@keyframes expandDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+    overflow: hidden;
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+  }
+}
+
+/* ========== TIER 1: ELEVATOR PITCH ========== */
+.tier-1-content {
+  background: var(--c-accent-glow); border: 1px solid rgba(96, 165, 250, 0.2);
+  border-radius: var(--radius-lg); padding: 32px;
+  margin-bottom: 32px;
+}
+
+.tier-1-content p {
+  font-size: 1.05rem; color: var(--c-text); line-height: 1.75;
+  margin-bottom: 0;
+}
+
+/* ========== TIER 2: HOW IT WORKS ========== */
+.tier-2-content {
+  display: flex; flex-direction: column; gap: 24px;
+}
+
+.concept-block {
+  background: var(--c-bg-card); border-left: 4px solid var(--c-owned);
+  border-radius: var(--radius); padding: 24px;
+}
+
+.concept-block h3 {
+  font-size: 1rem; font-weight: 700; color: var(--c-text-bright);
+  margin-bottom: 8px; letter-spacing: -0.01em;
+}
+
+.concept-block p {
+  color: var(--c-text-dim); font-size: 0.95rem; line-height: 1.7;
+  margin-bottom: 12px;
+}
+
+.concept-block p:last-child { margin-bottom: 0; }
+
+.concept-list {
+  list-style: none; margin: 12px 0 0 0; padding-left: 0;
+}
+
+.concept-list li {
+  padding-left: 24px; position: relative; margin-bottom: 10px;
+  color: var(--c-text-dim); font-size: 0.9rem;
+}
+
+.concept-list li::before {
+  content: "▪"; position: absolute; left: 4px; color: var(--c-owned);
+}
+
+/* ========== TIER 3: DEEP DIVE ========== */
+.tier-3-content {
+  display: flex; flex-direction: column; gap: 32px;
+}
+
+.deep-section {
+  background: var(--c-bg-alt); border: 1px solid var(--c-border-subtle);
+  border-radius: var(--radius-lg); padding: 28px;
+}
+
+.deep-section h3 {
+  font-size: 1.05rem; font-weight: 700; color: var(--c-text-bright);
+  margin-bottom: 16px; letter-spacing: -0.01em;
+}
+
+.code-block {
+  background: var(--c-bg); border: 1px solid var(--c-border-subtle);
+  border-radius: var(--radius); padding: 16px;
+  overflow-x: auto; margin: 16px 0;
+  font-family: var(--font-mono);
+  font-size: 0.8rem; line-height: 1.6;
+  color: var(--c-text-dim);
+}
+
+.code-block code {
+  display: block; color: var(--c-text-dim);
+}
+
+.const-table {
+  width: 100%; border-collapse: collapse; margin: 16px 0;
+  font-size: 0.9rem;
+}
+
+.const-table th, .const-table td {
+  padding: 12px; text-align: left; border-bottom: 1px solid var(--c-border-subtle);
+}
+
+.const-table th {
+  background: rgba(255,255,255,0.03); font-weight: 700; color: var(--c-text-bright);
+}
+
+.const-table code {
+  background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 3px;
+  font-family: var(--font-mono); font-size: 0.85em;
+}
+
+.flow-diagram {
+  background: rgba(255,255,255,0.02); padding: 20px;
+  border-radius: var(--radius); border: 1px solid var(--c-border-subtle);
+  font-family: var(--font-mono); font-size: 0.85rem;
+  color: var(--c-text-dim); line-height: 2;
+  overflow-x: auto;
+  margin: 16px 0;
+}
+
+/* ========== RESPONSIVE ========== */
+@media (max-width: 900px) {
+  .page-header h1 { font-size: 1.8rem; }
+}
+
+@media (max-width: 640px) {
+  main { padding: calc(var(--header-h) + 24px) 16px 60px; }
+  nav { display: none; }
+  nav.open {
+    display: flex; flex-direction: column;
+    position: absolute; top: var(--header-h); left: 0; right: 0;
+    background: var(--c-bg); border-bottom: 1px solid var(--c-border);
+    padding: 12px;
+  }
+  .nav-toggle { display: block; }
+  .page-header { margin-bottom: 40px; }
+  .tier-1-content { padding: 20px; }
+  .concept-block { padding: 16px; }
+  .deep-section { padding: 16px; }
+}
+
+/* ========== REDUCED MOTION ========== */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  details, .details-content { animation: none; transition: none; }
+}
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<!-- ========== HEADER ========== -->
+<header role="banner">
+  <div class="header-inner">
+    <a href="index.html" class="back-link" aria-label="Back to homepage">
+      ← Back to Overview
+    </a>
+    <a href="index.html" class="logo" aria-label="Sovereign OS home">
+      <span class="logo-mark" aria-hidden="true"><img src="logo-icon.svg" alt=""></span>
+      Sovereign OS
+    </a>
+    <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="document.querySelector('nav').classList.toggle('open'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">☰</button>
+    <nav role="navigation" aria-label="Main navigation">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#architecture">Architecture</a>
+      <a href="index.html#security">Security</a>
+      <a href="https://github.com/sovereign-os/sovereign" class="nav-cta" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ========== MAIN CONTENT ========== -->
+<main id="main" role="main">
+<div class="content-inner">
+
+<!-- ========== PAGE HEADER ========== -->
+<div class="page-header">
+  <h1>Unified Communications</h1>
+  <p class="subtitle">
+    One inbox for everything. Email, Signal, WhatsApp — organized by person, not by app. Search "what did Sarah say about the project?" and get results from every channel.
+  </p>
+</div>
+
+<!-- ========== TIER 1: ELEVATOR PITCH ========== -->
+<section class="tier-section tier-1">
+  <div class="tier-header">
+    <span class="tier-badge">1</span>
+    <div>
+      <div class="tier-label">Tier 1: The Elevator Pitch</div>
+      <div class="tier-subtext">10-second read</div>
+    </div>
+  </div>
+
+  <div class="tier-1-content">
+    <p>
+      All your messages in one place. Email, Signal, WhatsApp — organized by person, not by app.
+      Search "what did Sarah say about the project?" and get results from every channel Sarah has ever contacted you on.
+      No switching between apps. No fragmentation. One unified inbox with full-text search across all channels.
+    </p>
+  </div>
+</section>
+
+<!-- ========== TIER 2: HOW IT WORKS ========== -->
+<section class="tier-section tier-2">
+  <div class="tier-header">
+    <span class="tier-badge">2</span>
+    <div>
+      <div class="tier-label">Tier 2: How It Works</div>
+      <div class="tier-subtext">1–3 minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-2-content">
+
+    <details open>
+      <summary>Contact-Centric Model</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>One Contact Card per Person with Multiple Channel Addresses</h3>
+          <p>
+            Every person in your network has a unified profile with multiple communication channels attached.
+            Instead of bouncing between apps, you open Sarah's contact card and see everything she's ever sent:
+            emails, Signal messages, WhatsApp threads—in chronological order.
+          </p>
+          <ul class="concept-list">
+            <li><strong>One contact card per person:</strong> Name, avatar, notes, all channel addresses (email, phone, Signal ID, WhatsApp).</li>
+            <li><strong>All messages unified:</strong> When you open Sarah's card, you see a unified timeline of all her messages across all channels.</li>
+            <li><strong>Avatar & metadata synced:</strong> Avatar changes, notes, preferred contact method all update once and apply everywhere.</li>
+            <li><strong>Thread linking:</strong> Email exchange about a project can be anchored to that project's canvas thread for full context.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Channel Abstraction</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Trait-Based Design for Extensibility</h3>
+          <p>
+            Every communication channel (email, SMS, Signal, WhatsApp) implements the same interface.
+            Adding a new channel like Telegram or Discord is a single trait implementation.
+            No spaghetti integrations. Clean separation of concerns.
+          </p>
+          <div class="code-block"><code>trait CommunicationChannel {
+    async fn connect(&amp;mut self) -&gt; Result&lt;()&gt;;
+    async fn send_message(&amp;mut self, msg: Message) -&gt; Result&lt;String&gt;;
+    async fn fetch_messages(&amp;mut self, conversation_id: &amp;str) -&gt; Result&lt;Vec&lt;Message&gt;&gt;;
+    async fn sync(&amp;mut self) -&gt; Result&lt;SyncResult&gt;;
+}</code></div>
+          <p style="margin-top: 12px;">
+            Each channel plugin implements connect (authenticate), send_message, fetch_messages (batch sync), and sync (periodic update).
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Conversations Linked to Threads</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Email & Chat Anchored to Canvas Documents</h3>
+          <p>
+            An email exchange about a project doesn't live isolated in an inbox.
+            It can be explicitly linked to the project's canvas thread, so discussions and documents are visible together.
+          </p>
+          <ul class="concept-list">
+            <li><strong>Email thread linked to project canvas thread:</strong> All project discussion in one place.</li>
+            <li><strong>Signal chat linked to design decision thread:</strong> Design conversations contextualized with docs.</li>
+            <li><strong>All accessible from one place:</strong> No switching. Browse documents, see related messages inline.</li>
+            <li><strong>Bidirectional linkage:</strong> Access conversation from thread, and thread from conversation.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Search Across Everything</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>AI-Powered Multi-Channel Search</h3>
+          <p>
+            The orchestrator's <code>search_messages</code> tool queries all channels simultaneously.
+            One query returns results from email, Signal, WhatsApp, and SMS. Full-text, ranked, with context snippets.
+          </p>
+          <ul class="concept-list">
+            <li><strong>"Find messages from John about the deadline":</strong> Results from all channels John has messaged you on.</li>
+            <li><strong>Full-text search:</strong> Search message bodies and subjects.</li>
+            <li><strong>Filters:</strong> By channel, date range, participant, or conversation.</li>
+            <li><strong>Ranked results:</strong> Most relevant matches first, with context snippets showing why each result matches.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ========== TIER 3: DEEP DIVE ========== -->
+<section class="tier-section tier-3">
+  <div class="tier-header">
+    <span class="tier-badge">3</span>
+    <div>
+      <div class="tier-label">Tier 3: Deep Dive</div>
+      <div class="tier-subtext">5+ minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-3-content">
+
+    <div class="deep-section">
+      <h3>Contact Structure (schema.rs:196-240)</h3>
+      <p>
+        Every contact is a unified record with multiple communication channels and metadata.
+      </p>
+      <div class="code-block"><code>struct Contact {
+    id: Option&lt;Thing&gt;,              // SurrealDB ID
+    name: String,                      // Full name
+    avatar: Option&lt;String&gt;,          // Avatar URL/data
+    notes: String,                     // User notes
+    addresses: Vec&lt;ChannelAddress&gt;,  // Email, phone, Signal ID, WhatsApp, etc.
+    is_owned: bool,                    // (owned) vs (external)
+    created_at: DateTime&lt;Utc&gt;,       // Creation timestamp
+    modified_at: DateTime&lt;Utc&gt;,      // Last modification
+}</code></div>
+      <p style="margin-top: 12px;">
+        Each contact can have multiple addresses across different channels. The addresses vector allows attaching email, SMS, Signal, and WhatsApp to one person.
+      </p>
+    </div>
+
+    <div class="deep-section">
+      <h3>ChannelAddress (Polymorphic)</h3>
+      <p>
+        Each contact's addresses vector contains polymorphic address records for different channels.
+      </p>
+      <div class="code-block"><code>struct ChannelAddress {
+    channel: ChannelType,         // Email, SMS, Signal, WhatsApp
+    address: String,              // "alice@example.com" or "+1555123456"
+    display_name: Option&lt;String&gt;, // "Alice (work)"
+    is_primary: bool,             // Default channel for sending unsolicited messages
+}</code></div>
+      <p style="margin-top: 12px;">
+        ChannelType is an enum supporting Email, SMS, Signal, WhatsApp, and extensible to new channels. is_primary marks the preferred channel for sending messages.
+      </p>
+    </div>
+
+    <div class="deep-section">
+      <h3>Message Structure</h3>
+      <p>
+        Messages are stored with full metadata for search, filtering, and display.
+      </p>
+      <div class="code-block"><code>struct Message {
+    conversation_id: String,        // Links to conversation
+    channel: ChannelType,           // Which channel?
+    direction: MessageDirection,    // Inbound or Outbound
+    from_contact_id: String,        // Sender's contact ID
+    to_contact_ids: Vec&lt;String&gt;,   // Recipient IDs
+    subject: Option&lt;String&gt;,       // Email-style subject
+    body: String,                   // Plain text body
+    body_html: Option&lt;String&gt;,     // HTML version (email)
+    sent_at: DateTime&lt;Utc&gt;,        // When sent (canonical time)
+    read_status: ReadStatus,        // Unread/Read/Archived
+    encryption_nonce: Option&lt;String&gt;, // For encrypted storage
+}</code></div>
+      <p style="margin-top: 12px;">
+        Messages are stored in the graph database with links to conversations and contacts. Encryption nonce allows per-message encryption at rest.
+      </p>
+    </div>
+
+    <div class="deep-section">
+      <h3>Conversation Structure</h3>
+      <p>
+        Conversations group related messages and can be linked to canvas threads.
+      </p>
+      <div class="code-block"><code>struct Conversation {
+    id: Option&lt;Thing&gt;,
+    title: String,                    // Display title
+    channel: ChannelType,             // Email, Signal, etc.
+    participant_ids: Vec&lt;String&gt;,  // Involved contacts
+    linked_thread_id: Option&lt;String&gt;, // Optional canvas thread link
+    unread_count: u32,                // Unread message count
+    last_message_at: DateTime&lt;Utc&gt;, // Most recent message time
+    deleted_at: Option&lt;DateTime&lt;Utc&gt;&gt;, // Soft delete
+}</code></div>
+      <p style="margin-top: 12px;">
+        Conversations group related messages. A Slack DM thread, email conversation, or Signal chat is one conversation. linked_thread_id connects to canvas documents.
+      </p>
+    </div>
+
+    <div class="deep-section">
+      <h3>Graph Database Operations (traits.rs:130-175)</h3>
+      <p>
+        Core database operations for contacts, messages, and conversations.
+      </p>
+      <div class="const-table">
+        <tr><th>Operation</th><th>Purpose</th></tr>
+        <tr><td><code>create_contact()</code></td><td>Insert contact with addresses</td></tr>
+        <tr><td><code>get_contact(id)</code></td><td>Fetch contact + all messages from that contact</td></tr>
+        <tr><td><code>list_contacts()</code></td><td>All contacts, sorted by last_message_at</td></tr>
+        <tr><td><code>update_contact()</code></td><td>Modify name, avatar, addresses, notes</td></tr>
+        <tr><td><code>search_messages(query)</code></td><td>Full-text search across all channels simultaneously</td></tr>
+        <tr><td><code>list_conversations(filter)</code></td><td>Conversations filtered by channel, contact, or thread</td></tr>
+      </div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Channel Trait Implementations</h3>
+      <p>
+        Each communication protocol is implemented as a separate module conforming to the CommunicationChannel trait.
+      </p>
+      <ul class="concept-list">
+        <li><strong>Email (IMAP/SMTP):</strong> Connects to mail servers, fetches messages, maps to Contact/Message structs. Subject becomes message subject, headers parsed for sender/recipient.</li>
+        <li><strong>Signal (presage crate):</strong> Uses Signal protocol via presage library. Messages are ephemeral by default; persisted to DB. Encryption happens at protocol level (end-to-end).</li>
+        <li><strong>WhatsApp & SMS:</strong> Placeholder for future integrations. Same trait interface means implementation details are isolated and don't affect the core system.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>Sync Engine (CommsSync)</h3>
+      <p>
+        Multi-channel synchronization happens periodically or on-demand, fetching new messages and deduplicating across instances.
+      </p>
+      <div class="code-block"><code>struct SyncResult {
+    new_messages: u32,         // How many new messages fetched
+    updated_conversations: u32, // How many conversations updated
+    new_contacts: u32,         // New contacts discovered
+}</code></div>
+      <ul class="concept-list">
+        <li><strong>Idempotent:</strong> Syncing twice doesn't create duplicates. Message IDs prevent double-insertion.</li>
+        <li><strong>Parallel:</strong> Channels sync concurrently. Email, Signal, WhatsApp fetch in parallel.</li>
+        <li><strong>Conflict resolution:</strong> Last-write-wins for message metadata (read status, etc.).</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>Encryption & Storage</h3>
+      <p>
+        Message security is enforced at the storage layer with AES-256-GCM encryption.
+      </p>
+      <ul class="concept-list">
+        <li><strong>Message bodies encrypted:</strong> AES-256-GCM via sovereign-crypto module.</li>
+        <li><strong>Per-contact encryption nonce:</strong> Additional isolation—different contacts' messages encrypted with different nonces.</li>
+        <li><strong>Graph database storage:</strong> SurrealDB stores encrypted message blobs with plaintext indices for search (searchable encryption).</li>
+        <li><strong>Metadata encrypted:</strong> Sender, recipient, timestamps also encrypted at rest.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>Integration with Canvas Threads</h3>
+      <p>
+        Conversations can be linked to document threads on the spatial canvas for context.
+      </p>
+      <ul class="concept-list">
+        <li><strong>Bidirectional linkage:</strong> Conversation → linked_thread_id points to Document/Thread. Thread metadata includes unread message count from linked conversations.</li>
+        <li><strong>Unified search:</strong> Search across documents and messages simultaneously. Results ranked together.</li>
+        <li><strong>Context preservation:</strong> When reviewing project documents, related email/Signal discussion is visible inline.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>AI Orchestrator Integration</h3>
+      <p>
+        The <code>sovereign-ai</code> module includes a read-only tool for natural language message search across all channels.
+      </p>
+      <ul class="concept-list">
+        <li><strong>Natural language input:</strong> "What did Alice say about the deadline?"</li>
+        <li><strong>Multi-channel query:</strong> Queries the graph database across all channels simultaneously.</li>
+        <li><strong>Ranked results:</strong> Returns results sorted by relevance with snippets and metadata (sender, channel, date).</li>
+        <li><strong>Never modifies:</strong> Read-only tool, Observe level. No user confirmation needed.</li>
+        <li><strong>Aware of contact context:</strong> "Find messages from Sarah" understood to mean all addresses linked to Sarah's contact card.</li>
+      </ul>
+    </div>
+
+  </div>
+</section>
+
+  </div>
+</main>
+
+<!-- ========== FOOTER ========== -->
+<footer role="contentinfo" style="border-top: 1px solid var(--c-border-subtle); padding: 40px 24px; font-size: 0.82rem; color: var(--c-text-dim);">
+  <div style="max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+    <span>&copy; 2026 Sovereign OS. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <div style="display: flex; gap: 20px;">
+      <a href="https://github.com/sovereign-os/sovereign" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/sovereign-os/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
+      <a href="https://github.com/sovereign-os/sovereign/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+</footer>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Sovereign OS",
+      "item": "https://sovereign-os.org/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": "Unified Communications",
+      "item": "https://sovereign-os.org/detail-communications.html"
+    }
+  ]
+}
+</script>
+
+</body>
+</html>

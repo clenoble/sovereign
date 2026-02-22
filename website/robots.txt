@@ -1,0 +1,6 @@
+# Sovereign OS — https://clenoble.github.io/sovereign-os/
+User-agent: *
+Allow: /
+
+# Sitemap
+Sitemap: https://clenoble.github.io/sovereign-os/sitemap.xml

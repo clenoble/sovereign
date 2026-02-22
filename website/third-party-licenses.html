@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Third-Party Licenses — Sovereign OS</title>
+    <meta name="description" content="Third-party open-source licenses used in Sovereign OS.">
+    <link rel="canonical" href="https://sovereign-os.org/third-party-licenses.html">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://sovereign-os.org/third-party-licenses.html">
+    <meta property="og:title" content="Third-Party Licenses — Sovereign OS">
+    <meta property="og:description" content="Third-party open-source licenses used in Sovereign OS.">
+    <meta property="og:image" content="https://sovereign-os.org/logo-static.svg">
+    <meta property="og:site_name" content="Sovereign OS">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Third-Party Licenses — Sovereign OS">
+    <meta name="twitter:description" content="Third-party open-source licenses used in Sovereign OS.">
+    <meta name="twitter:image" content="https://sovereign-os.org/logo-static.svg">
+    <style>
+        :root {
+            --c-bg: #0c0e13;
+            --c-bg-alt: #13161d;
+            --c-bg-card: #181c25;
+            --c-border: #2a2f3a;
+            --c-border-subtle: #1e222c;
+            --c-text: #e2e4e9;
+            --c-text-dim: #a1a5b2;
+            --c-text-bright: #ffffff;
+            --c-accent: #4a9eff;
+            --c-accent-dim: #2d6ab3;
+            --c-owned: #3ecf8e;
+            --c-external: #f59e42;
+            --c-danger: #ef5350;
+            --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+            --font-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+            --radius: 6px;
+            --radius-lg: 10px;
+            --max-w: 860px;
+            --header-h: 60px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            background-color: var(--c-bg);
+            color: var(--c-text);
+            font-family: var(--font-sans);
+            line-height: 1.7;
+            font-size: 16px;
+        }
+
+        a {
+            color: var(--c-accent);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        a:hover {
+            color: var(--c-text-bright);
+            text-decoration: underline;
+        }
+        /* External link indicator (WCAG 3.2.4) */
+        footer a[target="_blank"]::after,
+        main a[target="_blank"]::after { content: " ↗"; font-size: 0.75em; }
+
+        a:focus-visible {
+            outline: 2px solid var(--c-accent);
+            outline-offset: 2px;
+        }
+
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0,0,0,0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* Header */
+        header {
+            height: var(--header-h);
+            background-color: var(--c-bg-alt);
+            border-bottom: 1px solid var(--c-border-subtle);
+            display: flex;
+            align-items: center;
+            padding: 0 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--c-accent);
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .back-link:hover {
+            color: var(--c-text-bright);
+        }
+
+        .back-link::before {
+            content: "←";
+            font-size: 18px;
+        }
+
+        /* Main content */
+        main {
+            max-width: var(--max-w);
+            margin: 0 auto;
+            padding: 3rem 2rem;
+        }
+
+        h1 {
+            font-size: 2.2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            color: var(--c-text-bright);
+            letter-spacing: -0.5px;
+        }
+
+        .subtitle {
+            font-size: 1rem;
+            color: var(--c-text-dim);
+            margin-bottom: 3rem;
+            line-height: 1.6;
+        }
+
+        section {
+            margin-bottom: 3rem;
+            scroll-margin-top: var(--header-h);
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--c-text-bright);
+            margin-bottom: 1rem;
+            margin-top: 2rem;
+        }
+
+        h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--c-accent);
+            margin-bottom: 0.75rem;
+            margin-top: 1.5rem;
+        }
+
+        p {
+            margin-bottom: 1rem;
+            color: var(--c-text);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+            font-size: 0.9rem;
+        }
+
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border: 1px solid var(--c-border);
+        }
+
+        th {
+            background-color: var(--c-bg-alt);
+            font-weight: 600;
+            color: var(--c-text-bright);
+        }
+
+        tbody tr:nth-child(even) {
+            background-color: var(--c-bg-alt);
+        }
+
+        tbody tr:hover {
+            background-color: var(--c-bg-card);
+        }
+
+        .component-name {
+            font-weight: 600;
+            color: var(--c-text-bright);
+        }
+
+        .license-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-agpl {
+            background-color: rgba(62, 207, 142, 0.2);
+            color: var(--c-owned);
+            border: 1px solid var(--c-owned);
+        }
+
+        .badge-apache {
+            background-color: rgba(74, 158, 255, 0.2);
+            color: var(--c-accent);
+            border: 1px solid var(--c-accent);
+        }
+
+        .badge-mit {
+            background-color: rgba(74, 158, 255, 0.2);
+            color: var(--c-accent);
+            border: 1px solid var(--c-accent);
+        }
+
+        .badge-bsl {
+            background-color: rgba(245, 158, 66, 0.2);
+            color: var(--c-external);
+            border: 1px solid var(--c-external);
+        }
+
+        .badge-proprietary {
+            background-color: rgba(239, 83, 80, 0.2);
+            color: var(--c-danger);
+            border: 1px solid var(--c-danger);
+        }
+
+        .badge-community {
+            background-color: rgba(245, 158, 66, 0.2);
+            color: var(--c-external);
+            border: 1px solid var(--c-external);
+        }
+
+        ul, ol {
+            margin-left: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+        }
+
+        code {
+            background-color: var(--c-bg-card);
+            border: 1px solid var(--c-border);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            font-size: 0.9em;
+            color: var(--c-accent);
+        }
+
+        pre {
+            background-color: var(--c-bg-card);
+            border: 1px solid var(--c-border);
+            border-radius: var(--radius);
+            padding: 1rem;
+            overflow-x: auto;
+            margin: 1rem 0;
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            line-height: 1.5;
+        }
+
+        .note {
+            background-color: var(--c-bg-card);
+            border-left: 3px solid var(--c-accent);
+            padding: 1rem;
+            padding-left: 1.25rem;
+            margin: 1rem 0;
+            border-radius: var(--radius);
+        }
+
+        .note strong {
+            color: var(--c-text-bright);
+        }
+
+        @media (max-width: 768px) {
+            main {
+                padding: 2rem 1.5rem;
+            }
+
+            h1 {
+                font-size: 1.8rem;
+            }
+
+            h2 {
+                font-size: 1.3rem;
+            }
+
+            table {
+                font-size: 0.8rem;
+            }
+
+            th, td {
+                padding: 0.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <a href="#main-content" class="sr-only">Skip to main content</a>
+
+    <header>
+        <a href="index.html" class="back-link">Back to Overview</a>
+    </header>
+
+    <main id="main-content">
+        <h1>Third-Party Licenses</h1>
+        <p class="subtitle">Complete licensing information for all dependencies, models, and system components.</p>
+
+        <section>
+            <h2>Core Runtime (Rust Crates)</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>License</th>
+                        <th>URL</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="component-name">gtk4-rs</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/gtk-rs/gtk4-rs" target="_blank" rel="noopener">github.com/gtk-rs/gtk4-rs</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">rust-skia</span></td>
+                        <td><span class="license-badge badge-bsl">BSL-1.1</span></td>
+                        <td><a href="https://github.com/rust-skia/rust-skia" target="_blank" rel="noopener">github.com/rust-skia/rust-skia</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">surrealdb</span></td>
+                        <td><span class="license-badge badge-bsl">BSL-1.1</span></td>
+                        <td><a href="https://github.com/surrealdb/surrealdb" target="_blank" rel="noopener">github.com/surrealdb/surrealdb</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">pyo3</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span> / <span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/PyO3/pyo3" target="_blank" rel="noopener">github.com/PyO3/pyo3</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">tokio</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/tokio-rs/tokio" target="_blank" rel="noopener">github.com/tokio-rs/tokio</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">serde</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span> / <span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/serde-rs/serde" target="_blank" rel="noopener">github.com/serde-rs/serde</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">uuid</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span> / <span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/uuid-rs/uuid" target="_blank" rel="noopener">github.com/uuid-rs/uuid</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">ring</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/briansmith/ring" target="_blank" rel="noopener">github.com/briansmith/ring</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">libp2p</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span> / <span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/libp2p/rust-libp2p" target="_blank" rel="noopener">github.com/libp2p/rust-libp2p</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">quinn</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span> / <span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/quinn-rs/quinn" target="_blank" rel="noopener">github.com/quinn-rs/quinn</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">clap</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span> / <span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/clap-rs/clap" target="_blank" rel="noopener">github.com/clap-rs/clap</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">tracing</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/tokio-rs/tracing" target="_blank" rel="noopener">github.com/tokio-rs/tracing</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">sha2, hkdf</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span> / <span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/RustCrypto" target="_blank" rel="noopener">github.com/RustCrypto</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">vsss-rs</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span></td>
+                        <td><a href="https://github.com/mikelodder7/vsss-rs" target="_blank" rel="noopener">github.com/mikelodder7/vsss-rs</a></td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>AI & Python Layer</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>License</th>
+                        <th>URL</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="component-name">llama-cpp-python</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/abetlen/llama-cpp-python" target="_blank" rel="noopener">github.com/abetlen/llama-cpp-python</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">llama.cpp</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/ggerganov/llama.cpp" target="_blank" rel="noopener">github.com/ggerganov/llama.cpp</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">openWakeWord</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span></td>
+                        <td><a href="https://github.com/openthingsio/openWakeWord" target="_blank" rel="noopener">github.com/openthingsio/openWakeWord</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">faster-whisper</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/SYSTRAN/faster-whisper" target="_blank" rel="noopener">github.com/SYSTRAN/faster-whisper</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">piper-tts</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/rhasspy/piper" target="_blank" rel="noopener">github.com/rhasspy/piper</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">sentence-transformers</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span></td>
+                        <td><a href="https://github.com/UKPLab/sentence-transformers" target="_blank" rel="noopener">github.com/UKPLab/sentence-transformers</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">transformers</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span></td>
+                        <td><a href="https://github.com/huggingface/transformers" target="_blank" rel="noopener">github.com/huggingface/transformers</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">TrOCR</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/microsoft/TrOCR" target="_blank" rel="noopener">github.com/microsoft/TrOCR</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">numpy</span></td>
+                        <td><span class="license-badge badge-bsl">BSD-3-Clause</span></td>
+                        <td><a href="https://github.com/numpy/numpy" target="_blank" rel="noopener">github.com/numpy/numpy</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">torch (PyTorch)</span></td>
+                        <td><span class="license-badge badge-bsl">BSD-3-Clause</span></td>
+                        <td><a href="https://github.com/pytorch/pytorch" target="_blank" rel="noopener">github.com/pytorch/pytorch</a></td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>AI Model Weights</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Model</th>
+                        <th>License</th>
+                        <th>Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="component-name">Phi-3-mini</span></td>
+                        <td><span class="license-badge badge-community">MIT</span></td>
+                        <td>Fast routing (intent classification)</td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">Qwen2.5-7B</span></td>
+                        <td><span class="license-badge badge-community">Qwen License</span></td>
+                        <td>Reasoning and chat (personal use license)</td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">Llama 3.1-8B</span></td>
+                        <td><span class="license-badge badge-community">Llama 3.1 Community</span></td>
+                        <td>Chat (personal use, no production without approval)</td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">Whisper-small</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td>Speech-to-text</td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">Piper voices</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td>Text-to-speech</td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">TrOCR-base</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td>Optical character recognition</td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">all-MiniLM-L6-v2</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span></td>
+                        <td>Embedding / semantic search</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>System Dependencies</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>License</th>
+                        <th>URL</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="component-name">GTK 4</span></td>
+                        <td><span class="license-badge badge-agpl">LGPL-2.1+</span></td>
+                        <td><a href="https://www.gtk.org/" target="_blank" rel="noopener">gtk.org</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">Skia</span></td>
+                        <td><span class="license-badge badge-bsl">BSD-3-Clause</span></td>
+                        <td><a href="https://skia.org/" target="_blank" rel="noopener">skia.org</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">GStreamer</span></td>
+                        <td><span class="license-badge badge-agpl">LGPL-2.1+</span></td>
+                        <td><a href="https://gstreamer.freedesktop.org/" target="_blank" rel="noopener">gstreamer.freedesktop.org</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">PipeWire</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://pipewire.org/" target="_blank" rel="noopener">pipewire.org</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">pandoc</span></td>
+                        <td><span class="license-badge badge-mit">GPL-2.0</span></td>
+                        <td><a href="https://pandoc.org/" target="_blank" rel="noopener">pandoc.org</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">typst</span></td>
+                        <td><span class="license-badge badge-mit">Apache-2.0</span></td>
+                        <td><a href="https://typst.app/" target="_blank" rel="noopener">typst.app</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">Python 3.11+</span></td>
+                        <td><span class="license-badge badge-mit">PSF License</span></td>
+                        <td><a href="https://www.python.org/" target="_blank" rel="noopener">python.org</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">CUDA Toolkit (optional)</span></td>
+                        <td><span class="license-badge badge-proprietary">Proprietary</span></td>
+                        <td><a href="https://developer.nvidia.com/cuda-toolkit" target="_blank" rel="noopener">developer.nvidia.com/cuda-toolkit</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">ROCm (optional)</span></td>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://rocmdocs.amd.com/" target="_blank" rel="noopener">rocmdocs.amd.com</a></td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>Build Tools</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Tool</th>
+                        <th>License</th>
+                        <th>URL</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="component-name">Rust compiler</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span> / <span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://www.rust-lang.org/" target="_blank" rel="noopener">rust-lang.org</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">Cargo</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span> / <span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://doc.rust-lang.org/cargo/" target="_blank" rel="noopener">doc.rust-lang.org/cargo</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">maturin</span></td>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span> / <span class="license-badge badge-mit">MIT</span></td>
+                        <td><a href="https://github.com/PyO3/maturin" target="_blank" rel="noopener">github.com/PyO3/maturin</a></td>
+                    </tr>
+                    <tr>
+                        <td><span class="component-name">Nix</span></td>
+                        <td><span class="license-badge badge-mit">MIT / LGPL-2.1+</span></td>
+                        <td><a href="https://nixos.org/" target="_blank" rel="noopener">nixos.org</a></td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>Important License Notes</h2>
+
+            <h3>SurrealDB (Business Source License)</h3>
+            <div class="note">
+                <strong>SurrealDB</strong> is distributed under the Business Source License (BSL-1.1), which is a source-available license. It automatically converts to Apache 2.0 four years after release. For Sovereign OS purposes (open-source, non-commercial), this is compatible with AGPL-3.0. See <a href="https://www.surrealdb.com/license" target="_blank" rel="noopener">SurrealDB license</a> for details.
+            </div>
+
+            <h3>Llama 3.1 Community License</h3>
+            <div class="note">
+                <strong>Llama 3.1 models</strong> are distributed under the Llama 3.1 Community License. Personal use is permitted. Production use may require additional agreements with Meta. See <a href="https://github.com/meta-llama/llama-models/blob/main/LICENSE" target="_blank" rel="noopener">Meta's license terms</a>.
+            </div>
+
+            <h3>CUDA Toolkit (Optional, Proprietary)</h3>
+            <div class="note">
+                <strong>CUDA Toolkit</strong> is optional and proprietary software from NVIDIA. It is not required to run Sovereign OS. GPU acceleration is optional and requires agreeing to NVIDIA's license terms separately.
+            </div>
+
+            <h3>LGPL Components</h3>
+            <div class="note">
+                <strong>GTK 4 and GStreamer</strong> are licensed under LGPL. As a work-around for AGPL-3.0 compatibility, we dynamically link these libraries. LGPL requirements (provision of object files for relinking) are satisfied via open-source distribution of Sovereign OS.
+            </div>
+        </section>
+
+        <section>
+            <h2>License Compatibility Summary</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>License</th>
+                        <th>AGPL-3.0 Compatible</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="license-badge badge-agpl">AGPL-3.0</span></td>
+                        <td>✓ Full compatibility</td>
+                        <td>Core license of Sovereign OS.</td>
+                    </tr>
+                    <tr>
+                        <td><span class="license-badge badge-apache">Apache-2.0</span></td>
+                        <td>✓ Compatible</td>
+                        <td>Permissive, allows linking with AGPL.</td>
+                    </tr>
+                    <tr>
+                        <td><span class="license-badge badge-mit">MIT</span></td>
+                        <td>✓ Compatible</td>
+                        <td>Permissive, allows linking with AGPL.</td>
+                    </tr>
+                    <tr>
+                        <td><span class="license-badge badge-bsl">BSD-3-Clause</span></td>
+                        <td>✓ Compatible</td>
+                        <td>Permissive, allows linking with AGPL.</td>
+                    </tr>
+                    <tr>
+                        <td><span class="license-badge badge-bsl">BSL-1.1</span></td>
+                        <td>✓ Compatible</td>
+                        <td>Converts to Apache 2.0 after 4 years; compatible during transition.</td>
+                    </tr>
+                    <tr>
+                        <td><span class="license-badge badge-agpl">LGPL-2.1+</span></td>
+                        <td>✓ Compatible</td>
+                        <td>Dynamically linked (GTK, GStreamer); LGPL requirements met via open source.</td>
+                    </tr>
+                    <tr>
+                        <td><span class="license-badge badge-community">Community Licenses</span></td>
+                        <td>✓ Compatible</td>
+                        <td>Model weights for personal use; no copyleft conflict with source code.</td>
+                    </tr>
+                    <tr>
+                        <td><span class="license-badge badge-proprietary">Proprietary</span></td>
+                        <td>✓ Optional</td>
+                        <td>CUDA is optional; ROCm is open source. No required proprietary dependencies.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>How to Verify Licenses</h2>
+            <p>To verify all licenses in the Sovereign OS codebase, run:</p>
+            <pre>
+# Generate license report for Rust crates
+cargo-license
+
+# Verify vendored dependencies
+ls -la vendor/
+
+# Check Python dependencies
+pip list --format=json
+
+# View Cargo.lock for pinned versions
+cat Cargo.lock
+            </pre>
+        </section>
+
+        <section>
+            <h2>Contact</h2>
+            <p>Questions about licensing? Email <a href="mailto:hello@sovereignos.org">hello@sovereignos.org</a></p>
+        </section>
+    </main>
+</body>
+</html>
