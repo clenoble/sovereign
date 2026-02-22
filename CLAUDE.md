@@ -157,7 +157,7 @@ cargo.exe test --target-dir "C:/cargo-target" -j 2
 
 ## Git & NAS Push/Merge Workflow
 
-The repo on the NAS is at `\\nas\home\Current\Projets\03 - user-centered OS` (not a bare repo — has a `.git/` directory).
+The repo on the NAS is at `\\nas\home\Current\Projets\03 - user-centered OS` (bare repo).
 
 ### Windows (from bash — Claude Code / Git Bash)
 

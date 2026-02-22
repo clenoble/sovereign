@@ -269,6 +269,20 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             (ui_rx, handle)
         };
 
+        // Jiminy camera poller: fetches JPEG frames at ~5fps into SharedFrame
+        #[cfg(feature = "jiminy")]
+        let camera_frame = {
+            let jiminy_url = std::env::var("JIMINY_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:9100".into());
+            let frame = sovereign_ai::jiminy_camera::shared_frame();
+            let _camera_handle =
+                sovereign_ai::jiminy_camera::spawn_poller(&jiminy_url, frame.clone(), 70, 640);
+            tracing::info!("Jiminy camera poller started");
+            Some(frame)
+        };
+        #[cfg(not(feature = "jiminy"))]
+        let camera_frame: Option<std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>> = None;
+
         // Try to initialize AI orchestrator
         let db_arc = db_arc_for_skills;
         let orchestrator = match sovereign_ai::Orchestrator::new(
@@ -630,6 +644,7 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             config.ai.model_dir.clone(),
             config.ai.router_model.clone(),
             config.ai.reasoning_model.clone(),
+            camera_frame,
         );
         Ok::<_, anyhow::Error>((app, _boot_task))
     })?;

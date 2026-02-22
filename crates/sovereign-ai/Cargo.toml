@@ -31,6 +31,8 @@ sovereign-p2p = { workspace = true, optional = true }
 
 # Jiminy (Reachy Mini) bridge
 reqwest = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 
 [features]
 default = ["cuda"]
@@ -38,4 +40,4 @@ cuda = ["llama-cpp-2/cuda"]
 voice-stt = ["whisper-rs", "cpal", "ringbuf"]
 wake-word = ["voice-stt", "rustpotter"]
 p2p = ["sovereign-crypto", "sovereign-p2p"]
-jiminy = ["reqwest"]
+jiminy = ["reqwest", "tokio-tungstenite", "futures-util", "ringbuf"]

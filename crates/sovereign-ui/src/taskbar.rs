@@ -178,6 +178,14 @@ impl TaskbarState {
                 .padding(Padding::from([4, 12])),
         );
 
+        // Camera button
+        items_row = items_row.push(
+            button(text("Camera").size(13))
+                .on_press(Message::CameraToggled)
+                .style(theme::taskbar_button_style)
+                .padding(Padding::from([4, 12])),
+        );
+
         // Chat button
         items_row = items_row.push(
             button(text("Chat").size(13))

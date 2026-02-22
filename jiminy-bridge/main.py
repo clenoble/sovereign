@@ -21,13 +21,16 @@ from typing import Optional
 
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from reachy_mini import ReachyMini
 from reachy_mini.utils import create_head_pose
 
+from audio_stream import audio_ws_handler
 from emotions import EmotionLibrary
+from tts_engine import PiperTts, create_tts_engine
 
 logger = logging.getLogger("jiminy")
 
@@ -66,6 +69,7 @@ class LookAtRequest(BaseModel):
 
 mini: Optional[ReachyMini] = None
 library: Optional[EmotionLibrary] = None
+tts_engine: Optional[PiperTts] = None
 _idle_task: Optional[asyncio.Task] = None
 
 
@@ -81,7 +85,7 @@ async def lifespan(app: FastAPI):
     # Start daemon first: reachy-mini-daemon        (USB hardware)
     #                   or reachy-mini-daemon --sim  (MuJoCo simulation)
     try:
-        mini = ReachyMini(media_backend="no_media")
+        mini = ReachyMini(media_backend="default")
         mini.__enter__()
         logger.info("Connected to Reachy Mini")
     except Exception as e:
@@ -95,6 +99,10 @@ async def lifespan(app: FastAPI):
         library.load()
     except Exception as e:
         logger.warning("Failed to load emotion libraries: %s", e)
+
+    # Initialize TTS engine (optional — needs PIPER_MODEL env)
+    global tts_engine
+    tts_engine = create_tts_engine()
 
     yield
 
@@ -196,18 +204,44 @@ async def idle():
 
 @app.post("/speak")
 async def speak(req: SpeakRequest):
-    """Speak text (placeholder — requires TTS integration)."""
+    """Speak text through the robot's speaker via Piper TTS.
+
+    Falls back to antenna animation if TTS is not configured.
+    """
     if mini is None:
         raise HTTPException(503, "Robot not connected")
     logger.info("Speaking: %s", req.text[:80])
-    # TODO: Integrate with robot's speaker or system TTS
-    # For now, just animate the antennas to simulate speech
-    for _ in range(3):
-        mini.set_target(antennas=[0.3, 0.3])
-        await asyncio.sleep(0.15)
-        mini.set_target(antennas=[0.0, 0.0])
-        await asyncio.sleep(0.15)
-    return {"status": "ok", "text_length": len(req.text)}
+
+    if tts_engine is not None:
+        # Real TTS: generate speech + animate antennas concurrently
+        async def animate_antennas():
+            try:
+                while True:
+                    mini.set_target(antennas=[0.3, 0.3])
+                    await asyncio.sleep(0.2)
+                    mini.set_target(antennas=[0.0, 0.0])
+                    await asyncio.sleep(0.15)
+            except asyncio.CancelledError:
+                mini.set_target(antennas=[0.0, 0.0])
+
+        anim_task = asyncio.create_task(animate_antennas())
+        try:
+            duration = await tts_engine.speak_to_robot(mini, req.text)
+        finally:
+            anim_task.cancel()
+            try:
+                await anim_task
+            except asyncio.CancelledError:
+                pass
+        return {"status": "ok", "duration_secs": duration}
+    else:
+        # Fallback: antenna animation only (no audio)
+        for _ in range(max(1, len(req.text) // 20)):
+            mini.set_target(antennas=[0.3, 0.3])
+            await asyncio.sleep(0.15)
+            mini.set_target(antennas=[0.0, 0.0])
+            await asyncio.sleep(0.15)
+        return {"status": "ok", "duration_secs": 0.0}
 
 
 @app.post("/look_at")
@@ -221,6 +255,59 @@ async def look_at(req: LookAtRequest):
     head = create_head_pose(roll=0.0, pitch=pitch, yaw=yaw, degrees=False, mm=False)
     mini.goto_target(head=head, duration=0.5)
     return {"status": "ok"}
+
+
+@app.websocket("/ws/audio")
+async def ws_audio(ws: WebSocket):
+    """Stream mic audio from Reachy Mini's ReSpeaker array."""
+    await audio_ws_handler(ws, mini)
+
+
+@app.get("/camera/status")
+async def camera_status():
+    """Check whether the camera is available."""
+    if mini is None:
+        return {"available": False, "reason": "Robot not connected"}
+    try:
+        loop = asyncio.get_event_loop()
+        frame = await loop.run_in_executor(None, mini.media_manager.get_frame)
+        if frame is None:
+            return {"available": False, "reason": "No frame returned"}
+        return {"available": True, "width": frame.shape[1], "height": frame.shape[0]}
+    except Exception as e:
+        return {"available": False, "reason": str(e)}
+
+
+@app.get("/camera/frame")
+async def camera_frame(quality: int = 70, max_width: int = 640):
+    """Capture a single JPEG frame from the robot's camera."""
+    if mini is None:
+        raise HTTPException(503, "Robot not connected")
+
+    try:
+        import cv2
+    except ImportError:
+        raise HTTPException(501, "opencv-python-headless not installed")
+
+    loop = asyncio.get_event_loop()
+    frame = await loop.run_in_executor(None, mini.media_manager.get_frame)
+    if frame is None:
+        raise HTTPException(503, "No frame from camera")
+
+    # Resize if wider than max_width
+    h, w = frame.shape[:2]
+    if w > max_width:
+        scale = max_width / w
+        new_w = max_width
+        new_h = int(h * scale)
+        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    # Encode as JPEG
+    ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise HTTPException(500, "JPEG encoding failed")
+
+    return Response(content=jpeg.tobytes(), media_type="image/jpeg")
 
 
 # --- Main ---

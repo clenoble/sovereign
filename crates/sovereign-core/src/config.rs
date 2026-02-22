@@ -79,6 +79,10 @@ impl Default for AiConfig {
 #[serde(default)]
 pub struct VoiceConfig {
     pub enabled: bool,
+    /// Audio source: "cpal" (PC mic, default) or "jiminy" (Reachy Mini mic via WebSocket).
+    pub voice_source: String,
+    /// WebSocket URL for Jiminy audio (only used when voice_source = "jiminy").
+    pub jiminy_ws_url: String,
     pub wake_word_model: String,
     pub whisper_model: String,
     pub piper_binary: String,
@@ -90,6 +94,8 @@ impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            voice_source: "cpal".into(),
+            jiminy_ws_url: "ws://127.0.0.1:9100/ws/audio".into(),
             wake_word_model: "models/sovereign.rpw".into(),
             whisper_model: "models/ggml-large-v3-turbo.bin".into(),
             piper_binary: "piper".into(),

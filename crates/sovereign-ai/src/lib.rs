@@ -5,6 +5,8 @@ pub mod injection;
 pub mod intent;
 #[cfg(feature = "jiminy")]
 pub mod jiminy;
+#[cfg(feature = "jiminy")]
+pub mod jiminy_camera;
 pub mod llm;
 pub mod orchestrator;
 pub mod session_log;
