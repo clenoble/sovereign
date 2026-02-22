@@ -77,7 +77,9 @@ async def lifespan(app: FastAPI):
     global mini, library
     logger.info("Starting Jiminy bridge...")
 
-    # Connect to robot (auto-detects sim or hardware)
+    # Connect to robot (daemon must be running separately)
+    # Start daemon first: reachy-mini-daemon        (USB hardware)
+    #                   or reachy-mini-daemon --sim  (MuJoCo simulation)
     try:
         mini = ReachyMini(media_backend="no_media")
         mini.__enter__()
@@ -132,7 +134,8 @@ async def play_emotion(req: EmotionRequest):
         raise HTTPException(503, "Robot not connected")
     if library is None:
         raise HTTPException(503, "Emotion library not loaded")
-    played = library.play_emotion(mini, req.name)
+    loop = asyncio.get_event_loop()
+    played = await loop.run_in_executor(None, library.play_emotion, mini, req.name)
     if not played:
         available = library.list_emotions()
         raise HTTPException(
@@ -149,7 +152,8 @@ async def play_dance(req: DanceRequest):
         raise HTTPException(503, "Robot not connected")
     if library is None:
         raise HTTPException(503, "Dance library not loaded")
-    played = library.play_dance(mini, req.name)
+    loop = asyncio.get_event_loop()
+    played = await loop.run_in_executor(None, library.play_dance, mini, req.name)
     if not played:
         available = library.list_dances()
         raise HTTPException(
