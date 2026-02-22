@@ -1,0 +1,40 @@
+<svg width="200" height="200" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Outer ring -->
+  <circle cx="100" cy="100" r="85" stroke="white" stroke-width="2" opacity="0.4"/>
+  
+  <!-- Central core -->
+  <circle cx="100" cy="100" r="24" fill="white"/>
+  
+  <!-- Peer nodes -->
+  <!-- Node 1 -->
+  <line x1="100" y1="100" x2="160" y2="100" stroke="white" stroke-width="1.5" opacity="0.5" stroke-dasharray="4 4"/>
+  <circle cx="160" cy="100" r="12" fill="white" opacity="0.8"/>
+  <circle cx="157" cy="97" r="3" fill="white"/>
+  
+  <!-- Node 2 -->
+  <line x1="100" y1="100" x2="117.08" y2="157.08" stroke="white" stroke-width="1.5" opacity="0.5" stroke-dasharray="4 4"/>
+  <circle cx="117.08" cy="157.08" r="12" fill="white" opacity="0.8"/>
+  <circle cx="114.08" cy="154.08" r="3" fill="white"/>
+  
+  <!-- Node 3 -->
+  <line x1="100" y1="100" x2="51.43" y2="142.92" stroke="white" stroke-width="1.5" opacity="0.5" stroke-dasharray="4 4"/>
+  <circle cx="51.43" cy="142.92" r="12" fill="white" opacity="0.8"/>
+  <circle cx="48.43" cy="139.92" r="3" fill="white"/>
+  
+  <!-- Node 4 -->
+  <line x1="100" y1="100" x2="51.43" y2="57.08" stroke="white" stroke-width="1.5" opacity="0.5" stroke-dasharray="4 4"/>
+  <circle cx="51.43" cy="57.08" r="12" fill="white" opacity="0.8"/>
+  <circle cx="48.43" cy="54.08" r="3" fill="white"/>
+  
+  <!-- Node 5 -->
+  <line x1="100" y1="100" x2="117.08" y2="42.92" stroke="white" stroke-width="1.5" opacity="0.5" stroke-dasharray="4 4"/>
+  <circle cx="117.08" cy="42.92" r="12" fill="white" opacity="0.8"/>
+  <circle cx="114.08" cy="39.92" r="3" fill="white"/>
+  
+  <!-- Crown -->
+  <g transform="translate(100, 100)">
+    <path d="M -10 4 L -12 8 L 12 8 L 10 4 Z" fill="black" opacity="0.7"/>
+    <path d="M -10 4 L -8 -8 L -6 4 M -2 4 L 0 -10 L 2 4 M 6 4 L 8 -8 L 10 4" fill="black" opacity="0.7"/>
+    <line x1="-3" y1="2" x2="-1" y2="-2" stroke="black" stroke-width="1.5" opacity="0.5" stroke-linecap="round"/>
+  </g>
+</svg>
