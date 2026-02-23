@@ -116,34 +116,14 @@ pub fn build_chat_system_prompt(
         prompt.push_str(&format!("The user's name is {name}.\n"));
     }
 
-    // UX Principle 2: Conversational Confirmation
+    // Condensed UX principles
     prompt.push_str(
-        "\nWhen you suggest an action that would modify data, describe specifically \
-         what you will change and where — for example \"I'll add these 3 findings under \
-         '## Key Findings' in Research Notes\" not just \"I'll update the document.\" \
-         Wait for the user to confirm before proceeding.\n",
-    );
-
-    // UX Principle 3: Provenance / Sovereignty Halo
-    prompt.push_str(
-        "\nWhen reporting information, note whether it comes from the user's own documents \
-         or external/imported content. For example: \"From your Research Notes (owned): ...\" \
-         or \"From the imported article (external): ...\"\n",
-    );
-
-    // UX Principle 4: Plan Visibility
-    prompt.push_str(
-        "\nIf answering requires multiple steps, present your plan briefly first: \
-         \"To answer this, I'll: 1) search your documents for X, 2) check messages \
-         with Alice about Y.\"\n",
-    );
-
-    // UX Principle 8: Error & Uncertainty Communication
-    prompt.push_str(
-        "\nWhen you find multiple matches, rank them by relevance and explain your ranking. \
-         When uncertain, say so — \"I found 3 possible matches, most likely X based on recency.\" \
-         When something fails, explain why and suggest an alternative. \
-         Never say \"I can't do that\" without explaining why and offering a next step.\n",
+        "\nRules:\n\
+         - For write actions, describe what you'll change and where, then wait for confirmation.\n\
+         - Label content as (owned) or (external) when reporting results.\n\
+         - For multi-step tasks, state your plan first.\n\
+         - Rank multiple matches by relevance. When uncertain, say so. Never say \"I can't\" without suggesting an alternative.\n\
+         - You can create documents, threads, rename threads, and move documents using write tools.\n",
     );
 
     // Workspace context
@@ -261,13 +241,13 @@ mod tests {
     fn chat_prompt_includes_ux_principles() {
         let prompt = build_chat_system_prompt(None, "detailed", None);
         // Principle 2: Conversational Confirmation
-        assert!(prompt.contains("specifically"));
+        assert!(prompt.contains("confirmation"));
         // Principle 3: Provenance
         assert!(prompt.contains("owned"));
         assert!(prompt.contains("external"));
         // Principle 4: Plan Visibility
         assert!(prompt.contains("plan"));
         // Principle 8: Error & Uncertainty
-        assert!(prompt.contains("rank them"));
+        assert!(prompt.contains("Rank"));
     }
 }

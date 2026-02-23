@@ -309,8 +309,8 @@ impl Orchestrator {
 
     /// Maximum iterations for the agent loop per chat message.
     const MAX_AGENT_ITERATIONS: usize = 5;
-    /// Maximum character budget for history in the prompt (~1800 tokens * 3.5 chars/token).
-    const MAX_HISTORY_CHARS: usize = 6300;
+    /// Maximum character budget for history in the prompt (~1000 tokens * 3.5 chars/token).
+    const MAX_HISTORY_CHARS: usize = 3500;
 
     /// Handle a chat message: load context, run agent loop with tool calling.
     pub async fn handle_chat(&self, message: &str) -> Result<()> {
@@ -388,7 +388,7 @@ impl Orchestrator {
                 .lock()
                 .await
                 .router
-                .generate(&full_prompt, 512)
+                .generate(&full_prompt, 300)
                 .await
             {
                 Ok(r) => r.trim().to_string(),
@@ -409,9 +409,84 @@ impl Orchestrator {
                 if let Some(call) = calls.first() {
                     tracing::info!("Tool call: {} (iteration {})", call.name, iterations);
 
-                    // Execute tool
-                    let result =
-                        crate::tools::execute_tool(call, self.db.as_ref()).await;
+                    let tool_output = if crate::tools::is_write_tool(&call.name) {
+                        // Write tool — gate through action gravity system
+                        let level = security::action_level(&call.name);
+                        let trusted = {
+                            if let Ok(trust) = self.trust.lock() {
+                                trust.should_auto_approve(&call.name, level)
+                            } else {
+                                false
+                            }
+                        };
+
+                        if !action_gate::requires_confirmation(level) || trusted {
+                            // Auto-execute (Observe/Annotate or trusted)
+                            let result = crate::tools::execute_write_tool(call, self.db.as_ref()).await;
+                            if let Some(event) = result.event {
+                                let _ = self.event_tx.send(event);
+                            }
+                            format!("[{}] {}", result.tool_name, result.output)
+                        } else {
+                            // Propose to user and wait for confirmation
+                            let proposal = security::ProposedAction {
+                                action: call.name.clone(),
+                                level,
+                                plane: security::Plane::Control,
+                                doc_id: None,
+                                thread_id: None,
+                                description: format!(
+                                    "{}: {}",
+                                    call.name,
+                                    call.arguments
+                                ),
+                            };
+                            let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                                BubbleVisualState::Proposing,
+                            ));
+                            let _ = self.event_tx.send(OrchestratorEvent::ActionProposed {
+                                proposal: proposal.clone(),
+                            });
+
+                            match self.wait_for_decision().await {
+                                ActionDecision::Approve => {
+                                    if let Ok(mut trust) = self.trust.lock() {
+                                        trust.record_approval(&call.name);
+                                        if let Err(e) = trust.save(&self.profile_dir) {
+                                            tracing::warn!("Failed to save trust: {e}");
+                                        }
+                                    }
+                                    let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                                        BubbleVisualState::Executing,
+                                    ));
+                                    let result = crate::tools::execute_write_tool(call, self.db.as_ref()).await;
+                                    if let Some(event) = result.event {
+                                        let _ = self.event_tx.send(event);
+                                    }
+                                    let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                                        BubbleVisualState::ProcessingOwned,
+                                    ));
+                                    format!("[{}] {}", result.tool_name, result.output)
+                                }
+                                ActionDecision::Reject(reason) => {
+                                    if let Ok(mut trust) = self.trust.lock() {
+                                        trust.record_rejection(&call.name);
+                                        if let Err(e) = trust.save(&self.profile_dir) {
+                                            tracing::warn!("Failed to save trust: {e}");
+                                        }
+                                    }
+                                    let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                                        BubbleVisualState::ProcessingOwned,
+                                    ));
+                                    format!("[{}] Action rejected by user: {}", call.name, reason)
+                                }
+                            }
+                        }
+                    } else {
+                        // Read-only tool — execute immediately
+                        let result = crate::tools::execute_tool(call, self.db.as_ref()).await;
+                        format!("[{}] {}", result.tool_name, result.output)
+                    };
 
                     // Append assistant turn (tool call) and tool result to history
                     turns.push(crate::llm::context::ChatTurn {
@@ -420,7 +495,7 @@ impl Orchestrator {
                     });
                     turns.push(crate::llm::context::ChatTurn {
                         role: crate::llm::context::ChatRole::Tool,
-                        content: format!("[{}] {}", result.tool_name, result.output),
+                        content: tool_output,
                     });
 
                     // Continue loop — model will see tool result and generate again

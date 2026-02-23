@@ -109,6 +109,14 @@ pub struct CryptoConfig {
     pub key_rotation_days: u32,
     /// Commits before automatic key rotation (0 = disabled).
     pub key_rotation_commits: u32,
+    /// Whether keystroke dynamics are enabled for login.
+    pub keystroke_enabled: bool,
+    /// Minutes before re-authentication is required after keystroke anomaly.
+    pub keystroke_reauth_minutes: u32,
+    /// Maximum failed login attempts before lockout.
+    pub max_login_attempts: u32,
+    /// Seconds the account is locked after exceeding max attempts.
+    pub lockout_seconds: u32,
 }
 
 impl Default for CryptoConfig {
@@ -117,6 +125,10 @@ impl Default for CryptoConfig {
             enabled: false,
             key_rotation_days: 90,
             key_rotation_commits: 100,
+            keystroke_enabled: true,
+            keystroke_reauth_minutes: 30,
+            max_login_attempts: 10,
+            lockout_seconds: 300,
         }
     }
 }

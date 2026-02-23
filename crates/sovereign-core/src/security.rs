@@ -55,9 +55,9 @@ pub fn action_level(action: &str) -> ActionLevel {
         | "list_models" | "list_milestones" | "chat"
         | "sync_device" | "list_guardians" | "sync_status" | "list_devices" => ActionLevel::Observe,
         "annotate" | "tag" | "bookmark" => ActionLevel::Annotate,
-        "create_thread" | "rename_thread" | "move_document" | "restore" | "edit"
-        | "find_replace" | "duplicate" | "import_file" | "swap_model"
-        | "merge_threads" | "split_thread" | "adopt"
+        "create_document" | "create_thread" | "rename_thread" | "move_document"
+        | "restore" | "edit" | "find_replace" | "duplicate" | "import_file"
+        | "swap_model" | "merge_threads" | "split_thread" | "adopt"
         | "create_milestone" | "delete_milestone" => ActionLevel::Modify,
         "export" | "share" | "transmit"
         | "pair_device" | "enroll_guardian" | "rotate_shards" => ActionLevel::Transmit,

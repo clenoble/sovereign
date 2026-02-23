@@ -30,8 +30,8 @@ pub struct ToolResult {
     pub output: String,
 }
 
-/// All available tools (read-only, Observe level).
-pub const TOOLS: &[ToolDef] = &[
+/// Read-only tools (Observe level — no confirmation needed).
+pub const READ_TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "search_documents",
         description: "Search documents by title or content keyword. Returns matching titles and IDs.",
@@ -61,6 +61,86 @@ pub const TOOLS: &[ToolDef] = &[
         name: "list_contacts",
         description: "List all contacts with their communication channels.",
         parameters: "{}",
+    },
+];
+
+/// Write tools (Modify level — require action-gate confirmation).
+pub const WRITE_TOOLS: &[ToolDef] = &[
+    ToolDef {
+        name: "create_document",
+        description: "Create a new owned document. Requires user confirmation.",
+        parameters: r#"{"title": "document title", "thread_name": "thread name (optional, defaults to first thread)"}"#,
+    },
+    ToolDef {
+        name: "create_thread",
+        description: "Create a new thread (project). Requires user confirmation.",
+        parameters: r#"{"name": "thread name"}"#,
+    },
+    ToolDef {
+        name: "rename_thread",
+        description: "Rename an existing thread. Requires user confirmation.",
+        parameters: r#"{"old_name": "current thread name", "new_name": "new thread name"}"#,
+    },
+    ToolDef {
+        name: "move_document",
+        description: "Move a document to a different thread. Requires user confirmation.",
+        parameters: r#"{"document_title": "document title", "thread_name": "destination thread name"}"#,
+    },
+];
+
+/// All available tools (read + write).
+pub const TOOLS: &[ToolDef] = &[
+    // Read tools (Observe level)
+    ToolDef {
+        name: "search_documents",
+        description: "Search documents by title or content keyword. Returns matching titles and IDs.",
+        parameters: r#"{"query": "search term"}"#,
+    },
+    ToolDef {
+        name: "list_threads",
+        description: "List all threads (projects) with document counts.",
+        parameters: "{}",
+    },
+    ToolDef {
+        name: "get_document",
+        description: "Get the full content of a document by title.",
+        parameters: r#"{"title": "document title"}"#,
+    },
+    ToolDef {
+        name: "list_documents",
+        description: "List documents, optionally filtered by thread name.",
+        parameters: r#"{"thread": "thread name (optional)"}"#,
+    },
+    ToolDef {
+        name: "search_messages",
+        description: "Search conversation messages by keyword.",
+        parameters: r#"{"query": "search term"}"#,
+    },
+    ToolDef {
+        name: "list_contacts",
+        description: "List all contacts with their communication channels.",
+        parameters: "{}",
+    },
+    // Write tools (Modify level — gated by action gravity)
+    ToolDef {
+        name: "create_document",
+        description: "Create a new owned document. Requires user confirmation.",
+        parameters: r#"{"title": "document title", "thread_name": "thread name (optional, defaults to first thread)"}"#,
+    },
+    ToolDef {
+        name: "create_thread",
+        description: "Create a new thread (project). Requires user confirmation.",
+        parameters: r#"{"name": "thread name"}"#,
+    },
+    ToolDef {
+        name: "rename_thread",
+        description: "Rename an existing thread. Requires user confirmation.",
+        parameters: r#"{"old_name": "current thread name", "new_name": "new thread name"}"#,
+    },
+    ToolDef {
+        name: "move_document",
+        description: "Move a document to a different thread. Requires user confirmation.",
+        parameters: r#"{"document_title": "document title", "thread_name": "destination thread name"}"#,
     },
 ];
 
@@ -124,7 +204,248 @@ pub fn extract_text_response(output: &str) -> String {
     text.trim().to_string()
 }
 
-/// Execute a tool call against the database. Returns a result with truncated output.
+/// Check if a tool name is a write tool (requires action-gate confirmation).
+pub fn is_write_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "create_document" | "create_thread" | "rename_thread" | "move_document"
+    )
+}
+
+/// Execute a write tool call against the database. Returns the result.
+/// The caller is responsible for gating (confirmation) before calling this.
+pub async fn execute_write_tool(call: &ToolCall, db: &SurrealGraphDB) -> WriteToolResult {
+    match call.name.as_str() {
+        "create_document" => execute_create_document(call, db).await,
+        "create_thread" => execute_create_thread(call, db).await,
+        "rename_thread" => execute_rename_thread(call, db).await,
+        "move_document" => execute_move_document(call, db).await,
+        _ => WriteToolResult {
+            tool_name: call.name.clone(),
+            success: false,
+            output: format!("Unknown write tool: {}", call.name),
+            event: None,
+        },
+    }
+}
+
+/// Result from a write tool, including an optional OrchestratorEvent to emit.
+#[derive(Debug, Clone)]
+pub struct WriteToolResult {
+    pub tool_name: String,
+    pub success: bool,
+    pub output: String,
+    pub event: Option<sovereign_core::interfaces::OrchestratorEvent>,
+}
+
+async fn execute_create_document(call: &ToolCall, db: &SurrealGraphDB) -> WriteToolResult {
+    let title = call
+        .arguments
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Untitled Document")
+        .to_string();
+
+    let thread_name = call.arguments.get("thread_name").and_then(|v| v.as_str());
+
+    // Resolve thread ID
+    let threads = db.list_threads().await.unwrap_or_default();
+    let thread = if let Some(tname) = thread_name {
+        let tname_lower = tname.to_lowercase();
+        threads
+            .iter()
+            .find(|t| t.name.to_lowercase().contains(&tname_lower))
+            .or(threads.first())
+    } else {
+        threads.first()
+    };
+
+    let thread_id = thread
+        .and_then(|t| t.id_string())
+        .unwrap_or_default();
+
+    let doc = sovereign_db::schema::Document::new(title.clone(), thread_id.clone(), true);
+    match db.create_document(doc).await {
+        Ok(created) => {
+            let doc_id = created.id_string().unwrap_or_default();
+            WriteToolResult {
+                tool_name: call.name.clone(),
+                success: true,
+                output: format!("Created document '{}' (id: {}) in thread {}", title, doc_id, thread_id),
+                event: Some(sovereign_core::interfaces::OrchestratorEvent::DocumentCreated {
+                    doc_id,
+                    title,
+                    thread_id,
+                }),
+            }
+        }
+        Err(e) => WriteToolResult {
+            tool_name: call.name.clone(),
+            success: false,
+            output: format!("Failed to create document: {e}"),
+            event: None,
+        },
+    }
+}
+
+async fn execute_create_thread(call: &ToolCall, db: &SurrealGraphDB) -> WriteToolResult {
+    let name = call
+        .arguments
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("New Thread")
+        .to_string();
+
+    let thread = sovereign_db::schema::Thread::new(name.clone(), String::new());
+    match db.create_thread(thread).await {
+        Ok(created) => {
+            let tid = created.id_string().unwrap_or_default();
+            WriteToolResult {
+                tool_name: call.name.clone(),
+                success: true,
+                output: format!("Created thread '{}' (id: {})", name, tid),
+                event: Some(sovereign_core::interfaces::OrchestratorEvent::ThreadCreated {
+                    thread_id: tid,
+                    name,
+                }),
+            }
+        }
+        Err(e) => WriteToolResult {
+            tool_name: call.name.clone(),
+            success: false,
+            output: format!("Failed to create thread: {e}"),
+            event: None,
+        },
+    }
+}
+
+async fn execute_rename_thread(call: &ToolCall, db: &SurrealGraphDB) -> WriteToolResult {
+    let old_name = call
+        .arguments
+        .get("old_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let new_name = call
+        .arguments
+        .get("new_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if old_name.is_empty() || new_name.is_empty() {
+        return WriteToolResult {
+            tool_name: call.name.clone(),
+            success: false,
+            output: "Both old_name and new_name are required.".into(),
+            event: None,
+        };
+    }
+
+    let threads = db.list_threads().await.unwrap_or_default();
+    let old_lower = old_name.to_lowercase();
+    let thread = threads
+        .iter()
+        .find(|t| t.name.to_lowercase().contains(&old_lower));
+
+    if let Some(thread) = thread {
+        let tid = thread.id_string().unwrap_or_default();
+        match db.update_thread(&tid, Some(new_name), None).await {
+            Ok(_) => WriteToolResult {
+                tool_name: call.name.clone(),
+                success: true,
+                output: format!("Renamed thread '{}' to '{}'", old_name, new_name),
+                event: Some(sovereign_core::interfaces::OrchestratorEvent::ThreadRenamed {
+                    thread_id: tid,
+                    name: new_name.to_string(),
+                }),
+            },
+            Err(e) => WriteToolResult {
+                tool_name: call.name.clone(),
+                success: false,
+                output: format!("Failed to rename thread: {e}"),
+                event: None,
+            },
+        }
+    } else {
+        WriteToolResult {
+            tool_name: call.name.clone(),
+            success: false,
+            output: format!("Thread '{}' not found.", old_name),
+            event: None,
+        }
+    }
+}
+
+async fn execute_move_document(call: &ToolCall, db: &SurrealGraphDB) -> WriteToolResult {
+    let doc_title = call
+        .arguments
+        .get("document_title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let thread_name = call
+        .arguments
+        .get("thread_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if doc_title.is_empty() || thread_name.is_empty() {
+        return WriteToolResult {
+            tool_name: call.name.clone(),
+            success: false,
+            output: "Both document_title and thread_name are required.".into(),
+            event: None,
+        };
+    }
+
+    let docs = db.list_documents(None).await.unwrap_or_default();
+    let threads = db.list_threads().await.unwrap_or_default();
+
+    let doc_lower = doc_title.to_lowercase();
+    let thread_lower = thread_name.to_lowercase();
+    let doc = docs
+        .iter()
+        .find(|d| d.title.to_lowercase().contains(&doc_lower));
+    let thread = threads
+        .iter()
+        .find(|t| t.name.to_lowercase().contains(&thread_lower));
+
+    if let (Some(doc), Some(thread)) = (doc, thread) {
+        let doc_id = doc.id_string().unwrap_or_default();
+        let tid = thread.id_string().unwrap_or_default();
+        match db.move_document_to_thread(&doc_id, &tid).await {
+            Ok(_) => WriteToolResult {
+                tool_name: call.name.clone(),
+                success: true,
+                output: format!("Moved '{}' to thread '{}'", doc_title, thread_name),
+                event: Some(sovereign_core::interfaces::OrchestratorEvent::DocumentMoved {
+                    doc_id,
+                    new_thread_id: tid,
+                }),
+            },
+            Err(e) => WriteToolResult {
+                tool_name: call.name.clone(),
+                success: false,
+                output: format!("Failed to move document: {e}"),
+                event: None,
+            },
+        }
+    } else {
+        let mut msg = String::new();
+        if doc.is_none() {
+            msg.push_str(&format!("Document '{}' not found. ", doc_title));
+        }
+        if thread.is_none() {
+            msg.push_str(&format!("Thread '{}' not found.", thread_name));
+        }
+        WriteToolResult {
+            tool_name: call.name.clone(),
+            success: false,
+            output: msg,
+            event: None,
+        }
+    }
+}
+
+/// Execute a read-only tool call against the database. Returns a result with truncated output.
 pub async fn execute_tool(call: &ToolCall, db: &SurrealGraphDB) -> ToolResult {
     let output = match call.name.as_str() {
         "search_documents" => execute_search_documents(call, db).await,
@@ -377,5 +698,33 @@ mod tests {
             assert!(desc.contains(tool.name), "Missing tool: {}", tool.name);
         }
         assert!(desc.contains("<tool_call>"));
+    }
+
+    #[test]
+    fn is_write_tool_checks() {
+        assert!(is_write_tool("create_document"));
+        assert!(is_write_tool("create_thread"));
+        assert!(is_write_tool("rename_thread"));
+        assert!(is_write_tool("move_document"));
+        assert!(!is_write_tool("search_documents"));
+        assert!(!is_write_tool("list_threads"));
+        assert!(!is_write_tool("get_document"));
+    }
+
+    #[test]
+    fn write_tools_have_correct_names() {
+        let names: Vec<&str> = WRITE_TOOLS.iter().map(|t| t.name).collect();
+        assert!(names.contains(&"create_document"));
+        assert!(names.contains(&"create_thread"));
+        assert!(names.contains(&"rename_thread"));
+        assert!(names.contains(&"move_document"));
+    }
+
+    #[test]
+    fn read_tools_have_correct_names() {
+        let names: Vec<&str> = READ_TOOLS.iter().map(|t| t.name).collect();
+        assert!(names.contains(&"search_documents"));
+        assert!(names.contains(&"list_threads"));
+        assert!(!names.contains(&"create_document"));
     }
 }
