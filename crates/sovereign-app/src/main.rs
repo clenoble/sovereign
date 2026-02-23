@@ -274,8 +274,14 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                                 let (p2p_cmd_tx, p2p_cmd_rx) =
                                     tokio::sync::mpsc::channel(64);
 
+                                let sync_service = Arc::new(
+                                    sovereign_p2p::SyncService::new(
+                                        db_arc.clone(),
+                                        p2p_config.device_name.clone(),
+                                    ),
+                                );
                                 match sovereign_p2p::node::SovereignNode::new(
-                                    &p2p_config, keypair, p2p_event_tx, p2p_cmd_rx,
+                                    &p2p_config, keypair, p2p_event_tx, p2p_cmd_rx, sync_service,
                                 ) {
                                     Ok(node) => {
                                         tokio::spawn(node.run());
