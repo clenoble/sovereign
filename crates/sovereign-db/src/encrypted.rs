@@ -170,6 +170,11 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.delete_document(id).await
     }
 
+    async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>> {
+        let docs = self.inner.search_documents_by_title(query).await?;
+        self.decrypt_documents(docs).await
+    }
+
     // Thread operations pass through unchanged
     async fn create_thread(&self, thread: Thread) -> DbResult<Thread> {
         self.inner.create_thread(thread).await
@@ -181,6 +186,10 @@ impl GraphDB for EncryptedGraphDB {
 
     async fn list_threads(&self) -> DbResult<Vec<Thread>> {
         self.inner.list_threads().await
+    }
+
+    async fn find_thread_by_name(&self, name: &str) -> DbResult<Option<Thread>> {
+        self.inner.find_thread_by_name(name).await
     }
 
     async fn update_thread(
@@ -596,11 +605,13 @@ mod tests {
         async fn list_documents(&self, _thread_id: Option<&str>) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn update_document(&self, _id: &str, _title: Option<&str>, _content: Option<&str>) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn delete_document(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        async fn search_documents_by_title(&self, _query: &str) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn create_thread(&self, thread: Thread) -> DbResult<Thread> { Ok(thread) }
         async fn get_thread(&self, _id: &str) -> DbResult<Thread> { Err(DbError::NotFound("mock".into())) }
         async fn list_threads(&self) -> DbResult<Vec<Thread>> { Ok(vec![]) }
         async fn update_thread(&self, _id: &str, _name: Option<&str>, _description: Option<&str>) -> DbResult<Thread> { Err(DbError::NotFound("mock".into())) }
         async fn delete_thread(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        async fn find_thread_by_name(&self, _name: &str) -> DbResult<Option<Thread>> { Ok(None) }
         async fn move_document_to_thread(&self, _doc_id: &str, _new_thread_id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn create_relationship(&self, _from_id: &str, _to_id: &str, _relation_type: RelationType, _strength: f32) -> DbResult<RelatedTo> { Err(DbError::NotFound("mock".into())) }
         async fn list_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
