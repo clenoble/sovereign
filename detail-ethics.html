@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ethics, Misuse Analysis & Design Constraints — Sovereign GE</title>
+<meta name="description" content="How Sovereign GE strengthens privacy while narrowing the misuse surface through binding design constraints. Ethical principles and precedent analysis.">
+<link rel="canonical" href="https://clenoble.github.io/sovereign-os/detail-ethics.html">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://clenoble.github.io/sovereign-os/detail-ethics.html">
+<meta property="og:title" content="Ethics, Misuse Analysis & Design Constraints — Sovereign GE">
+<meta property="og:description" content="How Sovereign GE strengthens privacy while narrowing the misuse surface through binding design constraints. Ethical principles and precedent analysis.">
+<meta property="og:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+<meta property="og:site_name" content="Sovereign GE">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Ethics, Misuse Analysis & Design Constraints — Sovereign GE">
+<meta name="twitter:description" content="How Sovereign GE strengthens privacy while narrowing the misuse surface through binding design constraints. Ethical principles and precedent analysis.">
+<meta name="twitter:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+<style>
+/* ========== RESET & BASE ========== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --c-bg: #0c0e13;
+  --c-bg-alt: #13161d;
+  --c-bg-card: #181c25;
+  --c-border: #2a2f3a;
+  --c-border-subtle: #1e222c;
+  --c-text: #e2e4e9;
+  --c-text-dim: #a1a5b2;
+  --c-text-bright: #ffffff;
+  --c-accent: #60A5FA;
+  --c-accent-dim: #3b82f6;
+  --c-accent-glow: rgba(96, 165, 250, 0.15);
+  --c-gold: #F59E0B;
+  --c-gold-light: #FCD34D;
+  --c-violet: #8B5CF6;
+  --c-owned: #3ecf8e;
+  --c-owned-dim: rgba(62, 207, 142, 0.12);
+  --c-external: #f59e42;
+  --c-external-dim: rgba(245, 158, 66, 0.12);
+  --c-danger: #ef5350;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --max-w: 1120px;
+  --header-h: 60px;
+}
+
+html { scroll-behavior: smooth; font-size: 16px; }
+body {
+  font-family: var(--font-sans);
+  background: var(--c-bg);
+  color: var(--c-text);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--c-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+/* External link indicator (WCAG 3.2.4) */
+footer a[target="_blank"]::after,
+main a[target="_blank"]::after { content: " ↗"; font-size: 0.75em; }
+a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+
+img { max-width: 100%; display: block; }
+button { cursor: pointer; font-family: inherit; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+/* ========== SKIP LINK (WCAG) ========== */
+.skip-link {
+  position: absolute; top: -100%; left: 50%; transform: translateX(-50%);
+  background: var(--c-accent); color: #000; padding: 8px 20px;
+  border-radius: var(--radius); font-weight: 600; z-index: 9999;
+}
+.skip-link:focus { top: 10px; }
+
+/* ========== HEADER ========== */
+header {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  height: var(--header-h);
+  background: rgba(12, 14, 19, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--c-border-subtle);
+  display: flex; align-items: center;
+}
+.header-inner {
+  max-width: var(--max-w); margin: 0 auto; padding: 0 24px;
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+}
+.logo {
+  font-size: 1.15rem; font-weight: 700; color: var(--c-text-bright);
+  display: flex; align-items: center; gap: 10px; letter-spacing: -0.02em;
+}
+.logo-mark {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+}
+.logo-mark img { width: 28px; height: 28px; }
+
+nav { display: flex; align-items: center; gap: 6px; }
+nav a {
+  color: var(--c-text-dim); padding: 6px 14px; border-radius: var(--radius);
+  font-size: 0.875rem; font-weight: 500; transition: color 0.15s, background 0.15s;
+}
+nav a:hover, nav a:focus-visible {
+  color: var(--c-text); background: rgba(255,255,255,0.05); text-decoration: none;
+}
+.nav-cta {
+  background: var(--c-accent) !important; color: #000 !important;
+  font-weight: 600; margin-left: 8px;
+}
+.nav-cta:hover { background: #7ab8ff !important; }
+
+.nav-toggle {
+  display: none; background: none; border: none; color: var(--c-text);
+  padding: 8px; font-size: 1.4rem; line-height: 1;
+}
+
+.back-link {
+  color: var(--c-accent); padding: 6px 14px; border-radius: var(--radius);
+  font-size: 0.875rem; font-weight: 500; transition: color 0.15s, background 0.15s;
+  display: flex; align-items: center; gap: 6px;
+}
+.back-link:hover, .back-link:focus-visible {
+  background: rgba(255,255,255,0.05); text-decoration: none;
+}
+
+/* ========== MAIN CONTENT ========== */
+main {
+  padding: calc(var(--header-h) + 40px) 24px 80px;
+}
+
+.content-inner {
+  max-width: var(--max-w); margin: 0 auto;
+}
+
+/* ========== PAGE HEADER ========== */
+.page-header {
+  margin-bottom: 60px;
+}
+
+.page-header h1 {
+  font-size: clamp(2rem, 4vw, 2.8rem); font-weight: 800;
+  color: var(--c-text-bright); letter-spacing: -0.03em; margin-bottom: 12px;
+  line-height: 1.15;
+}
+
+.page-header .subtitle {
+  color: var(--c-text-dim); font-size: 1.05rem; max-width: 700px;
+  line-height: 1.7;
+}
+
+/* ========== TIER SYSTEM ========== */
+.tier-section {
+  margin-bottom: 80px;
+}
+
+.tier-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+}
+
+.tier-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%;
+  font-weight: 700; font-size: 0.8rem;
+}
+
+.tier-1 .tier-badge {
+  background: var(--c-accent-glow); color: var(--c-accent);
+}
+
+.tier-2 .tier-badge {
+  background: var(--c-owned-dim); color: var(--c-owned);
+}
+
+.tier-3 .tier-badge {
+  background: rgba(168, 130, 255, 0.12); color: #a882ff;
+}
+
+.tier-label {
+  font-weight: 700; color: var(--c-text-bright); font-size: 1.1rem;
+}
+
+.tier-subtext {
+  color: var(--c-text-dim); font-size: 0.85rem;
+}
+
+/* ========== COLLAPSIBLE DETAILS ========== */
+details {
+  margin-bottom: 32px;
+}
+
+details > summary {
+  cursor: pointer; padding: 16px 20px; border-radius: var(--radius-lg);
+  background: var(--c-bg-card); border: 1px solid var(--c-border-subtle);
+  display: flex; align-items: center; gap: 12px;
+  font-weight: 600; color: var(--c-text-bright);
+  transition: border-color 0.2s, background 0.2s;
+  user-select: none;
+}
+
+details > summary:hover {
+  border-color: var(--c-border);
+  background: rgba(255,255,255,0.02);
+}
+
+details > summary::marker { color: var(--c-accent); }
+
+details[open] > summary {
+  border-color: var(--c-accent);
+  background: rgba(96, 165, 250, 0.05);
+}
+
+details > summary::before {
+  content: "▶";
+  display: inline-block;
+  font-size: 0.8rem;
+  transition: transform 0.2s;
+  width: 16px; text-align: center;
+}
+
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details > summary::-webkit-details-marker { display: none; }
+
+.details-content {
+  padding: 0 20px 20px 20px;
+  animation: expandDown 0.25s ease-out;
+}
+
+@keyframes expandDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+    overflow: hidden;
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+  }
+}
+
+/* ========== TIER 1: ELEVATOR PITCH ========== */
+.tier-1-content {
+  background: var(--c-accent-glow); border: 1px solid rgba(96, 165, 250, 0.2);
+  border-radius: var(--radius-lg); padding: 32px;
+  margin-bottom: 32px;
+}
+
+.tier-1-content p {
+  font-size: 1.05rem; color: var(--c-text); line-height: 1.75;
+  margin-bottom: 0;
+}
+
+/* ========== TIER 2: HOW IT WORKS ========== */
+.tier-2-content {
+  display: flex; flex-direction: column; gap: 24px;
+}
+
+.concept-block {
+  background: var(--c-bg-card); border-left: 4px solid var(--c-owned);
+  border-radius: var(--radius); padding: 24px;
+}
+
+.concept-block h3 {
+  font-size: 1rem; font-weight: 700; color: var(--c-text-bright);
+  margin-bottom: 8px; letter-spacing: -0.01em;
+}
+
+.concept-block p {
+  color: var(--c-text-dim); font-size: 0.95rem; line-height: 1.7;
+  margin-bottom: 12px;
+}
+
+.concept-block p:last-child { margin-bottom: 0; }
+
+.concept-list {
+  list-style: none; margin: 12px 0 0 0; padding-left: 0;
+}
+
+.concept-list li {
+  padding-left: 24px; position: relative; margin-bottom: 10px;
+  color: var(--c-text-dim); font-size: 0.9rem;
+}
+
+.concept-list li::before {
+  content: "▪"; position: absolute; left: 4px; color: var(--c-owned);
+}
+
+/* ========== TIER 3: DEEP DIVE ========== */
+.tier-3-content {
+  display: flex; flex-direction: column; gap: 32px;
+}
+
+.deep-section {
+  background: var(--c-bg-alt); border: 1px solid var(--c-border-subtle);
+  border-radius: var(--radius-lg); padding: 28px;
+}
+
+.deep-section h3 {
+  font-size: 1.05rem; font-weight: 700; color: var(--c-text-bright);
+  margin-bottom: 16px; letter-spacing: -0.01em;
+}
+
+.code-block {
+  background: var(--c-bg); border: 1px solid var(--c-border-subtle);
+  border-radius: var(--radius); padding: 16px;
+  overflow-x: auto; margin: 16px 0;
+  font-family: var(--font-mono);
+  font-size: 0.8rem; line-height: 1.6;
+  color: var(--c-text-dim);
+}
+
+.code-block code {
+  display: block; color: var(--c-text-dim);
+}
+
+.const-table {
+  width: 100%; border-collapse: collapse; margin: 16px 0;
+  font-size: 0.9rem;
+}
+
+.const-table th, .const-table td {
+  padding: 12px; text-align: left; border-bottom: 1px solid var(--c-border-subtle);
+}
+
+.const-table th {
+  background: rgba(255,255,255,0.03); font-weight: 700; color: var(--c-text-bright);
+}
+
+.const-table code {
+  background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 3px;
+  font-family: var(--font-mono); font-size: 0.85em;
+}
+
+.action-mapping {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 16px; margin: 16px 0;
+}
+
+@media (max-width: 640px) {
+  .action-mapping { grid-template-columns: 1fr; }
+}
+
+.action-item {
+  background: rgba(255,255,255,0.02); padding: 12px; border-radius: var(--radius);
+  border-left: 3px solid var(--c-border);
+  font-size: 0.85rem;
+}
+
+.action-item code {
+  background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 2px;
+  font-family: var(--font-mono);
+  color: var(--c-accent);
+}
+
+.action-item .level {
+  display: inline-block; font-weight: 700; margin-right: 8px;
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+}
+
+.level-observe { color: var(--c-text-dim); }
+.level-annotate { color: var(--c-accent); }
+.level-modify { color: var(--c-owned); }
+.level-transmit { color: var(--c-external); }
+.level-destruct { color: var(--c-danger); }
+
+.flow-diagram {
+  background: rgba(255,255,255,0.02); padding: 20px;
+  border-radius: var(--radius); border: 1px solid var(--c-border-subtle);
+  font-family: var(--font-mono); font-size: 0.85rem;
+  color: var(--c-text-dim); line-height: 2;
+  overflow-x: auto;
+  margin: 16px 0;
+}
+
+.hardware-specs {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px; margin: 16px 0;
+}
+
+.spec-card {
+  background: rgba(255,255,255,0.02); padding: 12px;
+  border-radius: var(--radius); border: 1px solid var(--c-border-subtle);
+  text-align: center; font-size: 0.85rem;
+}
+
+.spec-card .value {
+  font-weight: 700; color: var(--c-text-bright);
+  font-size: 1.1rem; margin-bottom: 4px;
+}
+
+.spec-card .label {
+  color: var(--c-text-dim); font-size: 0.8rem;
+}
+
+/* ========== RESPONSIVE ========== */
+@media (max-width: 900px) {
+  .page-header h1 { font-size: 1.8rem; }
+}
+
+@media (max-width: 640px) {
+  main { padding: calc(var(--header-h) + 24px) 16px 60px; }
+  nav { display: none; }
+  nav.open {
+    display: flex; flex-direction: column;
+    position: absolute; top: var(--header-h); left: 0; right: 0;
+    background: var(--c-bg); border-bottom: 1px solid var(--c-border);
+    padding: 12px;
+  }
+  .nav-toggle { display: block; }
+  .page-header { margin-bottom: 40px; }
+  .tier-1-content { padding: 20px; }
+  .concept-block { padding: 16px; }
+  .deep-section { padding: 16px; }
+}
+
+/* ========== REDUCED MOTION ========== */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  details, .details-content { animation: none; transition: none; }
+}
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<!-- ========== HEADER ========== -->
+<header role="banner">
+  <div class="header-inner">
+    <a href="index.html" class="back-link" aria-label="Back to homepage">
+      ← Back to Overview
+    </a>
+    <a href="index.html" class="logo" aria-label="Sovereign GE home">
+      <span class="logo-mark" aria-hidden="true"><img src="logo-icon.svg" alt=""></span>
+      Sovereign GE
+    </a>
+    <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="document.querySelector('nav').classList.toggle('open'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">☰</button>
+    <nav role="navigation" aria-label="Main navigation">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#architecture">Architecture</a>
+      <a href="index.html#security">Security</a>
+      <a href="index.html#recovery">Recovery</a>
+      <a href="https://github.com/clenoble/sovereign" class="nav-cta" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ========== MAIN CONTENT ========== -->
+<main id="main" role="main">
+<div class="content-inner">
+
+<!-- ========== PAGE HEADER ========== -->
+<div class="page-header">
+  <h1>Ethics, Misuse Analysis & Design Constraints</h1>
+  <p class="subtitle">
+    How Sovereign strengthens privacy while narrowing the misuse surface through binding design constraints.
+  </p>
+</div>
+
+<!-- ========== TIER 1: ELEVATOR PITCH ========== -->
+<section class="tier-section tier-1">
+  <div class="tier-header">
+    <span class="tier-badge">1</span>
+    <div>
+      <div class="tier-label">Tier 1: The Elevator Pitch</div>
+      <div class="tier-subtext">10-second read</div>
+    </div>
+  </div>
+
+  <div class="tier-1-content">
+    <p>
+      Sovereign aims to package strong privacy into a turnkey system. Every capability it explores already exists as a standalone tool — Signal did the same for encryption.
+      The project aspires to the Signal precedent rather than the Tor precedent: strengthen privacy for ordinary users while offering criminals only marginal improvement.
+      Four binding design constraints are intended to narrow the misuse surface by code, not policy. Some are implemented; others are roadmap items marked below.
+    </p>
+  </div>
+</section>
+
+<!-- ========== TIER 2: HOW IT WORKS ========== -->
+<section class="tier-section tier-2">
+  <div class="tier-header">
+    <span class="tier-badge">2</span>
+    <div>
+      <div class="tier-label">Tier 2: How It Works</div>
+      <div class="tier-subtext">1–3 minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-2-content">
+
+    <details open>
+      <summary>Existing Tool Equivalence</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Nothing New Under the Sun</h3>
+          <p>
+            Every capability in Sovereign already exists as standalone software. The value is in integration, not innovation.
+          </p>
+          <table class="const-table">
+            <tr><th>Sovereign Feature</th><th>Status</th><th>Existing Equivalents</th></tr>
+            <tr><td>Identity Firewall</td><td><em>Roadmap</em></td><td>Firefox containers, SimpleLogin, ProtonVPN, DuckDuckGo tracker blocking</td></tr>
+            <tr><td>Encrypted P2P Sync</td><td><em>Infrastructure only</em></td><td>Syncthing, IPFS, Restic + Backblaze</td></tr>
+            <tr><td>Social Recovery</td><td>Implemented</td><td>Casa (Bitcoin multisig model), ssss-split (Shamir secret sharing)</td></tr>
+            <tr><td>Local AI</td><td>Implemented</td><td>Ollama, llama.cpp, gpt4all</td></tr>
+            <tr><td>Per-Document Encryption</td><td>Implemented</td><td>LUKS (Linux), BitLocker (Windows), FileVault (macOS)</td></tr>
+          </table>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>What Sovereign Does NOT Provide</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Intentional Constraints for Ethical Clarity</h3>
+          <p>
+            These omissions are deliberate ethical choices, not limitations:
+          </p>
+          <ul class="concept-list">
+            <li><strong>No Network Anonymity:</strong> No Tor integration, no built-in VPN. Local privacy ≠ covert ops. Users install Tor separately if needed.</li>
+            <li><strong>No Cryptocurrency:</strong> No wallet, no censorship-resistant payment channel. Social recovery is identity-based, not financial.</li>
+            <li><strong>No Offensive Tooling:</strong> No password cracking, no keystroke injection, no privilege escalation exploits.</li>
+            <li><strong>Small AI Models:</strong> 3B/7B quantized models too small for sophisticated social engineering attacks. Audit logs record all inferences.</li>
+            <li><strong>Audit Logs Create Forensic Record:</strong> Worse for criminals than useful for them. Differential privacy prevents inference attacks on guardian shards.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Four Binding Design Constraints</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Code-Level Enforcement, Not Policy</h3>
+          <p>
+            Constraints are enforced by architecture, not trust in governance:
+          </p>
+          <ul class="concept-list">
+            <li><strong>1. Identity Firewall Scope <em>(roadmap — not yet implemented)</em>:</strong> Tracking prevention only (cookie isolation, URL param stripping, fingerprint resistance). Designed to block on banking/gov domains. No synthetic identities. Users would be able to override.</li>
+            <li><strong>2. No Network Anonymity:</strong> Intentional design choice. Network stack is transparent. Tor is a user install, not a feature. Clear separation of concerns.</li>
+            <li><strong>3. Guardian Protocol Transparency:</strong> Single function: shard storage and return. No messaging, no general storage layer, no coordination, no dead-man's switch. Scope is narrowly constrained.</li>
+            <li><strong>4. Audit Log Integrity <em>(partial — hash chain is roadmap)</em>:</strong> Currently append-only JSONL. The goal is a tamper-evident hash chain where each entry includes a hash of the previous entry. User can read and export but not selectively edit or reorder.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Ethical Principles</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Four Core Commitments</h3>
+          <ul class="concept-list">
+            <li><strong>Privacy as a Right:</strong> UN Article 12, ECHR Article 8, GDPR Article 5. Not conditional on "law-abiding" status. Universal human right.</li>
+            <li><strong>Full Transparency:</strong> Open source (AGPL-3.0), no telemetry, no proprietary components. Code audit by anyone.</li>
+            <li><strong>Honest Tradeoffs:</strong> No claims that privacy is "side-effect-free." Acknowledge misuse risks openly. Let users decide.</li>
+            <li><strong>Distributed, Not Centralized:</strong> Software, not service. Designed without back doors, master keys, or remote kill switches. You own the software and your data.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ========== TIER 3: DEEP DIVE ========== -->
+<section class="tier-section tier-3">
+  <div class="tier-header">
+    <span class="tier-badge">3</span>
+    <div>
+      <div class="tier-label">Tier 3: Deep Dive</div>
+      <div class="tier-subtext">5+ minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-3-content">
+
+    <div class="deep-section">
+      <h3>Identity Firewall Scope <em>(roadmap — not yet implemented)</em></h3>
+      <p>
+        The identity firewall is a planned feature designed to prevent tracking across domains. Its scope is intentionally narrow:
+      </p>
+      <ul class="concept-list">
+        <li><strong>What It Would Do:</strong> Cookie isolation (each domain gets a separate cookie jar), URL parameter stripping (removes utm_*, fbclid, etc.), fingerprint resistance (spoofs User-Agent, webgl, canvas fingerprints).</li>
+        <li><strong>What It Would NOT Do:</strong> No synthetic identities. You would still be the same person across sites within your identity context. No pretense of being multiple people.</li>
+        <li><strong>Trusted Domain List (TDL):</strong> Planned governance model inspired by Mozilla. Users would propose additions. Protected categories (banking, gov) could not be removed by users.</li>
+        <li><strong>User Override:</strong> Users would be able to disable tracking prevention per site. Clear UI would show when it's active.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>No Built-In Network Anonymity</h3>
+      <p>
+        Network anonymity is intentionally omitted. Rationale: separates this project from Tails/Whonix precedent.
+      </p>
+      <ul class="concept-list">
+        <li><strong>Local Privacy ≠ Covert Ops:</strong> Full-disk encryption protects your device. Network traffic still reveals your ISP, location, website visits. These are different problems.</li>
+        <li><strong>Tor is a User Install:</strong> Users can install Tor Browser separately. Sovereign does not bundle it. Clear boundary between privacy-by-default and anonymity-by-choice.</li>
+        <li><strong>Ethical Clarity:</strong> Avoids the appearance of targeting criminals while serving journalists. "Tor user" implies suspicious intent to some. Better to let users make that choice explicitly.</li>
+        <li><strong>Regulatory Risk:</strong> Bundled anonymity tools trigger export controls in some jurisdictions. Sovereign as "privacy tool" is defensible. Sovereign + Tor is a different category.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>Guardian Protocol Transparency</h3>
+      <p>
+        The guardian protocol is deliberately scoped to a single, auditable function: shard storage/return.
+      </p>
+      <ul class="concept-list">
+        <li><strong>What Guardians Do:</strong> Store encrypted shards of your recovery key. On your request, return the shard. That's it.</li>
+        <li><strong>No Messaging:</strong> Guardians cannot send you messages. No "you have a guardian request" notification system.</li>
+        <li><strong>No General Storage:</strong> Guardians cannot store arbitrary data. Only recovery shards, format-fixed, size-limited.</li>
+        <li><strong>No Coordination:</strong> Guardians cannot communicate with each other. No "2-of-3 consensus" logic on the guardian side. You orchestrate recovery locally.</li>
+        <li><strong>No Dead Man's Switch:</strong> Guardians do not auto-transmit anything on timer or trigger. No "if I don't check in, release my data." User must actively request shards.</li>
+        <li><strong>Repurposing Risk Minimized:</strong> Narrow scope makes it hard to misuse. Adding a general storage layer would create incentive to use Sovereign as a dead drop for contraband.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>Audit Log Integrity <em>(partial — currently append-only JSONL, hash chain is roadmap)</em></h3>
+      <p>
+        Today, Sovereign logs session activity to an append-only JSONL file with automatic rotation.
+        The long-term goal is a tamper-evident hash chain that is forensically sound:
+      </p>
+      <ul class="concept-list">
+        <li><strong>Current State:</strong> Append-only JSONL log. Records user inputs, orchestrator actions, and chat responses. Automatic rotation at 10 MB. No hash chain yet.</li>
+        <li><strong>Goal — Hash Chain:</strong> Each entry would include a hash of the previous entry. Reordering or editing entries would break the chain — tampering would be immediately visible.</li>
+        <li><strong>User Can Read:</strong> Full access to audit logs. No hidden logging.</li>
+        <li><strong>Goal — Export &amp; Sharing:</strong> Audit logs could be exported in plaintext, JSON, or cryptographic format for external verification. Proof of existence without proof of content.</li>
+        <li><strong>Goal — Delete All:</strong> Bulk deletion available but not selective editing — all-or-nothing.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>Local AI Inference Analysis</h3>
+      <p>
+        Running uncensored AI models locally raises questions about model choice and defaults:
+      </p>
+      <ul class="concept-list">
+        <li><strong>Uncensored Model Question:</strong> Should base models have safety filters? Current approach: base Qwen2.5 models are used as-is (no RLHF steering toward specific political views).</li>
+        <li><strong>Risk Assessment:</strong> 3B/7B quantized models are too small to generate sophisticated social engineering attacks, code exploits, or chemical synthesis instructions. Larger models (70B+) would raise safety concerns.</li>
+        <li><strong>Audit Log Records All:</strong> Every inference is logged with timestamp, input, and output. Provides forensic record if misuse occurs. Deters irresponsible use.</li>
+        <li><strong>Whose Filters?:</strong> Default: base models, user can substitute. If we filter by default, whose values? Better to let users choose. Transparency over paternalism.</li>
+        <li><strong>Model Substitution:</strong> Users can swap in alternative models (Llama, Mistral, Phi, etc.). Locked model choice would be lock-in.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>Encrypted Storage Debate</h3>
+      <p>
+        Full-disk encryption has been available since 2003 (BitLocker). The debate is old, not new.
+      </p>
+      <ul class="concept-list">
+        <li><strong>Law Enforcement vs Privacy:</strong> BitLocker (2003) enabled encrypted drives on consumer hardware. Two decades of debate: criminal use vs. privacy right. No resolution.</li>
+        <li><strong>Sovereign Makes Encryption Default:</strong> Like Signal made encryption the default for messaging (2014). Default encryption is high-friction for law enforcement but table-stakes for privacy-first software.</li>
+        <li><strong>Not Novel:</strong> Full-disk encryption is mature technology. Sovereign does not invent it. Uses LUKS (Linux), BitLocker-style (Windows), FileVault (macOS).</li>
+        <li><strong>Precedent:</strong> Signal is de facto recommended by journalists, activists, and law enforcement (e.g., FBI director recommends Signal). Encryption default is socially acceptable when implemented carefully.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>Precedent Analysis</h3>
+      <p>
+        Where does Sovereign sit in the landscape of privacy tools?
+      </p>
+      <ul class="concept-list">
+        <li><strong>Tor (2002):</strong> Network anonymity. Explicitly designed for covert ops, journalism, circumvention. Accepted misuse risk as trade-off for enabling dissidents. Narrow target audience.</li>
+        <li><strong>Full-Disk Encryption (2003+):</strong> Local data protection. BitLocker made FDE mainstream. Two-decade debate about key escrow. No resolution. Industry standard now.</li>
+        <li><strong>Signal (2014):</strong> End-to-end encrypted messaging. Made encryption the default. Mainstream adoption (200M+ users). Balances privacy strength with social acceptability. Law enforcement does not like it but it is legal and widespread.</li>
+        <li><strong>Sovereign:</strong> Aspires to the Signal model. Aims to package existing privacy features (encryption, local AI, and eventually an identity firewall) into a coherent system. Default encryption. Open source. Mainstream target audience. Narrow misuse surface relative to Tor.</li>
+      </ul>
+    </div>
+
+    <div class="deep-section">
+      <h3>Open Questions</h3>
+      <p>
+        Several design choices remain unresolved and open to community input:
+      </p>
+      <ul class="concept-list">
+        <li><strong>Trusted Domain List Governance:</strong> If the identity firewall is built, who decides what goes on the TDL? Community vote? Maintainer discretion? Mozilla model has limitations. Better alternative?</li>
+        <li><strong>Export Controls:</strong> Will jurisdictions restrict distribution of Sovereign? Precedent: PGP faced NSA pressure in 1990s. Current landscape is more permissive but regulation is tightening.</li>
+        <li><strong>Model Safety Defaults:</strong> Should Qwen2.5 have built-in refusals (jailbreak-resistant) or be maximally open (user can override)? Trade-off: ease of use vs. openness.</li>
+        <li><strong>Guardian Auditability:</strong> Can guardians be audited after shard return? Metadata might reveal identity or timing. How to balance auditability with privacy?</li>
+        <li><strong>Audit Log Forensics:</strong> Law enforcement will want audit logs. Should recovery be possible without user consent? Current design: user can delete logs fully but not selectively. Is this the right balance?</li>
+        <li><strong>P2P Metadata Leakage:</strong> Encrypted P2P sync might leak IP addresses, sync frequency, file sizes. How much metadata is acceptable for privacy-first design?</li>
+      </ul>
+    </div>
+
+  </div>
+</section>
+
+  </div>
+</main>
+
+<!-- ========== FOOTER ========== -->
+<footer role="contentinfo" style="border-top: 1px solid var(--c-border-subtle); padding: 40px 24px; font-size: 0.82rem; color: var(--c-text-dim);">
+  <div style="max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+    <span>&copy; 2026 Sovereign GE. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <div style="display: flex; gap: 20px;">
+      <a href="https://github.com/clenoble/sovereign" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/clenoble/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
+      <a href="https://github.com/clenoble/sovereign/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+</footer>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Sovereign GE",
+      "item": "https://clenoble.github.io/sovereign-os/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": "Ethics & Design Constraints",
+      "item": "https://clenoble.github.io/sovereign-os/detail-ethics.html"
+    }
+  ]
+}
+</script>
+
+</body>
+</html>

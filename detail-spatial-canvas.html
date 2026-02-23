@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spatial Canvas & Versioning — Sovereign GE</title>
+<meta name="description" content="Your documents live on an infinite canvas. Time runs left to right. Projects run top to bottom. Every edit is automatically remembered.">
+<link rel="canonical" href="https://clenoble.github.io/sovereign-os/detail-spatial-canvas.html">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://clenoble.github.io/sovereign-os/detail-spatial-canvas.html">
+<meta property="og:title" content="Spatial Canvas & Versioning — Sovereign GE">
+<meta property="og:description" content="Your documents live on an infinite canvas. Time runs left to right. Projects run top to bottom. Every edit is automatically remembered.">
+<meta property="og:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+<meta property="og:site_name" content="Sovereign GE">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Spatial Canvas & Versioning — Sovereign GE">
+<meta name="twitter:description" content="Your documents live on an infinite canvas. Time runs left to right. Projects run top to bottom. Every edit is automatically remembered.">
+<meta name="twitter:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+<style>
+/* ========== RESET & BASE ========== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --c-bg: #0c0e13;
+  --c-bg-alt: #13161d;
+  --c-bg-card: #181c25;
+  --c-border: #2a2f3a;
+  --c-border-subtle: #1e222c;
+  --c-text: #e2e4e9;
+  --c-text-dim: #a1a5b2;
+  --c-text-bright: #ffffff;
+  --c-accent: #60A5FA;
+  --c-accent-dim: #3b82f6;
+  --c-accent-glow: rgba(96, 165, 250, 0.15);
+  --c-gold: #F59E0B;
+  --c-gold-light: #FCD34D;
+  --c-violet: #8B5CF6;
+  --c-owned: #3ecf8e;
+  --c-owned-dim: rgba(62, 207, 142, 0.12);
+  --c-external: #f59e42;
+  --c-external-dim: rgba(245, 158, 66, 0.12);
+  --c-danger: #ef5350;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --max-w: 1120px;
+  --header-h: 60px;
+}
+
+html { scroll-behavior: smooth; font-size: 16px; }
+body {
+  font-family: var(--font-sans);
+  background: var(--c-bg);
+  color: var(--c-text);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--c-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+/* External link indicator (WCAG 3.2.4) */
+footer a[target="_blank"]::after,
+main a[target="_blank"]::after { content: " ↗"; font-size: 0.75em; }
+a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+
+img { max-width: 100%; display: block; }
+button { cursor: pointer; font-family: inherit; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+/* ========== SKIP LINK (WCAG) ========== */
+.skip-link {
+  position: absolute; top: -100%; left: 50%; transform: translateX(-50%);
+  background: var(--c-accent); color: #000; padding: 8px 20px;
+  border-radius: var(--radius); font-weight: 600; z-index: 9999;
+}
+.skip-link:focus { top: 10px; }
+
+/* ========== HEADER ========== */
+header {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  height: var(--header-h);
+  background: rgba(12, 14, 19, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--c-border-subtle);
+  display: flex; align-items: center;
+}
+.header-inner {
+  max-width: var(--max-w); margin: 0 auto; padding: 0 24px;
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+}
+.logo {
+  font-size: 1.15rem; font-weight: 700; color: var(--c-text-bright);
+  display: flex; align-items: center; gap: 10px; letter-spacing: -0.02em;
+}
+.logo-mark {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+}
+.logo-mark img { width: 28px; height: 28px; }
+
+nav { display: flex; align-items: center; gap: 6px; }
+nav a {
+  color: var(--c-text-dim); padding: 6px 14px; border-radius: var(--radius);
+  font-size: 0.875rem; font-weight: 500; transition: color 0.15s, background 0.15s;
+}
+nav a:hover, nav a:focus-visible {
+  color: var(--c-text); background: rgba(255,255,255,0.05); text-decoration: none;
+}
+.nav-cta {
+  background: var(--c-accent) !important; color: #000 !important;
+  font-weight: 600; margin-left: 8px;
+}
+.nav-cta:hover { background: #5eadff !important; }
+
+.nav-toggle {
+  display: none; background: none; border: none; color: var(--c-text);
+  padding: 8px; font-size: 1.4rem; line-height: 1;
+}
+
+.back-link {
+  color: var(--c-accent); padding: 6px 14px; border-radius: var(--radius);
+  font-size: 0.875rem; font-weight: 500; transition: color 0.15s, background 0.15s;
+  display: flex; align-items: center; gap: 6px;
+}
+.back-link:hover, .back-link:focus-visible {
+  background: rgba(255,255,255,0.05); text-decoration: none;
+}
+
+/* ========== MAIN CONTENT ========== */
+main {
+  padding: calc(var(--header-h) + 40px) 24px 80px;
+}
+
+.content-inner {
+  max-width: var(--max-w); margin: 0 auto;
+}
+
+/* ========== PAGE HEADER ========== */
+.page-header {
+  margin-bottom: 60px;
+}
+
+.page-header h1 {
+  font-size: clamp(2rem, 4vw, 2.8rem); font-weight: 800;
+  color: var(--c-text-bright); letter-spacing: -0.03em; margin-bottom: 12px;
+  line-height: 1.15;
+}
+
+.page-header .subtitle {
+  color: var(--c-text-dim); font-size: 1.05rem; max-width: 700px;
+  line-height: 1.7;
+}
+
+/* ========== TIER SYSTEM ========== */
+.tier-section {
+  margin-bottom: 80px;
+}
+
+.tier-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+}
+
+.tier-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%;
+  font-weight: 700; font-size: 0.8rem;
+}
+
+.tier-1 .tier-badge {
+  background: var(--c-accent-glow); color: var(--c-accent);
+}
+
+.tier-2 .tier-badge {
+  background: var(--c-owned-dim); color: var(--c-owned);
+}
+
+.tier-3 .tier-badge {
+  background: rgba(168, 130, 255, 0.12); color: #a882ff;
+}
+
+.tier-label {
+  font-weight: 700; color: var(--c-text-bright); font-size: 1.1rem;
+}
+
+.tier-subtext {
+  color: var(--c-text-dim); font-size: 0.85rem;
+}
+
+/* ========== COLLAPSIBLE DETAILS ========== */
+details {
+  margin-bottom: 32px;
+}
+
+details > summary {
+  cursor: pointer; padding: 16px 20px; border-radius: var(--radius-lg);
+  background: var(--c-bg-card); border: 1px solid var(--c-border-subtle);
+  display: flex; align-items: center; gap: 12px;
+  font-weight: 600; color: var(--c-text-bright);
+  transition: border-color 0.2s, background 0.2s;
+  user-select: none;
+}
+
+details > summary:hover {
+  border-color: var(--c-border);
+  background: rgba(255,255,255,0.02);
+}
+
+details > summary::marker { color: var(--c-accent); }
+
+details[open] > summary {
+  border-color: var(--c-accent);
+  background: rgba(74, 158, 255, 0.05);
+}
+
+details > summary::before {
+  content: "▶";
+  display: inline-block;
+  font-size: 0.8rem;
+  transition: transform 0.2s;
+  width: 16px; text-align: center;
+}
+
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details > summary::-webkit-details-marker { display: none; }
+
+.details-content {
+  padding: 0 20px 20px 20px;
+  animation: expandDown 0.25s ease-out;
+}
+
+@keyframes expandDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+    overflow: hidden;
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+  }
+}
+
+/* ========== TIER 1: ELEVATOR PITCH ========== */
+.tier-1-content {
+  background: var(--c-accent-glow); border: 1px solid rgba(74, 158, 255, 0.2);
+  border-radius: var(--radius-lg); padding: 32px;
+  margin-bottom: 32px;
+}
+
+.tier-1-content p {
+  font-size: 1.05rem; color: var(--c-text); line-height: 1.75;
+  margin-bottom: 0;
+}
+
+/* ========== TIER 2: HOW IT WORKS ========== */
+.tier-2-content {
+  display: flex; flex-direction: column; gap: 24px;
+}
+
+.concept-block {
+  background: var(--c-bg-card); border-left: 4px solid var(--c-owned);
+  border-radius: var(--radius); padding: 24px;
+}
+
+.concept-block h3 {
+  font-size: 1rem; font-weight: 700; color: var(--c-text-bright);
+  margin-bottom: 8px; letter-spacing: -0.01em;
+}
+
+.concept-block p {
+  color: var(--c-text-dim); font-size: 0.95rem; line-height: 1.7;
+  margin-bottom: 12px;
+}
+
+.concept-block p:last-child { margin-bottom: 0; }
+
+.concept-list {
+  list-style: none; margin: 12px 0 0 0; padding-left: 0;
+}
+
+.concept-list li {
+  padding-left: 24px; position: relative; margin-bottom: 10px;
+  color: var(--c-text-dim); font-size: 0.9rem;
+}
+
+.concept-list li::before {
+  content: "▪"; position: absolute; left: 4px; color: var(--c-owned);
+}
+
+/* ========== TIER 3: DEEP DIVE ========== */
+.tier-3-content {
+  display: flex; flex-direction: column; gap: 32px;
+}
+
+.deep-section {
+  background: var(--c-bg-alt); border: 1px solid var(--c-border-subtle);
+  border-radius: var(--radius-lg); padding: 28px;
+}
+
+.deep-section h3 {
+  font-size: 1.05rem; font-weight: 700; color: var(--c-text-bright);
+  margin-bottom: 16px; letter-spacing: -0.01em;
+}
+
+.code-block {
+  background: var(--c-bg); border: 1px solid var(--c-border-subtle);
+  border-radius: var(--radius); padding: 16px;
+  overflow-x: auto; margin: 16px 0;
+  font-family: var(--font-mono);
+  font-size: 0.8rem; line-height: 1.6;
+  color: var(--c-text-dim);
+}
+
+.code-block code {
+  display: block; color: var(--c-text-dim);
+}
+
+.const-table {
+  width: 100%; border-collapse: collapse; margin: 16px 0;
+  font-size: 0.9rem;
+}
+
+.const-table th, .const-table td {
+  padding: 12px; text-align: left; border-bottom: 1px solid var(--c-border-subtle);
+}
+
+.const-table th {
+  background: rgba(255,255,255,0.03); font-weight: 700; color: var(--c-text-bright);
+}
+
+.const-table code {
+  background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 3px;
+  font-family: var(--font-mono); font-size: 0.85em;
+}
+
+.action-mapping {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 16px; margin: 16px 0;
+}
+
+@media (max-width: 640px) {
+  .action-mapping { grid-template-columns: 1fr; }
+}
+
+.action-item {
+  background: rgba(255,255,255,0.02); padding: 12px; border-radius: var(--radius);
+  border-left: 3px solid var(--c-border);
+  font-size: 0.85rem;
+}
+
+.action-item code {
+  background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 2px;
+  font-family: var(--font-mono);
+  color: var(--c-accent);
+}
+
+.action-item .level {
+  display: inline-block; font-weight: 700; margin-right: 8px;
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+}
+
+.level-observe { color: var(--c-text-dim); }
+.level-annotate { color: var(--c-accent); }
+.level-modify { color: var(--c-owned); }
+.level-transmit { color: var(--c-external); }
+.level-destruct { color: var(--c-danger); }
+
+.flow-diagram {
+  background: rgba(255,255,255,0.02); padding: 20px;
+  border-radius: var(--radius); border: 1px solid var(--c-border-subtle);
+  font-family: var(--font-mono); font-size: 0.85rem;
+  color: var(--c-text-dim); line-height: 2;
+  overflow-x: auto;
+  margin: 16px 0;
+}
+
+.hardware-specs {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px; margin: 16px 0;
+}
+
+.spec-card {
+  background: rgba(255,255,255,0.02); padding: 12px;
+  border-radius: var(--radius); border: 1px solid var(--c-border-subtle);
+  text-align: center; font-size: 0.85rem;
+}
+
+.spec-card .value {
+  font-weight: 700; color: var(--c-text-bright);
+  font-size: 1.1rem; margin-bottom: 4px;
+}
+
+.spec-card .label {
+  color: var(--c-text-dim); font-size: 0.8rem;
+}
+
+/* ========== RESPONSIVE ========== */
+@media (max-width: 900px) {
+  .page-header h1 { font-size: 1.8rem; }
+}
+
+@media (max-width: 640px) {
+  main { padding: calc(var(--header-h) + 24px) 16px 60px; }
+  nav { display: none; }
+  nav.open {
+    display: flex; flex-direction: column;
+    position: absolute; top: var(--header-h); left: 0; right: 0;
+    background: var(--c-bg); border-bottom: 1px solid var(--c-border);
+    padding: 12px;
+  }
+  .nav-toggle { display: block; }
+  .page-header { margin-bottom: 40px; }
+  .tier-1-content { padding: 20px; }
+  .concept-block { padding: 16px; }
+  .deep-section { padding: 16px; }
+}
+
+/* ========== REDUCED MOTION ========== */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  details, .details-content { animation: none; transition: none; }
+}
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<!-- ========== HEADER ========== -->
+<header role="banner">
+  <div class="header-inner">
+    <a href="index.html" class="back-link" aria-label="Back to homepage">
+      ← Back to Overview
+    </a>
+    <a href="index.html" class="logo" aria-label="Sovereign GE home">
+      <span class="logo-mark" aria-hidden="true"><img src="logo-icon.svg" alt=""></span>
+      Sovereign GE
+    </a>
+    <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="document.querySelector('nav').classList.toggle('open'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">☰</button>
+    <nav role="navigation" aria-label="Main navigation">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#architecture">Architecture</a>
+      <a href="index.html#security">Security</a>
+      <a href="index.html#recovery">Recovery</a>
+      <a href="https://github.com/clenoble/sovereign" class="nav-cta" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ========== MAIN CONTENT ========== -->
+<main id="main" role="main">
+<div class="content-inner">
+
+<!-- ========== PAGE HEADER ========== -->
+<div class="page-header">
+  <h1>Spatial Canvas & Versioning</h1>
+  <p class="subtitle">
+    Your documents live on an infinite canvas. Time runs left to right. Projects run top to bottom.
+    Every edit is automatically remembered.
+  </p>
+</div>
+
+<!-- ========== TIER 1: ELEVATOR PITCH ========== -->
+<section class="tier-section tier-1">
+  <div class="tier-header">
+    <span class="tier-badge">1</span>
+    <div>
+      <div class="tier-label">Tier 1: The Elevator Pitch</div>
+      <div class="tier-subtext">10-second read</div>
+    </div>
+  </div>
+
+  <div class="tier-1-content">
+    <p>
+      Imagine your workspace as a living map. Documents on an infinite canvas. Time runs left→right. Projects run top→bottom.
+      Owned content is rectangles; external is parallelograms. Every document remembers its complete edit history—automatically,
+      invisibly. No save button. No lost work.
+    </p>
+  </div>
+</section>
+
+<!-- ========== TIER 2: HOW IT WORKS ========== -->
+<section class="tier-section tier-2">
+  <div class="tier-header">
+    <span class="tier-badge">2</span>
+    <div>
+      <div class="tier-label">Tier 2: How It Works</div>
+      <div class="tier-subtext">1–3 minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-2-content">
+
+    <details open>
+      <summary>The Two Axes</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Horizontal: Timeline. Vertical: Intent Threads.</h3>
+          <p>
+            The canvas has two organizing dimensions:
+          </p>
+          <ul class="concept-list">
+            <li><strong>Horizontal axis:</strong> Time. Past on the left, future on the right. A month-year ruler marks eras. Earlier edits live left; recent work drifts right.</li>
+            <li><strong>Vertical axis:</strong> Intent Threads (projects). Each row is a lane. "Q1 Planning" lane stays in place. Documents within that lane can slide left/right in time, but stay in the same lane.</li>
+            <li><strong>Layout invariant:</strong> A document's vertical position = its thread. Its horizontal position = when it was created or last touched.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Three Zoom Levels</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Dots → Blocks → Full Cards</h3>
+          <ul class="concept-list">
+            <li><strong>Dots (zoom &lt; 0.3):</strong> Each document is a single colored dot. Color = intent thread. Useful for seeing structure at 10,000 feet.</li>
+            <li><strong>Simplified (0.3–0.6):</strong> Small blocks with document title (truncated). Relationships shown as thin lines.</li>
+            <li><strong>Full (≥ 0.6):</strong> Complete card: title, preview snippet, last-edited timestamp, relationships as curves, ownership badge.</li>
+          </ul>
+          <p style="margin-top: 12px;">
+            Zoom transitions are smooth. No jank. Renderer culls off-screen cards automatically.
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Sovereignty Halo: Owned vs External</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Shape Encodes Ownership</h3>
+          <ul class="concept-list">
+            <li><strong>Owned:</strong> Rounded rectangles. Sharp 90° corners softened to 8px radius.</li>
+            <li><strong>External:</strong> Parallelograms (4° skew). Sheared edge signals "from outside".</li>
+            <li><strong>Preattentive processing:</strong> Your eye catches shape before reading title. Ownership is instant.</li>
+            <li><strong>Visual feedback:</strong> Hover any card: border glows, provenance label appears ("(owned)" or "(external)").</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Relationships: A Web of Connections</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Six Link Types, Drawn as Curves</h3>
+          <ul class="concept-list">
+            <li><strong>References:</strong> Dashed blue line. "This mentions that."</li>
+            <li><strong>DerivedFrom:</strong> Solid green arrow. "This version came from that version."</li>
+            <li><strong>Continues:</strong> Dotted orange line. "This follows from that in narrative sequence."</li>
+            <li><strong>Contradicts:</strong> Red X marker. "This conflicts with that."</li>
+            <li><strong>Supports:</strong> Solid teal line. "This backs up that claim."</li>
+            <li><strong>AttachedTo:</strong> Gray bracket. "This is metadata for that (e.g., a comment or tag)."</li>
+          </ul>
+          <p style="margin-top: 12px;">
+            Curves flow across lanes, never overlapping (forced layout prevents spaghetti). Hover a card to highlight all its connections.
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Built-In Versioning: Auto-Commit Engine</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>No Save Button. Just Save.</h3>
+          <ul class="concept-list">
+            <li><strong>Edit threshold:</strong> After 50 keystrokes or actions, the system auto-commits with a snapshot of the document.</li>
+            <li><strong>Time threshold:</strong> If 5 minutes pass since the last commit, commit now (even if only 10 edits).</li>
+            <li><strong>On close:</strong> Low-activity docs auto-commit when you navigate away. No data loss.</li>
+            <li><strong>Multi-device divergence:</strong> If you edit the same doc on two devices before syncing, you get a branch. Merge UI lets you reconcile.</li>
+            <li><strong>Metadata:</strong> Each commit stores: document_id, parent_commit (forming a chain), message (auto-generated or user-written), timestamp, full snapshot.</li>
+          </ul>
+          <p style="margin-top: 12px;">
+            The canvas shows time branches as subtle fork icons when hovering a doc.
+          </p>
+        </div>
+      </div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ========== TIER 3: DEEP DIVE ========== -->
+<section class="tier-section tier-3">
+  <div class="tier-header">
+    <span class="tier-badge">3</span>
+    <div>
+      <div class="tier-label">Tier 3: Deep Dive</div>
+      <div class="tier-subtext">5+ minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-3-content">
+
+    <div class="deep-section">
+      <h3>ZoomLevel Enum (sovereign-canvas/src/zoom.rs)</h3>
+      <p>
+        The renderer uses a zoom level to determine what to draw. Three visibility tiers gate the complexity.
+      </p>
+      <div class="code-block"><code>pub enum ZoomLevel {
+    Dots,       // zoom_factor < 0.3
+    Simplified, // zoom_factor >= 0.3 && < 0.6
+    Full,       // zoom_factor >= 0.6
+}
+
+impl ZoomLevel {
+    pub fn from_factor(factor: f32) -> Self {
+        match factor {
+            f if f < 0.3 => ZoomLevel::Dots,
+            f if f < 0.6 => ZoomLevel::Simplified,
+            _ => ZoomLevel::Full,
+        }
+    }
+}</code></div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Layout Constants (sovereign-canvas/src/layout.rs:1–15)</h3>
+      <p>
+        Spacing and sizing are constants to ensure consistent layout across all platforms and zoom levels.
+      </p>
+      <div class="const-table">
+        <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+        <tr><td><code>CARD_WIDTH</code></td><td>200 px</td><td>Default card width in Full zoom.</td></tr>
+        <tr><td><code>CARD_HEIGHT</code></td><td>80 px</td><td>Default card height in Full zoom.</td></tr>
+        <tr><td><code>CARD_SPACING_H</code></td><td>20 px</td><td>Horizontal gap between cards in the same lane.</td></tr>
+        <tr><td><code>LANE_SPACING_V</code></td><td>40 px</td><td>Vertical gap between lanes.</td></tr>
+        <tr><td><code>LANE_HEADER_WIDTH</code></td><td>160 px</td><td>Width of the left sidebar showing lane names.</td></tr>
+        <tr><td><code>LANE_PADDING_TOP</code></td><td>30 px</td><td>Top padding before first card in a lane.</td></tr>
+      </div>
+    </div>
+
+    <div class="deep-section">
+      <h3>CardLayout & LaneLayout Structs</h3>
+      <p>
+        The renderer maintains a layout state for each card and lane. This struct holds computed positions.
+      </p>
+      <div class="code-block"><code>pub struct CardLayout {
+    pub doc_id: String,
+    pub title: String,
+    pub is_owned: bool,
+    pub thread_id: String,
+    pub created_at_ts: i64,
+    pub x: f32, pub y: f32,      // Top-left, in canvas coords
+    pub w: f32, pub h: f32,      // Width, height
+    pub opacity: f32,             // Culled cards fade
+}
+
+pub struct LaneLayout {
+    pub thread_id: String,
+    pub thread_name: String,
+    pub y_offset: f32,            // Lane's vertical position
+    pub card_count: usize,
+    pub activity_heat: f32,       // 0.0–1.0; glows if recent activity
+}</code></div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Auto-Commit Engine (sovereign-canvas/src/versioning.rs)</h3>
+      <p>
+        Every document has an associated commit scheduler. When thresholds are hit, a new commit is written to the DB.
+      </p>
+      <div class="const-table">
+        <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+        <tr><td><code>EDIT_THRESHOLD</code></td><td>50</td><td>Number of edits before auto-commit.</td></tr>
+        <tr><td><code>TIME_THRESHOLD_SECS</code></td><td>300</td><td>Seconds (5 min) before time-based auto-commit.</td></tr>
+      </table>
+      <div class="flow-diagram">
+User types
+  ↓
+edit_count += 1, time_since_commit += 1
+  ↓
+if edit_count >= 50 OR time_since_commit >= 300:
+  ├─ Snapshot document state
+  ├─ Create commit (parent=latest, message=auto-gen, snapshot=full)
+  ├─ Write to DB
+  └─ Reset counters
+  ↓
+On document close:
+  ├─ If edit_count > 0: force commit
+  └─ Cleanup timers
+      </div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Commit Data Structure</h3>
+      <p>
+        Commits form a DAG (directed acyclic graph) where each commit points to its parent. Branches occur when
+        the same doc is edited on two devices before sync.
+      </p>
+      <div class="code-block"><code>pub struct Commit {
+    pub id: String,                    // UUID
+    pub document_id: String,
+    pub parent_commit: Option<String>, // Chain to prior version
+    pub message: String,               // Auto-gen or user-written
+    pub timestamp: i64,
+    pub snapshot: DocumentSnapshot,
+}
+
+pub struct DocumentSnapshot {
+    pub document_id: String,
+    pub title: String,
+    pub content: String,
+    pub metadata: Map<String, Value>,
+}</code></div>
+      <p>
+        On merge, the system creates a "merge commit" with two parent_commit pointers (not yet implemented in MVP).
+      </p>
+    </div>
+
+    <div class="deep-section">
+      <h3>Rendering Architecture</h3>
+      <p>
+        The canvas uses Iced 0.14 and WGPU for GPU-accelerated rendering. The state is shared via Arc&lt;Mutex&gt;
+        to allow concurrent edit + render loops.
+      </p>
+      <div class="code-block"><code>pub struct CanvasState {
+    pub zoom_factor: f32,
+    pub pan_x: f32, pan_y: f32,      // Scroll offset
+    pub cards: Vec<CardLayout>,
+    pub lanes: Vec<LaneLayout>,
+    pub selected_card: Option<String>,
+}
+
+pub struct CanvasRenderer {
+    state: Arc<Mutex<CanvasState>>,
+    wgpu_device: Device,
+    wgpu_queue: Queue,
+}
+
+// Render loop (decoupled from edit loop)
+impl CanvasRenderer {
+    pub fn render(&self, frame: &Frame) {
+        let state = self.state.lock();
+        // Draw lanes, cards, relationships
+    }
+}</code></div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Canvas Commands</h3>
+      <p>
+        User interactions (mouse, keyboard, touch) are mapped to commands. The orchestrator executes them.
+      </p>
+      <div class="code-block"><code>pub enum CanvasCommand {
+    NavigateTo { thread_id: String },
+    ZoomToThread { thread_id: String, duration_ms: u32 },
+    GoHome,
+    ZoomIn { center_x: f32, center_y: f32 },
+    ZoomOut { center_x: f32, center_y: f32 },
+    Pan { dx: f32, dy: f32 },
+}</code></div>
+    </div>
+
+  </div>
+</section>
+
+  </div>
+</main>
+
+<!-- ========== FOOTER ========== -->
+<footer role="contentinfo" style="border-top: 1px solid var(--c-border-subtle); padding: 40px 24px; font-size: 0.82rem; color: var(--c-text-dim);">
+  <div style="max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+    <span>&copy; 2026 Sovereign GE. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <div style="display: flex; gap: 20px;">
+      <a href="https://github.com/clenoble/sovereign" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/clenoble/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
+      <a href="https://github.com/clenoble/sovereign/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+</footer>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Sovereign GE",
+      "item": "https://clenoble.github.io/sovereign-os/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": "Spatial Canvas & Versioning",
+      "item": "https://clenoble.github.io/sovereign-os/detail-spatial-canvas.html"
+    }
+  ]
+}
+</script>
+
+</body>
+</html>

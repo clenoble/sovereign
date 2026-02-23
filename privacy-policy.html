@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy — Sovereign GE</title>
+    <meta name="description" content="Privacy policy for Sovereign GE. Local-first by design — your data does not by design leave your device.">
+    <link rel="canonical" href="https://clenoble.github.io/sovereign-os/privacy-policy.html">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://clenoble.github.io/sovereign-os/privacy-policy.html">
+    <meta property="og:title" content="Privacy Policy — Sovereign GE">
+    <meta property="og:description" content="Privacy policy for Sovereign GE. Local-first by design — your data does not by design leave your device.">
+    <meta property="og:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+    <meta property="og:site_name" content="Sovereign GE">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Privacy Policy — Sovereign GE">
+    <meta name="twitter:description" content="Privacy policy for Sovereign GE. Local-first by design — your data does not by design leave your device.">
+    <meta name="twitter:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+    <style>
+        :root {
+            --c-bg: #0c0e13;
+            --c-bg-alt: #13161d;
+            --c-bg-card: #181c25;
+            --c-border: #2a2f3a;
+            --c-border-subtle: #1e222c;
+            --c-text: #e2e4e9;
+            --c-text-dim: #a1a5b2;
+            --c-text-bright: #ffffff;
+            --c-accent: #4a9eff;
+            --c-accent-dim: #2d6ab3;
+            --c-owned: #3ecf8e;
+            --c-external: #f59e42;
+            --c-danger: #ef5350;
+            --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+            --font-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+            --radius: 6px;
+            --radius-lg: 10px;
+            --max-w: 860px;
+            --header-h: 60px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            background-color: var(--c-bg);
+            color: var(--c-text);
+            font-family: var(--font-sans);
+            line-height: 1.7;
+            font-size: 16px;
+        }
+
+        a {
+            color: var(--c-accent);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        a:hover {
+            color: var(--c-text-bright);
+            text-decoration: underline;
+        }
+        /* External link indicator (WCAG 3.2.4) */
+        footer a[target="_blank"]::after,
+        main a[target="_blank"]::after { content: " ↗"; font-size: 0.75em; }
+
+        a:focus-visible {
+            outline: 2px solid var(--c-accent);
+            outline-offset: 2px;
+        }
+
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0,0,0,0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* Header */
+        header {
+            height: var(--header-h);
+            background-color: var(--c-bg-alt);
+            border-bottom: 1px solid var(--c-border-subtle);
+            display: flex;
+            align-items: center;
+            padding: 0 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--c-accent);
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .back-link:hover {
+            color: var(--c-text-bright);
+        }
+
+        .back-link::before {
+            content: "←";
+            font-size: 18px;
+        }
+
+        /* Main content */
+        main {
+            max-width: var(--max-w);
+            margin: 0 auto;
+            padding: 3rem 2rem;
+        }
+
+        h1 {
+            font-size: 2.2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            color: var(--c-text-bright);
+            letter-spacing: -0.5px;
+        }
+
+        .subtitle {
+            font-size: 1rem;
+            color: var(--c-text-dim);
+            margin-bottom: 3rem;
+            line-height: 1.6;
+        }
+
+        section {
+            margin-bottom: 3rem;
+            scroll-margin-top: var(--header-h);
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--c-text-bright);
+            margin-bottom: 1rem;
+            margin-top: 2rem;
+        }
+
+        h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--c-accent);
+            margin-bottom: 0.75rem;
+            margin-top: 1.5rem;
+        }
+
+        p {
+            margin-bottom: 1rem;
+            color: var(--c-text);
+        }
+
+        .highlight-box {
+            background-color: var(--c-bg-card);
+            border: 2px solid var(--c-accent);
+            border-radius: var(--radius-lg);
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            font-size: 0.98rem;
+            line-height: 1.7;
+        }
+
+        .highlight-box strong {
+            color: var(--c-text-bright);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+            font-size: 0.95rem;
+        }
+
+        th, td {
+            padding: 1rem;
+            text-align: left;
+            border: 1px solid var(--c-border);
+        }
+
+        th {
+            background-color: var(--c-bg-alt);
+            font-weight: 600;
+            color: var(--c-text-bright);
+        }
+
+        tbody tr:nth-child(even) {
+            background-color: var(--c-bg-alt);
+        }
+
+        tbody tr:hover {
+            background-color: var(--c-bg-card);
+        }
+
+        ul, ol {
+            margin-left: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+        }
+
+        code {
+            background-color: var(--c-bg-card);
+            border: 1px solid var(--c-border);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            font-size: 0.9em;
+            color: var(--c-accent);
+        }
+
+        .data-row {
+            background-color: var(--c-bg-card);
+            border: 1px solid var(--c-border);
+            border-radius: var(--radius);
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .data-row-title {
+            font-weight: 600;
+            color: var(--c-accent);
+            margin-bottom: 0.5rem;
+        }
+
+        .data-row-location {
+            font-size: 0.9rem;
+            color: var(--c-text-dim);
+            font-family: var(--font-mono);
+            margin-bottom: 0.5rem;
+        }
+
+        @media (max-width: 768px) {
+            main {
+                padding: 2rem 1.5rem;
+            }
+
+            h1 {
+                font-size: 1.8rem;
+            }
+
+            h2 {
+                font-size: 1.3rem;
+            }
+
+            table {
+                font-size: 0.85rem;
+            }
+
+            th, td {
+                padding: 0.75rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <a href="#main-content" class="sr-only">Skip to main content</a>
+
+    <header>
+        <a href="index.html" class="back-link">Back to Overview</a>
+    </header>
+
+    <main id="main-content">
+        <h1>Privacy Policy</h1>
+        <p class="subtitle">How Sovereign handles your data—which is to say, it doesn't.</p>
+
+        <section>
+            <h2>The Short Version</h2>
+            <div class="highlight-box">
+                <strong>We don't collect your data. Sovereign does not collect or transmit your data. We have no servers, no accounts, no analytics, no telemetry, and no way to access or surveil you.</strong>
+                <br><br>
+                All data is stored locally on your device or synchronized peer-to-peer if you choose to enable it. Encryption is end-to-end. The software is designed without backdoors.
+            </div>
+        </section>
+
+        <section>
+            <h2>Who We Are</h2>
+            <p>Sovereign is a distributed, open-source software project maintained by volunteers. There is no central company, service operator, or data controller. The software is provided as-is under the AGPL-3.0 license.</p>
+        </section>
+
+        <section>
+            <h2>What This Policy Covers</h2>
+            <p>This policy applies to:</p>
+            <ul>
+                <li>Sovereign software (running on your device);</li>
+                <li>This website (sovereignos.org);</li>
+                <li>GitHub repositories and discussions;</li>
+                <li>Skill registry and community extensions;</li>
+                <li>Optional cloud backup and sync features (if enabled by you).</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Data Collection by Context</h2>
+
+            <h3>Through the Sovereign Software</h3>
+            <p><strong>The software collects zero data about your activity.</strong> It does not:</p>
+            <ul>
+                <li>Send usage statistics or telemetry;</li>
+                <li>Report errors back to any server;</li>
+                <li>Log your queries, documents, or communications;</li>
+                <li>Identify you or track your identity;</li>
+                <li>Contact external services without your explicit request.</li>
+            </ul>
+            <p>All processing happens on your device. No data leaves unless you explicitly sync it (peer-to-peer) or use a skill with network access.</p>
+
+            <h3>Through This Website</h3>
+            <p>This website is static HTML hosted on GitHub Pages. We collect minimal data:</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Data</th>
+                        <th>Collection Method</th>
+                        <th>Retention</th>
+                        <th>Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Server logs (IP, User-Agent, referer)</td>
+                        <td>GitHub Pages standard logging</td>
+                        <td>30 days</td>
+                        <td>Security, abuse prevention</td>
+                    </tr>
+                    <tr>
+                        <td>Cookies</td>
+                        <td>None set by us</td>
+                        <td>N/A</td>
+                        <td>N/A</td>
+                    </tr>
+                    <tr>
+                        <td>Analytics</td>
+                        <td>None</td>
+                        <td>N/A</td>
+                        <td>N/A</td>
+                    </tr>
+                    <tr>
+                        <td>JavaScript tracking</td>
+                        <td>None</td>
+                        <td>N/A</td>
+                        <td>N/A</td>
+                    </tr>
+                </tbody>
+            </table>
+            <p>We do not use Google Analytics, Mixpanel, Segment, or any third-party analytics platforms.</p>
+
+            <h3>Through GitHub</h3>
+            <p>If you open an issue, discussion, or pull request on our GitHub repositories, your activity is governed by <a href="https://docs.github.com/en/site-policy/privacy-policies/github-privacy-statement" target="_blank" rel="noopener">GitHub's privacy policy</a>. We have no control over GitHub's data practices.</p>
+
+            <h3>Through Skill Registry</h3>
+            <p>Community skills (extensions) may have their own privacy policies. When you install a skill, review its permissions and data handling practices. We are not responsible for third-party skills.</p>
+
+            <h3>Through TDL (Threat Detection Layer)</h3>
+            <p>If you share documents with the TDL for security analysis, you are sending encrypted data to a specified endpoint (if configured). This is your choice and subject to that endpoint's privacy policy.</p>
+        </section>
+
+        <section>
+            <h2>Data the Software Creates on Your Device</h2>
+            <p>Sovereign creates and stores data locally when you use it. This data is entirely under your control:</p>
+
+            <div class="data-row">
+                <div class="data-row-title">Documents & Threads</div>
+                <div class="data-row-location">Location: <code>~/.sovereign/db/</code></div>
+                <p>Your notes, documents, threads, and relationships. Stored in SurrealDB, encrypted at rest if configured.</p>
+            </div>
+
+            <div class="data-row">
+                <div class="data-row-title">Version History</div>
+                <div class="data-row-location">Location: <code>~/.sovereign/db/</code></div>
+                <p>Historical versions of documents, including timestamps and edit chains. Used for recovery and audit.</p>
+            </div>
+
+            <div class="data-row">
+                <div class="data-row-title">AI Profile & Context</div>
+                <div class="data-row-location">Location: <code>~/.sovereign/profile/</code></div>
+                <p>User profile (name, preferences), conversation history with the AI, and learned context. All local.</p>
+            </div>
+
+            <div class="data-row">
+                <div class="data-row-title">Session Logs</div>
+                <div class="data-row-location">Location: <code>~/.sovereign/logs/</code></div>
+                <p>Timestamped log of actions, tool calls, and AI responses. Used for debugging and user transparency.</p>
+            </div>
+
+            <div class="data-row">
+                <div class="data-row-title">Audit Log</div>
+                <div class="data-row-location">Location: <code>~/.sovereign/db/</code></div>
+                <p>Immutable record of sensitive actions (document access, permission changes, encryption changes). Cannot be deleted.</p>
+            </div>
+
+            <div class="data-row">
+                <div class="data-row-title">Encryption Keys</div>
+                <div class="data-row-location">Location: <code>~/.sovereign/crypto/</code></div>
+                <p>Master key, derived keys, key agreement secrets. Secured with OS-level file permissions and optionally a password.</p>
+            </div>
+
+            <div class="data-row">
+                <div class="data-row-title">AI Models</div>
+                <div class="data-row-location">Location: <code>~/.sovereign/models/</code></div>
+                <p>Downloaded model weights (Qwen, Whisper, etc.). Several gigabytes. Stored locally, not sent to us by design.</p>
+            </div>
+        </section>
+
+        <section>
+            <h2>Voice Data</h2>
+            <p>If you enable voice input (speech-to-text):</p>
+            <ul>
+                <li><strong>Recording:</strong> Audio is captured and processed locally by Faster Whisper.</li>
+                <li><strong>Transcription:</strong> Audio is converted to text on your device. Audio is not sent to any server.</li>
+                <li><strong>Retention:</strong> Audio files are not kept after transcription (unless you manually save them).</li>
+                <li><strong>Cloud option:</strong> You may choose to use cloud-based speech-to-text (e.g., cloud API). If so, that audio is sent to the cloud provider. This is entirely your choice and responsibility.</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Data Sharing</h2>
+
+            <h3>With Us</h3>
+            <p>We do not receive or store any of your data. We have no ability to access your documents, conversations, or profile.</p>
+
+            <h3>P2P Sync (Optional)</h3>
+            <p>If you enable peer-to-peer (P2P) sync via libp2p, your data is synchronized directly with other Sovereign instances you control or trust. This uses encryption to protect data in transit. We do not relay or intercept this data.</p>
+
+            <h3>Guardian Recovery</h3>
+            <p>If you configure a guardian for recovery, encrypted recovery data is sent to a guardian endpoint (your choice). The guardian cannot decrypt your data without your consent. See <a href="detail-social-recovery.html">Social Recovery</a> for details.</p>
+
+            <h3>Cloud Backup (Optional)</h3>
+            <p>If you enable cloud backup, encrypted data is uploaded to your chosen cloud provider (e.g., Backblaze, AWS). The cloud provider cannot read your data due to end-to-end encryption. This is your choice.</p>
+
+            <h3>Skills with Network Access</h3>
+            <p>Some skills (extensions) may request network access. If you grant permission, those skills can connect to external services. Review skill permissions before installing. We are not responsible for skill developer practices.</p>
+        </section>
+
+        <section>
+            <h2>Third-Party AI Models</h2>
+            <p>Sovereign uses AI models for chat, intent classification, and voice processing:</p>
+            <ul>
+                <li><strong>Default (Local):</strong> Qwen, Whisper, and other models run locally. No data is sent to any server.</li>
+                <li><strong>Optional (Cloud):</strong> You can configure cloud-based AI (OpenAI, Anthropic, etc.). If enabled, your queries are sent to that provider. You are responsible for reviewing their privacy policies.</li>
+            </ul>
+            <p>We do not use or store any of your chat data for model training or improvement.</p>
+        </section>
+
+        <section>
+            <h2>Children's Privacy</h2>
+            <p>Sovereign is not designed for children under 13. If a child uses Sovereign, a parent or guardian is responsible for their privacy and data protection under applicable laws (e.g., COPPA in the US).</p>
+        </section>
+
+        <section>
+            <h2>International Data Transfers</h2>
+            <p>All data is stored locally on your device. If you enable P2P sync or cloud backup, data may be transferred to other jurisdictions depending on where peers or cloud services are located. You are responsible for compliance with local data residency requirements (e.g., GDPR, CCPA).</p>
+        </section>
+
+        <section>
+            <h2>Your Rights</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Right</th>
+                        <th>GDPR (EU)</th>
+                        <th>DPA (Swiss)</th>
+                        <th>CCPA (CA)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Access your data</td>
+                        <td>✓ You own your data locally</td>
+                        <td>✓ You own your data locally</td>
+                        <td>✓ You own your data locally</td>
+                    </tr>
+                    <tr>
+                        <td>Correct data</td>
+                        <td>✓ Edit directly</td>
+                        <td>✓ Edit directly</td>
+                        <td>✓ Edit directly</td>
+                    </tr>
+                    <tr>
+                        <td>Delete data</td>
+                        <td>✓ Delete local files</td>
+                        <td>✓ Delete local files</td>
+                        <td>✓ Delete local files</td>
+                    </tr>
+                    <tr>
+                        <td>Portability</td>
+                        <td>✓ Export via settings</td>
+                        <td>✓ Export via settings</td>
+                        <td>✓ Export via settings</td>
+                    </tr>
+                    <tr>
+                        <td>Object to processing</td>
+                        <td>✓ Don't use cloud AI</td>
+                        <td>✓ Don't use cloud AI</td>
+                        <td>✓ Don't use cloud AI</td>
+                    </tr>
+                </tbody>
+            </table>
+            <p>Since we don't collect or control your data, most regulatory rights are exercised directly on your device.</p>
+        </section>
+
+        <section>
+            <h2>Data Protection Officer (DPO)</h2>
+            <p>As a volunteer-run open-source project, Sovereign does not have a formal DPO. For privacy questions, contact: <a href="mailto:hello@sovereignos.org">hello@sovereignos.org</a></p>
+        </section>
+
+        <section>
+            <h2>Changes to This Policy</h2>
+            <p>This privacy policy may be updated. Material changes will be announced in release notes. Continued use of Sovereign indicates acceptance of updates.</p>
+        </section>
+
+        <section>
+            <h2>Contact</h2>
+            <p>Questions or concerns? Email <a href="mailto:hello@sovereignos.org">hello@sovereignos.org</a></p>
+        </section>
+    </main>
+</body>
+</html>
