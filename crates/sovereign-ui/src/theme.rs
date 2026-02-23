@@ -108,8 +108,8 @@ pub fn text_primary() -> Color {
 
 pub fn text_dim() -> Color {
     pick(
-        Color::from_rgb(0.400, 0.400, 0.400),  // #666
-        Color::from_rgb(0.439, 0.439, 0.471),  // #707078
+        Color::from_rgb(0.600, 0.600, 0.600),  // #999 — 6.9:1 on #0e0e10 (WCAG AA)
+        Color::from_rgb(0.314, 0.314, 0.345),  // #505058 — 5.5:1 on #f0f0f3 (WCAG AA)
     )
 }
 
@@ -138,10 +138,10 @@ pub fn bubble_suggesting() -> Color {
 }
 
 pub fn approve_green() -> Color {
-    Color::from_rgb(0.227, 0.604, 0.290) // #3a9a4a
+    Color::from_rgb(0.290, 0.729, 0.353) // #4aba5a — 5.8:1 on dark bg (WCAG AA)
 }
 pub fn reject_red() -> Color {
-    Color::from_rgb(0.604, 0.227, 0.227) // #9a3a3a
+    Color::from_rgb(0.831, 0.314, 0.314) // #d45050 — 5.2:1 on dark bg (WCAG AA)
 }
 pub fn owned_blue() -> Color {
     pick(
@@ -343,12 +343,17 @@ pub fn taskbar_button_style(_theme: &Theme, status: button::Status) -> button::S
 
 // ── Text input styles ────────────────────────────────────────────────────────
 
-pub fn search_input_style(_theme: &Theme, _status: text_input::Status) -> text_input::Style {
+pub fn search_input_style(_theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let (border_color, border_width) = match status {
+        text_input::Status::Focused { .. } => (border_accent(), 2.0),
+        text_input::Status::Hovered => (border_accent(), 1.0),
+        _ => (border_dim(), 1.0),
+    };
     text_input::Style {
         background: Background::Color(bg_panel()),
         border: Border {
-            color: border_dim(),
-            width: 1.0,
+            color: border_color,
+            width: border_width,
             radius: 8.0.into(),
         },
         icon: text_dim(),

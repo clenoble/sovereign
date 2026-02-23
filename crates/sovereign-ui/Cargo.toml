@@ -6,6 +6,7 @@ description = "Iced UI shell with dark theme, taskbar, and search overlay"
 
 [dependencies]
 sovereign-core = { workspace = true }
+sovereign-crypto = { workspace = true }
 sovereign-db = { workspace = true }
 sovereign-canvas = { workspace = true }
 sovereign-skills = { workspace = true }

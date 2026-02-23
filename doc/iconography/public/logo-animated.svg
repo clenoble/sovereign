@@ -1,4 +1,22 @@
 <svg width="200" height="200" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    @keyframes pulse {
+      0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+      50% {
+        opacity: 0.7;
+        transform: scale(0.95);
+      }
+    }
+    .peer-0 { animation: pulse 2s ease-in-out infinite; animation-delay: 0s; }
+    .peer-1 { animation: pulse 2.3s ease-in-out infinite; animation-delay: 0.2s; }
+    .peer-2 { animation: pulse 2.6s ease-in-out infinite; animation-delay: 0.4s; }
+    .peer-3 { animation: pulse 2.9s ease-in-out infinite; animation-delay: 0.6s; }
+    .peer-4 { animation: pulse 3.2s ease-in-out infinite; animation-delay: 0.8s; }
+  </style>
+  
   <!-- Outer ring -->
   <circle cx="100" cy="100" r="85" stroke="url(#ringGradient)" stroke-width="2" opacity="0.4"/>
   
@@ -6,29 +24,29 @@
   <circle cx="100" cy="100" r="24" fill="url(#coreGradient)"/>
   
   <!-- Peer nodes -->
-  <!-- Node 1 -->
+  <!-- Node 1: Blue -->
   <line x1="100" y1="100" x2="160" y2="100" stroke="#F59E0B" stroke-width="1.5" opacity="0.5" stroke-dasharray="4 4"/>
-  <circle cx="160" cy="100" r="12" fill="#60A5FA"/>
+  <circle cx="160" cy="100" r="12" fill="#60A5FA" class="peer-0"/>
   <circle cx="157" cy="97" r="3" fill="white" opacity="0.8"/>
   
-  <!-- Node 2 -->
+  <!-- Node 2: Purple -->
   <line x1="100" y1="100" x2="117.08" y2="157.08" stroke="#F59E0B" stroke-width="1.5" opacity="0.5" stroke-dasharray="4 4"/>
-  <circle cx="117.08" cy="157.08" r="12" fill="#7C3AED"/>
+  <circle cx="117.08" cy="157.08" r="12" fill="#7C3AED" class="peer-1"/>
   <circle cx="114.08" cy="154.08" r="3" fill="white" opacity="0.8"/>
   
-  <!-- Node 3 -->
+  <!-- Node 3: Pink -->
   <line x1="100" y1="100" x2="51.43" y2="142.92" stroke="#F59E0B" stroke-width="1.5" opacity="0.5" stroke-dasharray="4 4"/>
-  <circle cx="51.43" cy="142.92" r="12" fill="#EC4899"/>
+  <circle cx="51.43" cy="142.92" r="12" fill="#EC4899" class="peer-2"/>
   <circle cx="48.43" cy="139.92" r="3" fill="white" opacity="0.8"/>
   
-  <!-- Node 4 -->
+  <!-- Node 4: Green -->
   <line x1="100" y1="100" x2="51.43" y2="57.08" stroke="#F59E0B" stroke-width="1.5" opacity="0.5" stroke-dasharray="4 4"/>
-  <circle cx="51.43" cy="57.08" r="12" fill="#8B5CF6"/>
+  <circle cx="51.43" cy="57.08" r="12" fill="#10B981" class="peer-3"/>
   <circle cx="48.43" cy="54.08" r="3" fill="white" opacity="0.8"/>
   
-  <!-- Node 5 -->
+  <!-- Node 5: Deep Blue -->
   <line x1="100" y1="100" x2="117.08" y2="42.92" stroke="#F59E0B" stroke-width="1.5" opacity="0.5" stroke-dasharray="4 4"/>
-  <circle cx="117.08" cy="42.92" r="12" fill="#3B82F6"/>
+  <circle cx="117.08" cy="42.92" r="12" fill="#3B82F6" class="peer-4"/>
   <circle cx="114.08" cy="39.92" r="3" fill="white" opacity="0.8"/>
   
   <!-- Crown -->

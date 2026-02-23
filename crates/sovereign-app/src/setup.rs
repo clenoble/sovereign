@@ -103,6 +103,101 @@ pub fn init_crypto() -> Result<(
     ))
 }
 
+// ── Two-phase auth ──────────────────────────────────────────────────
+
+/// Result of preparing authentication (before GUI).
+#[cfg(feature = "encryption")]
+pub enum AuthPrepareResult {
+    /// Auth store exists — show login screen.
+    LoginRequired(sovereign_crypto::auth::AuthStore),
+    /// No auth store — first launch, show onboarding + registration.
+    RegistrationRequired { salt: Vec<u8>, device_id: String },
+}
+
+/// Prepare the crypto directory and load/detect the AuthStore.
+/// Does NOT prompt for password — that happens in the GUI.
+#[cfg(feature = "encryption")]
+pub fn prepare_auth() -> Result<AuthPrepareResult> {
+    let dir = crypto_dir();
+    std::fs::create_dir_all(&dir)?;
+    let auth_path = dir.join("auth.store");
+    let device_id = load_or_create_device_id()?;
+    let salt = load_or_create_salt(&dir)?;
+
+    if auth_path.exists() {
+        let store = sovereign_crypto::auth::AuthStore::load(&auth_path)?;
+        Ok(AuthPrepareResult::LoginRequired(store))
+    } else {
+        Ok(AuthPrepareResult::RegistrationRequired { salt, device_id })
+    }
+}
+
+/// Load or create the persistent salt.
+#[cfg(feature = "encryption")]
+fn load_or_create_salt(dir: &std::path::Path) -> Result<Vec<u8>> {
+    let salt_path = dir.join("salt");
+    if salt_path.exists() {
+        Ok(std::fs::read(&salt_path)?)
+    } else {
+        let mut s = vec![0u8; 32];
+        use rand::Rng;
+        rand::rng().fill_bytes(&mut s);
+        std::fs::write(&salt_path, &s)?;
+        Ok(s)
+    }
+}
+
+/// Complete authentication after GUI login — loads persona-specific KeyDatabase.
+#[cfg(feature = "encryption")]
+pub fn complete_auth(
+    persona: sovereign_crypto::auth::PersonaKind,
+    device_key: &sovereign_crypto::device_key::DeviceKey,
+    kek: &sovereign_crypto::kek::Kek,
+) -> Result<(
+    std::sync::Arc<tokio::sync::Mutex<sovereign_crypto::key_db::KeyDatabase>>,
+    std::sync::Arc<sovereign_crypto::kek::Kek>,
+)> {
+    use sovereign_crypto::{kek::Kek, key_db::KeyDatabase};
+
+    let dir = crypto_dir();
+    let suffix = match persona {
+        sovereign_crypto::auth::PersonaKind::Primary => "",
+        sovereign_crypto::auth::PersonaKind::Duress => ".duress",
+    };
+    let key_db_path = dir.join(format!("keys{suffix}.db"));
+    let key_db = if key_db_path.exists() {
+        KeyDatabase::load(&key_db_path, device_key)?
+    } else {
+        KeyDatabase::new(key_db_path)
+    };
+
+    // Reconstruct KEK from bytes (we can't clone Arc, but we have the bytes)
+    let kek_copy = Kek::from_bytes(*kek.as_bytes());
+
+    Ok((
+        std::sync::Arc::new(tokio::sync::Mutex::new(key_db)),
+        std::sync::Arc::new(kek_copy),
+    ))
+}
+
+/// Get the persona-specific DB path.
+pub fn persona_db_path(
+    config: &AppConfig,
+    persona: sovereign_core::auth::PersonaKind,
+) -> String {
+    match persona {
+        sovereign_core::auth::PersonaKind::Primary => config.database.path.clone(),
+        sovereign_core::auth::PersonaKind::Duress => {
+            let base = &config.database.path;
+            if base.ends_with(".db") {
+                format!("{}-duress.db", base.trim_end_matches(".db"))
+            } else {
+                format!("{}-duress", base)
+            }
+        }
+    }
+}
+
 /// Wrap an orchestrator method call into a spawn-and-log callback.
 pub fn orch_callback(
     orch: &std::sync::Arc<sovereign_ai::orchestrator::Orchestrator>,

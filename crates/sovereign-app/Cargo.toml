@@ -29,6 +29,9 @@ rpassword = { version = "7.3", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 rand = { version = "0.10", optional = true }
 
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource = "0.1"
+
 [features]
 default = []
 cuda = ["sovereign-ai/cuda"]

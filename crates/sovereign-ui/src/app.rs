@@ -48,6 +48,8 @@ pub enum Message {
     SearchToggled,
     SearchQueryChanged(String),
     SearchSubmitted,
+    SearchResultNavigate(String),
+    SearchResultOpen(String),
     // Bubble
     BubbleClicked,
     SkillExecuted(String, String), // skill_name, action_id
@@ -104,13 +106,29 @@ pub enum Message {
     CameraToggled,
     // Theme
     ThemeToggled,
+    // Login
+    LoginPasswordChanged(String),
+    LoginSubmit,
     // Onboarding
     OnboardingNext,
     OnboardingBack,
     OnboardingDeviceNameChanged(String),
     OnboardingThemeToggled,
     OnboardingSeedToggled,
+    OnboardingPrimaryChanged(String),
+    OnboardingPrimaryConfirmChanged(String),
+    OnboardingDuressChanged(String),
+    OnboardingDuressConfirmChanged(String),
+    OnboardingCanaryChanged(String),
+    OnboardingCanaryConfirmChanged(String),
+    OnboardingEnrollInputChanged(String),
+    OnboardingEnrollSubmit,
+    OnboardingSkipAuth,
+    OnboardingFocusField(&'static str),
+    OnboardingTryAdvance,
     OnboardingComplete,
+    // Canary / lockdown
+    CanaryTriggered,
     // No-op
     Ignore,
 }
@@ -140,6 +158,10 @@ pub struct SovereignApp {
     // Panels
     model_panel: ModelPanel,
     camera_panel: CameraPanel,
+    // Auth
+    login: Option<crate::login::LoginState>,
+    canary_detector: Option<sovereign_crypto::canary::CanaryDetector>,
+    lockdown_triggered: bool,
     // Onboarding
     onboarding: Option<OnboardingState>,
     // Callbacks
@@ -238,6 +260,9 @@ impl SovereignApp {
             camera_panel: CameraPanel::new(
                 camera_frame.unwrap_or_else(|| Arc::new(Mutex::new(None))),
             ),
+            login: None,
+            canary_detector: None,
+            lockdown_triggered: false,
             decision_tx,
             onboarding: if first_launch {
                 Some(OnboardingState::new())
@@ -272,6 +297,29 @@ impl SovereignApp {
                 Task::none()
             }
             Message::SearchQueryChanged(query) => {
+                if self.feed_canary(&query) {
+                    return self.update(Message::CanaryTriggered);
+                }
+                // Instant client-side filtering by title and content
+                let q = query.to_lowercase();
+                if q.is_empty() {
+                    self.search.results.clear();
+                } else {
+                    self.search.results = self
+                        .doc_map
+                        .values()
+                        .filter(|d| {
+                            d.title.to_lowercase().contains(&q)
+                                || d.content.to_lowercase().contains(&q)
+                        })
+                        .filter_map(|d| {
+                            d.id_string().map(|id| crate::search::SearchResult {
+                                id,
+                                title: d.title.clone(),
+                            })
+                        })
+                        .collect();
+                }
                 self.search.query = query;
                 Task::none()
             }
@@ -282,6 +330,19 @@ impl SovereignApp {
                         cb(query);
                     }
                 }
+                Task::none()
+            }
+            Message::SearchResultNavigate(doc_id) => {
+                sovereign_canvas::apply_command(
+                    &self.canvas_state,
+                    CanvasCommand::NavigateTo(doc_id),
+                );
+                self.search.visible = false;
+                Task::none()
+            }
+            Message::SearchResultOpen(doc_id) => {
+                self.open_document(&doc_id);
+                self.search.visible = false;
                 Task::none()
             }
 
@@ -540,6 +601,9 @@ impl SovereignApp {
                 Task::none()
             }
             Message::ChatInputChanged(input) => {
+                if self.feed_canary(&input) {
+                    return self.update(Message::CanaryTriggered);
+                }
                 self.chat.input = input;
                 Task::none()
             }
@@ -596,6 +660,9 @@ impl SovereignApp {
                             self.chat.visible = !self.chat.visible;
                         }
                         keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                            if self.onboarding.is_some() {
+                                return self.update(Message::OnboardingBack);
+                            }
                             self.search.visible = false;
                             self.chat.visible = false;
                         }
@@ -699,12 +766,14 @@ impl SovereignApp {
             Message::OnboardingNext => {
                 if let Some(ref mut ob) = self.onboarding {
                     ob.next_step();
+                    return crate::onboarding::focus_first_input(ob.step);
                 }
                 Task::none()
             }
             Message::OnboardingBack => {
                 if let Some(ref mut ob) = self.onboarding {
                     ob.prev_step();
+                    return crate::onboarding::focus_first_input(ob.step);
                 }
                 Task::none()
             }
@@ -724,6 +793,94 @@ impl SovereignApp {
                 }
                 Task::none()
             }
+            Message::OnboardingPrimaryChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.primary_password = val;
+                    ob.validate_primary();
+                }
+                Task::none()
+            }
+            Message::OnboardingPrimaryConfirmChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.primary_confirm = val;
+                    ob.validate_primary();
+                }
+                Task::none()
+            }
+            Message::OnboardingDuressChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.duress_password = val;
+                    ob.validate_duress();
+                }
+                Task::none()
+            }
+            Message::OnboardingDuressConfirmChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.duress_confirm = val;
+                    ob.validate_duress();
+                }
+                Task::none()
+            }
+            Message::OnboardingCanaryChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.canary_phrase = val;
+                }
+                Task::none()
+            }
+            Message::OnboardingCanaryConfirmChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.canary_confirm = val;
+                }
+                Task::none()
+            }
+            Message::OnboardingEnrollInputChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.current_enrollment_input = val;
+                }
+                Task::none()
+            }
+            Message::OnboardingEnrollSubmit => {
+                if let Some(ref mut ob) = self.onboarding {
+                    if ob.current_enrollment_input == ob.primary_password {
+                        let keystrokes =
+                            std::mem::take(&mut ob.current_enrollment_keystrokes);
+                        ob.enrollment_samples.push(keystrokes);
+                        ob.current_enrollment_input.clear();
+                        ob.enrollment_error = None;
+                    } else {
+                        ob.enrollment_error =
+                            Some("Password doesn't match — try again.".into());
+                        ob.current_enrollment_input.clear();
+                        ob.current_enrollment_keystrokes.clear();
+                    }
+                }
+                Task::none()
+            }
+            Message::OnboardingFocusField(id) => {
+                iced::widget::operation::focus(iced::widget::Id::new(id))
+            }
+            Message::OnboardingTryAdvance => {
+                if let Some(ref mut ob) = self.onboarding {
+                    if ob.can_advance() {
+                        ob.next_step();
+                        if ob.step == crate::onboarding::OnboardingStep::Complete {
+                            return self.update(Message::OnboardingComplete);
+                        }
+                        return crate::onboarding::focus_first_input(ob.step);
+                    }
+                }
+                Task::none()
+            }
+            Message::OnboardingSkipAuth => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.next_step();
+                    if ob.step == crate::onboarding::OnboardingStep::Complete {
+                        return self.update(Message::OnboardingComplete);
+                    }
+                    return crate::onboarding::focus_first_input(ob.step);
+                }
+                Task::none()
+            }
             Message::OnboardingComplete => {
                 self.onboarding = None;
                 // Write marker file so onboarding doesn't show again
@@ -733,11 +890,50 @@ impl SovereignApp {
                 Task::none()
             }
 
+            // ── Login ─────────────────────────────────────────────────────
+            Message::LoginPasswordChanged(val) => {
+                if let Some(ref mut login) = self.login {
+                    login.password_input = val;
+                }
+                Task::none()
+            }
+            Message::LoginSubmit => {
+                // Auth logic will be wired in main.rs bootstrap
+                // For now, just clear the login screen
+                if let Some(ref mut login) = self.login {
+                    login.error_message =
+                        Some("Auth not yet wired — restart app".into());
+                }
+                Task::none()
+            }
+
+            // ── Canary / Lockdown ─────────────────────────────────────────
+            Message::CanaryTriggered => {
+                tracing::warn!("Canary phrase detected — initiating lockdown");
+                self.lockdown_triggered = true;
+                // Zeroize canary detector
+                self.canary_detector = None;
+                // Clear sensitive UI state
+                self.chat = ChatState::new();
+                self.search = SearchState::new();
+                self.doc_panels.clear();
+                self.contact_panels.clear();
+                Task::none()
+            }
+
             Message::Ignore => Task::none(),
         }
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        // Login screen (highest priority — blocks everything)
+        if let Some(ref login) = self.login {
+            return login.view();
+        }
+        // Lockdown screen (canary triggered)
+        if self.lockdown_triggered {
+            return self.view_lockdown();
+        }
         // Onboarding overlay (full-screen, blocks everything else)
         if let Some(ref onboarding) = self.onboarding {
             return onboarding.view();
@@ -822,6 +1018,40 @@ impl SovereignApp {
             // Keyboard events
             keyboard::listen().map(Message::KeyEvent),
         ])
+    }
+
+    fn view_lockdown(&self) -> Element<'_, Message> {
+        use iced::widget::{column, container, text, Space};
+        let content = column![
+            text("Session expired")
+                .size(24)
+                .color(theme::text_primary()),
+            Space::new().height(12),
+            text("Please restart the application.")
+                .size(14)
+                .color(theme::text_dim()),
+        ]
+        .spacing(0)
+        .padding(40)
+        .width(420);
+
+        container(container(content).style(theme::skill_panel_style))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(theme::dark_background)
+            .into()
+    }
+
+    /// Feed text into the canary detector. Returns true if canary triggered.
+    fn feed_canary(&mut self, text: &str) -> bool {
+        if let Some(ref mut detector) = self.canary_detector {
+            if detector.feed_str(text) {
+                return true;
+            }
+        }
+        false
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────────
@@ -931,7 +1161,20 @@ impl SovereignApp {
     fn handle_orchestrator_event(&mut self, event: OrchestratorEvent) {
         match event {
             OrchestratorEvent::SearchResults { ref doc_ids, .. } => {
-                self.search.results = doc_ids.clone();
+                self.search.results = doc_ids
+                    .iter()
+                    .map(|id| {
+                        let title = self
+                            .doc_map
+                            .get(id)
+                            .map(|d| d.title.clone())
+                            .unwrap_or_else(|| id.clone());
+                        crate::search::SearchResult {
+                            id: id.clone(),
+                            title,
+                        }
+                    })
+                    .collect();
                 let mut st = self.canvas_state.lock().unwrap();
                 for id in doc_ids {
                     st.highlighted.insert(id.clone());
@@ -968,6 +1211,47 @@ impl SovereignApp {
                     true,
                 );
                 self.doc_map.insert(doc_id.clone(), new_doc);
+
+                // Add a card to the canvas layout so it appears immediately
+                {
+                    let mut st = self.canvas_state.lock().unwrap();
+                    // Find the lane for this thread and place after the last card in it
+                    let lane_y = st
+                        .layout
+                        .lanes
+                        .iter()
+                        .find(|l| l.thread_id == *thread_id)
+                        .map(|l| l.y + sovereign_canvas::layout::LANE_PADDING_TOP)
+                        .unwrap_or(0.0);
+                    let last_x = st
+                        .layout
+                        .cards
+                        .iter()
+                        .filter(|c| c.thread_id == *thread_id)
+                        .map(|c| c.x + c.w + sovereign_canvas::layout::CARD_SPACING_H)
+                        .fold(sovereign_canvas::layout::LANE_HEADER_WIDTH, f32::max);
+                    st.layout.cards.push(sovereign_canvas::layout::CardLayout {
+                        doc_id: doc_id.clone(),
+                        title: title.clone(),
+                        is_owned: true,
+                        thread_id: thread_id.clone(),
+                        created_at_ts: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0),
+                        x: last_x,
+                        y: lane_y,
+                        w: sovereign_canvas::layout::CARD_WIDTH,
+                        h: sovereign_canvas::layout::CARD_HEIGHT,
+                    });
+                    st.mark_dirty();
+                }
+
+                // Navigate to the new document
+                sovereign_canvas::apply_command(
+                    &self.canvas_state,
+                    CanvasCommand::NavigateTo(doc_id.clone()),
+                );
             }
             OrchestratorEvent::SkillResult { ref kind, ref data, .. } => {
                 let display = match kind.as_str() {

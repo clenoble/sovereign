@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod duress;
 mod seed;
 mod setup;
 
@@ -604,6 +605,7 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             config.ai.model_dir.clone(),
             config.ai.router_model.clone(),
             config.ai.reasoning_model.clone(),
+            None, // camera_frame — initialized later if camera is available
         );
         Ok::<_, anyhow::Error>((app, _boot_task))
     })?;
