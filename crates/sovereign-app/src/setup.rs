@@ -181,6 +181,7 @@ pub fn complete_auth(
 }
 
 /// Get the persona-specific DB path.
+#[allow(dead_code)]
 pub fn persona_db_path(
     config: &AppConfig,
     persona: sovereign_core::auth::PersonaKind,
