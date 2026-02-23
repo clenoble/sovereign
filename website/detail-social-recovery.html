@@ -3,19 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Guardian Social Recovery — Sovereign OS</title>
+<title>Guardian Social Recovery — Sovereign GE</title>
 <meta name="description" content="Recover your account with help from trusted people. No corporation involved. Shamir's Secret Sharing splits your recovery key across 5 guardians — any 3 can help you recover.">
-<link rel="canonical" href="https://sovereign-os.org/detail-social-recovery.html">
+<link rel="canonical" href="https://clenoble.github.io/sovereign-os/detail-social-recovery.html">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://sovereign-os.org/detail-social-recovery.html">
-<meta property="og:title" content="Guardian Social Recovery — Sovereign OS">
+<meta property="og:url" content="https://clenoble.github.io/sovereign-os/detail-social-recovery.html">
+<meta property="og:title" content="Guardian Social Recovery — Sovereign GE">
 <meta property="og:description" content="Recover your account with help from trusted people. No corporation involved. Shamir's Secret Sharing splits your recovery key across 5 guardians — any 3 can help you recover.">
-<meta property="og:image" content="https://sovereign-os.org/logo-static.svg">
-<meta property="og:site_name" content="Sovereign OS">
+<meta property="og:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+<meta property="og:site_name" content="Sovereign GE">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="Guardian Social Recovery — Sovereign OS">
+<meta name="twitter:title" content="Guardian Social Recovery — Sovereign GE">
 <meta name="twitter:description" content="Recover your account with help from trusted people. No corporation involved. Shamir's Secret Sharing splits your recovery key across 5 guardians — any 3 can help you recover.">
-<meta name="twitter:image" content="https://sovereign-os.org/logo-static.svg">
+<meta name="twitter:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
 <style>
 /* ========== RESET & BASE ========== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -389,9 +389,9 @@ details > summary::-webkit-details-marker { display: none; }
     <a href="index.html" class="back-link" aria-label="Back to homepage">
       ← Back to Overview
     </a>
-    <a href="index.html" class="logo" aria-label="Sovereign OS home">
+    <a href="index.html" class="logo" aria-label="Sovereign GE home">
       <span class="logo-mark" aria-hidden="true"><img src="logo-icon.svg" alt=""></span>
-      Sovereign OS
+      Sovereign GE
     </a>
     <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="document.querySelector('nav').classList.toggle('open'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">☰</button>
     <nav role="navigation" aria-label="Main navigation">
@@ -462,7 +462,7 @@ details > summary::-webkit-details-marker { display: none; }
             <li><strong>Guardians are isolated:</strong> Each guardian holds one shard and knows only their own encrypted piece. They cannot derive your key from just their shard, nor can they see what other guardians hold.</li>
           </ul>
           <p style="margin-top: 12px;">
-            This mathematically guarantees that even if 2 guardians leak their shards to an attacker, the attacker cannot recover your key.
+            This provides a mathematical property such that even if 2 guardians leak their shards to an attacker, the attacker cannot recover your key.
           </p>
         </div>
       </div>
@@ -676,20 +676,20 @@ state = Complete
     Ok(())
 }</code></div>
       <p style="margin-top: 12px;">
-        This ensures a malicious initiator cannot force recovery if the real user notices and can abort.
+        This is designed so a malicious initiator cannot force recovery if the real user notices and can abort.
       </p>
     </div>
 
     <div class="deep-section">
       <h3>Security Properties</h3>
       <p>
-        The recovery system is designed with threat modeling in mind. Here are the key security guarantees:
+        The recovery system is designed with threat modeling in mind. Here are the key security properties:
       </p>
       <ul class="concept-list">
-        <li><strong>Master key never leaves memory:</strong> The recovered key exists only in RAM during reconstruction. It is never logged, cached, or transmitted over the network.</li>
+        <li><strong>Master key is not designed to leave memory:</strong> The recovered key exists only in RAM during reconstruction. It is not logged, cached, or transmitted over the network by design.</li>
         <li><strong>Guardians are isolated:</strong> Each guardian only holds one encrypted shard. They cannot collude offline to reconstruct the key. Communication happens only through the system.</li>
         <li><strong>Epoch tracking:</strong> Each shard includes an epoch counter. Shards from old epochs are rejected. This prevents replay attacks where an attacker uses a captured shard multiple times.</li>
-        <li><strong>Threat: fewer than 3 shards compromised:</strong> Useless. Mathematical guarantee: SSS with k=3 means &lt;3 shards leak zero information about the master key.</li>
+        <li><strong>Threat: fewer than 3 shards compromised:</strong> Useless. Mathematical property of SSS: with k=3, fewer than 3 shards leak zero information about the master key.</li>
         <li><strong>Threat: exactly 3 shards compromised:</strong> Attacker can reconstruct, but must wait 72h for real user to either abort or for the system to verify 3 guardian approvals. High friction.</li>
         <li><strong>Threat: 3+ guardians compromised:</strong> Attacker can reconstruct immediately after 72h. But this requires compromising 60% of guardians, which is a high bar for social engineering.</li>
         <li><strong>Threat: impersonation:</strong> Attacker initiates recovery under your account. But you see the 72h notification on any of your devices and abort. Attacker foiled unless they also compromised all your devices.</li>
@@ -741,7 +741,7 @@ state = Complete
 <!-- ========== FOOTER ========== -->
 <footer role="contentinfo" style="border-top: 1px solid var(--c-border-subtle); padding: 40px 24px; font-size: 0.82rem; color: var(--c-text-dim);">
   <div style="max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
-    <span>&copy; 2026 Sovereign OS. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <span>&copy; 2026 Sovereign GE. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
     <div style="display: flex; gap: 20px;">
       <a href="https://github.com/sovereign-os/sovereign" target="_blank" rel="noopener">GitHub</a>
       <a href="https://github.com/sovereign-os/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
@@ -758,14 +758,14 @@ state = Complete
     {
       "@type": "ListItem",
       "position": 1,
-      "name": "Sovereign OS",
-      "item": "https://sovereign-os.org/"
+      "name": "Sovereign GE",
+      "item": "https://clenoble.github.io/sovereign-os/"
     },
     {
       "@type": "ListItem",
       "position": 2,
       "name": "Guardian Social Recovery",
-      "item": "https://sovereign-os.org/detail-social-recovery.html"
+      "item": "https://clenoble.github.io/sovereign-os/detail-social-recovery.html"
     }
   ]
 }

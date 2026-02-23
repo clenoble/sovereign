@@ -3,19 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ethics, Misuse Analysis & Design Constraints — Sovereign OS</title>
-<meta name="description" content="How Sovereign OS strengthens privacy while narrowing the misuse surface through binding design constraints. Ethical principles and precedent analysis.">
-<link rel="canonical" href="https://sovereign-os.org/detail-ethics.html">
+<title>Ethics, Misuse Analysis & Design Constraints — Sovereign GE</title>
+<meta name="description" content="How Sovereign GE strengthens privacy while narrowing the misuse surface through binding design constraints. Ethical principles and precedent analysis.">
+<link rel="canonical" href="https://clenoble.github.io/sovereign-os/detail-ethics.html">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://sovereign-os.org/detail-ethics.html">
-<meta property="og:title" content="Ethics, Misuse Analysis & Design Constraints — Sovereign OS">
-<meta property="og:description" content="How Sovereign OS strengthens privacy while narrowing the misuse surface through binding design constraints. Ethical principles and precedent analysis.">
-<meta property="og:image" content="https://sovereign-os.org/logo-static.svg">
-<meta property="og:site_name" content="Sovereign OS">
+<meta property="og:url" content="https://clenoble.github.io/sovereign-os/detail-ethics.html">
+<meta property="og:title" content="Ethics, Misuse Analysis & Design Constraints — Sovereign GE">
+<meta property="og:description" content="How Sovereign GE strengthens privacy while narrowing the misuse surface through binding design constraints. Ethical principles and precedent analysis.">
+<meta property="og:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+<meta property="og:site_name" content="Sovereign GE">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="Ethics, Misuse Analysis & Design Constraints — Sovereign OS">
-<meta name="twitter:description" content="How Sovereign OS strengthens privacy while narrowing the misuse surface through binding design constraints. Ethical principles and precedent analysis.">
-<meta name="twitter:image" content="https://sovereign-os.org/logo-static.svg">
+<meta name="twitter:title" content="Ethics, Misuse Analysis & Design Constraints — Sovereign GE">
+<meta name="twitter:description" content="How Sovereign GE strengthens privacy while narrowing the misuse surface through binding design constraints. Ethical principles and precedent analysis.">
+<meta name="twitter:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
 <style>
 /* ========== RESET & BASE ========== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -444,9 +444,9 @@ details > summary::-webkit-details-marker { display: none; }
     <a href="index.html" class="back-link" aria-label="Back to homepage">
       ← Back to Overview
     </a>
-    <a href="index.html" class="logo" aria-label="Sovereign OS home">
+    <a href="index.html" class="logo" aria-label="Sovereign GE home">
       <span class="logo-mark" aria-hidden="true"><img src="logo-icon.svg" alt=""></span>
-      Sovereign OS
+      Sovereign GE
     </a>
     <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="document.querySelector('nav').classList.toggle('open'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">☰</button>
     <nav role="navigation" aria-label="Main navigation">
@@ -467,7 +467,7 @@ details > summary::-webkit-details-marker { display: none; }
 <div class="page-header">
   <h1>Ethics, Misuse Analysis & Design Constraints</h1>
   <p class="subtitle">
-    How Sovereign OS strengthens privacy while narrowing the misuse surface through binding design constraints.
+    How Sovereign strengthens privacy while narrowing the misuse surface through binding design constraints.
   </p>
 </div>
 
@@ -483,9 +483,9 @@ details > summary::-webkit-details-marker { display: none; }
 
   <div class="tier-1-content">
     <p>
-      Sovereign OS packages strong privacy into a turnkey system. Every feature already exists as a standalone tool—Signal did the same for encryption.
-      The project falls closer to the Signal precedent than the Tor precedent: it strengthens privacy for ordinary users while offering criminals only marginal improvement.
-      Four binding design constraints narrow the misuse surface by code, not policy.
+      Sovereign aims to package strong privacy into a turnkey system. Every capability it explores already exists as a standalone tool — Signal did the same for encryption.
+      The project aspires to the Signal precedent rather than the Tor precedent: strengthen privacy for ordinary users while offering criminals only marginal improvement.
+      Four binding design constraints are intended to narrow the misuse surface by code, not policy. Some are implemented; others are roadmap items marked below.
     </p>
   </div>
 </section>
@@ -508,22 +508,22 @@ details > summary::-webkit-details-marker { display: none; }
         <div class="concept-block">
           <h3>Nothing New Under the Sun</h3>
           <p>
-            Every capability in Sovereign OS already exists as standalone software. The value is in integration, not innovation.
+            Every capability in Sovereign already exists as standalone software. The value is in integration, not innovation.
           </p>
           <table class="const-table">
-            <tr><th>Sovereign OS Feature</th><th>Existing Equivalents</th></tr>
-            <tr><td>Identity Firewall</td><td>Firefox containers, SimpleLogin, ProtonVPN, DuckDuckGo tracker blocking</td></tr>
-            <tr><td>Encrypted P2P Sync</td><td>Syncthing, IPFS, Restic + Backblaze</td></tr>
-            <tr><td>Social Recovery</td><td>Casa (Bitcoin multisig model), ssss-split (Shamir secret sharing)</td></tr>
-            <tr><td>Local AI</td><td>Ollama, llama.cpp, gpt4all</td></tr>
-            <tr><td>Full-Disk Encryption</td><td>LUKS (Linux), BitLocker (Windows), FileVault (macOS)</td></tr>
+            <tr><th>Sovereign Feature</th><th>Status</th><th>Existing Equivalents</th></tr>
+            <tr><td>Identity Firewall</td><td><em>Roadmap</em></td><td>Firefox containers, SimpleLogin, ProtonVPN, DuckDuckGo tracker blocking</td></tr>
+            <tr><td>Encrypted P2P Sync</td><td><em>Infrastructure only</em></td><td>Syncthing, IPFS, Restic + Backblaze</td></tr>
+            <tr><td>Social Recovery</td><td>Implemented</td><td>Casa (Bitcoin multisig model), ssss-split (Shamir secret sharing)</td></tr>
+            <tr><td>Local AI</td><td>Implemented</td><td>Ollama, llama.cpp, gpt4all</td></tr>
+            <tr><td>Per-Document Encryption</td><td>Implemented</td><td>LUKS (Linux), BitLocker (Windows), FileVault (macOS)</td></tr>
           </table>
         </div>
       </div>
     </details>
 
     <details open>
-      <summary>What Sovereign OS Does NOT Provide</summary>
+      <summary>What Sovereign Does NOT Provide</summary>
       <div class="details-content">
         <div class="concept-block">
           <h3>Intentional Constraints for Ethical Clarity</h3>
@@ -550,10 +550,10 @@ details > summary::-webkit-details-marker { display: none; }
             Constraints are enforced by architecture, not trust in governance:
           </p>
           <ul class="concept-list">
-            <li><strong>1. Identity Firewall Scope:</strong> Tracking prevention only (cookie isolation, URL param stripping, fingerprint blocking). TDL blocks only on banking/gov domains. No synthetic identities. Users can override.</li>
+            <li><strong>1. Identity Firewall Scope <em>(roadmap — not yet implemented)</em>:</strong> Tracking prevention only (cookie isolation, URL param stripping, fingerprint resistance). Designed to block on banking/gov domains. No synthetic identities. Users would be able to override.</li>
             <li><strong>2. No Network Anonymity:</strong> Intentional design choice. Network stack is transparent. Tor is a user install, not a feature. Clear separation of concerns.</li>
             <li><strong>3. Guardian Protocol Transparency:</strong> Single function: shard storage and return. No messaging, no general storage layer, no coordination, no dead-man's switch. Scope is narrowly constrained.</li>
-            <li><strong>4. Audit Log Integrity:</strong> Append-only hash chain. User can read, export, delete-all but not selectively edit/reorder. Forensic record is tamper-evident.</li>
+            <li><strong>4. Audit Log Integrity <em>(partial — hash chain is roadmap)</em>:</strong> Currently append-only JSONL. The goal is a tamper-evident hash chain where each entry includes a hash of the previous entry. User can read and export but not selectively edit or reorder.</li>
           </ul>
         </div>
       </div>
@@ -568,7 +568,7 @@ details > summary::-webkit-details-marker { display: none; }
             <li><strong>Privacy as a Right:</strong> UN Article 12, ECHR Article 8, GDPR Article 5. Not conditional on "law-abiding" status. Universal human right.</li>
             <li><strong>Full Transparency:</strong> Open source (AGPL-3.0), no telemetry, no proprietary components. Code audit by anyone.</li>
             <li><strong>Honest Tradeoffs:</strong> No claims that privacy is "side-effect-free." Acknowledge misuse risks openly. Let users decide.</li>
-            <li><strong>Distributed, Not Centralized:</strong> Software, not service. No back doors, no master key, no remote kill switch. You own it fully.</li>
+            <li><strong>Distributed, Not Centralized:</strong> Software, not service. Designed without back doors, master keys, or remote kill switches. You own the software and your data.</li>
           </ul>
         </div>
       </div>
@@ -590,15 +590,15 @@ details > summary::-webkit-details-marker { display: none; }
   <div class="tier-3-content">
 
     <div class="deep-section">
-      <h3>Identity Firewall Scope</h3>
+      <h3>Identity Firewall Scope <em>(roadmap — not yet implemented)</em></h3>
       <p>
-        The identity firewall prevents tracking across domains. Its scope is intentionally narrow:
+        The identity firewall is a planned feature designed to prevent tracking across domains. Its scope is intentionally narrow:
       </p>
       <ul class="concept-list">
-        <li><strong>What It Does:</strong> Cookie isolation (each domain gets separate cookie jar), URL parameter stripping (removes utm_*, fbclid, etc.), fingerprint blocking (spoofs User-Agent, webgl, canvas fingerprints).</li>
-        <li><strong>What It Does NOT Do:</strong> No synthetic identities. You are still the same person across sites within your identity context. No pretense of being multiple people.</li>
-        <li><strong>Trusted Domain List (TDL):</strong> Mozilla-style governance. Users propose additions. Sovereign OS maintainers curate. Protected categories (banking, gov) cannot be removed by users but can be reviewed.</li>
-        <li><strong>User Override:</strong> Users can disable tracking prevention per site. Clear UI shows when it's active. Preference is transparent.</li>
+        <li><strong>What It Would Do:</strong> Cookie isolation (each domain gets a separate cookie jar), URL parameter stripping (removes utm_*, fbclid, etc.), fingerprint resistance (spoofs User-Agent, webgl, canvas fingerprints).</li>
+        <li><strong>What It Would NOT Do:</strong> No synthetic identities. You would still be the same person across sites within your identity context. No pretense of being multiple people.</li>
+        <li><strong>Trusted Domain List (TDL):</strong> Planned governance model inspired by Mozilla. Users would propose additions. Protected categories (banking, gov) could not be removed by users.</li>
+        <li><strong>User Override:</strong> Users would be able to disable tracking prevention per site. Clear UI would show when it's active.</li>
       </ul>
     </div>
 
@@ -609,9 +609,9 @@ details > summary::-webkit-details-marker { display: none; }
       </p>
       <ul class="concept-list">
         <li><strong>Local Privacy ≠ Covert Ops:</strong> Full-disk encryption protects your device. Network traffic still reveals your ISP, location, website visits. These are different problems.</li>
-        <li><strong>Tor is a User Install:</strong> Users can install Tor Browser separately. Sovereign OS does not bundle it. Clear boundary between privacy-by-default and anonymity-by-choice.</li>
+        <li><strong>Tor is a User Install:</strong> Users can install Tor Browser separately. Sovereign does not bundle it. Clear boundary between privacy-by-default and anonymity-by-choice.</li>
         <li><strong>Ethical Clarity:</strong> Avoids the appearance of targeting criminals while serving journalists. "Tor user" implies suspicious intent to some. Better to let users make that choice explicitly.</li>
-        <li><strong>Regulatory Risk:</strong> Bundled anonymity tools trigger export controls in some jurisdictions. Sovereign OS as "privacy tool" is defensible. Sovereign OS + Tor is a different category.</li>
+        <li><strong>Regulatory Risk:</strong> Bundled anonymity tools trigger export controls in some jurisdictions. Sovereign as "privacy tool" is defensible. Sovereign + Tor is a different category.</li>
       </ul>
     </div>
 
@@ -626,22 +626,22 @@ details > summary::-webkit-details-marker { display: none; }
         <li><strong>No General Storage:</strong> Guardians cannot store arbitrary data. Only recovery shards, format-fixed, size-limited.</li>
         <li><strong>No Coordination:</strong> Guardians cannot communicate with each other. No "2-of-3 consensus" logic on the guardian side. You orchestrate recovery locally.</li>
         <li><strong>No Dead Man's Switch:</strong> Guardians do not auto-transmit anything on timer or trigger. No "if I don't check in, release my data." User must actively request shards.</li>
-        <li><strong>Repurposing Risk Minimized:</strong> Narrow scope makes it hard to misuse. Adding a general storage layer would create incentive to use Sovereign OS as a dead drop for contraband.</li>
+        <li><strong>Repurposing Risk Minimized:</strong> Narrow scope makes it hard to misuse. Adding a general storage layer would create incentive to use Sovereign as a dead drop for contraband.</li>
       </ul>
     </div>
 
     <div class="deep-section">
-      <h3>Audit Log Integrity</h3>
+      <h3>Audit Log Integrity <em>(partial — currently append-only JSONL, hash chain is roadmap)</em></h3>
       <p>
-        The audit log is a permanent, tamper-evident record of system actions. It is designed to be forensically sound:
+        Today, Sovereign logs session activity to an append-only JSONL file with automatic rotation.
+        The long-term goal is a tamper-evident hash chain that is forensically sound:
       </p>
       <ul class="concept-list">
-        <li><strong>Append-Only Hash Chain:</strong> Each entry includes a hash of the previous entry. Cannot reorder or edit entries without breaking the chain—tampering is immediately visible.</li>
+        <li><strong>Current State:</strong> Append-only JSONL log. Records user inputs, orchestrator actions, and chat responses. Automatic rotation at 10 MB. No hash chain yet.</li>
+        <li><strong>Goal — Hash Chain:</strong> Each entry would include a hash of the previous entry. Reordering or editing entries would break the chain — tampering would be immediately visible.</li>
         <li><strong>User Can Read:</strong> Full access to audit logs. No hidden logging.</li>
-        <li><strong>User Can Export:</strong> Audit logs can be exported in plaintext, JSON, or cryptographic format for external verification.</li>
-        <li><strong>User Can Delete All:</strong> "Nuke my audit log" is a supported operation. Bulk deletion is available. Selective editing is not—all-or-nothing.</li>
-        <li><strong>Forensic Deterrent:</strong> Criminals know logs exist. Knowing your actions are being recorded deters misuse. Law enforcement can recover logs even after deletion (deleted_at field, recovery window).</li>
-        <li><strong>Privacy-Preserving Sharing:</strong> Logs can be cryptographically hashed and shared with a lawyer/auditor without revealing content. Proof of existence without proof of content.</li>
+        <li><strong>Goal — Export &amp; Sharing:</strong> Audit logs could be exported in plaintext, JSON, or cryptographic format for external verification. Proof of existence without proof of content.</li>
+        <li><strong>Goal — Delete All:</strong> Bulk deletion available but not selective editing — all-or-nothing.</li>
       </ul>
     </div>
 
@@ -666,8 +666,8 @@ details > summary::-webkit-details-marker { display: none; }
       </p>
       <ul class="concept-list">
         <li><strong>Law Enforcement vs Privacy:</strong> BitLocker (2003) enabled encrypted drives on consumer hardware. Two decades of debate: criminal use vs. privacy right. No resolution.</li>
-        <li><strong>Sovereign OS Makes Encryption Default:</strong> Like Signal made encryption the default for messaging (2014). Default encryption is high-friction for law enforcement but table-stakes for privacy-first software.</li>
-        <li><strong>Not Novel:</strong> Full-disk encryption is mature technology. Sovereign OS does not invent it. Uses LUKS (Linux), BitLocker-style (Windows), FileVault (macOS).</li>
+        <li><strong>Sovereign Makes Encryption Default:</strong> Like Signal made encryption the default for messaging (2014). Default encryption is high-friction for law enforcement but table-stakes for privacy-first software.</li>
+        <li><strong>Not Novel:</strong> Full-disk encryption is mature technology. Sovereign does not invent it. Uses LUKS (Linux), BitLocker-style (Windows), FileVault (macOS).</li>
         <li><strong>Precedent:</strong> Signal is de facto recommended by journalists, activists, and law enforcement (e.g., FBI director recommends Signal). Encryption default is socially acceptable when implemented carefully.</li>
       </ul>
     </div>
@@ -675,13 +675,13 @@ details > summary::-webkit-details-marker { display: none; }
     <div class="deep-section">
       <h3>Precedent Analysis</h3>
       <p>
-        Where does Sovereign OS sit in the landscape of privacy tools?
+        Where does Sovereign sit in the landscape of privacy tools?
       </p>
       <ul class="concept-list">
         <li><strong>Tor (2002):</strong> Network anonymity. Explicitly designed for covert ops, journalism, circumvention. Accepted misuse risk as trade-off for enabling dissidents. Narrow target audience.</li>
         <li><strong>Full-Disk Encryption (2003+):</strong> Local data protection. BitLocker made FDE mainstream. Two-decade debate about key escrow. No resolution. Industry standard now.</li>
         <li><strong>Signal (2014):</strong> End-to-end encrypted messaging. Made encryption the default. Mainstream adoption (200M+ users). Balances privacy strength with social acceptability. Law enforcement does not like it but it is legal and widespread.</li>
-        <li><strong>Sovereign OS:</strong> Closest to Signal. Packages existing privacy features (encryption, local AI, identity firewall) into a coherent system. Default encryption. Open source. Mainstream target audience. Narrow misuse surface relative to Tor.</li>
+        <li><strong>Sovereign:</strong> Aspires to the Signal model. Aims to package existing privacy features (encryption, local AI, and eventually an identity firewall) into a coherent system. Default encryption. Open source. Mainstream target audience. Narrow misuse surface relative to Tor.</li>
       </ul>
     </div>
 
@@ -691,8 +691,8 @@ details > summary::-webkit-details-marker { display: none; }
         Several design choices remain unresolved and open to community input:
       </p>
       <ul class="concept-list">
-        <li><strong>Trusted Domain List Governance:</strong> Who decides what goes on the TDL? Community vote? Maintainer discretion? Mozilla model has limitations. Better alternative?</li>
-        <li><strong>Export Controls:</strong> Will jurisdictions restrict distribution of Sovereign OS? Precedent: PGP faced NSA pressure in 1990s. Current landscape is more permissive but regulation is tightening.</li>
+        <li><strong>Trusted Domain List Governance:</strong> If the identity firewall is built, who decides what goes on the TDL? Community vote? Maintainer discretion? Mozilla model has limitations. Better alternative?</li>
+        <li><strong>Export Controls:</strong> Will jurisdictions restrict distribution of Sovereign? Precedent: PGP faced NSA pressure in 1990s. Current landscape is more permissive but regulation is tightening.</li>
         <li><strong>Model Safety Defaults:</strong> Should Qwen2.5 have built-in refusals (jailbreak-resistant) or be maximally open (user can override)? Trade-off: ease of use vs. openness.</li>
         <li><strong>Guardian Auditability:</strong> Can guardians be audited after shard return? Metadata might reveal identity or timing. How to balance auditability with privacy?</li>
         <li><strong>Audit Log Forensics:</strong> Law enforcement will want audit logs. Should recovery be possible without user consent? Current design: user can delete logs fully but not selectively. Is this the right balance?</li>
@@ -709,7 +709,7 @@ details > summary::-webkit-details-marker { display: none; }
 <!-- ========== FOOTER ========== -->
 <footer role="contentinfo" style="border-top: 1px solid var(--c-border-subtle); padding: 40px 24px; font-size: 0.82rem; color: var(--c-text-dim);">
   <div style="max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
-    <span>&copy; 2026 Sovereign OS. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <span>&copy; 2026 Sovereign GE. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
     <div style="display: flex; gap: 20px;">
       <a href="https://github.com/sovereign-os/sovereign" target="_blank" rel="noopener">GitHub</a>
       <a href="https://github.com/sovereign-os/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
@@ -726,14 +726,14 @@ details > summary::-webkit-details-marker { display: none; }
     {
       "@type": "ListItem",
       "position": 1,
-      "name": "Sovereign OS",
-      "item": "https://sovereign-os.org/"
+      "name": "Sovereign GE",
+      "item": "https://clenoble.github.io/sovereign-os/"
     },
     {
       "@type": "ListItem",
       "position": 2,
       "name": "Ethics & Design Constraints",
-      "item": "https://sovereign-os.org/detail-ethics.html"
+      "item": "https://clenoble.github.io/sovereign-os/detail-ethics.html"
     }
   ]
 }

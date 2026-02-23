@@ -3,19 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Local AI Orchestrator — Sovereign OS</title>
-<meta name="description" content="How Sovereign OS runs AI entirely on your machine with a fast intent classifier, reasoning model, and multi-turn chat loop. No cloud. No API keys.">
-<link rel="canonical" href="https://sovereign-os.org/detail-ai-orchestrator.html">
+<title>Local AI Orchestrator — Sovereign GE</title>
+<meta name="description" content="How Sovereign GE runs AI entirely on your machine with a fast intent classifier, reasoning model, and multi-turn chat loop. No cloud. No API keys.">
+<link rel="canonical" href="https://clenoble.github.io/sovereign-os/detail-ai-orchestrator.html">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://sovereign-os.org/detail-ai-orchestrator.html">
-<meta property="og:title" content="Local AI Orchestrator — Sovereign OS">
-<meta property="og:description" content="How Sovereign OS runs AI entirely on your machine with a fast intent classifier, reasoning model, and multi-turn chat loop. No cloud. No API keys.">
-<meta property="og:image" content="https://sovereign-os.org/logo-static.svg">
-<meta property="og:site_name" content="Sovereign OS">
+<meta property="og:url" content="https://clenoble.github.io/sovereign-os/detail-ai-orchestrator.html">
+<meta property="og:title" content="Local AI Orchestrator — Sovereign GE">
+<meta property="og:description" content="How Sovereign GE runs AI entirely on your machine with a fast intent classifier, reasoning model, and multi-turn chat loop. No cloud. No API keys.">
+<meta property="og:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+<meta property="og:site_name" content="Sovereign GE">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="Local AI Orchestrator — Sovereign OS">
-<meta name="twitter:description" content="How Sovereign OS runs AI entirely on your machine with a fast intent classifier, reasoning model, and multi-turn chat loop. No cloud. No API keys.">
-<meta name="twitter:image" content="https://sovereign-os.org/logo-static.svg">
+<meta name="twitter:title" content="Local AI Orchestrator — Sovereign GE">
+<meta name="twitter:description" content="How Sovereign GE runs AI entirely on your machine with a fast intent classifier, reasoning model, and multi-turn chat loop. No cloud. No API keys.">
+<meta name="twitter:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
 <style>
 /* ========== RESET & BASE ========== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -441,9 +441,9 @@ details > summary::-webkit-details-marker { display: none; }
     <a href="index.html" class="back-link" aria-label="Back to homepage">
       ← Back to Overview
     </a>
-    <a href="index.html" class="logo" aria-label="Sovereign OS home">
+    <a href="index.html" class="logo" aria-label="Sovereign GE home">
       <span class="logo-mark" aria-hidden="true"><img src="logo-icon.svg" alt=""></span>
-      Sovereign OS
+      Sovereign GE
     </a>
     <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="document.querySelector('nav').classList.toggle('open'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">☰</button>
     <nav role="navigation" aria-label="Main navigation">
@@ -464,7 +464,7 @@ details > summary::-webkit-details-marker { display: none; }
 <div class="page-header">
   <h1>Local AI Orchestrator</h1>
   <p class="subtitle">
-    How Sovereign OS runs AI entirely on your machine with a fast intent classifier, reasoning model,
+    How Sovereign runs AI entirely on your machine with a fast intent classifier, reasoning model,
     and multi-turn chat agent. No cloud. No API keys. No subscription.
   </p>
 </div>
@@ -481,9 +481,9 @@ details > summary::-webkit-details-marker { display: none; }
 
   <div class="tier-1-content">
     <p>
-      Sovereign OS runs AI entirely on your machine. A fast 3B router classifies your intent in milliseconds;
+      Sovereign runs AI entirely on your machine. A fast 3B router classifies your intent in milliseconds;
       a larger 7B model loads on demand for complex queries. No cloud, no API key, no subscription.
-      Your prompts never leave your device.
+      Your prompts are not designed to leave your device.
     </p>
   </div>
 </section>
@@ -543,7 +543,7 @@ details > summary::-webkit-details-marker { display: none; }
       <summary>Six Read-Only Tools (Observe Level)</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>AI Can Browse, Never Modify</h3>
+          <h3>AI Can Browse, Not Modify</h3>
           <p>
             The AI has access to exactly 6 tools, all at Observe level (Level 0 in Action Gravity):
           </p>
@@ -556,7 +556,7 @@ details > summary::-webkit-details-marker { display: none; }
             <li><code>list_contacts</code> — Get contact list (no private data).</li>
           </ul>
           <p style="margin-top: 12px;">
-            These tools can never modify, delete, or export data. The AI can propose actions (e.g., "Should I export this to PDF?"),
+            These tools are not designed to modify, delete, or export data. The AI can propose actions (e.g., "Should I export this to PDF?"),
             but execution requires explicit user confirmation and goes through the Action Gravity gate.
           </p>
         </div>
@@ -569,13 +569,13 @@ details > summary::-webkit-details-marker { display: none; }
         <div class="concept-block">
           <h3>Wake Word → Speech-to-Text → Chat → Text-to-Speech</h3>
           <ul class="concept-list">
-            <li><strong>Wake Word Detection:</strong> Rustpotter listening for "sovereign" (threshold 0.4). Runs on a rolling 10-second buffer that never leaves your device.</li>
+            <li><strong>Wake Word Detection:</strong> Rustpotter listening for "sovereign" (threshold 0.4). Runs on a rolling 10-second buffer that does not leave your device by design.</li>
             <li><strong>Speech-to-Text:</strong> Whisper (OpenAI's model, quantized via llama.cpp). Converts speech at 16 kHz sample rate in real-time.</li>
             <li><strong>Chat:</strong> Text from Whisper feeds into the intent classification and agent loop.</li>
-            <li><strong>Text-to-Speech:</strong> Piper TTS with multiple voice options. Fully local, natural-sounding responses.</li>
+            <li><strong>Text-to-Speech:</strong> Piper TTS with multiple voice options. Runs locally by design, natural-sounding responses.</li>
           </ul>
           <p style="margin-top: 12px;">
-            All audio processing happens on-device. No audio ever leaves your machine.
+            All audio processing happens on-device. Audio is not designed to leave your machine.
           </p>
         </div>
       </div>
@@ -588,7 +588,7 @@ details > summary::-webkit-details-marker { display: none; }
           <h3>ChatML + Structured Tool Call Format</h3>
           <p>Conversation uses the ChatML format for clarity:</p>
           <div class="code-block"><code>&lt;|im_start|&gt;system
-You are Sovereign OS AI. Help the user with their documents, contacts, and tasks.
+You are Sovereign AI. Help the user with their documents, contacts, and tasks.
 &lt;|im_end|&gt;
 &lt;|im_start|&gt;user
 Find documents about machine learning
@@ -599,7 +599,7 @@ I'll search for that.
 &lt;|im_end|&gt;</code></div>
           <p>
             The model learns to emit tool calls in this structured format via few-shot examples during training.
-            This ensures reliable parsing and prevents prompt injection attacks from modifying tool invocation.
+            This is designed to enable reliable parsing and help prevent prompt injection attacks from modifying tool invocation.
           </p>
         </div>
       </div>
@@ -689,7 +689,7 @@ impl IntentClassifier {
       </div>
       <p>
         The chat system prompt encodes this: "For Level 2+ actions, propose with specifics and ask for confirmation."
-        This ensures the AI doesn't accidentally delete or export without explicit user approval.
+        This is designed to prevent the AI from accidentally deleting or exporting without explicit user approval.
       </p>
     </div>
 
@@ -821,7 +821,7 @@ pub struct VoicePipeline {
     <div class="deep-section">
       <h3>Hardware Requirements</h3>
       <p>
-        Sovereign OS is designed for mid-range modern hardware. The quantized models (4-bit or 8-bit) minimize VRAM usage
+        Sovereign is designed for mid-range modern hardware. The quantized models (4-bit or 8-bit) minimize VRAM usage
         compared to full-precision inference.
       </p>
       <div class="hardware-specs">
@@ -852,7 +852,7 @@ pub struct VoicePipeline {
       <h3>Control vs. Data Plane Separation</h3>
       <p>
         The architectural safeguard against prompt injection: external content (documents, emails, web content)
-        lives in the <strong>data plane</strong>, which has zero ability to invoke actions.
+        lives in the <strong>data plane</strong>, which is not designed to invoke actions.
       </p>
       <div class="code-block"><code>// Control Plane
 // Receives: user instructions, chat history
@@ -876,7 +876,7 @@ pub async fn data_plane(content: &amp;str) -&gt; Summary {
 }</code></div>
       <p>
         This separation means that even if a malicious PDF says "delete everything", the data plane processing
-        that PDF has no <code>delete</code> capability. It can only return text/metadata to the control plane,
+        that PDF has no <code>delete</code> capability by design. It can only return text/metadata to the control plane,
         which then requires user confirmation to act.
       </p>
     </div>
@@ -890,7 +890,7 @@ pub async fn data_plane(content: &amp;str) -&gt; Summary {
 <!-- ========== FOOTER ========== -->
 <footer role="contentinfo" style="border-top: 1px solid var(--c-border-subtle); padding: 40px 24px; font-size: 0.82rem; color: var(--c-text-dim);">
   <div style="max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
-    <span>&copy; 2026 Sovereign OS. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <span>&copy; 2026 Sovereign GE. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
     <div style="display: flex; gap: 20px;">
       <a href="https://github.com/sovereign-os/sovereign" target="_blank" rel="noopener">GitHub</a>
       <a href="https://github.com/sovereign-os/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
@@ -907,14 +907,14 @@ pub async fn data_plane(content: &amp;str) -&gt; Summary {
     {
       "@type": "ListItem",
       "position": 1,
-      "name": "Sovereign OS",
-      "item": "https://sovereign-os.org/"
+      "name": "Sovereign GE",
+      "item": "https://clenoble.github.io/sovereign-os/"
     },
     {
       "@type": "ListItem",
       "position": 2,
       "name": "Local AI Orchestrator",
-      "item": "https://sovereign-os.org/detail-ai-orchestrator.html"
+      "item": "https://clenoble.github.io/sovereign-os/detail-ai-orchestrator.html"
     }
   ]
 }

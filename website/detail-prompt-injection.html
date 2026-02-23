@@ -3,19 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Prompt Injection Architecture — Sovereign OS</title>
-<meta name="description" content="How Sovereign OS makes prompt injection attacks structurally impossible by separating data and control planes.">
-<link rel="canonical" href="https://sovereign-os.org/detail-prompt-injection.html">
+<title>Prompt Injection Architecture — Sovereign GE</title>
+<meta name="description" content="How Sovereign GE is designed to prevent prompt injection attacks by separating data and control planes.">
+<link rel="canonical" href="https://clenoble.github.io/sovereign-os/detail-prompt-injection.html">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://sovereign-os.org/detail-prompt-injection.html">
-<meta property="og:title" content="Prompt Injection Architecture — Sovereign OS">
-<meta property="og:description" content="How Sovereign OS makes prompt injection attacks structurally impossible by separating data and control planes.">
-<meta property="og:image" content="https://sovereign-os.org/logo-static.svg">
-<meta property="og:site_name" content="Sovereign OS">
+<meta property="og:url" content="https://clenoble.github.io/sovereign-os/detail-prompt-injection.html">
+<meta property="og:title" content="Prompt Injection Architecture — Sovereign GE">
+<meta property="og:description" content="How Sovereign GE is designed to prevent prompt injection attacks by separating data and control planes.">
+<meta property="og:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+<meta property="og:site_name" content="Sovereign GE">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="Prompt Injection Architecture — Sovereign OS">
-<meta name="twitter:description" content="How Sovereign OS makes prompt injection attacks structurally impossible by separating data and control planes.">
-<meta name="twitter:image" content="https://sovereign-os.org/logo-static.svg">
+<meta name="twitter:title" content="Prompt Injection Architecture — Sovereign GE">
+<meta name="twitter:description" content="How Sovereign GE is designed to prevent prompt injection attacks by separating data and control planes.">
+<meta name="twitter:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
 <style>
 /* ========== RESET & BASE ========== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -863,9 +863,9 @@ details > summary::-webkit-details-marker { display: none; }
     <a href="index.html" class="back-link" aria-label="Back to homepage">
       ← Back to Overview
     </a>
-    <a href="index.html" class="logo" aria-label="Sovereign OS home">
+    <a href="index.html" class="logo" aria-label="Sovereign GE home">
       <span class="logo-mark" aria-hidden="true"><img src="logo-icon.svg" alt=""></span>
-      Sovereign OS
+      Sovereign GE
     </a>
     <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="document.querySelector('nav').classList.toggle('open'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">☰</button>
     <nav role="navigation" aria-label="Main navigation">
@@ -885,7 +885,7 @@ details > summary::-webkit-details-marker { display: none; }
 <div class="page-header">
   <h1>Prompt Injection Architecture</h1>
   <p class="subtitle">
-    Structural immunity: why Sovereign OS makes prompt injection attacks structurally impossible
+    Structural defense: how Sovereign is designed to prevent prompt injection attacks
     by separating data and control planes.
   </p>
 </div>
@@ -903,8 +903,8 @@ details > summary::-webkit-details-marker { display: none; }
   <div class="tier-1-content">
     <p>
       Most AI agents try to prevent prompt injection by telling the model "don't follow bad instructions."
-      Sovereign OS makes it structurally impossible: the component that reads external content has no API
-      for taking actions. Even a fully compromised model can't cause harm.
+      Sovereign is architecturally defended against this: the component that reads external content has no API
+      for taking actions. Even a fully compromised model is designed to prevent harm.
     </p>
   </div>
 </section>
@@ -927,11 +927,11 @@ details > summary::-webkit-details-marker { display: none; }
         <div class="concept-block">
           <h3>Control Plane vs. Data Plane</h3>
           <p>
-            Sovereign OS enforces two separate processing paths, each with different capabilities:
+            Sovereign enforces two separate processing paths, each with different capabilities:
           </p>
           <ul class="concept-list">
             <li><strong>Control Plane:</strong> User-initiated input only (chat commands, voice, UI). Has full access to all action levels (0–4). Can create, modify, delete, transmit. Enforced by code in <code>action_gate.rs</code>, not by prompt instructions.</li>
-            <li><strong>Data Plane:</strong> External content only (documents, emails, PDFs, web content). Restricted to Level 0 (Observe). Can read and summarize, never modify. Model cannot invoke any tools that change state.</li>
+            <li><strong>Data Plane:</strong> External content only (documents, emails, PDFs, web content). Restricted to Level 0 (Observe). Can read and summarize, not modify by design. Model cannot invoke any tools that change state.</li>
           </ul>
           <p style="margin-top: 12px;">
             This separation is enforced at the architectural level. Even if a jailbroken model tries to call a Modify/Transmit/Destruct action from the data plane,
@@ -967,7 +967,7 @@ details > summary::-webkit-details-marker { display: none; }
         <div class="concept-block">
           <h3>UX Principle #7: Show the Attack</h3>
           <p>
-            Sovereign OS doesn't silently filter injection attempts. Instead, it surfaces them to the user with full transparency:
+            Sovereign doesn't silently filter injection attempts. Instead, it surfaces them to the user with full transparency:
           </p>
           <ul class="concept-list">
             <li><strong>Pattern name:</strong> Which detection method triggered (e.g., "role_override_ignore_previous").</li>
@@ -1024,7 +1024,7 @@ details > summary::-webkit-details-marker { display: none; }
     <div class="deep-section">
       <h3>Plane Enum (sovereign-core/src/security.rs:23–31)</h3>
       <p>
-        At the core, the <code>Plane</code> enum ensures every code path knows whether it's processing user input or external data.
+        At the core, the <code>Plane</code> enum is designed so every code path knows whether it's processing user input or external data.
       </p>
       <div class="code-block"><code>pub enum Plane {
     Control,  // User-initiated (chat, voice, UI command)
@@ -1113,7 +1113,7 @@ pub struct InjectionEvent {
     <div class="deep-section">
       <h3>Hidden Unicode Characters (13 Total)</h3>
       <p>
-        Attackers use invisible Unicode to hide injection attempts visually. Sovereign OS detects all 13 canonical zero-width and control characters:
+        Attackers use invisible Unicode to hide injection attempts visually. Sovereign detects all 13 canonical zero-width and control characters:
       </p>
       <table class="const-table">
         <tr><th>Character Name</th><th>Codepoint</th><th>Severity</th><th>Purpose</th></tr>
@@ -1172,7 +1172,7 @@ pub struct InjectionEvent {
     <div class="deep-section">
       <h3>Surfacing Flow (orchestrator.rs:1122–1152)</h3>
       <p>
-        When content enters the system, this flow ensures detection results are shown to the user immediately:
+        When content enters the system, this flow is designed to show detection results to the user immediately:
       </p>
       <div class="flow-diagram">
 Content received (document, email, etc.)
@@ -1241,7 +1241,7 @@ pub async fn run_skill(
     <div class="deep-section">
       <h3>Why This Matters: Hard Barriers (UX Principle #6)</h3>
       <p>
-        Sovereign OS's injection defense rests on three hard barriers that cannot be overcome by prompts or model output:
+        Sovereign's injection defense rests on three hard barriers designed to prevent bypass by prompts or model output:
       </p>
       <ul class="concept-list">
         <li><strong>Structural capability denial:</strong> Data plane has no access to Modify/Transmit/Destruct tools at compile time. Not a prompt instruction—a missing function.</li>
@@ -1257,7 +1257,7 @@ pub async fn run_skill(
         </ul>
       </p>
       <p style="margin-top: 12px;">
-        These capabilities simply don't exist in the data plane's execution environment. The architecture itself prevents the attack.
+        These capabilities simply don't exist in the data plane's execution environment. The architecture is designed to prevent the attack.
       </p>
     </div>
 
@@ -1270,7 +1270,7 @@ pub async fn run_skill(
 <!-- ========== FOOTER ========== -->
 <footer role="contentinfo" style="border-top: 1px solid var(--c-border-subtle); padding: 40px 24px; font-size: 0.82rem; color: var(--c-text-dim);">
   <div style="max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
-    <span>&copy; 2026 Sovereign OS. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <span>&copy; 2026 Sovereign GE. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
     <div style="display: flex; gap: 20px;">
       <a href="https://github.com/sovereign-os/sovereign" target="_blank" rel="noopener">GitHub</a>
       <a href="https://github.com/sovereign-os/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
@@ -1286,14 +1286,14 @@ pub async fn run_skill(
     {
       "@type": "ListItem",
       "position": 1,
-      "name": "Sovereign OS",
-      "item": "https://sovereign-os.org/"
+      "name": "Sovereign GE",
+      "item": "https://clenoble.github.io/sovereign-os/"
     },
     {
       "@type": "ListItem",
       "position": 2,
       "name": "Prompt Injection Architecture",
-      "item": "https://sovereign-os.org/detail-prompt-injection.html"
+      "item": "https://clenoble.github.io/sovereign-os/detail-prompt-injection.html"
     }
   ]
 }

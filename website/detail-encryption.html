@@ -3,19 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Encryption & Key Management — Sovereign OS</title>
-<meta name="description" content="How Sovereign OS protects your documents with modern encryption, multi-level key hierarchies, and cryptographic guarantees.">
-<link rel="canonical" href="https://sovereign-os.org/detail-encryption.html">
+<title>Encryption & Key Management — Sovereign GE</title>
+<meta name="description" content="How Sovereign GE protects your documents with modern encryption, multi-level key hierarchies, and cryptographic protections.">
+<link rel="canonical" href="https://clenoble.github.io/sovereign-os/detail-encryption.html">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://sovereign-os.org/detail-encryption.html">
-<meta property="og:title" content="Encryption & Key Management — Sovereign OS">
-<meta property="og:description" content="How Sovereign OS protects your documents with modern encryption, multi-level key hierarchies, and cryptographic guarantees.">
-<meta property="og:image" content="https://sovereign-os.org/logo-static.svg">
-<meta property="og:site_name" content="Sovereign OS">
+<meta property="og:url" content="https://clenoble.github.io/sovereign-os/detail-encryption.html">
+<meta property="og:title" content="Encryption & Key Management — Sovereign GE">
+<meta property="og:description" content="How Sovereign GE protects your documents with modern encryption, multi-level key hierarchies, and cryptographic protections.">
+<meta property="og:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+<meta property="og:site_name" content="Sovereign GE">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="Encryption & Key Management — Sovereign OS">
-<meta name="twitter:description" content="How Sovereign OS protects your documents with modern encryption, multi-level key hierarchies, and cryptographic guarantees.">
-<meta name="twitter:image" content="https://sovereign-os.org/logo-static.svg">
+<meta name="twitter:title" content="Encryption & Key Management — Sovereign GE">
+<meta name="twitter:description" content="How Sovereign GE protects your documents with modern encryption, multi-level key hierarchies, and cryptographic protections.">
+<meta name="twitter:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
 <style>
 /* ========== RESET & BASE ========== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -444,9 +444,9 @@ details > summary::-webkit-details-marker { display: none; }
     <a href="index.html" class="back-link" aria-label="Back to homepage">
       ← Back to Overview
     </a>
-    <a href="index.html" class="logo" aria-label="Sovereign OS home">
+    <a href="index.html" class="logo" aria-label="Sovereign GE home">
       <span class="logo-mark" aria-hidden="true"><img src="logo-icon.svg" alt=""></span>
-      Sovereign OS
+      Sovereign GE
     </a>
     <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="document.querySelector('nav').classList.toggle('open'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">☰</button>
     <nav role="navigation" aria-label="Main navigation">
@@ -467,8 +467,8 @@ details > summary::-webkit-details-marker { display: none; }
 <div class="page-header">
   <h1>Encryption & Key Management</h1>
   <p class="subtitle">
-    How Sovereign OS protects your documents with modern encryption, multi-level key hierarchies,
-    and cryptographic guarantees.
+    How Sovereign protects your documents with modern encryption, multi-level key hierarchies,
+    and cryptographic protections.
   </p>
 </div>
 
@@ -485,8 +485,8 @@ details > summary::-webkit-details-marker { display: none; }
   <div class="tier-1-content">
     <p>
       Every document is encrypted with its own unique key. Keys are derived from a single master key only you control.
-      Stolen hard drive = encrypted noise. Stolen document key = one document. Stolen master key = catastrophic
-      (but guardian recovery protects you). Modern cipher (XChaCha20-Poly1305). No backdoors.
+      Stolen hard drive = encrypted noise. Stolen document key = one document. Stolen master key = serious risk
+      (but guardian recovery is designed to protect you). Modern cipher (XChaCha20-Poly1305). No backdoors by design.
     </p>
   </div>
 </section>
@@ -526,7 +526,7 @@ details > summary::-webkit-details-marker { display: none; }
         <div class="concept-block">
           <h3>Master → Device → KEK → Document Keys</h3>
           <ul class="concept-list">
-            <li><strong>Master Key (32 bytes):</strong> You control this alone. Never synced. Stored in OS keyring or hardware wallet. Derivation: passphrase + salt via HKDF-SHA256.</li>
+            <li><strong>Master Key (32 bytes):</strong> You control this alone. Not synced by design. Stored in OS keyring or hardware wallet. Derivation: passphrase + salt via HKDF-SHA256.</li>
             <li><strong>Device Key (32 bytes):</strong> Derived from Master + device_id via HKDF. Per-device, so revoke one device without affecting others.</li>
             <li><strong>KEK (Key Encryption Key, 32 bytes):</strong> Random per encryption epoch. Wraps all document keys for that epoch. Enables rotation without re-encrypting documents.</li>
             <li><strong>Document Keys (32 bytes each):</strong> One per document. Encrypts the document content. Wrapped with KEK for storage.</li>
@@ -560,10 +560,10 @@ details > summary::-webkit-details-marker { display: none; }
           <h3>Zero Key Material Left in RAM</h3>
           <ul class="concept-list">
             <li><strong>Zeroize trait:</strong> All key types implement <code>Zeroize</code> and <code>ZeroizeOnDrop</code>. When a key goes out of scope, its bytes are overwritten with zeros.</li>
-            <li><strong>No copies:</strong> Keys are moved, not cloned. Prevents accidental duplication in memory.</li>
+            <li><strong>No copies:</strong> Keys are moved, not cloned. Designed to prevent accidental duplication in memory.</li>
             <li><strong>Debug output redaction:</strong> Custom <code>Debug</code> impl for key types. Printing a key yields <code>"MasterKey(***REDACTED***)"</code>, never the actual bytes.</li>
             <li><strong>Stack safety:</strong> Stack buffers used in crypto routines are also zeroized. No leftover ciphertext or plaintext on the stack after decryption.</li>
-            <li><strong>No serialization:</strong> Keys are not Serialize/Deserialize. Can't accidentally JSON-dump your keys.</li>
+            <li><strong>No serialization:</strong> Keys are not Serialize/Deserialize. Designed to prevent accidentally JSON-dumping your keys.</li>
           </ul>
         </div>
       </div>
@@ -613,7 +613,7 @@ pub fn decrypt(ciphertext: &[u8], nonce: &[u8; NONCE_SIZE], key: &[u8; KEY_SIZE]
     <div class="deep-section">
       <h3>MasterKey (sovereign-crypto/src/keys.rs:10–40)</h3>
       <p>
-        The master key is the root of the key hierarchy. Never leave the device unless recovered by a guardian.
+        The master key is the root of the key hierarchy. It is not designed to leave the device unless recovered by a guardian.
       </p>
       <div class="code-block"><code>pub struct MasterKey {
     bytes: [u8; 32],
@@ -769,7 +769,7 @@ On read:
       </p>
       <div class="const-table">
         <tr><th>Key / Nonce Type</th><th>Size</th><th>Bit Strength</th><th>Storage</th></tr>
-        <tr><td>Master Key</td><td>32 bytes</td><td>256 bits</td><td>OS keyring (never synced)</td></tr>
+        <tr><td>Master Key</td><td>32 bytes</td><td>256 bits</td><td>OS keyring (not synced by design)</td></tr>
         <tr><td>Device Key</td><td>32 bytes</td><td>256 bits</td><td>Derived on-demand from Master</td></tr>
         <tr><td>KEK (per epoch)</td><td>32 bytes</td><td>256 bits</td><td>Wrapped by Device Key, stored in DB</td></tr>
         <tr><td>Document Key</td><td>32 bytes</td><td>256 bits</td><td>Wrapped by KEK, stored in DB</td></tr>
@@ -778,7 +778,7 @@ On read:
     </div>
 
     <div class="deep-section">
-      <h3>Threat Model & Guarantees</h3>
+      <h3>Threat Model & Protections</h3>
       <p>
         Encryption provides confidentiality and integrity. Here's what we protect against and what we don't.
       </p>
@@ -806,7 +806,7 @@ On read:
 <!-- ========== FOOTER ========== -->
 <footer role="contentinfo" style="border-top: 1px solid var(--c-border-subtle); padding: 40px 24px; font-size: 0.82rem; color: var(--c-text-dim);">
   <div style="max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
-    <span>&copy; 2026 Sovereign OS. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <span>&copy; 2026 Sovereign GE. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
     <div style="display: flex; gap: 20px;">
       <a href="https://github.com/sovereign-os/sovereign" target="_blank" rel="noopener">GitHub</a>
       <a href="https://github.com/sovereign-os/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
@@ -823,14 +823,14 @@ On read:
     {
       "@type": "ListItem",
       "position": 1,
-      "name": "Sovereign OS",
-      "item": "https://sovereign-os.org/"
+      "name": "Sovereign GE",
+      "item": "https://clenoble.github.io/sovereign-os/"
     },
     {
       "@type": "ListItem",
       "position": 2,
       "name": "Encryption & Key Management",
-      "item": "https://sovereign-os.org/detail-encryption.html"
+      "item": "https://clenoble.github.io/sovereign-os/detail-encryption.html"
     }
   ]
 }

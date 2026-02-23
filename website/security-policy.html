@@ -3,19 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Security Policy — Sovereign OS</title>
-    <meta name="description" content="Security policy and vulnerability reporting for Sovereign OS. Responsible disclosure and security architecture overview.">
-    <link rel="canonical" href="https://sovereign-os.org/security-policy.html">
+    <title>Security Policy — Sovereign GE</title>
+    <meta name="description" content="Security policy and vulnerability reporting for Sovereign GE. Responsible disclosure and security architecture overview.">
+    <link rel="canonical" href="https://clenoble.github.io/sovereign-os/security-policy.html">
     <meta property="og:type" content="website">
-    <meta property="og:url" content="https://sovereign-os.org/security-policy.html">
-    <meta property="og:title" content="Security Policy — Sovereign OS">
-    <meta property="og:description" content="Security policy and vulnerability reporting for Sovereign OS. Responsible disclosure and security architecture overview.">
-    <meta property="og:image" content="https://sovereign-os.org/logo-static.svg">
-    <meta property="og:site_name" content="Sovereign OS">
+    <meta property="og:url" content="https://clenoble.github.io/sovereign-os/security-policy.html">
+    <meta property="og:title" content="Security Policy — Sovereign GE">
+    <meta property="og:description" content="Security policy and vulnerability reporting for Sovereign GE. Responsible disclosure and security architecture overview.">
+    <meta property="og:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+    <meta property="og:site_name" content="Sovereign GE">
     <meta name="twitter:card" content="summary">
-    <meta name="twitter:title" content="Security Policy — Sovereign OS">
-    <meta name="twitter:description" content="Security policy and vulnerability reporting for Sovereign OS. Responsible disclosure and security architecture overview.">
-    <meta name="twitter:image" content="https://sovereign-os.org/logo-static.svg">
+    <meta name="twitter:title" content="Security Policy — Sovereign GE">
+    <meta name="twitter:description" content="Security policy and vulnerability reporting for Sovereign GE. Responsible disclosure and security architecture overview.">
+    <meta name="twitter:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
     <style>
         :root {
             --c-bg: #0c0e13;
@@ -420,7 +420,7 @@
 
             <h3>In Scope</h3>
             <ul>
-                <li>All Sovereign OS crates: <code>sovereign-core</code>, <code>sovereign-db</code>, <code>sovereign-crypto</code>, <code>sovereign-ai</code>, <code>sovereign-ui</code>, <code>sovereign-canvas</code>, <code>sovereign-skills</code>, <code>sovereign-p2p</code>, <code>sovereign-comms</code>, <code>sovereign-app</code>;</li>
+                <li>All Sovereign crates: <code>sovereign-core</code>, <code>sovereign-db</code>, <code>sovereign-crypto</code>, <code>sovereign-ai</code>, <code>sovereign-ui</code>, <code>sovereign-canvas</code>, <code>sovereign-skills</code>, <code>sovereign-p2p</code>, <code>sovereign-comms</code>, <code>sovereign-app</code>;</li>
                 <li>Published releases (stable and pre-release);</li>
                 <li>Website (sovereignos.org) and documentation;</li>
                 <li>Official GitHub repositories.</li>
@@ -430,7 +430,7 @@
             <ul>
                 <li>Third-party AI models (Qwen, Llama, Whisper, Piper) — report to model maintainers;</li>
                 <li>System dependencies (GTK, GStreamer, CUDA, ROCm, Python) — report to their maintainers;</li>
-                <li>Community-contributed skills (unless security issues in Sovereign OS skill framework);</li>
+                <li>Community-contributed skills (unless security issues in Sovereign skill framework);</li>
                 <li>Operational security of user devices (lost/stolen devices, malware, weak passwords);</li>
                 <li>Social engineering or phishing attacks;</li>
                 <li>Attacks on cloud providers or third-party services (report to them directly).</li>
@@ -499,7 +499,7 @@
             </table>
 
             <h3>Prompt Injection Boundary</h3>
-            <p>Sovereign OS uses the ChatML format to separate user input from system instructions. User messages are tagged with role boundaries that prevent prompt injection:</p>
+            <p>Sovereign uses the ChatML format to separate user input from system instructions. User messages are tagged with role boundaries that prevent prompt injection:</p>
             <pre>
 &lt;|im_start|&gt;system
 You are a helpful assistant...
@@ -567,7 +567,7 @@ You are a helpful assistant...
             <h3>Coordinated Disclosure Steps</h3>
             <ol>
                 <li>Reporter submits vulnerability via secure channel.</li>
-                <li>Sovereign OS team acknowledges receipt within 48 hours.</li>
+                <li>Sovereign team acknowledges receipt within 48 hours.</li>
                 <li>Team assesses severity and develops fix.</li>
                 <li>Fix is tested on all supported versions.</li>
                 <li>Advisory is drafted in private (CVE if applicable).</li>
@@ -588,7 +588,7 @@ You are a helpful assistant...
 
         <section>
             <h2>Bug Bounty</h2>
-            <p>Sovereign OS currently does not offer a formal bug bounty program due to our volunteer, non-profit nature. However, we provide:</p>
+            <p>Sovereign currently does not offer a formal bug bounty program due to our volunteer, non-profit nature. However, we provide:</p>
             <ul>
                 <li><strong>Recognition:</strong> Researchers who report vulnerabilities are credited in security advisories (if desired);</li>
                 <li><strong>Gratitude:</strong> We deeply appreciate responsible research that improves security;</li>

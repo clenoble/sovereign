@@ -1,4 +1,4 @@
-# Sovereign OS — https://clenoble.github.io/sovereign-os/
+# Sovereign GE — https://clenoble.github.io/sovereign-os/
 User-agent: *
 Allow: /
 

@@ -3,18 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sovereign OS — Your Data, Your Rules</title>
-<meta name="description" content="A local-first personal operating system with AI assistance, end-to-end encryption, and peer-to-peer sync. Open source (AGPL-3.0).">
+<title>Sovereign GE — Your Data, Your Rules</title>
+<meta name="description" content="An experimental local-first graphical environment with on-device AI, end-to-end encryption, and peer-to-peer sync. Open source (AGPL-3.0).">
 <link rel="canonical" href="https://clenoble.github.io/sovereign-os/">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://clenoble.github.io/sovereign-os/">
-<meta property="og:title" content="Sovereign OS — Your Data, Your Rules">
-<meta property="og:description" content="A local-first personal operating system with AI assistance, end-to-end encryption, and peer-to-peer sync. Open source (AGPL-3.0).">
+<meta property="og:title" content="Sovereign GE — Your Data, Your Rules">
+<meta property="og:description" content="An experimental local-first graphical environment with on-device AI, end-to-end encryption, and peer-to-peer sync. Open source (AGPL-3.0).">
 <meta property="og:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
-<meta property="og:site_name" content="Sovereign OS">
+<meta property="og:site_name" content="Sovereign GE">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="Sovereign OS — Your Data, Your Rules">
-<meta name="twitter:description" content="A local-first personal operating system with AI assistance, end-to-end encryption, and peer-to-peer sync. Open source (AGPL-3.0).">
+<meta name="twitter:title" content="Sovereign GE — Your Data, Your Rules">
+<meta name="twitter:description" content="An experimental local-first graphical environment with on-device AI, end-to-end encryption, and peer-to-peer sync. Open source (AGPL-3.0).">
 <meta name="twitter:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
 <style>
 /* ========== CONSOLIDATED STYLES (from consolidated-styles.css) ========== */
@@ -196,6 +196,11 @@ section { padding: 100px 24px; }
 .guardian-step h4 { font-size: 0.85rem; font-weight: 700; color: var(--c-text-bright); margin-bottom: 4px; }
 .guardian-step p { font-size: 0.78rem; color: var(--c-text-dim); }
 .guardian-arrow { color: var(--c-border); font-size: 1.2rem; flex-shrink: 0; }
+
+.roadmap-card { background: var(--c-bg-card); border: 1px dashed var(--c-border); border-radius: var(--radius-lg); padding: 28px; position: relative; }
+.roadmap-card::before { content: "Vision"; position: absolute; top: 12px; right: 16px; font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--c-text-dim); background: var(--c-bg-alt); border: 1px solid var(--c-border-subtle); border-radius: 4px; padding: 2px 8px; }
+.roadmap-card h3 { font-size: 0.95rem; font-weight: 700; color: var(--c-text-bright); margin-bottom: 8px; }
+.roadmap-card p { font-size: 0.85rem; color: var(--c-text-dim); line-height: 1.55; }
 
 .cta-section { text-align: center; padding: 120px 24px; background: var(--c-bg); position: relative; }
 .cta-section::before { content: ""; position: absolute; inset: 0; background: radial-gradient(ellipse 50% 60% at 50% 50%, rgba(74, 158, 255, 0.05), transparent); pointer-events: none; }
@@ -396,9 +401,9 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 <!-- ========== HEADER ========== -->
 <header role="banner">
   <div class="header-inner">
-    <a href="#/" class="logo" aria-label="Sovereign OS home">
+    <a href="#/" class="logo" aria-label="Sovereign GE home">
       <span class="logo-mark" aria-hidden="true"><img src="logo-icon.svg" alt=""></span>
-      Sovereign OS
+      Sovereign GE
     </a>
     <a href="#/" class="back-link" style="display:none" aria-label="Back to homepage">← Home</a>
     <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" onclick="document.querySelector('nav').classList.toggle('open'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">☰</button>
@@ -444,7 +449,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 <!-- ========== FOOTER ========== -->
 <footer role="contentinfo">
   <div class="footer-inner">
-    <span>&copy; 2026 Sovereign OS. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <span>&copy; 2026 Sovereign GE. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
     <div class="footer-links">
       <a href="https://github.com/sovereign-os/sovereign" target="_blank" rel="noopener">GitHub</a>
       <a href="https://github.com/sovereign-os/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
@@ -473,7 +478,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
     <div class="chatbox-avatar" aria-hidden="true"><img src="logo-icon.svg" alt=""></div>
     <div class="chatbox-header-text">
       <h3>Sovereign AI Guide</h3>
-      <p>Ask me anything about Sovereign OS</p>
+      <p>Ask me anything about Sovereign</p>
     </div>
   </div>
   <div class="chatbox-messages" id="chatMessages" role="log" aria-live="polite" aria-label="Chat messages">
@@ -482,7 +487,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
   </div>
   <form class="chatbox-input" id="chatForm" onsubmit="return false;">
     <label for="chatInput" class="sr-only">Type a message</label>
-    <input type="text" id="chatInput" placeholder="Ask about Sovereign OS..." autocomplete="off">
+    <input type="text" id="chatInput" placeholder="Ask about Sovereign..." autocomplete="off">
     <button type="submit" id="chatSend">Send</button>
   </form>
 </div>
@@ -496,23 +501,24 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 <section class="hero" aria-labelledby="hero-title">
   <div class="hero-inner">
     <div class="hero-text">
-      <img src="logo-animated.svg" alt="Sovereign OS logo" class="hero-logo" width="120" height="120">
+      <img src="logo-animated.svg" alt="Sovereign GE logo" class="hero-logo" width="120" height="120">
       <h1 id="hero-title">Your data,<br>your <span>rules</span>.</h1>
       <p class="subtitle">
-        A local-first personal OS with on-device AI, end-to-end encryption,
-        and peer-to-peer sync. No cloud. No lock-in. Open source.
+        An experimental graphical environment exploring local-first computing
+        with on-device AI, end-to-end encryption, and peer-to-peer sync.
+        No cloud. No lock-in. Open source prototype.
         Built by a human and <a href="https://claude.ai" target="_blank" rel="noopener" style="color: var(--c-accent);">Claude</a>, Anthropic's AI.
       </p>
       <div class="hero-actions">
         <a href="https://github.com/sovereign-os/sovereign" class="btn btn-primary" target="_blank" rel="noopener">
-          Download Alpha
+          View on GitHub
         </a>
         <a href="#features" class="btn btn-secondary">
           Explore Features
         </a>
       </div>
     </div>
-    <div class="hero-visual" aria-hidden="true" role="img" aria-label="Mock-up of the Sovereign OS spatial canvas showing document cards in thread lanes along a timeline">
+    <div class="hero-visual" aria-hidden="true" role="img" aria-label="Mock-up of the Sovereign spatial canvas showing document cards in thread lanes along a timeline">
       <div class="hero-visual-bar">
         <span class="hero-visual-dot"></span>
         <span class="hero-visual-dot"></span>
@@ -558,10 +564,10 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 
 <section id="features" aria-labelledby="features-title">
   <div class="section-inner">
-    <p class="section-label">Core Features</p>
-    <h2 class="section-title" id="features-title">Everything runs on your machine</h2>
+    <p class="section-label">Key concepts we want to test</p>
+    <h2 class="section-title" id="features-title">What if everything ran on your machine?</h2>
     <p class="section-desc">
-      Sovereign OS replaces cloud-dependent apps with a unified, encrypted workspace.
+      Sovereign explores alternatives to cloud-dependent apps with a unified, encrypted workspace.
       Your AI assistant, your documents, your communications — all local-first.
     </p>
     <div class="features-grid">
@@ -569,14 +575,14 @@ p { margin-bottom: 1rem; color: var(--c-text); }
         <div class="feature-icon local" aria-hidden="true">⟁</div>
         <h3>Local-First Storage</h3>
         <p>SurrealDB graph database stores documents, threads, and relationships locally.
-          Sub-millisecond queries, full-text search, git-style version history per document.</p>
+          Fast queries, full-text search, git-style version history per document.</p>
         <a href="#/content-skills" class="learn-more">Content &amp; skills architecture</a>
       </div>
       <div class="feature-card">
         <div class="feature-icon ai" aria-hidden="true">◈</div>
         <h3>On-Device AI Orchestrator</h3>
         <p>Qwen2.5 models run entirely on your hardware via llama.cpp. Intent classification,
-          multi-turn chat, tool calling, voice input — no data ever leaves your machine.</p>
+          multi-turn chat, tool calling, voice input — designed so no data leaves your machine.</p>
         <a href="#/ai-orchestrator" class="learn-more">How the AI works</a>
       </div>
       <div class="feature-card">
@@ -597,7 +603,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
         <div class="feature-icon p2p" aria-hidden="true">⬡</div>
         <h3>Peer-to-Peer Sync</h3>
         <p>Sync across your devices via libp2p with QUIC transport.
-          No server needed. Encrypted manifests ensure even the network can't see your data.</p>
+          No server needed. Encrypted manifests are designed so that even the network can't see your data.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon skills" aria-hidden="true">⬢</div>
@@ -613,10 +619,10 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 <section id="architecture" aria-labelledby="arch-title">
   <div class="section-inner">
     <p class="section-label">Architecture</p>
-    <h2 class="section-title" id="arch-title">Prompt injection? Handled by architecture.</h2>
+    <h2 class="section-title" id="arch-title">Can architecture defend against prompt injection?</h2>
     <p class="section-desc">
       The AI orchestrator separates the control plane (user instructions, skill invocation)
-      from the data plane (content processing). External content can never trigger actions.
+      from the data plane (content processing). External content is restricted from triggering actions by design.
     </p>
     <div class="arch-grid">
       <div class="arch-diagram">
@@ -663,7 +669,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 <section id="security" aria-labelledby="security-title">
   <div class="section-inner">
     <p class="section-label">Security Model</p>
-    <h2 class="section-title" id="security-title">Friction that scales with risk</h2>
+    <h2 class="section-title" id="security-title">What if friction scaled with risk?</h2>
     <p class="section-desc">
       Action Gravity: the more irreversible an action, the more friction it requires.
       Reading is instant. Deleting needs explicit confirmation and a 30-day undo window.
@@ -707,11 +713,11 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 <section id="recovery" aria-labelledby="recovery-title">
   <div class="section-inner">
     <p class="section-label">Data Recovery</p>
-    <h2 class="section-title" id="recovery-title">Social recovery, not corporate recovery</h2>
+    <h2 class="section-title" id="recovery-title">What if your friends were your backup?</h2>
     <p class="section-desc">
       Lost all your devices? Five trusted guardians hold encrypted key shards.
       Three of five can reconstruct your master key — after a 72-hour fraud window.
-      Guardians never see your data.
+      Guardians are not given access to your data.
     </p>
     <div class="guardian-flow" role="list" aria-label="Guardian recovery flow">
       <div class="guardian-step" role="listitem">
@@ -745,7 +751,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 <section aria-labelledby="comms-title">
   <div class="section-inner">
     <p class="section-label">Communications</p>
-    <h2 class="section-title" id="comms-title">One inbox, all channels</h2>
+    <h2 class="section-title" id="comms-title">What if all your messages lived in one place?</h2>
     <p class="section-desc">
       Email (IMAP/SMTP), Signal, and WhatsApp unified in a single interface.
       Contacts merged across channels. Conversations archived in your encrypted local graph.
@@ -771,9 +777,9 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 <section aria-labelledby="specs-title">
   <div class="section-inner">
     <p class="section-label">Requirements</p>
-    <h2 class="section-title" id="specs-title">Runs on mid-range hardware</h2>
+    <h2 class="section-title" id="specs-title">Designed for mid-range hardware</h2>
     <p class="section-desc">
-      No data center needed. Sovereign OS runs on a modern desktop or gaming laptop.
+      No data center needed. Sovereign runs on a modern desktop or gaming laptop.
     </p>
     <div class="features-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
       <div class="feature-card" style="text-align:center;">
@@ -796,12 +802,43 @@ p { margin-bottom: 1rem; color: var(--c-text); }
   </div>
 </section>
 
+<section aria-labelledby="roadmap-title">
+  <div class="section-inner">
+    <p class="section-label">Where we'd like to go next</p>
+    <h2 class="section-title" id="roadmap-title">Ideas we haven't built yet</h2>
+    <p class="section-desc">
+      These are directions we're exploring, not commitments. None of this code exists today.
+      We're sharing them because they shape the project's long-term vision.
+    </p>
+    <div class="features-grid">
+      <div class="roadmap-card">
+        <h3>Identity Firewall</h3>
+        <p>A kernel-level proxy that isolates tracking across domains — cookie isolation,
+          URL parameter stripping, fingerprint resistance. The goal is tracking prevention,
+          not anonymity. No Tor, no VPN, no synthetic identities.</p>
+      </div>
+      <div class="roadmap-card">
+        <h3>Contextual Identities</h3>
+        <p>Separate browsing contexts per domain (work, personal, banking) so that trackers
+          can't correlate activity across contexts. Inspired by Firefox Containers,
+          but integrated at the environment level.</p>
+      </div>
+      <div class="roadmap-card">
+        <h3>PII Dashboard</h3>
+        <p>A single view showing what personal data exists across your documents, messages,
+          and contacts — and where it's been shared. Think of it as a personal data map
+          that helps you understand your own exposure.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section class="cta-section" aria-labelledby="cta-title">
   <div class="section-inner">
     <p class="section-label">Open Source · AGPL-3.0</p>
-    <h2 class="section-title" id="cta-title">Take back control of your digital life</h2>
+    <h2 class="section-title" id="cta-title">An experimental prototype — come explore with us</h2>
     <p class="section-desc">
-      Sovereign OS is in alpha. Download it, break it, contribute.
+      Sovereign GE is an experimental prototype. Try it, break it, contribute.
       Built in Rust. 10 crates. 16K+ lines. 367 tests.
       Co-developed with <a href="https://claude.ai" target="_blank" rel="noopener" style="color: var(--c-accent);">Claude Opus 4.6</a> by Anthropic.
     </p>
@@ -825,8 +862,8 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 <div class="page-header">
   <h1>Local AI Orchestrator</h1>
   <p class="subtitle">
-    How Sovereign OS runs AI entirely on your machine with a fast intent classifier, reasoning model,
-    and multi-turn chat agent. No cloud. No API keys. No subscription.
+    How Sovereign runs AI on your machine with a fast intent classifier, reasoning model,
+    and multi-turn chat agent. Designed to work without cloud services, API keys, or subscriptions.
   </p>
 </div>
 <section class="tier-section tier-1">
@@ -838,9 +875,9 @@ p { margin-bottom: 1rem; color: var(--c-text); }
   </div>
   <div class="tier-1-content">
     <p>
-      Sovereign OS runs AI entirely on your machine. A fast 3B router classifies your intent in milliseconds;
-      a larger 7B model loads on demand for complex queries. No cloud, no API key, no subscription.
-      Your prompts never leave your device.
+      Sovereign runs AI on your machine. A fast 3B router classifies your intent in milliseconds;
+      a larger 7B model loads on demand for complex queries. Designed to work without cloud services, API keys, or subscriptions.
+      Your prompts are processed locally by design.
     </p>
   </div>
 </section>
@@ -848,7 +885,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
   <div class="tier-header">
     <span class="tier-badge">2</span>
     <div>
-      <div class="tier-label">Two models, six tools, one local brain that never phones home</div>
+      <div class="tier-label">Two models, six tools, one local brain designed to stay local</div>
     </div>
   </div>
   <div class="tier-2-content">
@@ -893,7 +930,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       <summary>Six Read-Only Tools (Observe Level)</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>AI Can Browse, Never Modify</h3>
+          <h3>AI Can Browse, Not Modify</h3>
           <p>
             The AI has access to exactly 6 tools, all at Observe level (Level 0 in Action Gravity):
           </p>
@@ -906,7 +943,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
             <li><code>list_contacts</code> — Get contact list (no private data).</li>
           </ul>
           <p style="margin-top: 12px;">
-            These tools can never modify, delete, or export data. The AI can propose actions (e.g., "Should I export this to PDF?"),
+            These tools are designed to be read-only — they cannot modify, delete, or export data. The AI can propose actions (e.g., "Should I export this to PDF?"),
             but execution requires explicit user confirmation and goes through the Action Gravity gate.
           </p>
         </div>
@@ -918,13 +955,13 @@ p { margin-bottom: 1rem; color: var(--c-text); }
         <div class="concept-block">
           <h3>Wake Word → Speech-to-Text → Chat → Text-to-Speech</h3>
           <ul class="concept-list">
-            <li><strong>Wake Word Detection:</strong> Rustpotter listening for "sovereign" (threshold 0.4). Runs on a rolling 10-second buffer that never leaves your device.</li>
+            <li><strong>Wake Word Detection:</strong> Rustpotter listening for "sovereign" (threshold 0.4). Runs on a rolling 10-second buffer processed locally.</li>
             <li><strong>Speech-to-Text:</strong> Whisper (OpenAI's model, quantized via llama.cpp). Converts speech at 16 kHz sample rate in real-time.</li>
             <li><strong>Chat:</strong> Text from Whisper feeds into the intent classification and agent loop.</li>
-            <li><strong>Text-to-Speech:</strong> Piper TTS with multiple voice options. Fully local, natural-sounding responses.</li>
+            <li><strong>Text-to-Speech:</strong> Piper TTS with multiple voice options. Runs locally, natural-sounding responses.</li>
           </ul>
           <p style="margin-top: 12px;">
-            All audio processing happens on-device. No audio ever leaves your machine.
+            All audio processing happens on-device. Audio is designed to stay on your machine.
           </p>
         </div>
       </div>
@@ -976,7 +1013,7 @@ impl IntentClassifier {
 <div class="page-header">
   <h1>Prompt Injection Architecture</h1>
   <p class="subtitle">
-    Structural immunity: why Sovereign OS makes prompt injection attacks structurally impossible
+    How Sovereign defends against prompt injection attacks
     by separating data and control planes.
   </p>
 </div>
@@ -986,15 +1023,15 @@ impl IntentClassifier {
   <div class="tier-header">
     <span class="tier-badge">1</span>
     <div>
-      <div class="tier-label">Structurally immune by design</div>
+      <div class="tier-label">Architectural defense by design</div>
     </div>
   </div>
 
   <div class="tier-1-content">
     <p>
       Most AI agents try to prevent prompt injection by telling the model "don't follow bad instructions."
-      Sovereign OS makes it structurally impossible: the component that reads external content has no API
-      for taking actions. Even a fully compromised model can't cause harm.
+      Sovereign takes a different approach: the component that reads external content has no API
+      for taking actions. Even a compromised model is designed to be unable to cause harm.
     </p>
   </div>
 </section>
@@ -1016,11 +1053,11 @@ impl IntentClassifier {
         <div class="concept-block">
           <h3>Control Plane vs. Data Plane</h3>
           <p>
-            Sovereign OS enforces two separate processing paths, each with different capabilities:
+            Sovereign enforces two separate processing paths, each with different capabilities:
           </p>
           <ul class="concept-list">
             <li><strong>Control Plane:</strong> User-initiated input only (chat commands, voice, UI). Has full access to all action levels (0–4). Can create, modify, delete, transmit. Enforced by code in <code>action_gate.rs</code>, not by prompt instructions.</li>
-            <li><strong>Data Plane:</strong> External content only (documents, emails, PDFs, web content). Restricted to Level 0 (Observe). Can read and summarize, never modify. Model cannot invoke any tools that change state.</li>
+            <li><strong>Data Plane:</strong> External content only (documents, emails, PDFs, web content). Restricted to Level 0 (Observe). Can read and summarize, not modify. The model has no access to tools that change state.</li>
           </ul>
           <p style="margin-top: 12px;">
             This separation is enforced at the architectural level. Even if a jailbroken model tries to call a Modify/Transmit/Destruct action from the data plane,
@@ -1056,7 +1093,7 @@ impl IntentClassifier {
         <div class="concept-block">
           <h3>UX Principle #7: Show the Attack</h3>
           <p>
-            Sovereign OS doesn't silently filter injection attempts. Instead, it surfaces them to the user with full transparency:
+            Sovereign doesn't silently filter injection attempts. Instead, it surfaces them to the user with full transparency:
           </p>
           <ul class="concept-list">
             <li><strong>Pattern name:</strong> Which detection method triggered (e.g., "role_override_ignore_previous").</li>
@@ -1088,7 +1125,7 @@ impl IntentClassifier {
             <li><code>list_contacts</code> — View contact info, no add/modify/export.</li>
           </ul>
           <p style="margin-top: 12px;">
-            Even a fully jailbroken model cannot execute <code>delete_document</code> or <code>export_to_email</code> because these functions
+            A jailbroken model cannot execute <code>delete_document</code> or <code>export_to_email</code> because these functions
             don't exist in the tool registry at data-plane execution time. Capability denial at compile time.
           </p>
         </div>
@@ -1112,7 +1149,7 @@ impl IntentClassifier {
     <div class="deep-section">
       <h3>Plane Enum (sovereign-core/src/security.rs:23–31)</h3>
       <p>
-        At the core, the <code>Plane</code> enum ensures every code path knows whether it's processing user input or external data.
+        At the core, the <code>Plane</code> enum tags every code path so the system knows whether it's processing user input or external data.
       </p>
       <div class="code-block"><code>pub enum Plane {
     Control,  // User-initiated (chat, voice, UI command)
@@ -1201,7 +1238,7 @@ pub struct InjectionEvent {
     <div class="deep-section">
       <h3>Hidden Unicode Characters (13 Total)</h3>
       <p>
-        Attackers use invisible Unicode to hide injection attempts visually. Sovereign OS detects all 13 canonical zero-width and control characters:
+        Attackers use invisible Unicode to hide injection attempts visually. Sovereign detects 13 canonical zero-width and control characters:
       </p>
       <table class="const-table">
         <tr><th>Character Name</th><th>Codepoint</th><th>Severity</th><th>Purpose</th></tr>
@@ -1260,7 +1297,7 @@ pub struct InjectionEvent {
     <div class="deep-section">
       <h3>Surfacing Flow (orchestrator.rs:1122–1152)</h3>
       <p>
-        When content enters the system, this flow ensures detection results are shown to the user immediately:
+        When content enters the system, this flow is designed to show detection results to the user immediately:
       </p>
       <div class="flow-diagram">
 Content received (document, email, etc.)
@@ -1329,7 +1366,7 @@ pub async fn run_skill(
     <div class="deep-section">
       <h3>Why This Matters: Hard Barriers (UX Principle #6)</h3>
       <p>
-        Sovereign OS's injection defense rests on three hard barriers that cannot be overcome by prompts or model output:
+        Sovereign's injection defense rests on three hard barriers designed to resist prompts or model output:
       </p>
       <ul class="concept-list">
         <li><strong>Structural capability denial:</strong> Data plane has no access to Modify/Transmit/Destruct tools at compile time. Not a prompt instruction—a missing function.</li>
@@ -1337,11 +1374,11 @@ pub async fn run_skill(
         <li><strong>Detection & surfacing:</strong> Injection attempts are not filtered silently. They're surfaced to the user with full context, preserving autonomy while providing transparency.</li>
       </ul>
       <p style="margin-top: 12px;">
-        Even if the LLM is fully compromised (jailbroken, fine-tuned to ignore safety), it cannot:
+        Even if the LLM is compromised (jailbroken, fine-tuned to ignore safety), the architecture is designed to prevent it from:
         <ul class="concept-list" style="margin-top: 8px;">
-          <li>Execute <code>delete_document</code> from a PDF</li>
-          <li>Send data from an email message</li>
-          <li>Modify thread metadata from search results</li>
+          <li>Executing <code>delete_document</code> from a PDF</li>
+          <li>Sending data from an email message</li>
+          <li>Modifying thread metadata from search results</li>
         </ul>
       </p>
       <p style="margin-top: 12px;">
@@ -1380,7 +1417,7 @@ pub async fn run_skill(
 
   <div class="tier-1-content">
     <p>
-      Not all actions are equal. In Sovereign OS, friction scales with irreversibility. Reading documents is instant.
+      Not all actions are equal. In Sovereign, friction scales with irreversibility. Reading documents is instant.
       Editing requires conversational confirmation. Deleting triggers a modal with a 30-day undo window.
       This is Action Gravity: friction that matches consequence.
     </p>
@@ -1404,7 +1441,7 @@ pub async fn run_skill(
         <div class="concept-block">
           <h3>From Observe to Destruct</h3>
           <p>
-            Every action in Sovereign OS maps to one of five levels, each with different confirmation requirements:
+            Every action in Sovereign maps to one of five levels, each with different confirmation requirements:
           </p>
           <ul class="concept-list">
             <li><strong>Level 0 — Observe:</strong> Read documents, search, list threads. No confirmation needed. Instant.</li>
@@ -1426,11 +1463,11 @@ pub async fn run_skill(
         <div class="concept-block">
           <h3>Learning Your Preferences</h3>
           <p>
-            Sovereign OS doesn't ask the same question twice. It learns which actions you approve frequently and stops asking:
+            Sovereign doesn't ask the same question twice. It learns which actions you approve frequently and stops asking:
           </p>
           <ul class="concept-list">
             <li><strong>Consecutive approvals tracked:</strong> Each action type (e.g., "edit document") has its own counter.</li>
-            <li><strong>Threshold of 5:</strong> After 5 consecutive approvals for the same action, Sovereign OS stops asking and auto-executes.</li>
+            <li><strong>Threshold of 5:</strong> After 5 consecutive approvals for the same action, Sovereign stops asking and auto-executes.</li>
             <li><strong>Rejection resets counter:</strong> Say "no" once and the counter resets to zero. You must re-approve 5 times.</li>
             <li><strong>Persistent in trust_state.json:</strong> Trust decisions persist across sessions. Your preferences are remembered.</li>
             <li><strong>Levels 3–4 never auto-approve:</strong> Transmit and Destruct always require explicit confirmation, no matter how many times you've approved.</li>
@@ -1678,7 +1715,7 @@ If user rejected:
   "last_updated": "2026-02-22T16:45:00Z"
 }</code></div>
       <p style="margin-top: 12px;">
-        This structure allows Sovereign OS to learn your behavior without requiring re-confirmation for routine actions.
+        This structure allows Sovereign to learn your behavior without requiring re-confirmation for routine actions.
       </p>
     </div>
 
@@ -1713,8 +1750,8 @@ If user rejected:
 <div class="page-header">
   <h1>Encryption & Key Management</h1>
   <p class="subtitle">
-    How Sovereign OS protects your documents with modern encryption, multi-level key hierarchies,
-    and cryptographic guarantees.
+    How Sovereign protects your documents with modern encryption, multi-level key hierarchies,
+    and cryptographic protections.
   </p>
 </div>
 
@@ -2101,7 +2138,7 @@ On read:
           <ul class="concept-list">
             <li><strong>Master key → 5 shards:</strong> Your recovery key is split using SSS with parameters (k=3, n=5). This means exactly 5 shards are created.</li>
             <li><strong>Any 3 shards reconstruct:</strong> Any subset of 3 or more shards can mathematically reconstruct the original key. Fewer than 3 shards reveal nothing.</li>
-            <li><strong>Each shard is encrypted:</strong> Before giving shard #i to guardian i, we encrypt it with their public key. Guardians never see your data. They see only an opaque encrypted blob.</li>
+            <li><strong>Each shard is encrypted:</strong> Before giving shard #i to guardian i, we encrypt it with their public key. Guardians are not given access to your data. They see only an opaque encrypted blob.</li>
             <li><strong>Guardians are isolated:</strong> Each guardian holds one shard and knows only their own encrypted piece. They cannot derive your key from just their shard, nor can they see what other guardians hold.</li>
           </ul>
           <p style="margin-top: 12px;">
@@ -2167,7 +2204,7 @@ On read:
             <li><strong>Recovery ID:</strong> A unique identifier like "recovery_abc123def456". No name attached.</li>
             <li><strong>Action prompt:</strong> "Do you want to help recover this account? Approve/Reject."</li>
             <li><strong>Encrypted shard:</strong> If they approve, they submit a blob that looks like random bytes. They cannot decrypt it, inspect it, or derive meaning from it.</li>
-            <li><strong>No data visibility:</strong> Guardians never see your documents, emails, contacts, or any personal information.</li>
+            <li><strong>No data visibility:</strong> Guardians do not have access to your documents, emails, contacts, or any personal information.</li>
             <li><strong>No identifying info:</strong> They don't see your real name, email, or account handle in the recovery process.</li>
           </ul>
           <p style="margin-top: 12px;">
@@ -2318,17 +2355,17 @@ state = Complete
     Ok(())
 }</code></div>
       <p style="margin-top: 12px;">
-        This ensures a malicious initiator cannot force recovery if the real user notices and can abort.
+        This is designed so that a malicious initiator cannot force recovery if the real user notices and can abort.
       </p>
     </div>
 
     <div class="deep-section">
       <h3>Security Properties</h3>
       <p>
-        The recovery system is designed with threat modeling in mind. Here are the key security guarantees:
+        The recovery system is designed with threat modeling in mind. Here are the key security properties:
       </p>
       <ul class="concept-list">
-        <li><strong>Master key never leaves memory:</strong> The recovered key exists only in RAM during reconstruction. It is never logged, cached, or transmitted over the network.</li>
+        <li><strong>Master key stays in memory:</strong> The recovered key exists only in RAM during reconstruction. It is not logged, cached, or transmitted over the network by design.</li>
         <li><strong>Guardians are isolated:</strong> Each guardian only holds one encrypted shard. They cannot collude offline to reconstruct the key. Communication happens only through the system.</li>
         <li><strong>Epoch tracking:</strong> Each shard includes an epoch counter. Shards from old epochs are rejected. This prevents replay attacks where an attacker uses a captured shard multiple times.</li>
         <li><strong>Threat: fewer than 3 shards compromised:</strong> Useless. Mathematical guarantee: SSS with k=3 means &lt;3 shards leak zero information about the master key.</li>
@@ -3022,9 +3059,9 @@ impl CanvasRenderer {
 
   <div class="tier-1-content">
     <p>
-      In traditional apps, Notion owns your notes, Google owns your sheets. In Sovereign OS, the graph database owns your data.
-      Documents live in a persistent, queryable store with typed relationships. Skills are lightweight tools—markdown editor, PDF exporter—that operate on your data without owning it.
-      You switch tools freely. You never migrate data.
+      In traditional apps, Notion owns your notes, Google owns your sheets. In Sovereign, your data lives in a local graph database.
+      Documents live in a persistent, queryable store with typed relationships. Skills are lightweight tools — markdown editor, PDF exporter — that operate on your data without owning it.
+      You switch tools freely. No data migration needed.
     </p>
   </div>
 </section>
@@ -3064,7 +3101,7 @@ impl CanvasRenderer {
         <div class="concept-block">
           <h3>Atomic Units in a Flat Structure</h3>
           <p>
-            Documents are the atomic content unit in Sovereign OS. Threads organize documents into named project lanes (flat, no nesting).
+            Documents are the atomic content unit in Sovereign. Threads organize documents into named project lanes (flat, no nesting).
           </p>
           <ul class="concept-list">
             <li><strong>Document:</strong> Title, body (markdown or structured JSON), images, thread assignment, ownership flag (is_owned), spatial coordinates (for canvas), encryption nonce, soft-delete marker.</li>
@@ -3311,7 +3348,7 @@ impl CanvasRenderer {
 <div class="page-header">
   <h1>Ethics, Misuse Analysis & Design Constraints</h1>
   <p class="subtitle">
-    How Sovereign OS strengthens privacy while narrowing the misuse surface through binding design constraints.
+    How Sovereign strengthens privacy while narrowing the misuse surface through binding design constraints.
   </p>
 </div>
 
@@ -3326,9 +3363,9 @@ impl CanvasRenderer {
 
   <div class="tier-1-content">
     <p>
-      Sovereign OS packages strong privacy into a turnkey system. Every feature already exists as a standalone tool—Signal did the same for encryption.
-      The project falls closer to the Signal precedent than the Tor precedent: it strengthens privacy for ordinary users while offering criminals only marginal improvement.
-      Four binding design constraints narrow the misuse surface by code, not policy.
+      Sovereign aims to package strong privacy into a turnkey system. Every capability it explores already exists as a standalone tool — Signal did the same for encryption.
+      The project aspires to the Signal precedent rather than the Tor precedent: strengthen privacy for ordinary users while offering criminals only marginal improvement.
+      Four binding design constraints are intended to narrow the misuse surface by code, not policy. Some are implemented; others are roadmap items marked below.
     </p>
   </div>
 </section>
@@ -3350,22 +3387,22 @@ impl CanvasRenderer {
         <div class="concept-block">
           <h3>Nothing New Under the Sun</h3>
           <p>
-            Every capability in Sovereign OS already exists as standalone software. The value is in integration, not innovation.
+            Every capability in Sovereign already exists as standalone software. The value is in integration, not innovation.
           </p>
           <table class="const-table">
-            <tr><th>Sovereign OS Feature</th><th>Existing Equivalents</th></tr>
-            <tr><td>Identity Firewall</td><td>Firefox containers, SimpleLogin, ProtonVPN, DuckDuckGo tracker blocking</td></tr>
-            <tr><td>Encrypted P2P Sync</td><td>Syncthing, IPFS, Restic + Backblaze</td></tr>
-            <tr><td>Social Recovery</td><td>Casa (Bitcoin multisig model), ssss-split (Shamir secret sharing)</td></tr>
-            <tr><td>Local AI</td><td>Ollama, llama.cpp, gpt4all</td></tr>
-            <tr><td>Full-Disk Encryption</td><td>LUKS (Linux), BitLocker (Windows), FileVault (macOS)</td></tr>
+            <tr><th>Sovereign Feature</th><th>Status</th><th>Existing Equivalents</th></tr>
+            <tr><td>Identity Firewall</td><td><em>Roadmap</em></td><td>Firefox containers, SimpleLogin, ProtonVPN, DuckDuckGo tracker blocking</td></tr>
+            <tr><td>Encrypted P2P Sync</td><td><em>Infrastructure only</em></td><td>Syncthing, IPFS, Restic + Backblaze</td></tr>
+            <tr><td>Social Recovery</td><td>Implemented</td><td>Casa (Bitcoin multisig model), ssss-split (Shamir secret sharing)</td></tr>
+            <tr><td>Local AI</td><td>Implemented</td><td>Ollama, llama.cpp, gpt4all</td></tr>
+            <tr><td>Per-Document Encryption</td><td>Implemented</td><td>LUKS (Linux), BitLocker (Windows), FileVault (macOS)</td></tr>
           </table>
         </div>
       </div>
     </details>
 
     <details open>
-      <summary>What Sovereign OS Does NOT Provide</summary>
+      <summary>What Sovereign Does NOT Provide</summary>
       <div class="details-content">
         <div class="concept-block">
           <h3>Intentional Constraints for Ethical Clarity</h3>
@@ -3392,10 +3429,10 @@ impl CanvasRenderer {
             Constraints are enforced by architecture, not trust in governance:
           </p>
           <ul class="concept-list">
-            <li><strong>1. Identity Firewall Scope:</strong> Tracking prevention only (cookie isolation, URL param stripping, fingerprint blocking). TDL blocks only on banking/gov domains. No synthetic identities. Users can override.</li>
+            <li><strong>1. Identity Firewall Scope <em>(roadmap — not yet implemented)</em>:</strong> Tracking prevention only (cookie isolation, URL param stripping, fingerprint resistance). Designed to block on banking/gov domains. No synthetic identities. Users would be able to override.</li>
             <li><strong>2. No Network Anonymity:</strong> Intentional design choice. Network stack is transparent. Tor is a user install, not a feature. Clear separation of concerns.</li>
             <li><strong>3. Guardian Protocol Transparency:</strong> Single function: shard storage and return. No messaging, no general storage layer, no coordination, no dead-man's switch. Scope is narrowly constrained.</li>
-            <li><strong>4. Audit Log Integrity:</strong> Append-only hash chain. User can read, export, delete-all but not selectively edit/reorder. Forensic record is tamper-evident.</li>
+            <li><strong>4. Audit Log Integrity <em>(partial — hash chain is roadmap)</em>:</strong> Currently append-only JSONL. The goal is a tamper-evident hash chain where each entry includes a hash of the previous entry. User can read and export but not selectively edit or reorder.</li>
           </ul>
         </div>
       </div>
@@ -3410,7 +3447,7 @@ impl CanvasRenderer {
             <li><strong>Privacy as a Right:</strong> UN Article 12, ECHR Article 8, GDPR Article 5. Not conditional on "law-abiding" status. Universal human right.</li>
             <li><strong>Full Transparency:</strong> Open source (AGPL-3.0), no telemetry, no proprietary components. Code audit by anyone.</li>
             <li><strong>Honest Tradeoffs:</strong> No claims that privacy is "side-effect-free." Acknowledge misuse risks openly. Let users decide.</li>
-            <li><strong>Distributed, Not Centralized:</strong> Software, not service. No back doors, no master key, no remote kill switch. You own it fully.</li>
+            <li><strong>Distributed, Not Centralized:</strong> Software, not service. Designed without back doors, master keys, or remote kill switches. You own the software and your data.</li>
           </ul>
         </div>
       </div>
@@ -3431,15 +3468,15 @@ impl CanvasRenderer {
   <div class="tier-3-content">
 
     <div class="deep-section">
-      <h3>Identity Firewall Scope</h3>
+      <h3>Identity Firewall Scope <em>(roadmap — not yet implemented)</em></h3>
       <p>
-        The identity firewall prevents tracking across domains. Its scope is intentionally narrow:
+        The identity firewall is a planned feature designed to prevent tracking across domains. Its scope is intentionally narrow:
       </p>
       <ul class="concept-list">
-        <li><strong>What It Does:</strong> Cookie isolation (each domain gets separate cookie jar), URL parameter stripping (removes utm_*, fbclid, etc.), fingerprint blocking (spoofs User-Agent, webgl, canvas fingerprints).</li>
-        <li><strong>What It Does NOT Do:</strong> No synthetic identities. You are still the same person across sites within your identity context. No pretense of being multiple people.</li>
-        <li><strong>Trusted Domain List (TDL):</strong> Mozilla-style governance. Users propose additions. Sovereign OS maintainers curate. Protected categories (banking, gov) cannot be removed by users but can be reviewed.</li>
-        <li><strong>User Override:</strong> Users can disable tracking prevention per site. Clear UI shows when it's active. Preference is transparent.</li>
+        <li><strong>What It Would Do:</strong> Cookie isolation (each domain gets a separate cookie jar), URL parameter stripping (removes utm_*, fbclid, etc.), fingerprint resistance (spoofs User-Agent, webgl, canvas fingerprints).</li>
+        <li><strong>What It Would NOT Do:</strong> No synthetic identities. You would still be the same person across sites within your identity context. No pretense of being multiple people.</li>
+        <li><strong>Trusted Domain List (TDL):</strong> Planned governance model inspired by Mozilla. Users would propose additions. Protected categories (banking, gov) could not be removed by users.</li>
+        <li><strong>User Override:</strong> Users would be able to disable tracking prevention per site. Clear UI would show when it's active.</li>
       </ul>
     </div>
 
@@ -3450,9 +3487,9 @@ impl CanvasRenderer {
       </p>
       <ul class="concept-list">
         <li><strong>Local Privacy ≠ Covert Ops:</strong> Full-disk encryption protects your device. Network traffic still reveals your ISP, location, website visits. These are different problems.</li>
-        <li><strong>Tor is a User Install:</strong> Users can install Tor separately. Sovereign OS does not bundle it. Clear boundary between privacy-by-default and anonymity-by-choice.</li>
+        <li><strong>Tor is a User Install:</strong> Users can install Tor separately. Sovereign does not bundle it. Clear boundary between privacy-by-default and anonymity-by-choice.</li>
         <li><strong>Ethical Clarity:</strong> Avoids the appearance of targeting criminals while serving journalists. "Tor user" implies suspicious intent to some. Better to let users make that choice explicitly.</li>
-        <li><strong>Regulatory Risk:</strong> Bundled anonymity tools trigger export controls in some jurisdictions. Sovereign OS as "privacy tool" is defensible. Sovereign OS + Tor is a different category.</li>
+        <li><strong>Regulatory Risk:</strong> Bundled anonymity tools trigger export controls in some jurisdictions. Sovereign as "privacy tool" is defensible. Sovereign + Tor is a different category.</li>
       </ul>
     </div>
 
@@ -3467,22 +3504,22 @@ impl CanvasRenderer {
         <li><strong>No General Storage:</strong> Guardians cannot store arbitrary data. Only recovery shards, format-fixed, size-limited.</li>
         <li><strong>No Coordination:</strong> Guardians cannot communicate with each other. No "2-of-3 consensus" logic on the guardian side. You orchestrate recovery locally.</li>
         <li><strong>No Dead Man's Switch:</strong> Guardians do not auto-transmit anything on timer or trigger. No "if I don't check in, release my data." User must actively request shards.</li>
-        <li><strong>Repurposing Risk Minimized:</strong> Narrow scope makes it hard to misuse. Adding a general storage layer would create incentive to use Sovereign OS as a dead drop for contraband.</li>
+        <li><strong>Repurposing Risk Minimized:</strong> Narrow scope makes it hard to misuse. Adding a general storage layer would create incentive to use Sovereign as a dead drop for contraband.</li>
       </ul>
     </div>
 
     <div class="deep-section">
-      <h3>Audit Log Integrity</h3>
+      <h3>Audit Log Integrity <em>(partial — currently append-only JSONL, hash chain is roadmap)</em></h3>
       <p>
-        The audit log is a permanent, tamper-evident record of system actions. It is designed to be forensically sound:
+        Today, Sovereign logs session activity to an append-only JSONL file with automatic rotation.
+        The long-term goal is a tamper-evident hash chain that is forensically sound:
       </p>
       <ul class="concept-list">
-        <li><strong>Append-Only Hash Chain:</strong> Each entry includes a hash of the previous entry. Cannot reorder or edit entries without breaking the chain—tampering is immediately visible.</li>
+        <li><strong>Current State:</strong> Append-only JSONL log. Records user inputs, orchestrator actions, and chat responses. Automatic rotation at 10 MB. No hash chain yet.</li>
+        <li><strong>Goal — Hash Chain:</strong> Each entry would include a hash of the previous entry. Reordering or editing entries would break the chain — tampering would be immediately visible.</li>
         <li><strong>User Can Read:</strong> Full access to audit logs. No hidden logging.</li>
-        <li><strong>User Can Export:</strong> Audit logs can be exported in plaintext, JSON, or cryptographic format for external verification.</li>
-        <li><strong>User Can Delete All:</strong> "Nuke my audit log" is a supported operation. Bulk deletion is available. Selective editing is not—all-or-nothing.</li>
-        <li><strong>Forensic Deterrent:</strong> Criminals know logs exist. Knowing your actions are being recorded deters misuse. Law enforcement can recover logs even after deletion (deleted_at field, recovery window).</li>
-        <li><strong>Privacy-Preserving Sharing:</strong> Logs can be cryptographically hashed and shared with a lawyer/auditor without revealing content. Proof of existence without proof of content.</li>
+        <li><strong>Goal — Export &amp; Sharing:</strong> Audit logs could be exported in plaintext, JSON, or cryptographic format for external verification. Proof of existence without proof of content.</li>
+        <li><strong>Goal — Delete All:</strong> Bulk deletion available but not selective editing — all-or-nothing.</li>
       </ul>
     </div>
 
@@ -3507,8 +3544,8 @@ impl CanvasRenderer {
       </p>
       <ul class="concept-list">
         <li><strong>Law Enforcement vs Privacy:</strong> BitLocker (2003) enabled encrypted drives on consumer hardware. Two decades of debate: criminal use vs. privacy right. No resolution.</li>
-        <li><strong>Sovereign OS Makes Encryption Default:</strong> Like Signal made encryption the default for messaging (2014). Default encryption is high-friction for law enforcement but table-stakes for privacy-first software.</li>
-        <li><strong>Not Novel:</strong> Full-disk encryption is mature technology. Sovereign OS does not invent it. Uses LUKS (Linux), BitLocker-style (Windows), FileVault (macOS).</li>
+        <li><strong>Sovereign Makes Encryption Default:</strong> Like Signal made encryption the default for messaging (2014). Default encryption is high-friction for law enforcement but table-stakes for privacy-first software.</li>
+        <li><strong>Not Novel:</strong> Full-disk encryption is mature technology. Sovereign does not invent it. Uses LUKS (Linux), BitLocker-style (Windows), FileVault (macOS).</li>
         <li><strong>Precedent:</strong> Signal is de facto recommended by journalists, activists, and law enforcement (e.g., FBI director recommends Signal). Encryption default is socially acceptable when implemented carefully.</li>
       </ul>
     </div>
@@ -3516,13 +3553,13 @@ impl CanvasRenderer {
     <div class="deep-section">
       <h3>Precedent Analysis</h3>
       <p>
-        Where does Sovereign OS sit in the landscape of privacy tools?
+        Where does Sovereign sit in the landscape of privacy tools?
       </p>
       <ul class="concept-list">
         <li><strong>Tor (2002):</strong> Network anonymity. Explicitly designed for covert ops, journalism, circumvention. Accepted misuse risk as trade-off for enabling dissidents. Narrow target audience.</li>
         <li><strong>Full-Disk Encryption (2003+):</strong> Local data protection. BitLocker made FDE mainstream. Two-decade debate about key escrow. No resolution. Industry standard now.</li>
         <li><strong>Signal (2014):</strong> End-to-end encrypted messaging. Made encryption the default. Mainstream adoption (200M+ users). Balances privacy strength with social acceptability. Law enforcement does not like it but it is legal and widespread.</li>
-        <li><strong>Sovereign OS:</strong> Closest to Signal. Packages existing privacy features (encryption, local AI, identity firewall) into a coherent system. Default encryption. Open source. Mainstream target audience. Narrow misuse surface relative to Tor.</li>
+        <li><strong>Sovereign:</strong> Aspires to the Signal model. Aims to package existing privacy features (encryption, local AI, and eventually an identity firewall) into a coherent system. Default encryption. Open source. Mainstream target audience. Narrow misuse surface relative to Tor.</li>
       </ul>
     </div>
 
@@ -3532,8 +3569,8 @@ impl CanvasRenderer {
         Several design choices remain unresolved and open to community input:
       </p>
       <ul class="concept-list">
-        <li><strong>Trusted Domain List Governance:</strong> Who decides what goes on the TDL? Community vote? Maintainer discretion? Mozilla model has limitations. Better alternative?</li>
-        <li><strong>Export Controls:</strong> Will jurisdictions restrict distribution of Sovereign OS? Precedent: PGP faced NSA pressure in 1990s. Current landscape is more permissive but regulation is tightening.</li>
+        <li><strong>Trusted Domain List Governance:</strong> If the identity firewall is built, who decides what goes on the TDL? Community vote? Maintainer discretion? Mozilla model has limitations. Better alternative?</li>
+        <li><strong>Export Controls:</strong> Will jurisdictions restrict distribution of Sovereign? Precedent: PGP faced NSA pressure in 1990s. Current landscape is more permissive but regulation is tightening.</li>
         <li><strong>Model Safety Defaults:</strong> Should Qwen2.5 have built-in refusals (jailbreak-resistant) or be maximally open (user can override)? Trade-off: ease of use vs. openness.</li>
         <li><strong>Guardian Auditability:</strong> Can guardians be audited after shard return? Metadata might reveal identity or timing. How to balance auditability with privacy?</li>
         <li><strong>Audit Log Forensics:</strong> Law enforcement will want audit logs. Should recovery be possible without user consent? Current design: user can delete logs fully but not selectively. Is this the right balance?</li>
@@ -3553,17 +3590,17 @@ impl CanvasRenderer {
 <template id="page-legal-notice">
     <main id="main-content">
         <h1>Legal Notice</h1>
-        <p class="subtitle">Full legal terms, disclaimers, and regulatory information for Sovereign OS.</p>
+        <p class="subtitle">Full legal terms, disclaimers, and regulatory information for Sovereign GE.</p>
 
         <section>
             <h2>License</h2>
-            <p>Sovereign OS is distributed under the <strong>GNU Affero General Public License v3.0 (AGPL-3.0)</strong>. The full license text is included in the <code>LICENSE</code> file in the repository.</p>
+            <p>Sovereign GE is distributed under the <strong>GNU Affero General Public License v3.0 (AGPL-3.0)</strong>. The full license text is included in the <code>LICENSE</code> file in the repository.</p>
             <p>Key rights and obligations:</p>
             <ul>
                 <li><strong>Freedom to use:</strong> You may run the software for any purpose.</li>
                 <li><strong>Freedom to modify:</strong> You may inspect and modify the source code.</li>
                 <li><strong>Freedom to share:</strong> You may distribute copies under the same license.</li>
-                <li><strong>Network copyleft:</strong> If you modify Sovereign OS and operate it as a network service, you must make the modified source available to users (Section 13).</li>
+                <li><strong>Network copyleft:</strong> If you modify Sovereign and operate it as a network service, you must make the modified source available to users (Section 13).</li>
             </ul>
         </section>
 
@@ -3579,7 +3616,7 @@ impl CanvasRenderer {
 
         <section>
             <h2>Limitation of Liability</h2>
-            <p>To the fullest extent permitted by law, in no event shall the Sovereign OS project, its maintainers, contributors, or any related parties be liable for:</p>
+            <p>To the fullest extent permitted by law, in no event shall the Sovereign GE project, its maintainers, contributors, or any related parties be liable for:</p>
             <ul>
                 <li>Any indirect, incidental, special, consequential, or punitive damages;</li>
                 <li>Loss of profits, revenue, data, or use;</li>
@@ -3591,33 +3628,33 @@ impl CanvasRenderer {
 
         <section>
             <h2>Nature of the Project</h2>
-            <p>Sovereign OS is a <strong>distributed, open-source software project</strong>. It is not a hosted service. Key characteristics:</p>
+            <p>Sovereign GE is a <strong>distributed, open-source software project</strong>. It is not a hosted service. Key characteristics:</p>
             <ul>
-                <li><strong>No servers operated:</strong> The Sovereign OS project does not operate or maintain any servers.</li>
+                <li><strong>No servers operated:</strong> The Sovereign GE project does not operate or maintain any servers.</li>
                 <li><strong>No user data collection:</strong> The software does not send data to any service operated by the project.</li>
-                <li><strong>No accounts maintained:</strong> There is no account system operated by the Sovereign OS project.</li>
+                <li><strong>No accounts maintained:</strong> There is no account system operated by the Sovereign GE project.</li>
                 <li><strong>No capability to intercept, access, or modify user data:</strong> By design, the project has no technical means to access, intercept, modify, or delete user data stored on your device.</li>
                 <li><strong>Decentralized:</strong> All data is stored locally or synchronized peer-to-peer (if enabled) without central storage.</li>
             </ul>
             <div class="highlight">
-                <strong>What this means:</strong> If you are concerned about data privacy and control, Sovereign OS cannot access your data by design. We have no ability to surveil, audit, recover, or restore your information.
+                <strong>What this means:</strong> If you are concerned about data privacy and control, Sovereign is designed so that we cannot access your data. We have no ability to surveil, audit, recover, or restore your information.
             </div>
         </section>
 
         <section>
             <h2>Encryption Notice</h2>
-            <p>Sovereign OS includes cryptographic functionality (AES-256-GCM, HKDF, key derivation). Export, import, possession, and use of cryptographic software may be regulated under:</p>
+            <p>Sovereign includes cryptographic functionality (AES-256-GCM, HKDF, key derivation). Export, import, possession, and use of cryptographic software may be regulated under:</p>
             <ul>
                 <li><strong>United States:</strong> Export Administration Regulations (EAR), controlled by the Bureau of Industry and Security (BIS).</li>
                 <li><strong>European Union:</strong> Dual-Use Regulation (EU 2021/821).</li>
                 <li><strong>Multinational:</strong> Wassenaar Arrangement restrictions.</li>
             </ul>
-            <p>You are responsible for ensuring your possession and use of Sovereign OS complies with all applicable laws in your jurisdiction. Consult local legal counsel if unsure.</p>
+            <p>You are responsible for ensuring your possession and use of Sovereign complies with all applicable laws in your jurisdiction. Consult local legal counsel if unsure.</p>
         </section>
 
         <section>
             <h2>No Professional Advice</h2>
-            <p>Sovereign OS includes AI assistance powered by large language models. <strong>The AI's output does not constitute legal, financial, medical, or other professional advice.</strong></p>
+            <p>Sovereign includes AI assistance powered by large language models. <strong>The AI's output does not constitute legal, financial, medical, or other professional advice.</strong></p>
             <p>AI models can make mistakes, hallucinate facts, or provide misleading information. Never rely on AI output for:</p>
             <ul>
                 <li>Legal interpretation or compliance guidance;</li>
@@ -3630,10 +3667,10 @@ impl CanvasRenderer {
 
         <section>
             <h2>Third-Party Components</h2>
-            <p>Sovereign OS depends on many open-source libraries, models, and tools. Full licensing information, including compatibility analysis, is available in <a href="#/third-party-licenses">Third-Party Licenses</a>.</p>
+            <p>Sovereign depends on many open-source libraries, models, and tools. Full licensing information, including compatibility analysis, is available in <a href="#/third-party-licenses">Third-Party Licenses</a>.</p>
             <p>Notable licenses:</p>
             <ul>
-                <li><strong>AGPL-3.0:</strong> Sovereign OS core crates.</li>
+                <li><strong>AGPL-3.0:</strong> Sovereign core crates.</li>
                 <li><strong>Business Source License (BSL):</strong> SurrealDB (converts to AGPL-3.0 after 4 years).</li>
                 <li><strong>Llama 3.1 Community License:</strong> AI models (personal use, no production without approval).</li>
                 <li><strong>Proprietary:</strong> CUDA Toolkit (optional, required for GPU acceleration).</li>
@@ -3643,21 +3680,21 @@ impl CanvasRenderer {
 
         <section>
             <h2>Trademark</h2>
-            <p>"Sovereign OS" is not a registered trademark. The name is descriptive and used in this project and documentation. You may use the name if you comply with the AGPL-3.0 license.</p>
+            <p>"Sovereign GE" is not a registered trademark. The name is descriptive and used in this project and documentation. You may use the name if you comply with the AGPL-3.0 license.</p>
         </section>
 
         <section>
             <h2>AGPL-3.0 Network Interaction Clause (Section 13)</h2>
-            <p>If you modify Sovereign OS and operate it as a network service (e.g., host it on a server accessible over a network), you must provide users with a way to download or view the complete modified source code. This is called the "network copyleft" clause and ensures that anyone using your modified version has the right to inspect and modify it.</p>
+            <p>If you modify Sovereign and operate it as a network service (e.g., host it on a server accessible over a network), you must provide users with a way to download or view the complete modified source code. This is called the "network copyleft" clause and means that anyone using your modified version has the right to inspect and modify it.</p>
             <p><strong>Examples of when Section 13 applies:</strong></p>
             <ul>
-                <li>Running a modified Sovereign OS backend as a web service;</li>
+                <li>Running a modified Sovereign backend as a web service;</li>
                 <li>Hosting a modified version in the cloud;</li>
                 <li>Operating a network-accessible server based on modified code.</li>
             </ul>
             <p><strong>Examples of when Section 13 does not apply:</strong></p>
             <ul>
-                <li>Using unmodified Sovereign OS locally on your own device;</li>
+                <li>Using unmodified Sovereign locally on your own device;</li>
                 <li>Modifying code for your own private use without distributing it;</li>
                 <li>Distributing modified source code directly (not as a service).</li>
             </ul>
@@ -3672,7 +3709,7 @@ impl CanvasRenderer {
 
         <section>
             <h2>Changes to This Notice</h2>
-            <p>This legal notice may be updated at any time. Material changes will be announced in release notes or via the project's communication channels. Continued use of Sovereign OS after changes indicates acceptance of the updated notice.</p>
+            <p>This legal notice may be updated at any time. Material changes will be announced in release notes or via the project's communication channels. Continued use of Sovereign after changes indicates acceptance of the updated notice.</p>
         </section>
     </main>
 </template>
@@ -3680,27 +3717,27 @@ impl CanvasRenderer {
 <template id="page-privacy-policy">
 <main id="main-content">
         <h1>Privacy Policy</h1>
-        <p class="subtitle">How Sovereign OS handles your data—which is to say, it doesn't.</p>
+        <p class="subtitle">How Sovereign handles your data — which is to say, it doesn't.</p>
 
         <section>
             <h2>The Short Version</h2>
             <div class="highlight-box">
-                <strong>We don't collect your data. We can't see your data. We have no servers, no accounts, no analytics, no telemetry, and no way to access or surveil you.</strong>
+                <strong>Sovereign does not collect or transmit your data. The software has no servers, no accounts, no analytics, and no telemetry.</strong>
                 <br><br>
-                All data is stored locally on your device or synchronized peer-to-peer if you choose to enable it. Encryption is end-to-end. We have no backdoors.
+                All data is stored locally on your device or synchronized peer-to-peer if you choose to enable it. Encryption is end-to-end by design.
             </div>
         </section>
 
         <section>
             <h2>Who We Are</h2>
-            <p>Sovereign OS is a distributed, open-source software project maintained by volunteers. There is no central company, service operator, or data controller. The software is provided as-is under the AGPL-3.0 license.</p>
+            <p>Sovereign GE is a distributed, open-source software project maintained by volunteers. There is no central company, service operator, or data controller. The software is provided as-is under the AGPL-3.0 license.</p>
         </section>
 
         <section>
             <h2>What This Policy Covers</h2>
             <p>This policy applies to:</p>
             <ul>
-                <li>Sovereign OS software (running on your device);</li>
+                <li>Sovereign software (running on your device);</li>
                 <li>This website (sovereignos.org);</li>
                 <li>GitHub repositories and discussions;</li>
                 <li>Skill registry and community extensions;</li>
@@ -3711,7 +3748,7 @@ impl CanvasRenderer {
         <section>
             <h2>Data Collection by Context</h2>
 
-            <h3>Through the Sovereign OS Software</h3>
+            <h3>Through the Sovereign Software</h3>
             <p><strong>The software collects zero data about your activity.</strong> It does not:</p>
             <ul>
                 <li>Send usage statistics or telemetry;</li>
@@ -3774,7 +3811,7 @@ impl CanvasRenderer {
 
         <section>
             <h2>Data the Software Creates on Your Device</h2>
-            <p>Sovereign OS creates and stores data locally when you use it. This data is entirely under your control:</p>
+            <p>Sovereign creates and stores data locally when you use it. This data is entirely under your control:</p>
 
             <div class="data-row">
                 <div class="data-row-title">Documents & Threads</div>
@@ -3815,7 +3852,7 @@ impl CanvasRenderer {
             <div class="data-row">
                 <div class="data-row-title">AI Models</div>
                 <div class="data-row-location">Location: <code>~/.sovereign/models/</code></div>
-                <p>Downloaded model weights (Qwen, Whisper, etc.). Several gigabytes. Stored locally, never sent to us.</p>
+                <p>Downloaded model weights (Qwen, Whisper, etc.). Several gigabytes. Stored locally, not sent to us.</p>
             </div>
         </section>
 
@@ -3837,7 +3874,7 @@ impl CanvasRenderer {
             <p>We do not receive or store any of your data. We have no ability to access your documents, conversations, or profile.</p>
 
             <h3>P2P Sync (Optional)</h3>
-            <p>If you enable peer-to-peer (P2P) sync via libp2p, your data is synchronized directly with other Sovereign OS instances you control or trust. This uses encryption to protect data in transit. We do not relay or intercept this data.</p>
+            <p>If you enable peer-to-peer (P2P) sync via libp2p, your data is synchronized directly with other Sovereign instances you control or trust. This uses encryption to protect data in transit. We do not relay or intercept this data.</p>
 
             <h3>Guardian Recovery</h3>
             <p>If you configure a guardian for recovery, encrypted recovery data is sent to a guardian endpoint (your choice). The guardian cannot decrypt your data without your consent. See <a href="#/social-recovery">Social Recovery</a> for details.</p>
@@ -3851,7 +3888,7 @@ impl CanvasRenderer {
 
         <section>
             <h2>Third-Party AI Models</h2>
-            <p>Sovereign OS uses AI models for chat, intent classification, and voice processing:</p>
+            <p>Sovereign uses AI models for chat, intent classification, and voice processing:</p>
             <ul>
                 <li><strong>Default (Local):</strong> Qwen, Whisper, and other models run locally. No data is sent to any server.</li>
                 <li><strong>Optional (Cloud):</strong> You can configure cloud-based AI (OpenAI, Anthropic, etc.). If enabled, your queries are sent to that provider. You are responsible for reviewing their privacy policies.</li>
@@ -3861,7 +3898,7 @@ impl CanvasRenderer {
 
         <section>
             <h2>Children's Privacy</h2>
-            <p>Sovereign OS is not designed for children under 13. If a child uses Sovereign OS, a parent or guardian is responsible for their privacy and data protection under applicable laws (e.g., COPPA in the US).</p>
+            <p>Sovereign is not designed for children under 13. If a child uses Sovereign, a parent or guardian is responsible for their privacy and data protection under applicable laws (e.g., COPPA in the US).</p>
         </section>
 
         <section>
@@ -3918,12 +3955,12 @@ impl CanvasRenderer {
 
         <section>
             <h2>Data Protection Officer (DPO)</h2>
-            <p>As a volunteer-run open-source project, Sovereign OS does not have a formal DPO. For privacy questions, contact: <a href="mailto:hello@sovereignos.org">hello@sovereignos.org</a></p>
+            <p>As a volunteer-run open-source project, Sovereign does not have a formal DPO. For privacy questions, contact: <a href="mailto:hello@sovereignos.org">hello@sovereignos.org</a></p>
         </section>
 
         <section>
             <h2>Changes to This Policy</h2>
-            <p>This privacy policy may be updated. Material changes will be announced in release notes. Continued use of Sovereign OS indicates acceptance of updates.</p>
+            <p>This privacy policy may be updated. Material changes will be announced in release notes. Continued use of Sovereign indicates acceptance of updates.</p>
         </section>
 
         <section>
@@ -4071,7 +4108,7 @@ impl CanvasRenderer {
 
             <h3>In Scope</h3>
             <ul>
-                <li>All Sovereign OS crates: <code>sovereign-core</code>, <code>sovereign-db</code>, <code>sovereign-crypto</code>, <code>sovereign-ai</code>, <code>sovereign-ui</code>, <code>sovereign-canvas</code>, <code>sovereign-skills</code>, <code>sovereign-p2p</code>, <code>sovereign-comms</code>, <code>sovereign-app</code>;</li>
+                <li>All Sovereign crates: <code>sovereign-core</code>, <code>sovereign-db</code>, <code>sovereign-crypto</code>, <code>sovereign-ai</code>, <code>sovereign-ui</code>, <code>sovereign-canvas</code>, <code>sovereign-skills</code>, <code>sovereign-p2p</code>, <code>sovereign-comms</code>, <code>sovereign-app</code>;</li>
                 <li>Published releases (stable and pre-release);</li>
                 <li>Website (sovereignos.org) and documentation;</li>
                 <li>Official GitHub repositories.</li>
@@ -4081,7 +4118,7 @@ impl CanvasRenderer {
             <ul>
                 <li>Third-party AI models (Qwen, Llama, Whisper, Piper) — report to model maintainers;</li>
                 <li>System dependencies (GTK, GStreamer, CUDA, ROCm, Python) — report to their maintainers;</li>
-                <li>Community-contributed skills (unless security issues in Sovereign OS skill framework);</li>
+                <li>Community-contributed skills (unless security issues in the Sovereign skill framework);</li>
                 <li>Operational security of user devices (lost/stolen devices, malware, weak passwords);</li>
                 <li>Social engineering or phishing attacks;</li>
                 <li>Attacks on cloud providers or third-party services (report to them directly).</li>
@@ -4150,7 +4187,7 @@ impl CanvasRenderer {
             </table>
 
             <h3>Prompt Injection Boundary</h3>
-            <p>Sovereign OS uses the ChatML format to separate user input from system instructions. User messages are tagged with role boundaries that prevent prompt injection:</p>
+            <p>Sovereign uses the ChatML format to separate user input from system instructions. User messages are tagged with role boundaries designed to prevent prompt injection:</p>
             <pre>
 &lt;|im_start|&gt;system
 You are a helpful assistant...
@@ -4218,7 +4255,7 @@ You are a helpful assistant...
             <h3>Coordinated Disclosure Steps</h3>
             <ol>
                 <li>Reporter submits vulnerability via secure channel.</li>
-                <li>Sovereign OS team acknowledges receipt within 48 hours.</li>
+                <li>Sovereign team acknowledges receipt within 48 hours.</li>
                 <li>Team assesses severity and develops fix.</li>
                 <li>Fix is tested on all supported versions.</li>
                 <li>Advisory is drafted in private (CVE if applicable).</li>
@@ -4239,7 +4276,7 @@ You are a helpful assistant...
 
         <section>
             <h2>Bug Bounty</h2>
-            <p>Sovereign OS currently does not offer a formal bug bounty program due to our volunteer, non-profit nature. However, we provide:</p>
+            <p>Sovereign currently does not offer a formal bug bounty program due to our volunteer, non-profit nature. However, we provide:</p>
             <ul>
                 <li><strong>Recognition:</strong> Researchers who report vulnerabilities are credited in security advisories (if desired);</li>
                 <li><strong>Gratitude:</strong> We deeply appreciate responsible research that improves security;</li>
@@ -4561,7 +4598,7 @@ You are a helpful assistant...
 
             <h3>SurrealDB (Business Source License)</h3>
             <div class="note">
-                <strong>SurrealDB</strong> is distributed under the Business Source License (BSL-1.1), which is a source-available license. It automatically converts to Apache 2.0 four years after release. For Sovereign OS purposes (open-source, non-commercial), this is compatible with AGPL-3.0. See <a href="https://www.surrealdb.com/license" target="_blank" rel="noopener">SurrealDB license</a> for details.
+                <strong>SurrealDB</strong> is distributed under the Business Source License (BSL-1.1), which is a source-available license. It automatically converts to Apache 2.0 four years after release. For Sovereign's purposes (open-source, non-commercial), this is compatible with AGPL-3.0. See <a href="https://www.surrealdb.com/license" target="_blank" rel="noopener">SurrealDB license</a> for details.
             </div>
 
             <h3>Llama 3.1 Community License</h3>
@@ -4571,12 +4608,12 @@ You are a helpful assistant...
 
             <h3>CUDA Toolkit (Optional, Proprietary)</h3>
             <div class="note">
-                <strong>CUDA Toolkit</strong> is optional and proprietary software from NVIDIA. It is not required to run Sovereign OS. GPU acceleration is optional and requires agreeing to NVIDIA's license terms separately.
+                <strong>CUDA Toolkit</strong> is optional and proprietary software from NVIDIA. It is not required to run Sovereign. GPU acceleration is optional and requires agreeing to NVIDIA's license terms separately.
             </div>
 
             <h3>LGPL Components</h3>
             <div class="note">
-                <strong>GTK 4 and GStreamer</strong> are licensed under LGPL. As a work-around for AGPL-3.0 compatibility, we dynamically link these libraries. LGPL requirements (provision of object files for relinking) are satisfied via open-source distribution of Sovereign OS.
+                <strong>GTK 4 and GStreamer</strong> are licensed under LGPL. As a work-around for AGPL-3.0 compatibility, we dynamically link these libraries. LGPL requirements (provision of object files for relinking) are satisfied via open-source distribution of Sovereign.
             </div>
         </section>
 
@@ -4594,7 +4631,7 @@ You are a helpful assistant...
                     <tr>
                         <td><span class="license-badge badge-agpl">AGPL-3.0</span></td>
                         <td>✓ Full compatibility</td>
-                        <td>Core license of Sovereign OS.</td>
+                        <td>Core license of Sovereign.</td>
                     </tr>
                     <tr>
                         <td><span class="license-badge badge-apache">Apache-2.0</span></td>
@@ -4637,7 +4674,7 @@ You are a helpful assistant...
 
         <section>
             <h2>How to Verify Licenses</h2>
-            <p>To verify all licenses in the Sovereign OS codebase, run:</p>
+            <p>To verify all licenses in the Sovereign codebase, run:</p>
             <pre>
 # Generate license report for Rust crates
 cargo-license
@@ -4665,20 +4702,20 @@ cat Cargo.lock
 <script>
 // ========== ROUTER =========
 const ROUTES = {
-  '/': { template: 'page-home', title: 'Sovereign OS — Your Data, Your Rules', description: 'A local-first personal operating system with AI assistance, end-to-end encryption, and peer-to-peer sync. Open source (AGPL-3.0).' },
-  '/ai-orchestrator': { template: 'page-ai-orchestrator', title: 'Local AI Orchestrator — Sovereign OS', description: 'How Sovereign OS runs AI entirely on your machine with fast intent classification and multi-turn chat.' },
-  '/prompt-injection': { template: 'page-prompt-injection', title: 'Prompt Injection Architecture — Sovereign OS', description: 'Structural immunity through data and control plane separation.' },
-  '/action-gravity': { template: 'page-action-gravity', title: 'Action Gravity — Sovereign OS', description: 'Friction that scales with irreversibility.' },
-  '/encryption': { template: 'page-encryption', title: 'Encryption & Key Management — Sovereign OS', description: 'Modern encryption with XChaCha20-Poly1305 and hierarchical key derivation.' },
-  '/social-recovery': { template: 'page-social-recovery', title: 'Guardian Social Recovery — Sovereign OS', description: 'Recover your account with trusted people using Shamir secret sharing.' },
-  '/spatial-canvas': { template: 'page-spatial-canvas', title: 'Spatial Canvas & Versioning — Sovereign OS', description: 'Your documents on an infinite canvas with automatic versioning.' },
-  '/communications': { template: 'page-communications', title: 'Unified Communications — Sovereign OS', description: 'One inbox for Email, Signal, and WhatsApp.' },
-  '/content-skills': { template: 'page-content-skills', title: 'Content + Skills Architecture — Sovereign OS', description: 'Data ownership through composable tools and graph database.' },
-  '/ethics': { template: 'page-ethics', title: 'Ethics & Design Constraints — Sovereign OS', description: 'How Sovereign OS narrows the misuse surface.' },
-  '/legal-notice': { template: 'page-legal-notice', title: 'Legal Notice — Sovereign OS', description: 'Terms, disclaimers, and regulatory information.' },
-  '/privacy-policy': { template: 'page-privacy-policy', title: 'Privacy Policy — Sovereign OS', description: 'We don\'t collect your data.' },
-  '/security-policy': { template: 'page-security-policy', title: 'Security Policy — Sovereign OS', description: 'Reporting vulnerabilities and security architecture.' },
-  '/third-party-licenses': { template: 'page-third-party-licenses', title: 'Third-Party Licenses — Sovereign OS', description: 'Licensing information for all dependencies.' },
+  '/': { template: 'page-home', title: 'Sovereign GE — Your Data, Your Rules', description: 'An experimental local-first graphical environment with on-device AI, end-to-end encryption, and peer-to-peer sync. Open source (AGPL-3.0).' },
+  '/ai-orchestrator': { template: 'page-ai-orchestrator', title: 'Local AI Orchestrator — Sovereign GE', description: 'How Sovereign runs AI on your machine with fast intent classification and multi-turn chat.' },
+  '/prompt-injection': { template: 'page-prompt-injection', title: 'Prompt Injection Architecture — Sovereign GE', description: 'Architectural defense through data and control plane separation.' },
+  '/action-gravity': { template: 'page-action-gravity', title: 'Action Gravity — Sovereign GE', description: 'Friction that scales with irreversibility.' },
+  '/encryption': { template: 'page-encryption', title: 'Encryption & Key Management — Sovereign GE', description: 'Modern encryption with XChaCha20-Poly1305 and hierarchical key derivation.' },
+  '/social-recovery': { template: 'page-social-recovery', title: 'Guardian Social Recovery — Sovereign GE', description: 'Recover your account with trusted people using Shamir secret sharing.' },
+  '/spatial-canvas': { template: 'page-spatial-canvas', title: 'Spatial Canvas & Versioning — Sovereign GE', description: 'Your documents on an infinite canvas with automatic versioning.' },
+  '/communications': { template: 'page-communications', title: 'Unified Communications — Sovereign GE', description: 'One inbox for Email, Signal, and WhatsApp.' },
+  '/content-skills': { template: 'page-content-skills', title: 'Content + Skills Architecture — Sovereign GE', description: 'Data ownership through composable tools and graph database.' },
+  '/ethics': { template: 'page-ethics', title: 'Ethics & Design Constraints — Sovereign GE', description: 'How Sovereign narrows the misuse surface.' },
+  '/legal-notice': { template: 'page-legal-notice', title: 'Legal Notice — Sovereign GE', description: 'Terms, disclaimers, and regulatory information.' },
+  '/privacy-policy': { template: 'page-privacy-policy', title: 'Privacy Policy — Sovereign GE', description: 'We don\'t collect your data.' },
+  '/security-policy': { template: 'page-security-policy', title: 'Security Policy — Sovereign GE', description: 'Reporting vulnerabilities and security architecture.' },
+  '/third-party-licenses': { template: 'page-third-party-licenses', title: 'Third-Party Licenses — Sovereign GE', description: 'Licensing information for all dependencies.' },
 };
 
 function navigate() {
@@ -4705,7 +4742,7 @@ function navigate() {
 
   document.body.className = isHome ? 'is-home' : 'is-detail';
 
-  window.scrollTo(0, 0);
+  window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
 
   const h1 = content.querySelector('h1');
   if (h1) {
@@ -4805,41 +4842,41 @@ document.addEventListener('click', (e) => {
 <script>
 // ========== CHATBOT ENGINE ==========
 const SOVEREIGN_KNOWLEDGE = {
-  overview: `Sovereign OS is a local-first personal operating system built in Rust. It replaces cloud-dependent apps with a unified, encrypted workspace powered by on-device AI. Your documents, communications, and AI assistant all run locally — no data ever leaves your machine unless you explicitly choose to share it. It's open source under AGPL-3.0.`,
+  overview: `Sovereign GE is an experimental local-first graphical environment built in Rust. It explores alternatives to cloud-dependent apps with a unified, encrypted workspace powered by on-device AI. Your documents, communications, and AI assistant all run locally — data is designed to stay on your machine unless you explicitly choose to share it. It's open source under AGPL-3.0.`,
 
-  ai: `The AI orchestrator runs Qwen2.5 models entirely on your hardware via llama.cpp — no cloud, no API keys, no subscription. There are two models: a fast 3B router (always loaded, ~2 GB VRAM) for intent classification, and a 7B reasoning model loaded on demand for complex queries. The system supports multi-turn chat with tool calling, voice input (wake word + Whisper STT), and text-to-speech (Piper TTS). A key innovation is the data/control plane separation: the control plane handles user instructions and can invoke skills, while the data plane processes document content but has zero ability to take actions — making prompt injection architecturally impossible.`,
+  ai: `The AI orchestrator runs Qwen2.5 models on your hardware via llama.cpp — designed to work without cloud services, API keys, or subscriptions. There are two models: a fast 3B router (always loaded, ~2 GB VRAM) for intent classification, and a 7B reasoning model loaded on demand for complex queries. The system supports multi-turn chat with tool calling, voice input (wake word + Whisper STT), and text-to-speech (Piper TTS). A key design choice is the data/control plane separation: the control plane handles user instructions and can invoke skills, while the data plane processes document content but has no ability to take actions — an architectural defense against prompt injection.`,
 
-  security: `Security in Sovereign OS is based on "Action Gravity" — friction scales with irreversibility. Reading is instant (Level 0). Editing gets conversational confirmation (Level 2). Deleting requires explicit approval and has a 30-day undo window (Level 4). Encryption uses XChaCha20-Poly1305 with a hierarchical key system: Master Key → Device Key → KEK → per-document keys. Keys auto-rotate every 90 days. The AI has hard barriers enforced by code: chat tools are read-only regardless of what the model outputs. Prompt injection is handled architecturally — the data plane (which processes external content) has no access to skills or actions.`,
+  security: `Security in Sovereign is based on "Action Gravity" — friction scales with irreversibility. Reading is instant (Level 0). Editing gets conversational confirmation (Level 2). Deleting requires explicit approval and has a 30-day undo window (Level 4). Encryption uses XChaCha20-Poly1305 with a hierarchical key system: Master Key → Device Key → KEK → per-document keys. Keys auto-rotate every 90 days. The AI has hard barriers enforced by code: chat tools are read-only regardless of what the model outputs. Prompt injection is addressed architecturally — the data plane (which processes external content) has no access to skills or actions.`,
 
   canvas: `The Spatial Canvas is an infinite 2D workspace replacing traditional folder hierarchies. The X-axis is a timeline (past → future), the Y-axis shows intent threads (project lanes), and documents appear as cards. Owned documents are rounded rectangles; external content appears as slanted parallelograms — you can tell at a glance what's yours. GPU-accelerated via Skia/WGPU, it handles 100K+ documents using Level-of-Detail rendering (cards become density blobs at extreme zoom-out). There's a minimap, smooth pan/zoom, and instant jump to any date.`,
 
-  encryption: `Sovereign OS uses XChaCha20-Poly1305 AEAD encryption with a hierarchical key derivation system. Your Master Key (256-bit, stored in TPM/secure enclave) derives Device Keys via HKDF. Each document gets its own random encryption key, wrapped by a Key-Encryption Key (KEK). This means compromising one document key reveals nothing about others. Keys auto-rotate every 90 days or every 100 commits. There is zero plaintext on disk at any point.`,
+  encryption: `Sovereign uses XChaCha20-Poly1305 AEAD encryption with a hierarchical key derivation system. Your Master Key (256-bit, stored in TPM/secure enclave) derives Device Keys via HKDF. Each document gets its own random encryption key, wrapped by a Key-Encryption Key (KEK). This means compromising one document key is designed to reveal nothing about others. Keys auto-rotate every 90 days or every 100 commits. The goal is zero plaintext on disk.`,
 
-  recovery: `Guardian Social Recovery replaces corporate account recovery. You choose 5 trusted people as guardians. Your Master Recovery Key is split into 5 shards using Shamir's Secret Sharing (3-of-5 threshold). Each guardian holds one encrypted, opaque shard — they never see your data. If you lose all devices: you initiate recovery on a new device, prove identity via a memorized passphrase, then wait 72 hours (all 5 guardians are notified so the real you can abort if it's fraud). After the waiting period, 3+ guardians approve, shards are reassembled, and your master key is restored.`,
+  recovery: `Guardian Social Recovery replaces corporate account recovery. You choose 5 trusted people as guardians. Your Master Recovery Key is split into 5 shards using Shamir's Secret Sharing (3-of-5 threshold). Each guardian holds one encrypted, opaque shard — they are not given access to your data. If you lose all devices: you initiate recovery on a new device, prove identity via a memorized passphrase, then wait 72 hours (all 5 guardians are notified so the real you can abort if it's fraud). After the waiting period, 3+ guardians approve, shards are reassembled, and your master key is restored.`,
 
-  p2p: `Peer-to-peer sync uses libp2p with QUIC transport for NAT traversal. Your devices discover each other via mDNS (local network) or a minimal rendezvous server (internet). Sync exchanges encrypted document manifests — the rendezvous server sees only opaque device IDs and connection timing, never content. Only changed commits are synced (not full documents), using a git-like merge model. Manifests are padded to obscure document count and size distribution.`,
+  p2p: `Peer-to-peer sync uses libp2p with QUIC transport for NAT traversal. Your devices discover each other via mDNS (local network) or a minimal rendezvous server (internet). Sync exchanges encrypted document manifests — the rendezvous server sees only opaque device IDs and connection timing, not content. Only changed commits are synced (not full documents), using a git-like merge model. Manifests are padded to obscure document count and size distribution.`,
 
-  skills: `Sovereign OS replaces monolithic apps with composable "Skills." There are 8 core skills built in: markdown editor, search, image viewer, PDF export, word count, find & replace, file import, and duplicate document. Community skills can be installed from a registry — they're sandboxed using Linux kernel security (Landlock + seccomp-bpf) and require cryptographic audit signatures. Sideloaded skills get the strictest sandbox: read-only document access, no network by default. The AI orchestrator composes skills into multi-step workflows.`,
+  skills: `Sovereign explores replacing monolithic apps with composable "Skills." There are 8 core skills built in: markdown editor, search, image viewer, PDF export, word count, find & replace, file import, and duplicate document. Community skills can be installed from a registry — they're sandboxed using Linux kernel security (Landlock + seccomp-bpf) and require cryptographic audit signatures. Sideloaded skills get the strictest sandbox: read-only document access, no network by default. The AI orchestrator composes skills into multi-step workflows.`,
 
-  comms: `Sovereign OS unifies your communications. Email (IMAP/SMTP), Signal (via the presage library), and WhatsApp (Business API) all appear in a single inbox. Contacts are merged across channels. Conversation threads are grouped by contact and archived in your local encrypted graph. Channels are optional compile-time features — you enable only what you need.`,
+  comms: `Sovereign unifies your communications. Email (IMAP/SMTP), Signal (via the presage library), and WhatsApp (Business API) all appear in a single inbox. Contacts are merged across channels. Conversation threads are grouped by contact and archived in your local encrypted graph. Channels are optional compile-time features — you enable only what you need.`,
 
-  voice: `The voice pipeline is fully local. Rustpotter handles wake-word detection ("Sovereign") using a rolling 10-second audio buffer that's never transmitted. Whisper large-v3-turbo handles speech-to-text in real-time. Piper handles text-to-speech with multiple voice options. There's optional speaker verification via voiceprint enrollment. You can use push-to-talk instead if you prefer. The system distinguishes between dictation mode and command mode based on context.`,
+  voice: `The voice pipeline runs locally by design. Rustpotter handles wake-word detection ("Sovereign") using a rolling 10-second audio buffer processed on-device. Whisper large-v3-turbo handles speech-to-text in real-time. Piper handles text-to-speech with multiple voice options. There's optional speaker verification via voiceprint enrollment. You can use push-to-talk instead if you prefer. The system distinguishes between dictation mode and command mode based on context.`,
 
-  tech: `Sovereign OS is a 10-crate Rust workspace with ~16K+ lines of code and 367 tests. It uses SurrealDB for graph storage, Iced 0.14 for the GUI, Skia for canvas rendering, llama.cpp for AI inference, libp2p for networking, and XChaCha20-Poly1305 for encryption. It runs on Linux, Windows (MSVC), WSL2, and macOS. Minimum hardware: 6-core CPU, 16 GB RAM, 512 GB SSD. GPU optional but recommended (RTX 3060 or equivalent). The project is AGPL-3.0 licensed.`,
+  tech: `Sovereign GE is a 10-crate Rust workspace with ~16K+ lines of code and 367 tests. It uses SurrealDB for graph storage, Iced 0.14 for the GUI, Skia for canvas rendering, llama.cpp for AI inference, libp2p for networking, and XChaCha20-Poly1305 for encryption. It runs on Linux, Windows (MSVC), WSL2, and macOS. Minimum hardware: 6-core CPU, 16 GB RAM, 512 GB SSD. GPU optional but recommended (RTX 3060 or equivalent). The project is AGPL-3.0 licensed.`,
 
-  philosophy: `Sovereign OS is built on a content-centric paradigm — the opposite of the app-centric model that dominates today. Instead of your data being trapped inside applications (Google Docs, Notion, Outlook), data is the primary citizen. Skills (lightweight, composable tools) operate on your data, but they don't own it. This means you can switch skills freely without migration pain. Combined with local-first storage, end-to-end encryption, and no cloud dependency, it puts you in complete control of your digital life.`,
+  philosophy: `Sovereign is built on a content-centric paradigm — the opposite of the app-centric model that dominates today. Instead of your data being trapped inside applications (Google Docs, Notion, Outlook), data is the primary citizen. Skills (lightweight, composable tools) operate on your data, but they don't own it. This means you can switch skills freely without migration pain. Combined with local-first storage, end-to-end encryption, and no cloud dependency, the goal is to give you control of your digital life.`,
 
-  status: `Sovereign OS is currently in alpha (February 2026). Phases 0-4 are complete: data layer, UI shell, spatial canvas, AI orchestrator, and skill system. Phase 5 (thread management, version tracking, timeline layout) is in progress. The codebase has ~24K lines of Rust across 10 crates with 367 tests. Post-MVP roadmap includes: identity firewall (synthetic identity generation), community skill registry, stylus/drawing input, handwriting recognition, image generation, and VR extensions.`,
+  status: `Sovereign GE is an experimental prototype (February 2026). Phases 0-4 are complete: data layer, UI shell, spatial canvas, AI orchestrator, and skill system. Phase 5 (thread management, version tracking, timeline layout) is in progress. The codebase has ~24K lines of Rust across 10 crates with 367 tests. This is very much a work in progress — we're testing ideas, not shipping a finished product. Post-MVP roadmap includes: identity firewall, community skill registry, stylus/drawing input, handwriting recognition, and more.`,
 
-  contribute: `Sovereign OS is open source under AGPL-3.0. You can contribute by: filing issues on GitHub, submitting pull requests, building community skills, testing the alpha and reporting bugs, writing documentation, or spreading the word. The codebase is Rust — edition 2021, favoring safe code. Check the README for build instructions (supports Linux, Windows MSVC, WSL2, macOS).`,
+  contribute: `Sovereign is open source under AGPL-3.0. You can contribute by: filing issues on GitHub, submitting pull requests, building community skills, testing the prototype and reporting bugs, writing documentation, or spreading the word. The codebase is Rust — edition 2021, favoring safe code. Check the README for build instructions (supports Linux, Windows MSVC, WSL2, macOS).`,
 
-  comparison: `Unlike cloud-dependent tools (Google Workspace, Notion, Obsidian Sync), Sovereign OS stores everything locally with encryption. Unlike traditional OSes, it replaces the file/folder metaphor with a spatial canvas and graph database. Unlike ChatGPT or Copilot, its AI runs entirely on-device with no subscription. Unlike Signal or ProtonMail alone, it unifies all communications in one encrypted workspace. The closest comparison might be a self-hosted Notion + local AI + encrypted sync — but built from the ground up as an OS layer rather than bolted together.`,
+  comparison: `Unlike cloud-dependent tools (Google Workspace, Notion, Obsidian Sync), Sovereign stores everything locally with encryption. Unlike traditional desktop environments, it replaces the file/folder metaphor with a spatial canvas and graph database. Unlike ChatGPT or Copilot, its AI runs on-device with no subscription. Unlike Signal or ProtonMail alone, it aims to unify communications in one encrypted workspace. The closest comparison might be a self-hosted Notion + local AI + encrypted sync — but built from the ground up as a graphical environment rather than bolted together. It's an experimental prototype exploring these ideas.`,
 
-  built: `Sovereign OS is co-developed by Céline Lenoble — a solution-finder with a background in teaching, UX research, product management, and CRO marketing — and Claude Opus 4.6, Anthropic's AI. The initial brainstorming and specs came from working with Gemini; the Rust implementation comes from Claude. Céline provides the vision, UX principles, and architectural decisions; Claude contributes code generation, algorithm implementation, debugging, and iterative refinement across the 10-crate Rust workspace. This website and the marketing plan were also co-created the same way. It's a real-world example of what human-AI collaboration can produce — not a developer replaced by AI, but a non-developer building serious software by combining domain expertise with AI capabilities.`
+  built: `Sovereign GE is co-developed by Céline Lenoble — a solution-finder with a background in teaching, UX research, product management, and CRO marketing — and Claude Opus 4.6, Anthropic's AI. The initial brainstorming and specs came from working with Gemini; the Rust implementation comes from Claude. Céline provides the vision, UX principles, and architectural decisions; Claude contributes code generation, algorithm implementation, debugging, and iterative refinement across the 10-crate Rust workspace. This website and the marketing plan were also co-created the same way. It's a real-world example of what human-AI collaboration can produce — not a developer replaced by AI, but a non-developer building an experimental prototype by combining domain expertise with AI capabilities.`
 };
 
 const TOPIC_PATTERNS = [
-  { keys: ['overview', 'what is', 'about', 'sovereign os', 'tell me', 'explain', 'introduction', 'intro'], topic: 'overview' },
+  { keys: ['overview', 'what is', 'about', 'sovereign', 'tell me', 'explain', 'introduction', 'intro'], topic: 'overview' },
   { keys: ['ai', 'orchestrat', 'llm', 'model', 'qwen', 'llama', 'chat', 'intent', 'assistant', 'intelligent'], topic: 'ai' },
   { keys: ['secur', 'safe', 'action gravity', 'gravity', 'trust', 'inject', 'prompt inject', 'barrier'], topic: 'security' },
   { keys: ['canvas', 'spatial', 'timeline', 'visual', 'map', 'navigate', 'thread', 'lane'], topic: 'canvas' },
@@ -4901,13 +4938,13 @@ function getResponse(input) {
     }
     return response;
   }
-  return `That's a great question! I can tell you about any aspect of Sovereign OS — the AI orchestrator, encryption, the spatial canvas, guardian recovery, the skill system, voice pipeline, P2P sync, communications, or the project's philosophy and status. What interests you most?`;
+  return `That's a great question! I can tell you about any aspect of Sovereign — the AI orchestrator, encryption, the spatial canvas, guardian recovery, the skill system, voice pipeline, P2P sync, communications, or the project's philosophy and status. What interests you most?`;
 }
 
 function getSuggestions(lastTopic) {
   const allSuggestions = {
     _default: [
-      "What is Sovereign OS?",
+      "What is Sovereign GE?",
       "How does the AI work?",
       "Who built this?",
       "Tell me about encryption"
@@ -4926,7 +4963,7 @@ function getSuggestions(lastTopic) {
     philosophy: ["What is the spatial canvas?", "How does the AI work?", "Compare with other tools", "What's the roadmap?"],
     status: ["How can I contribute?", "What hardware do I need?", "Tell me about encryption", "How does the AI work?"],
     contribute: ["What's the tech stack?", "Tell me about the AI", "What's the current status?", "How does encryption work?"],
-    comparison: ["What is Sovereign OS?", "Tell me about the AI", "How does encryption work?", "How can I contribute?"],
+    comparison: ["What is Sovereign GE?", "Tell me about the AI", "How does encryption work?", "How can I contribute?"],
     built: ["How does the AI orchestrator work?", "What's the tech stack?", "How can I contribute?", "Compare with other tools"],
   };
   return allSuggestions[lastTopic] || allSuggestions._default;
@@ -4948,7 +4985,7 @@ function toggleChat() {
   if (isOpen) {
     chatInput.focus();
     if (chatMessages.children.length === 0) {
-      addBotMessage("Welcome! I'm the Sovereign AI guide. I know everything about Sovereign OS — its architecture, security model, AI orchestrator, and more. What would you like to explore?");
+      addBotMessage("Welcome! I'm the Sovereign AI guide. I can tell you about Sovereign GE — its architecture, security model, AI orchestrator, and more. What would you like to explore?");
       renderSuggestions('_default');
     }
   }
@@ -5059,10 +5096,11 @@ document.addEventListener('keydown', (e) => {
 {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  "name": "Sovereign OS",
-  "description": "A local-first personal operating system with AI assistance, end-to-end encryption, and peer-to-peer sync.",
+  "name": "Sovereign GE",
+  "description": "An experimental local-first graphical environment with on-device AI, end-to-end encryption, and peer-to-peer sync.",
   "url": "https://clenoble.github.io/sovereign-os",
   "applicationCategory": "DesktopApplication",
+  "applicationSubCategory": "Desktop Environment",
   "operatingSystem": "Linux, Windows, macOS",
   "license": "https://www.gnu.org/licenses/agpl-3.0.html",
   "isAccessibleForFree": true,
@@ -5081,7 +5119,7 @@ document.addEventListener('keydown', (e) => {
 {
   "@context": "https://schema.org",
   "@type": "WebSite",
-  "name": "Sovereign OS",
+  "name": "Sovereign GE",
   "url": "https://clenoble.github.io/sovereign-os"
 }
 </script>
