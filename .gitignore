@@ -10,6 +10,7 @@ __pycache__/
 *.so
 .Python
 venv/
+.venv/
 env/
 
 # IDE
@@ -39,6 +40,12 @@ data/
 
 # Test databases (RocksDB artifacts)
 *.db/
+
+# Environment / secrets
+.env*
+
+# Bridge (Python venv + deps)
+jiminy-bridge/
 
 # Model files
 models/
