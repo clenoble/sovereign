@@ -111,6 +111,17 @@ impl GraphDB for SurrealGraphDB {
         }
     }
 
+    async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>> {
+        let q = query.to_string();
+        let mut result = self
+            .db
+            .query("SELECT * FROM document WHERE deleted_at IS NONE AND string::lowercase(title) CONTAINS string::lowercase($q) ORDER BY created_at DESC LIMIT 20")
+            .bind(("q", q))
+            .await?;
+        let docs: Vec<Document> = result.take(0)?;
+        Ok(docs)
+    }
+
     async fn update_document(
         &self,
         id: &str,
@@ -170,6 +181,17 @@ impl GraphDB for SurrealGraphDB {
             .await?;
         let threads: Vec<Thread> = result.take(0)?;
         Ok(threads)
+    }
+
+    async fn find_thread_by_name(&self, name: &str) -> DbResult<Option<Thread>> {
+        let n = name.to_string();
+        let mut result = self
+            .db
+            .query("SELECT * FROM thread WHERE deleted_at IS NONE AND string::lowercase(name) CONTAINS string::lowercase($n) LIMIT 1")
+            .bind(("n", n))
+            .await?;
+        let threads: Vec<Thread> = result.take(0)?;
+        Ok(threads.into_iter().next())
     }
 
     async fn update_thread(
@@ -1649,5 +1671,52 @@ mod tests {
         assert_eq!(rt2.to_string(), "attachedto");
         let parsed2: RelationType = "attached_to".parse().unwrap();
         assert_eq!(parsed2, RelationType::AttachedTo);
+    }
+
+    #[tokio::test]
+    async fn search_documents_by_title_finds_match() {
+        let db = setup_db().await;
+        let t = Thread::new("T".into(), "".into());
+        let t = db.create_thread(t).await.unwrap();
+        let tid = t.id_string().unwrap();
+
+        let mut d1 = Document::new("Meeting Notes".into(), tid.clone(), true);
+        d1.content = "some content".into();
+        db.create_document(d1).await.unwrap();
+
+        let mut d2 = Document::new("Grocery List".into(), tid.clone(), true);
+        d2.content = "milk, eggs".into();
+        db.create_document(d2).await.unwrap();
+
+        let mut d3 = Document::new("Meeting Agenda".into(), tid.clone(), true);
+        d3.content = "agenda items".into();
+        db.create_document(d3).await.unwrap();
+
+        let results = db.search_documents_by_title("meeting").await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|d| d.title.to_lowercase().contains("meeting")));
+
+        let empty = db.search_documents_by_title("nonexistent").await.unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_thread_by_name_returns_match() {
+        let db = setup_db().await;
+        let t1 = Thread::new("Work Projects".into(), "work stuff".into());
+        db.create_thread(t1).await.unwrap();
+
+        let t2 = Thread::new("Personal Notes".into(), "personal".into());
+        db.create_thread(t2).await.unwrap();
+
+        let found = db.find_thread_by_name("work").await.unwrap();
+        assert!(found.is_some());
+        assert!(found.unwrap().name.to_lowercase().contains("work"));
+
+        let found2 = db.find_thread_by_name("personal").await.unwrap();
+        assert!(found2.is_some());
+
+        let not_found = db.find_thread_by_name("nonexistent").await.unwrap();
+        assert!(not_found.is_none());
     }
 }

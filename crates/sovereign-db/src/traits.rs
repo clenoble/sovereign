@@ -31,6 +31,9 @@ pub trait GraphDB: Send + Sync {
     ) -> DbResult<Document>;
     async fn delete_document(&self, id: &str) -> DbResult<()>;
 
+    /// Search documents by title (case-insensitive substring match).
+    async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>>;
+
     // -- Threads ---
 
     async fn create_thread(&self, thread: Thread) -> DbResult<Thread>;
@@ -43,6 +46,10 @@ pub trait GraphDB: Send + Sync {
         description: Option<&str>,
     ) -> DbResult<Thread>;
     async fn delete_thread(&self, id: &str) -> DbResult<()>;
+
+    /// Find a thread by name (case-insensitive substring match). Returns first match.
+    async fn find_thread_by_name(&self, name: &str) -> DbResult<Option<Thread>>;
+
     async fn move_document_to_thread(
         &self,
         doc_id: &str,
