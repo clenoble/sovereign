@@ -581,6 +581,11 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         // Detect first launch for onboarding wizard
         let first_launch = sovereign_ui::app::is_first_launch();
 
+        // Load bubble style from user profile
+        let bubble_style = sovereign_core::profile::UserProfile::load(&profile_dir)
+            .map(|p| p.bubble_style)
+            .ok();
+
         // Build SovereignApp (but don't launch Iced yet)
         let (app, _boot_task) = sovereign_ui::app::SovereignApp::new(
             &config.ui,
@@ -606,6 +611,7 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             config.ai.router_model.clone(),
             config.ai.reasoning_model.clone(),
             None, // camera_frame — initialized later if camera is available
+            bubble_style,
         );
         Ok::<_, anyhow::Error>((app, _boot_task))
     })?;

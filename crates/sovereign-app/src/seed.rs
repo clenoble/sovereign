@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use sovereign_core::content::ContentFields;
-use sovereign_core::profile::{SuggestionFeedback, UserProfile};
+use sovereign_core::profile::{BubbleStyle, SuggestionFeedback, UserProfile};
 use sovereign_db::schema::{
     ChannelAddress, ChannelType, Contact, Conversation, Document, Message, MessageDirection,
     ReadStatus, RelationType, Thread,
@@ -316,6 +316,8 @@ pub fn seed_profile_and_history(profile_dir: &Path) -> Result<()> {
 
         let mut profile = UserProfile::default_new();
         profile.display_name = Some("Alex".into());
+        profile.nickname = Some("Ike".into());
+        profile.bubble_style = BubbleStyle::Wave;
         profile.interaction_patterns.command_verbosity = "detailed".into();
         profile
             .skill_preferences
@@ -341,7 +343,10 @@ pub fn seed_profile_and_history(profile_dir: &Path) -> Result<()> {
             .insert("create_thread".into(), thread_fb);
 
         profile.save(profile_dir)?;
-        tracing::info!("Seeded user profile: display_name=Alex");
+        tracing::info!(
+            "Seeded user profile: display_name=Alex, nickname=Ike, designation={}, bubble=Wave",
+            profile.designation,
+        );
     }
 
     // Seed session log if it doesn't exist

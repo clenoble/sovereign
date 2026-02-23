@@ -154,27 +154,56 @@ pub fn format_tool_descriptions() -> String {
         ));
     }
     out.push_str(
-        "\nTo use a tool, output:\n\
+        "\nTo use a tool, you MUST output exactly this format (no markdown, no code fences):\n\
          <tool_call>\n\
          {\"name\": \"tool_name\", \"arguments\": {\"key\": \"value\"}}\n\
          </tool_call>\n\n\
          You can call one tool per turn. After seeing the result, either call another tool or give your final answer.\n\
-         If you can answer without tools, respond directly.\n",
+         For create/rename/move actions, ALWAYS use the tool — never just describe the action in text.\n",
     );
     out
 }
 
 /// Check if model output contains a tool call.
 pub fn has_tool_call(output: &str) -> bool {
-    output.contains("<tool_call>")
+    output.contains("<tool_call>") || has_bare_tool_json(output)
+}
+
+/// Check if the output contains bare tool-call JSON without `<tool_call>` tags.
+/// Catches cases where the 3B model writes the JSON in code fences or inline.
+fn has_bare_tool_json(output: &str) -> bool {
+    // Strip markdown code fences if present
+    let stripped = strip_code_fences(output);
+    stripped.contains("\"name\"") && stripped.contains("\"arguments\"")
+        && serde_json::from_str::<ToolCall>(&stripped).is_ok()
+}
+
+/// Strip markdown code fences (```json ... ``` or ``` ... ```) from output.
+fn strip_code_fences(output: &str) -> String {
+    let mut s = output.trim().to_string();
+    // Remove opening fence like ```json or ```
+    if s.starts_with("```") {
+        if let Some(newline) = s.find('\n') {
+            s = s[newline + 1..].to_string();
+        }
+    }
+    // Remove closing fence
+    if s.trim_end().ends_with("```") {
+        if let Some(pos) = s.rfind("```") {
+            s = s[..pos].to_string();
+        }
+    }
+    s.trim().to_string()
 }
 
 /// Parse tool calls from model output.
-/// Looks for `<tool_call>...</tool_call>` delimiters containing JSON.
+/// Looks for `<tool_call>...</tool_call>` delimiters containing JSON,
+/// with fallback to bare JSON or code-fenced JSON.
 pub fn parse_tool_calls(output: &str) -> Vec<ToolCall> {
     let mut calls = Vec::new();
     let mut remaining = output;
 
+    // Primary: look for <tool_call>...</tool_call> tags
     while let Some(start) = remaining.find("<tool_call>") {
         let after_tag = &remaining[start + 11..];
         if let Some(end) = after_tag.find("</tool_call>") {
@@ -187,6 +216,17 @@ pub fn parse_tool_calls(output: &str) -> Vec<ToolCall> {
             break;
         }
     }
+
+    // Fallback: try bare JSON or code-fenced JSON when no tags found
+    if calls.is_empty() {
+        let stripped = strip_code_fences(output);
+        if let Ok(call) = serde_json::from_str::<ToolCall>(&stripped) {
+            if TOOLS.iter().any(|t| t.name == call.name) {
+                calls.push(call);
+            }
+        }
+    }
+
     calls
 }
 
@@ -675,6 +715,41 @@ mod tests {
     #[test]
     fn has_tool_call_false() {
         assert!(!has_tool_call("just a normal response"));
+    }
+
+    #[test]
+    fn has_tool_call_bare_json() {
+        let output = r#"{"name": "create_document", "arguments": {"title": "Test"}}"#;
+        assert!(has_tool_call(output));
+    }
+
+    #[test]
+    fn has_tool_call_code_fenced() {
+        let output = "```json\n{\"name\": \"create_document\", \"arguments\": {\"title\": \"Test\"}}\n```";
+        assert!(has_tool_call(output));
+    }
+
+    #[test]
+    fn parse_tool_calls_bare_json() {
+        let output = r#"{"name": "create_document", "arguments": {"title": "Test"}}"#;
+        let calls = parse_tool_calls(output);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "create_document");
+    }
+
+    #[test]
+    fn parse_tool_calls_code_fenced() {
+        let output = "```json\n{\"name\": \"create_thread\", \"arguments\": {\"name\": \"Marketing\"}}\n```";
+        let calls = parse_tool_calls(output);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "create_thread");
+    }
+
+    #[test]
+    fn parse_tool_calls_bare_json_unknown_tool_ignored() {
+        let output = r#"{"name": "unknown_tool", "arguments": {}}"#;
+        let calls = parse_tool_calls(output);
+        assert!(calls.is_empty());
     }
 
     #[test]

@@ -99,9 +99,21 @@ pub fn build_chat_system_prompt(
     ctx: Option<&WorkspaceContext>,
     verbosity: &str,
     user_name: Option<&str>,
+    designation: Option<&str>,
+    nickname: Option<&str>,
 ) -> String {
     let mut prompt = String::from(SOVEREIGN_IDENTITY);
     prompt.push_str("\n\n");
+
+    // AI identity
+    if let Some(desig) = designation {
+        prompt.push_str(&format!("Your designation is {desig}. "));
+        if let Some(nick) = nickname {
+            prompt.push_str(&format!("The user calls you {nick}.\n"));
+        } else {
+            prompt.push_str("The user may call you by a short nickname.\n");
+        }
+    }
 
     // Personality based on verbosity preference
     match verbosity {
@@ -119,7 +131,7 @@ pub fn build_chat_system_prompt(
     // Condensed UX principles
     prompt.push_str(
         "\nRules:\n\
-         - For write actions, describe what you'll change and where, then wait for confirmation.\n\
+         - For write actions (create, rename, move), always use the appropriate tool. The system will ask the user for confirmation automatically.\n\
          - Label content as (owned) or (external) when reporting results.\n\
          - For multi-step tasks, state your plan first.\n\
          - Rank multiple matches by relevance. When uncertain, say so. Never say \"I can't\" without suggesting an alternative.\n\
@@ -144,6 +156,16 @@ pub fn build_chat_system_prompt(
          {\"name\": \"list_documents\", \"arguments\": {\"thread\": \"Research\"}}\n\
          </tool_call>\n\n\
          [After receiving tool results, respond naturally with the information, noting provenance.]\n\n\
+         User: create a document called Project Ideas\n\
+         <tool_call>\n\
+         {\"name\": \"create_document\", \"arguments\": {\"title\": \"Project Ideas\"}}\n\
+         </tool_call>\n\n\
+         [The system asks the user for confirmation. After approval, respond naturally confirming the action.]\n\n\
+         User: create a new thread called Marketing\n\
+         <tool_call>\n\
+         {\"name\": \"create_thread\", \"arguments\": {\"name\": \"Marketing\"}}\n\
+         </tool_call>\n\n\
+         [The system asks the user for confirmation. After approval, respond naturally confirming the action.]\n\n\
          User: hello!\n\
          Hello! How can I help you with your workspace today?\n",
     );
@@ -197,19 +219,19 @@ mod tests {
 
     #[test]
     fn chat_prompt_respects_terse_verbosity() {
-        let prompt = build_chat_system_prompt(None, "terse", None);
+        let prompt = build_chat_system_prompt(None, "terse", None, None, None);
         assert!(prompt.contains("brief and direct"));
     }
 
     #[test]
     fn chat_prompt_respects_conversational_verbosity() {
-        let prompt = build_chat_system_prompt(None, "conversational", None);
+        let prompt = build_chat_system_prompt(None, "conversational", None, None, None);
         assert!(prompt.contains("warm and conversational"));
     }
 
     #[test]
     fn chat_prompt_includes_user_name() {
-        let prompt = build_chat_system_prompt(None, "detailed", Some("Alex"));
+        let prompt = build_chat_system_prompt(None, "detailed", Some("Alex"), None, None);
         assert!(prompt.contains("Alex"));
     }
 
@@ -223,7 +245,7 @@ mod tests {
             contact_count: 5,
             unread_conversations: 1,
         };
-        let prompt = build_chat_system_prompt(Some(&ctx), "detailed", None);
+        let prompt = build_chat_system_prompt(Some(&ctx), "detailed", None, None, None);
         assert!(prompt.contains("4 threads"));
         assert!(prompt.contains("Research, Development"));
         assert!(prompt.contains("Project Plan"));
@@ -231,7 +253,7 @@ mod tests {
 
     #[test]
     fn chat_prompt_includes_tools() {
-        let prompt = build_chat_system_prompt(None, "detailed", None);
+        let prompt = build_chat_system_prompt(None, "detailed", None, None, None);
         assert!(prompt.contains("search_documents"));
         assert!(prompt.contains("list_threads"));
         assert!(prompt.contains("<tool_call>"));
@@ -239,7 +261,7 @@ mod tests {
 
     #[test]
     fn chat_prompt_includes_ux_principles() {
-        let prompt = build_chat_system_prompt(None, "detailed", None);
+        let prompt = build_chat_system_prompt(None, "detailed", None, None, None);
         // Principle 2: Conversational Confirmation
         assert!(prompt.contains("confirmation"));
         // Principle 3: Provenance
@@ -249,5 +271,38 @@ mod tests {
         assert!(prompt.contains("plan"));
         // Principle 8: Error & Uncertainty
         assert!(prompt.contains("Rank"));
+    }
+
+    #[test]
+    fn chat_prompt_includes_write_tool_examples() {
+        let prompt = build_chat_system_prompt(None, "detailed", None, None, None);
+        assert!(prompt.contains("create_document"));
+        assert!(prompt.contains("\"name\": \"create_document\""));
+        assert!(prompt.contains("\"name\": \"create_thread\""));
+        assert!(prompt.contains("Project Ideas"));
+    }
+
+    #[test]
+    fn chat_prompt_includes_designation() {
+        let prompt = build_chat_system_prompt(
+            None, "detailed", None, Some("Ikshal-B4T9-Ω"), None,
+        );
+        assert!(prompt.contains("Ikshal-B4T9-Ω"));
+        assert!(prompt.contains("designation"));
+    }
+
+    #[test]
+    fn chat_prompt_includes_designation_and_nickname() {
+        let prompt = build_chat_system_prompt(
+            None, "detailed", None, Some("Ikshal-B4T9-Ω"), Some("Ike"),
+        );
+        assert!(prompt.contains("Ikshal-B4T9-Ω"));
+        assert!(prompt.contains("Ike"));
+    }
+
+    #[test]
+    fn chat_prompt_omits_designation_when_none() {
+        let prompt = build_chat_system_prompt(None, "detailed", None, None, None);
+        assert!(!prompt.contains("designation"));
     }
 }

@@ -1,4 +1,5 @@
 pub mod app;
+pub mod bubble_canvas;
 pub mod chat;
 pub mod login;
 pub mod onboarding;

@@ -64,11 +64,14 @@ genpdf = "0.2"
 pdf-extract = "0.10"
 
 # UI framework
-iced = { version = "0.14", features = ["tokio", "wgpu", "image", "markdown"] }
+iced = { version = "0.14", features = ["tokio", "wgpu", "image", "markdown", "canvas"] }
 open = "5.3"
 bytemuck = { version = "1.0", features = ["derive"] }
 wgpu = "24"
 rfd = "0.17"
+
+# RNG
+rand = "0.10"
 
 # Voice pipeline
 whisper-rs = "0.15"

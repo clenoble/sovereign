@@ -4,14 +4,109 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 
 const PROFILE_FILENAME: &str = "user_profile.json";
+
+// ── Bubble style ────────────────────────────────────────────────────────
+
+/// Visual style for the AI orchestrator bubble avatar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BubbleStyle {
+    Icon,
+    Wave,
+    Spin,
+    Pulse,
+    Blink,
+    Rings,
+    Matrix,
+    Orbit,
+    Morph,
+}
+
+impl Default for BubbleStyle {
+    fn default() -> Self {
+        Self::Icon
+    }
+}
+
+impl BubbleStyle {
+    /// All available bubble styles, in display order.
+    pub fn all() -> &'static [Self] {
+        &[
+            Self::Icon,
+            Self::Wave,
+            Self::Spin,
+            Self::Pulse,
+            Self::Blink,
+            Self::Rings,
+            Self::Matrix,
+            Self::Orbit,
+            Self::Morph,
+        ]
+    }
+
+    /// Human-readable label.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Icon => "Icon",
+            Self::Wave => "Wave",
+            Self::Spin => "Spin",
+            Self::Pulse => "Pulse",
+            Self::Blink => "Blink",
+            Self::Rings => "Rings",
+            Self::Matrix => "Matrix",
+            Self::Orbit => "Orbit",
+            Self::Morph => "Morph",
+        }
+    }
+}
+
+// ── Designation generation ──────────────────────────────────────────────
+
+/// Alphanumeric pool (no ambiguous chars: no I, L, O, 0, 1).
+const LATIN_POOL: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
+/// Curated non-Latin characters spanning multiple scripts.
+const NON_LATIN_POOL: &[char] = &[
+    'Ω', 'Δ', 'Σ', 'Λ', 'Π', 'θ', 'φ', // Greek
+    'Ж', 'Я', 'Щ', // Cyrillic
+    'त', 'क', 'द', // Devanagari
+    '山', '龍', // CJK
+    'ש', // Hebrew
+    'Þ', 'ð', // Icelandic
+];
+
+/// Generate a unique orchestrator designation: `Ikshal-XXXX-Y`.
+///
+/// - 4 Latin/numeric chars from [`LATIN_POOL`] (30^4 = 810,000 combos)
+/// - 1 non-Latin char from [`NON_LATIN_POOL`] (20 chars)
+/// - Total: ~16.2M combinations — no collision check needed for a personal OS.
+pub fn generate_designation() -> String {
+    let mut rng = rand::rng();
+    let latin: String = (0..4)
+        .map(|_| *LATIN_POOL.choose(&mut rng).unwrap() as char)
+        .collect();
+    let suffix = *NON_LATIN_POOL.choose(&mut rng).unwrap();
+    format!("Ikshal-{latin}-{suffix}")
+}
 
 /// Top-level persistent user profile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserProfile {
     pub user_id: String,
+    /// AI orchestrator serial ID, e.g. `Ikshal-B4T9-Ω`.
+    #[serde(default)]
+    pub designation: String,
+    /// What the user calls the AI for short (e.g. "Ike", "T-Nine").
+    #[serde(default)]
+    pub nickname: Option<String>,
+    /// Visual style for the AI bubble avatar.
+    #[serde(default)]
+    pub bubble_style: BubbleStyle,
+    /// The user's own display name.
     #[serde(default)]
     pub display_name: Option<String>,
     pub created: String,
@@ -111,11 +206,14 @@ impl AdaptiveParams {
 }
 
 impl UserProfile {
-    /// Create a fresh profile with a new UUID.
+    /// Create a fresh profile with a new UUID and auto-generated designation.
     pub fn default_new() -> Self {
         let now = chrono::Utc::now().to_rfc3339();
         Self {
             user_id: uuid::Uuid::new_v4().to_string(),
+            designation: generate_designation(),
+            nickname: None,
+            bubble_style: BubbleStyle::default(),
             display_name: None,
             created: now.clone(),
             last_updated: now,
@@ -130,13 +228,19 @@ impl UserProfile {
 
     /// Load a profile from `dir/user_profile.json`.
     /// Returns a fresh default if the file doesn't exist.
+    /// Backfills designation for old profiles that lack one.
     pub fn load(dir: &Path) -> anyhow::Result<Self> {
         let path = dir.join(PROFILE_FILENAME);
         if !path.exists() {
             return Ok(Self::default_new());
         }
         let data = std::fs::read_to_string(&path)?;
-        let profile: Self = serde_json::from_str(&data)?;
+        let mut profile: Self = serde_json::from_str(&data)?;
+        // Backfill designation for profiles created before this feature
+        if profile.designation.is_empty() {
+            profile.designation = generate_designation();
+            profile.save(dir)?;
+        }
         Ok(profile)
     }
 
@@ -247,6 +351,72 @@ mod tests {
     }
 
     #[test]
+    fn designation_format_valid() {
+        let d = generate_designation();
+        // Format: Ikshal-XXXX-Y
+        assert!(d.starts_with("Ikshal-"), "designation must start with Ikshal-: {d}");
+        let parts: Vec<&str> = d.split('-').collect();
+        assert_eq!(parts.len(), 3, "designation must have 3 parts: {d}");
+        assert_eq!(parts[1].len(), 4, "latin part must be 4 chars: {d}");
+        assert_eq!(
+            parts[2].chars().count(),
+            1,
+            "suffix must be 1 char: {d}"
+        );
+        // Latin part should only contain LATIN_POOL chars
+        for ch in parts[1].chars() {
+            assert!(
+                LATIN_POOL.contains(&(ch as u8)),
+                "unexpected latin char '{ch}' in {d}"
+            );
+        }
+        // Suffix should be in NON_LATIN_POOL
+        let suffix = parts[2].chars().next().unwrap();
+        assert!(
+            NON_LATIN_POOL.contains(&suffix),
+            "unexpected suffix char '{suffix}' in {d}"
+        );
+    }
+
+    #[test]
+    fn designation_uniqueness() {
+        let designations: Vec<String> = (0..50).map(|_| generate_designation()).collect();
+        // With 16.2M combinations, 50 draws should all be unique
+        for (i, a) in designations.iter().enumerate() {
+            for b in &designations[i + 1..] {
+                assert_ne!(a, b, "collision: {a}");
+            }
+        }
+    }
+
+    #[test]
+    fn default_new_has_designation_and_bubble() {
+        let p = UserProfile::default_new();
+        assert!(p.designation.starts_with("Ikshal-"));
+        assert_eq!(p.bubble_style, BubbleStyle::Icon);
+        assert!(p.nickname.is_none());
+    }
+
+    #[test]
+    fn bubble_style_serde_roundtrip() {
+        for &style in BubbleStyle::all() {
+            let json = serde_json::to_string(&style).unwrap();
+            let back: BubbleStyle = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, style);
+        }
+    }
+
+    #[test]
+    fn bubble_style_default_is_icon() {
+        assert_eq!(BubbleStyle::default(), BubbleStyle::Icon);
+    }
+
+    #[test]
+    fn bubble_style_all_has_nine_variants() {
+        assert_eq!(BubbleStyle::all().len(), 9);
+    }
+
+    #[test]
     fn save_recomputes_receptiveness() {
         let dir = test_dir("receptiveness");
         let mut p = UserProfile::default_new();
@@ -257,6 +427,54 @@ mod tests {
         p.save(&dir).unwrap();
 
         assert!((p.interaction_patterns.suggestion_receptiveness - 0.7).abs() < f32::EPSILON);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_backfills_empty_designation() {
+        let dir = test_dir("backfill_desig");
+        // Write a profile with empty designation (simulates old format)
+        let json = r#"{
+            "user_id": "test-123",
+            "designation": "",
+            "created": "2026-01-01T00:00:00Z",
+            "last_updated": "2026-01-01T00:00:00Z",
+            "interaction_patterns": {"suggestion_receptiveness": 0.5, "command_verbosity": "detailed"},
+            "skill_preferences": {},
+            "suggestion_feedback": {}
+        }"#;
+        std::fs::write(dir.join("user_profile.json"), json).unwrap();
+
+        let p = UserProfile::load(&dir).unwrap();
+        assert!(
+            p.designation.starts_with("Ikshal-"),
+            "empty designation should be backfilled: {}",
+            p.designation,
+        );
+        // Should also have been saved back
+        let reloaded = UserProfile::load(&dir).unwrap();
+        assert_eq!(reloaded.designation, p.designation);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_preserves_missing_fields_with_defaults() {
+        let dir = test_dir("missing_fields");
+        // Write a minimal profile (no nickname, no bubble_style, no designation)
+        let json = r#"{
+            "user_id": "test-456",
+            "created": "2026-01-01T00:00:00Z",
+            "last_updated": "2026-01-01T00:00:00Z",
+            "interaction_patterns": {"suggestion_receptiveness": 0.5, "command_verbosity": "terse"},
+            "skill_preferences": {},
+            "suggestion_feedback": {}
+        }"#;
+        std::fs::write(dir.join("user_profile.json"), json).unwrap();
+
+        let p = UserProfile::load(&dir).unwrap();
+        assert!(p.nickname.is_none());
+        assert_eq!(p.bubble_style, BubbleStyle::Icon);
+        assert!(p.display_name.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

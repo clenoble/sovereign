@@ -112,7 +112,8 @@ pub enum Message {
     // Onboarding
     OnboardingNext,
     OnboardingBack,
-    OnboardingDeviceNameChanged(String),
+    OnboardingNicknameChanged(String),
+    OnboardingBubbleSelected(sovereign_core::profile::BubbleStyle),
     OnboardingThemeToggled,
     OnboardingSeedToggled,
     OnboardingPrimaryChanged(String),
@@ -200,6 +201,7 @@ impl SovereignApp {
         router_model: String,
         reasoning_model: String,
         camera_frame: Option<SharedFrame>,
+        bubble_style: Option<sovereign_core::profile::BubbleStyle>,
     ) -> (Self, Task<Message>) {
         let doc_map: HashMap<String, Document> = documents
             .iter()
@@ -240,7 +242,13 @@ impl SovereignApp {
             canvas_cmd_rx: Some(canvas_cmd_rx),
             search: SearchState::new(),
             chat: ChatState::new(),
-            bubble: BubbleState::new(),
+            bubble: {
+                let mut b = BubbleState::new();
+                if let Some(style) = bubble_style {
+                    b.bubble_style = style;
+                }
+                b
+            },
             taskbar,
             doc_panels: Vec::new(),
             contact_panels: Vec::new(),
@@ -287,6 +295,10 @@ impl SovereignApp {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick => {
+                self.bubble.elapsed += 1.0 / 60.0;
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.elapsed += 1.0 / 60.0;
+                }
                 self.poll_channels();
                 Task::none()
             }
@@ -777,9 +789,15 @@ impl SovereignApp {
                 }
                 Task::none()
             }
-            Message::OnboardingDeviceNameChanged(name) => {
+            Message::OnboardingNicknameChanged(name) => {
                 if let Some(ref mut ob) = self.onboarding {
-                    ob.device_name = name;
+                    ob.nickname = name;
+                }
+                Task::none()
+            }
+            Message::OnboardingBubbleSelected(style) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.bubble_style = style;
                 }
                 Task::none()
             }
@@ -882,6 +900,19 @@ impl SovereignApp {
                 Task::none()
             }
             Message::OnboardingComplete => {
+                // Persist designation, nickname, and bubble style to profile
+                if let Some(ref ob) = self.onboarding {
+                    self.bubble.bubble_style = ob.bubble_style;
+                    let dir = sovereign_data_dir();
+                    if let Ok(mut profile) = sovereign_core::profile::UserProfile::load(&dir) {
+                        profile.designation = ob.designation.clone();
+                        if !ob.nickname.is_empty() {
+                            profile.nickname = Some(ob.nickname.clone());
+                        }
+                        profile.bubble_style = ob.bubble_style;
+                        let _ = profile.save(&dir);
+                    }
+                }
                 self.onboarding = None;
                 // Write marker file so onboarding doesn't show again
                 let dir = sovereign_data_dir();
@@ -996,6 +1027,11 @@ impl SovereignApp {
         // Search overlay (conditional)
         if self.search.visible {
             layers.push(self.search.view());
+        }
+
+        // Action-gate confirmation overlay (above everything)
+        if let Some(confirm_overlay) = self.bubble.view_confirmation() {
+            layers.push(confirm_overlay);
         }
 
         // Compose: stack of layers + taskbar at bottom
@@ -1186,6 +1222,7 @@ impl SovereignApp {
                     &self.canvas_state,
                     CanvasCommand::NavigateTo(doc_id.clone()),
                 );
+                self.open_document(doc_id);
             }
             OrchestratorEvent::BubbleState(state) => {
                 self.bubble.set_state(state);
@@ -1223,11 +1260,13 @@ impl SovereignApp {
                         .find(|l| l.thread_id == *thread_id)
                         .map(|l| l.y + sovereign_canvas::layout::LANE_PADDING_TOP)
                         .unwrap_or(0.0);
-                    let last_x = st
+                    // Place at the global "Now" edge (rightmost card across ALL
+                    // threads), so the new card appears at the current moment on
+                    // the timeline — not squeezed among older cards in the lane.
+                    let global_now_x = st
                         .layout
                         .cards
                         .iter()
-                        .filter(|c| c.thread_id == *thread_id)
                         .map(|c| c.x + c.w + sovereign_canvas::layout::CARD_SPACING_H)
                         .fold(sovereign_canvas::layout::LANE_HEADER_WIDTH, f32::max);
                     st.layout.cards.push(sovereign_canvas::layout::CardLayout {
@@ -1239,7 +1278,7 @@ impl SovereignApp {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs() as i64)
                             .unwrap_or(0),
-                        x: last_x,
+                        x: global_now_x,
                         y: lane_y,
                         w: sovereign_canvas::layout::CARD_WIDTH,
                         h: sovereign_canvas::layout::CARD_HEIGHT,
@@ -1247,11 +1286,12 @@ impl SovereignApp {
                     st.mark_dirty();
                 }
 
-                // Navigate to the new document
+                // Navigate to the new document and open it
                 sovereign_canvas::apply_command(
                     &self.canvas_state,
                     CanvasCommand::NavigateTo(doc_id.clone()),
                 );
+                self.open_document(doc_id);
             }
             OrchestratorEvent::SkillResult { ref kind, ref data, .. } => {
                 let display = match kind.as_str() {
