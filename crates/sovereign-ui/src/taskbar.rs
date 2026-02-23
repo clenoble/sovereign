@@ -30,6 +30,7 @@ pub struct TaskbarState {
     pub contacts: Vec<TaskbarContactItem>,
     pub pinned_contact_ids: HashSet<String>,
     pub listening: bool,
+    pub inbox_unread: u32,
 }
 
 impl TaskbarState {
@@ -53,6 +54,7 @@ impl TaskbarState {
             contacts: Vec::new(),
             pinned_contact_ids: HashSet::new(),
             listening: false,
+            inbox_unread: 0,
         }
     }
 
@@ -157,6 +159,19 @@ impl TaskbarState {
 
         // Spacer
         items_row = items_row.push(Space::new().width(Length::Fill));
+
+        // Inbox button (with unread badge)
+        let inbox_label = if self.inbox_unread > 0 {
+            format!("Inbox ({})", self.inbox_unread)
+        } else {
+            "Inbox".to_string()
+        };
+        items_row = items_row.push(
+            button(text(inbox_label).size(13))
+                .on_press(Message::InboxToggled)
+                .style(theme::taskbar_button_style)
+                .padding(Padding::from([4, 12])),
+        );
 
         // Theme toggle
         let theme_label = match theme::current_mode() {

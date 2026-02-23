@@ -18,21 +18,22 @@ chrono = { workspace = true }
 toml = { workspace = true }
 
 # Email (optional)
-lettre = { version = "0.11", optional = true }
-async-imap = { version = "0.11", optional = true }
-async-native-tls = { version = "0.5", optional = true }
+lettre = { version = "0.11", features = ["tokio1", "tokio1-native-tls", "smtp-transport"], optional = true }
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"], optional = true }
+tokio-native-tls = { version = "0.3", optional = true }
+native-tls = { version = "0.2", optional = true }
 mailparse = { version = "0.16", optional = true }
+futures = { version = "0.3", optional = true }
 
 # Signal (optional) — presage is git-only, not on crates.io
 presage = { git = "https://github.com/whisperfish/presage", tag = "0.7.0", optional = true }
 presage-store-sqlite = { git = "https://github.com/whisperfish/presage", tag = "0.7.0", optional = true }
-futures = { version = "0.3", optional = true }
 
 # WhatsApp Cloud API (optional)
 reqwest = { version = "0.12", features = ["json"], optional = true }
 
 [features]
 default = []
-email = ["lettre", "async-imap", "async-native-tls", "mailparse"]
+email = ["lettre", "async-imap", "tokio-native-tls", "native-tls", "mailparse", "futures"]
 signal = ["presage", "presage-store-sqlite", "futures"]
 whatsapp = ["reqwest"]
