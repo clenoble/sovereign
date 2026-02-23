@@ -786,6 +786,22 @@ impl GraphDB for SurrealGraphDB {
         updated.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
 
+    async fn update_conversation_last_message_at(
+        &self,
+        id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> DbResult<Conversation> {
+        let (table, key) = parse_thing(id)?;
+        if table != "conversation" {
+            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
+        }
+        let updated: Option<Conversation> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "last_message_at": at.to_rfc3339() }))
+            .await?;
+        updated.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
     async fn delete_conversation(&self, id: &str) -> DbResult<()> {
         let (table, key) = parse_thing(id)?;
         if table != "conversation" {

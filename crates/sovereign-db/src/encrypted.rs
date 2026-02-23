@@ -478,6 +478,14 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.update_conversation_unread(id, unread_count).await
     }
 
+    async fn update_conversation_last_message_at(
+        &self,
+        id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> DbResult<Conversation> {
+        self.inner.update_conversation_last_message_at(id, at).await
+    }
+
     async fn delete_conversation(&self, id: &str) -> DbResult<()> {
         self.inner.delete_conversation(id).await
     }
@@ -634,6 +642,7 @@ mod tests {
         async fn get_conversation(&self, _id: &str) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
         async fn list_conversations(&self, _channel: Option<&ChannelType>) -> DbResult<Vec<Conversation>> { Ok(vec![]) }
         async fn update_conversation_unread(&self, _id: &str, _unread_count: u32) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
+        async fn update_conversation_last_message_at(&self, _id: &str, _at: chrono::DateTime<chrono::Utc>) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
         async fn delete_conversation(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn link_conversation_to_thread(&self, _conversation_id: &str, _thread_id: &str) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
     }

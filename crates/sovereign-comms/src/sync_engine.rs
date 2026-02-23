@@ -63,7 +63,7 @@ impl CommsSync {
 
     /// Run the sync loop. This blocks and should be spawned as a tokio task.
     pub async fn run(mut self) {
-        async fn emit_sync_error(tx: &mpsc::Sender<CommsEvent>, channel: ChannelType, error: &dyn std::fmt::Display) {
+        async fn emit_sync_error(tx: &mpsc::Sender<CommsEvent>, channel: ChannelType, error: &(dyn std::fmt::Display + Send + Sync)) {
             let _ = tx.send(CommsEvent::SyncError {
                 channel,
                 error: error.to_string(),

@@ -215,6 +215,13 @@ pub trait GraphDB: Send + Sync {
         unread_count: u32,
     ) -> DbResult<Conversation>;
 
+    /// Update a conversation's last_message_at timestamp.
+    async fn update_conversation_last_message_at(
+        &self,
+        id: &str,
+        at: DateTime<Utc>,
+    ) -> DbResult<Conversation>;
+
     /// Hard-delete a conversation.
     async fn delete_conversation(&self, id: &str) -> DbResult<()>;
 

@@ -159,16 +159,12 @@ impl CommunicationChannel for EmailChannel {
         // Test IMAP connection
         #[cfg(feature = "email")]
         {
-            let tls = async_native_tls::TlsConnector::new();
-            match async_imap::connect(
-                (&*self.config.imap_host, self.config.imap_port),
-                &self.config.imap_host,
-                tls,
-            ).await {
-                Ok(client) => {
+            match imap_connect(&self.config.imap_host, self.config.imap_port).await {
+                Ok(mut client) => {
+                    let _greeting = client.read_response().await
+                        .map_err(|e| CommsError::NotConnected(e.to_string()))?;
                     match client.login(&self.config.username, &self.password).await {
-                        Ok(session) => {
-                            // Successfully connected — logout cleanly
+                        Ok(mut session) => {
                             let _ = session.logout().await;
                             self.status = ChannelStatus::Connected;
                         }
@@ -208,16 +204,13 @@ impl CommunicationChannel for EmailChannel {
 
     async fn fetch_messages(
         &self,
-        _since: Option<DateTime<Utc>>,
+        since: Option<DateTime<Utc>>,
     ) -> Result<Vec<Message>, CommsError> {
         #[cfg(feature = "email")]
         {
-            let tls = async_native_tls::TlsConnector::new();
-            let client = async_imap::connect(
-                (&*self.config.imap_host, self.config.imap_port),
-                &self.config.imap_host,
-                tls,
-            ).await
+            let mut client = imap_connect(&self.config.imap_host, self.config.imap_port).await
+                .map_err(|e| CommsError::FetchFailed(e.to_string()))?;
+            let _greeting = client.read_response().await
                 .map_err(|e| CommsError::FetchFailed(e.to_string()))?;
 
             let mut session = client.login(&self.config.username, &self.password).await
@@ -226,9 +219,22 @@ impl CommunicationChannel for EmailChannel {
             session.select("INBOX").await
                 .map_err(|e| CommsError::FetchFailed(e.to_string()))?;
 
-            // Fetch recent messages (last 50 for now)
+            // Use SEARCH SINCE if we have a date, fall back to sequence range
             use futures::StreamExt;
-            let messages_stream = session.fetch("1:50", "RFC822").await
+            let sequence_set = if let Some(since_date) = since {
+                let date_str = since_date.format("%d-%b-%Y").to_string();
+                match session.search(format!("SINCE {date_str}")).await {
+                    Ok(uids) if !uids.is_empty() => {
+                        let uid_list: Vec<String> = uids.iter().map(|u| u.to_string()).collect();
+                        uid_list.join(",")
+                    }
+                    _ => "1:*".to_string(), // fallback: all messages
+                }
+            } else {
+                "1:50".to_string() // first sync: cap at 50
+            };
+
+            let messages_stream = session.fetch(&sequence_set, "RFC822").await
                 .map_err(|e| CommsError::FetchFailed(e.to_string()))?;
 
             let fetched: Vec<_> = messages_stream.collect().await;
@@ -312,7 +318,8 @@ impl CommunicationChannel for EmailChannel {
             }
 
             if let Some(ref reply_to) = msg.in_reply_to {
-                builder = builder.header(lettre::message::header::InReplyTo::new(reply_to.clone()));
+                let in_reply_to: lettre::message::header::InReplyTo = reply_to.clone().into();
+                builder = builder.header(in_reply_to);
             }
 
             let email = builder
@@ -333,6 +340,38 @@ impl CommunicationChannel for EmailChannel {
             let response = mailer.send(email).await
                 .map_err(|e| CommsError::SendFailed(e.to_string()))?;
 
+            // Persist outbound message to DB
+            if let Some(ref conv_id) = msg.conversation_id {
+                let my_id = self.resolve_contact_id(
+                    &self.config.username,
+                    self.config.display_name.as_deref(),
+                ).await.unwrap_or_default();
+
+                let to_ids: Vec<String> = msg.to.iter()
+                    .map(|addr| addr.clone())
+                    .collect();
+
+                let mut db_msg = Message::new(
+                    conv_id.clone(),
+                    ChannelType::Email,
+                    MessageDirection::Outbound,
+                    my_id,
+                    to_ids,
+                    msg.body.clone(),
+                );
+                db_msg.subject = msg.subject.clone();
+                db_msg.sent_at = Utc::now();
+
+                if let Err(e) = self.db.create_message(db_msg).await {
+                    tracing::warn!("Failed to persist outbound message: {e}");
+                }
+
+                // Update conversation last_message_at
+                if let Err(e) = self.db.update_conversation_last_message_at(conv_id, Utc::now()).await {
+                    tracing::warn!("Failed to update conversation timestamp: {e}");
+                }
+            }
+
             Ok(format!("{:?}", response))
         }
 
@@ -347,7 +386,8 @@ impl CommunicationChannel for EmailChannel {
         let messages = self.fetch_messages(self.last_sync).await?;
 
         let mut new_messages = 0u32;
-        let mut new_contacts = 0u32;
+        let new_contacts = 0u32;
+        let mut updated_conversations = std::collections::HashSet::new();
 
         for msg in &messages {
             // Check if message already exists by external_id
@@ -360,13 +400,29 @@ impl CommunicationChannel for EmailChannel {
 
             self.db.create_message(msg.clone()).await?;
             new_messages += 1;
+
+            // Update conversation unread count and last_message_at
+            let conv_id = &msg.conversation_id;
+            if !conv_id.is_empty() && updated_conversations.insert(conv_id.clone()) {
+                // Get current conversation to increment unread
+                if let Ok(conv) = self.db.get_conversation(conv_id).await {
+                    let _ = self.db.update_conversation_unread(
+                        conv_id,
+                        conv.unread_count + 1,
+                    ).await;
+                }
+                let _ = self.db.update_conversation_last_message_at(
+                    conv_id,
+                    msg.sent_at,
+                ).await;
+            }
         }
 
         self.last_sync = Some(Utc::now());
 
         Ok(SyncResult {
             new_messages,
-            updated_conversations: 0,
+            updated_conversations: updated_conversations.len() as u32,
             new_contacts,
         })
     }
@@ -385,6 +441,22 @@ impl CommunicationChannel for EmailChannel {
         });
         self.db.create_contact(contact).await.map_err(CommsError::from)
     }
+}
+
+/// Connect to IMAP server over TLS (async-imap 0.11 + tokio-native-tls).
+#[cfg(feature = "email")]
+async fn imap_connect(
+    host: &str,
+    port: u16,
+) -> Result<async_imap::Client<tokio_native_tls::TlsStream<tokio::net::TcpStream>>, CommsError> {
+    let tcp = tokio::net::TcpStream::connect((host, port)).await
+        .map_err(|e| CommsError::NotConnected(e.to_string()))?;
+    let native_connector = native_tls::TlsConnector::new()
+        .map_err(|e| CommsError::NotConnected(e.to_string()))?;
+    let connector = tokio_native_tls::TlsConnector::from(native_connector);
+    let tls_stream = connector.connect(host, tcp).await
+        .map_err(|e| CommsError::NotConnected(e.to_string()))?;
+    Ok(async_imap::Client::new(tls_stream))
 }
 
 /// Extract the email address from a "Display Name <email>" string.

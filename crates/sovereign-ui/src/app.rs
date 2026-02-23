@@ -23,6 +23,7 @@ use crate::orchestrator_bubble::{build_skill_doc, format_structured_data, Bubble
 use crate::panels::camera_panel::{CameraPanel, SharedFrame};
 use crate::panels::contact_panel::ContactPanel;
 use crate::panels::document_panel::{FloatingPanel, FormatKind, DEAD_ZONE, DRAG_BAR_HEIGHT};
+use crate::panels::inbox_panel::InboxPanel;
 use crate::panels::model_panel::{ModelEntry, ModelPanel, ModelRole};
 use crate::search::SearchState;
 use crate::taskbar::TaskbarState;
@@ -71,6 +72,16 @@ pub enum Message {
     ContactPanelDragStart(usize),
     ContactPanelDragMove { panel_idx: usize, local: iced::Point },
     ContactPanelDragEnd(usize),
+    // Inbox panel
+    InboxToggled,
+    InboxClose,
+    InboxSelectConversation(usize),
+    InboxBack,
+    InboxReplyChanged(String),
+    InboxReplySubmit,
+    InboxDragStart,
+    InboxDragMove(iced::Point),
+    InboxDragEnd,
     // Taskbar
     TaskbarDocClicked(String),
     TaskbarDocPinToggled(String),
@@ -159,6 +170,7 @@ pub struct SovereignApp {
     // Panels
     model_panel: ModelPanel,
     camera_panel: CameraPanel,
+    inbox_panel: Option<InboxPanel>,
     // Auth
     login: Option<crate::login::LoginState>,
     canary_detector: Option<sovereign_crypto::canary::CanaryDetector>,
@@ -172,6 +184,7 @@ pub struct SovereignApp {
     close_callback: Option<Box<dyn Fn(String) + Send>>,
     decision_tx: Option<tokio::sync::mpsc::Sender<ActionDecision>>,
     feedback_tx: Option<tokio::sync::mpsc::Sender<FeedbackEvent>>,
+    send_message_tx: Option<tokio::sync::mpsc::Sender<crate::panels::inbox_panel::SendRequest>>,
     skill_registry: SkillRegistry,
 }
 
@@ -196,6 +209,7 @@ impl SovereignApp {
         decision_tx: Option<tokio::sync::mpsc::Sender<ActionDecision>>,
         skill_registry: Option<SkillRegistry>,
         feedback_tx: Option<tokio::sync::mpsc::Sender<FeedbackEvent>>,
+        send_message_tx: Option<tokio::sync::mpsc::Sender<crate::panels::inbox_panel::SendRequest>>,
         first_launch: bool,
         model_dir: String,
         router_model: String,
@@ -268,6 +282,7 @@ impl SovereignApp {
             camera_panel: CameraPanel::new(
                 camera_frame.unwrap_or_else(|| Arc::new(Mutex::new(None))),
             ),
+            inbox_panel: None,
             login: None,
             canary_detector: None,
             lockdown_triggered: false,
@@ -278,6 +293,7 @@ impl SovereignApp {
                 None
             },
             feedback_tx,
+            send_message_tx,
             skill_registry: skill_registry.unwrap_or_default(),
         };
 
@@ -525,6 +541,133 @@ impl SovereignApp {
             }
             Message::ContactPanelDragEnd(idx) => {
                 if let Some(panel) = self.contact_panels.get_mut(idx) {
+                    panel.dragging = false;
+                    panel.drag_start_screen = None;
+                    panel.drag_start_panel = None;
+                }
+                Task::none()
+            }
+
+            // ── Inbox panel ─────────────────────────────────────────────
+            Message::InboxToggled => {
+                if self.inbox_panel.is_some() {
+                    self.inbox_panel = None;
+                } else {
+                    let panel = InboxPanel::new(
+                        self.conversations.clone(),
+                        self.messages.clone(),
+                    );
+                    self.taskbar.inbox_unread = panel.total_unread();
+                    self.inbox_panel = Some(panel);
+                }
+                Task::none()
+            }
+            Message::InboxClose => {
+                self.inbox_panel = None;
+                Task::none()
+            }
+            Message::InboxSelectConversation(idx) => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.selected_conversation = Some(idx);
+                }
+                Task::none()
+            }
+            Message::InboxBack => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.selected_conversation = None;
+                }
+                Task::none()
+            }
+            Message::InboxReplyChanged(text) => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.reply_input = text;
+                }
+                Task::none()
+            }
+            Message::InboxReplySubmit => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    let body = panel.reply_input.clone();
+                    if body.is_empty() {
+                        return Task::none();
+                    }
+
+                    // Build send request from current conversation context
+                    if let Some(conv_idx) = panel.selected_conversation {
+                        if let Some(conv) = panel.conversations.get(conv_idx) {
+                            let conv_id = conv.id_string().unwrap_or_default();
+
+                            // Get recipient addresses from conversation participants
+                            // (all participants except self — but we don't track self here,
+                            // so we send to all participant IDs and let the backend resolve)
+                            let to_addresses = conv.participant_contact_ids.clone();
+
+                            let subject = Some(format!("Re: {}", conv.title));
+
+                            // Find the last message's external_id for In-Reply-To header
+                            let in_reply_to = panel.messages.iter()
+                                .filter(|m| m.conversation_id == conv_id)
+                                .last()
+                                .and_then(|m| m.external_id.clone());
+
+                            let request = crate::panels::inbox_panel::SendRequest {
+                                conversation_id: conv_id,
+                                to_addresses,
+                                subject,
+                                body,
+                                in_reply_to,
+                            };
+
+                            if let Some(ref tx) = self.send_message_tx {
+                                let _ = tx.try_send(request);
+                            }
+                        }
+                    }
+
+                    panel.reply_input.clear();
+                }
+                Task::none()
+            }
+            Message::InboxDragStart => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    let local_y = panel.last_local_cursor.y;
+                    if local_y >= DEAD_ZONE && local_y < DEAD_ZONE + DRAG_BAR_HEIGHT {
+                        let screen = iced::Point::new(
+                            (panel.position.x - DEAD_ZONE) + panel.last_local_cursor.x,
+                            (panel.position.y - DEAD_ZONE) + panel.last_local_cursor.y,
+                        );
+                        panel.drag_start_screen = Some(screen);
+                        panel.drag_start_panel = Some(panel.position);
+                    }
+                }
+                Task::none()
+            }
+            Message::InboxDragMove(local) => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.last_local_cursor = local;
+                    if let (Some(start_screen), Some(start_panel)) =
+                        (panel.drag_start_screen, panel.drag_start_panel)
+                    {
+                        let screen = iced::Point::new(
+                            (panel.position.x - DEAD_ZONE) + local.x,
+                            (panel.position.y - DEAD_ZONE) + local.y,
+                        );
+                        let dx = screen.x - start_screen.x;
+                        let dy = screen.y - start_screen.y;
+                        if !panel.dragging && (dx.abs() > 3.0 || dy.abs() > 3.0) {
+                            panel.dragging = true;
+                        }
+                        if panel.dragging {
+                            panel.position = iced::Point::new(
+                                (start_panel.x + dx).max(0.0),
+                                (start_panel.y + dy).max(0.0),
+                            );
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::InboxDragEnd => {
+                if let Some(ref mut panel) = self.inbox_panel {
                     panel.dragging = false;
                     panel.drag_start_screen = None;
                     panel.drag_start_panel = None;
@@ -991,6 +1134,13 @@ impl SovereignApp {
             }
         }
 
+        // Inbox panel
+        if let Some(ref inbox) = self.inbox_panel {
+            if inbox.visible {
+                layers.push(inbox.view());
+            }
+        }
+
         // Orchestrator bubble
         let has_active_doc = !self.doc_panels.is_empty();
         layers.push(self.bubble.view(&self.skill_registry, has_active_doc));
@@ -1325,7 +1475,46 @@ impl SovereignApp {
                 self.chat.push_assistant_message(text.clone());
                 // TODO: Trigger TTS when cross-platform audio playback is available
             }
-            _ => {}
+            // P2P sync events
+            OrchestratorEvent::SyncStatus { ref status, .. } => {
+                self.bubble.show_skill_result(&format!("Sync: {status}"));
+            }
+            OrchestratorEvent::SyncConflict { ref doc_id, ref description } => {
+                self.bubble.show_skill_result(&format!("Conflict on {doc_id}: {description}"));
+                let mut st = self.canvas_state.lock().unwrap();
+                st.highlighted.insert(doc_id.clone());
+                st.mark_dirty();
+            }
+            OrchestratorEvent::DeviceDiscovered { ref device_name, .. } => {
+                self.bubble.show_skill_result(&format!("Device found: {device_name}"));
+            }
+            OrchestratorEvent::DevicePaired { ref device_id } => {
+                self.bubble.show_skill_result(&format!("Paired with {device_id}"));
+            }
+            // Comms events — refresh inbox
+            OrchestratorEvent::NewMessagesReceived { ref channel, count, .. } => {
+                self.bubble.show_skill_result(&format!("{count} new {channel} messages"));
+                if let Some(ref mut inbox) = self.inbox_panel {
+                    inbox.refresh(self.conversations.clone(), self.messages.clone());
+                    self.taskbar.inbox_unread = inbox.total_unread();
+                }
+            }
+            OrchestratorEvent::CommsSyncComplete { ref channel, new_messages } => {
+                if new_messages > 0 {
+                    self.bubble.show_skill_result(
+                        &format!("{channel} sync: {new_messages} new messages"),
+                    );
+                }
+            }
+            OrchestratorEvent::CommsSyncError { ref channel, ref error } => {
+                self.bubble.show_skill_result(&format!("{channel} sync error: {error}"));
+            }
+            OrchestratorEvent::ContactCreated { ref name, .. } => {
+                self.bubble.show_skill_result(&format!("New contact: {name}"));
+            }
+            _ => {
+                tracing::debug!("Unhandled orchestrator event: {:?}", event);
+            }
         }
     }
 
