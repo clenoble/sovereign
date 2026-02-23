@@ -314,7 +314,7 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         };
 
         // Channel for inbox reply → async send task
-        let mut send_message_tx: Option<
+        let send_message_tx: Option<
             tokio::sync::mpsc::Sender<sovereign_ui::panels::inbox_panel::SendRequest>,
         > = None;
         // Wire comms sync if enabled

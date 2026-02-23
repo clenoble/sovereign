@@ -8,6 +8,7 @@ use sovereign_db::GraphDB;
 
 /// Seed the duress persona database with plausible but innocuous data.
 /// Called when the duress password is used and the duress DB is empty.
+#[allow(dead_code)]
 pub async fn seed_duress_db(db: &SurrealGraphDB) -> Result<()> {
     let threads = db.list_threads().await?;
     if !threads.is_empty() {
