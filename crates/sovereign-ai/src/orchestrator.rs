@@ -336,15 +336,17 @@ impl Orchestrator {
         let workspace_ctx =
             crate::llm::context::gather_workspace_context(self.db.as_ref()).await;
 
-        // 4. Read user profile for verbosity + name
-        let (verbosity, user_name) = {
+        // 4. Read user profile for verbosity, name, designation, and nickname
+        let (verbosity, user_name, designation, nickname) = {
             if let Ok(profile) = self.profile.lock() {
                 (
                     profile.interaction_patterns.command_verbosity.clone(),
                     profile.display_name.clone(),
+                    if profile.designation.is_empty() { None } else { Some(profile.designation.clone()) },
+                    profile.nickname.clone(),
                 )
             } else {
-                ("detailed".into(), None)
+                ("detailed".into(), None, None, None)
             }
         };
 
@@ -353,6 +355,8 @@ impl Orchestrator {
             Some(&workspace_ctx),
             &verbosity,
             user_name.as_deref(),
+            designation.as_deref(),
+            nickname.as_deref(),
         );
 
         // 6. Append current user message to turns
@@ -546,7 +550,7 @@ impl Orchestrator {
     async fn wait_for_decision(&self) -> ActionDecision {
         if let Some(ref rx_mutex) = self.decision_rx {
             let mut rx = rx_mutex.lock().await;
-            match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
+            match tokio::time::timeout(Duration::from_secs(120), rx.recv()).await {
                 Ok(Some(decision)) => return decision,
                 Ok(None) => {
                     tracing::warn!("Decision channel closed — rejecting action");

@@ -1,14 +1,16 @@
-use iced::widget::{button, column, container, row, text, text_input, Id, Space};
+use iced::widget::{button, canvas, column, container, row, text, text_input, Id, Space};
 use iced::{Element, Length, Padding, Task};
 
+use sovereign_core::profile::{self, BubbleStyle};
 use sovereign_crypto::auth::PasswordPolicy;
 
 use crate::app::Message;
+use crate::bubble_canvas::BubbleProgram;
 use crate::login::KeystrokeSampleUi;
 use crate::theme;
 
 // Text-input field IDs for focus management (Tab / Enter navigation).
-const ID_DEVICE: &str = "ob_device";
+const ID_NICKNAME: &str = "ob_nickname";
 const ID_PW: &str = "ob_pw";
 const ID_PW_CONFIRM: &str = "ob_pw_confirm";
 const ID_DURESS: &str = "ob_duress";
@@ -20,7 +22,7 @@ const ID_ENROLL: &str = "ob_enroll";
 /// Returns a [`Task`] that focuses the first input field of the given step.
 pub fn focus_first_input(step: OnboardingStep) -> Task<Message> {
     let id = match step {
-        OnboardingStep::DeviceName => Some(ID_DEVICE),
+        OnboardingStep::Nickname => Some(ID_NICKNAME),
         OnboardingStep::SetPassword => Some(ID_PW),
         OnboardingStep::SetDuressPassword => Some(ID_DURESS),
         OnboardingStep::SetCanaryPhrase => Some(ID_CANARY),
@@ -36,7 +38,8 @@ pub fn focus_first_input(step: OnboardingStep) -> Task<Message> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardingStep {
     Welcome,
-    DeviceName,
+    Nickname,
+    BubbleSelect,
     ThemeSelect,
     SampleData,
     // Auth setup
@@ -51,26 +54,30 @@ impl OnboardingStep {
     fn index(self) -> usize {
         match self {
             Self::Welcome => 0,
-            Self::DeviceName => 1,
-            Self::ThemeSelect => 2,
-            Self::SampleData => 3,
-            Self::SetPassword => 4,
-            Self::SetDuressPassword => 5,
-            Self::SetCanaryPhrase => 6,
-            Self::EnrollKeystrokes => 7,
-            Self::Complete => 8,
+            Self::Nickname => 1,
+            Self::BubbleSelect => 2,
+            Self::ThemeSelect => 3,
+            Self::SampleData => 4,
+            Self::SetPassword => 5,
+            Self::SetDuressPassword => 6,
+            Self::SetCanaryPhrase => 7,
+            Self::EnrollKeystrokes => 8,
+            Self::Complete => 9,
         }
     }
 
     fn total() -> usize {
-        8 // Welcome through EnrollKeystrokes
+        9 // Welcome through EnrollKeystrokes
     }
 }
 
 /// State for the first-launch onboarding wizard.
 pub struct OnboardingState {
     pub step: OnboardingStep,
-    pub device_name: String,
+    pub designation: String,
+    pub nickname: String,
+    pub bubble_style: BubbleStyle,
+    pub elapsed: f32,
     pub seed_sample_data: bool,
     // Auth setup fields
     pub primary_password: String,
@@ -94,18 +101,10 @@ impl OnboardingState {
     pub fn new() -> Self {
         Self {
             step: OnboardingStep::Welcome,
-            device_name: std::env::var("COMPUTERNAME")
-                .or_else(|_| std::env::var("HOSTNAME"))
-                .map(|name| {
-                    // Title-case the hostname for a friendlier default
-                    let lower = name.to_lowercase();
-                    let mut chars = lower.chars();
-                    match chars.next() {
-                        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-                        None => name,
-                    }
-                })
-                .unwrap_or_else(|_| "My Device".into()),
+            designation: profile::generate_designation(),
+            nickname: String::new(),
+            bubble_style: BubbleStyle::default(),
+            elapsed: 0.0,
             seed_sample_data: true,
             primary_password: String::new(),
             primary_confirm: String::new(),
@@ -126,8 +125,9 @@ impl OnboardingState {
 
     pub fn next_step(&mut self) {
         self.step = match self.step {
-            OnboardingStep::Welcome => OnboardingStep::DeviceName,
-            OnboardingStep::DeviceName => OnboardingStep::ThemeSelect,
+            OnboardingStep::Welcome => OnboardingStep::Nickname,
+            OnboardingStep::Nickname => OnboardingStep::BubbleSelect,
+            OnboardingStep::BubbleSelect => OnboardingStep::ThemeSelect,
             OnboardingStep::ThemeSelect => OnboardingStep::SampleData,
             OnboardingStep::SampleData => OnboardingStep::SetPassword,
             OnboardingStep::SetPassword => OnboardingStep::SetDuressPassword,
@@ -141,8 +141,9 @@ impl OnboardingState {
     pub fn prev_step(&mut self) {
         self.step = match self.step {
             OnboardingStep::Welcome => OnboardingStep::Welcome,
-            OnboardingStep::DeviceName => OnboardingStep::Welcome,
-            OnboardingStep::ThemeSelect => OnboardingStep::DeviceName,
+            OnboardingStep::Nickname => OnboardingStep::Welcome,
+            OnboardingStep::BubbleSelect => OnboardingStep::Nickname,
+            OnboardingStep::ThemeSelect => OnboardingStep::BubbleSelect,
             OnboardingStep::SampleData => OnboardingStep::ThemeSelect,
             OnboardingStep::SetPassword => OnboardingStep::SampleData,
             OnboardingStep::SetDuressPassword => OnboardingStep::SetPassword,
@@ -202,7 +203,8 @@ impl OnboardingState {
     pub fn view(&self) -> Element<'_, Message> {
         let step_body: Element<'_, Message> = match self.step {
             OnboardingStep::Welcome => self.view_welcome(),
-            OnboardingStep::DeviceName => self.view_device_name(),
+            OnboardingStep::Nickname => self.view_nickname(),
+            OnboardingStep::BubbleSelect => self.view_bubble_select(),
             OnboardingStep::ThemeSelect => self.view_theme_select(),
             OnboardingStep::SampleData => self.view_sample_data(),
             OnboardingStep::SetPassword => self.view_set_password(),
@@ -285,9 +287,17 @@ impl OnboardingState {
                 .size(14)
                 .color(theme::text_dim())
                 .wrapping(text::Wrapping::Word),
-            Space::new().height(8),
-            text("This wizard will help you set up your workspace in a few quick steps.")
+            Space::new().height(16),
+            text("Your AI orchestrator has been assigned:")
                 .size(14)
+                .color(theme::text_dim()),
+            Space::new().height(8),
+            text(&self.designation)
+                .size(22)
+                .color(theme::border_accent()),
+            Space::new().height(16),
+            text("This is its unique designation — a serial identity for your personal AI assistant. In the next step, you can give it a shorter nickname.")
+                .size(13)
                 .color(theme::text_dim())
                 .wrapping(text::Wrapping::Word),
         ]
@@ -295,20 +305,25 @@ impl OnboardingState {
         .into()
     }
 
-    fn view_device_name(&self) -> Element<'_, Message> {
+    fn view_nickname(&self) -> Element<'_, Message> {
         column![
-            text("Name this device")
+            text("What would you like to call me?")
                 .size(20)
                 .color(theme::text_primary()),
-            Space::new().height(12),
-            text("Choose a name to identify this device when syncing with others.")
+            Space::new().height(8),
+            text(format!("My full designation is {}, but that's a bit of a mouthful.", &self.designation))
+                .size(14)
+                .color(theme::text_dim())
+                .wrapping(text::Wrapping::Word),
+            Space::new().height(4),
+            text("Give me a short nickname — something easy to say.")
                 .size(14)
                 .color(theme::text_dim())
                 .wrapping(text::Wrapping::Word),
             Space::new().height(16),
-            text_input("Device name", &self.device_name)
-                .id(Id::new(ID_DEVICE))
-                .on_input(Message::OnboardingDeviceNameChanged)
+            text_input("e.g. Ike, T-Nine, B4...", &self.nickname)
+                .id(Id::new(ID_NICKNAME))
+                .on_input(Message::OnboardingNicknameChanged)
                 .on_submit(Message::OnboardingTryAdvance)
                 .style(theme::search_input_style)
                 .padding(Padding::from([10, 14]))
@@ -316,6 +331,65 @@ impl OnboardingState {
         ]
         .spacing(0)
         .into()
+    }
+
+    fn view_bubble_select(&self) -> Element<'_, Message> {
+        let mut col = column![
+            text("Choose my look")
+                .size(20)
+                .color(theme::text_primary()),
+            Space::new().height(8),
+            text("Pick a visual style for my bubble avatar. You'll see it in the corner of your workspace.")
+                .size(14)
+                .color(theme::text_dim())
+                .wrapping(text::Wrapping::Word),
+            Space::new().height(16),
+        ]
+        .spacing(0);
+
+        // 3×3 grid of animated bubble previews
+        let styles = BubbleStyle::all();
+        for chunk in styles.chunks(3) {
+            let mut grid_row = row![].spacing(12);
+            for &style in chunk {
+                let is_selected = style == self.bubble_style;
+                let border_color = if is_selected {
+                    theme::border_accent()
+                } else {
+                    iced::Color { r: 0.3, g: 0.3, b: 0.3, a: 1.0 }
+                };
+
+                let bubble_preview = canvas(BubbleProgram {
+                    style,
+                    state_color: border_color,
+                    elapsed: self.elapsed,
+                })
+                .width(Length::Fixed(80.0))
+                .height(Length::Fixed(80.0));
+
+                let label = text(style.label())
+                    .size(11)
+                    .color(if is_selected {
+                        theme::border_accent()
+                    } else {
+                        theme::text_dim()
+                    })
+                    .align_x(iced::alignment::Horizontal::Center);
+
+                let cell = column![bubble_preview, label]
+                    .spacing(4)
+                    .align_x(iced::alignment::Horizontal::Center);
+
+                grid_row = grid_row.push(
+                    iced::widget::mouse_area(cell)
+                        .on_press(Message::OnboardingBubbleSelected(style)),
+                );
+            }
+            col = col.push(grid_row);
+            col = col.push(Space::new().height(8));
+        }
+
+        col.into()
     }
 
     fn view_theme_select(&self) -> Element<'_, Message> {
