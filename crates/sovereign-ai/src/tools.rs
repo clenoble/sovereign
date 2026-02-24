@@ -5,7 +5,6 @@
 //! gate system which enforces trust and confirmation per the UX principles.
 
 use serde::Deserialize;
-use sovereign_db::surreal::SurrealGraphDB;
 use sovereign_db::GraphDB;
 
 /// Definition of a tool the model can call.
@@ -254,7 +253,7 @@ pub fn is_write_tool(name: &str) -> bool {
 
 /// Execute a write tool call against the database. Returns the result.
 /// The caller is responsible for gating (confirmation) before calling this.
-pub async fn execute_write_tool(call: &ToolCall, db: &SurrealGraphDB) -> WriteToolResult {
+pub async fn execute_write_tool(call: &ToolCall, db: &dyn GraphDB) -> WriteToolResult {
     match call.name.as_str() {
         "create_document" => execute_create_document(call, db).await,
         "create_thread" => execute_create_thread(call, db).await,
@@ -278,7 +277,7 @@ pub struct WriteToolResult {
     pub event: Option<sovereign_core::interfaces::OrchestratorEvent>,
 }
 
-async fn execute_create_document(call: &ToolCall, db: &SurrealGraphDB) -> WriteToolResult {
+async fn execute_create_document(call: &ToolCall, db: &dyn GraphDB) -> WriteToolResult {
     let title = call
         .arguments
         .get("title")
@@ -289,15 +288,16 @@ async fn execute_create_document(call: &ToolCall, db: &SurrealGraphDB) -> WriteT
     let thread_name = call.arguments.get("thread_name").and_then(|v| v.as_str());
 
     // Resolve thread ID
-    let threads = db.list_threads().await.unwrap_or_default();
     let thread = if let Some(tname) = thread_name {
-        let tname_lower = tname.to_lowercase();
-        threads
-            .iter()
-            .find(|t| t.name.to_lowercase().contains(&tname_lower))
-            .or(threads.first())
+        db.find_thread_by_name(tname).await.unwrap_or(None)
+            .or_else(|| None) // fallback handled below
     } else {
-        threads.first()
+        None
+    };
+    // Fallback to first thread if no match or no name given
+    let thread = match thread {
+        Some(t) => Some(t),
+        None => db.list_threads().await.unwrap_or_default().into_iter().next(),
     };
 
     let thread_id = thread
@@ -328,7 +328,7 @@ async fn execute_create_document(call: &ToolCall, db: &SurrealGraphDB) -> WriteT
     }
 }
 
-async fn execute_create_thread(call: &ToolCall, db: &SurrealGraphDB) -> WriteToolResult {
+async fn execute_create_thread(call: &ToolCall, db: &dyn GraphDB) -> WriteToolResult {
     let name = call
         .arguments
         .get("name")
@@ -359,7 +359,7 @@ async fn execute_create_thread(call: &ToolCall, db: &SurrealGraphDB) -> WriteToo
     }
 }
 
-async fn execute_rename_thread(call: &ToolCall, db: &SurrealGraphDB) -> WriteToolResult {
+async fn execute_rename_thread(call: &ToolCall, db: &dyn GraphDB) -> WriteToolResult {
     let old_name = call
         .arguments
         .get("old_name")
@@ -380,11 +380,7 @@ async fn execute_rename_thread(call: &ToolCall, db: &SurrealGraphDB) -> WriteToo
         };
     }
 
-    let threads = db.list_threads().await.unwrap_or_default();
-    let old_lower = old_name.to_lowercase();
-    let thread = threads
-        .iter()
-        .find(|t| t.name.to_lowercase().contains(&old_lower));
+    let thread = db.find_thread_by_name(old_name).await.unwrap_or(None);
 
     if let Some(thread) = thread {
         let tid = thread.id_string().unwrap_or_default();
@@ -415,7 +411,7 @@ async fn execute_rename_thread(call: &ToolCall, db: &SurrealGraphDB) -> WriteToo
     }
 }
 
-async fn execute_move_document(call: &ToolCall, db: &SurrealGraphDB) -> WriteToolResult {
+async fn execute_move_document(call: &ToolCall, db: &dyn GraphDB) -> WriteToolResult {
     let doc_title = call
         .arguments
         .get("document_title")
@@ -436,19 +432,11 @@ async fn execute_move_document(call: &ToolCall, db: &SurrealGraphDB) -> WriteToo
         };
     }
 
-    let docs = db.list_documents(None).await.unwrap_or_default();
-    let threads = db.list_threads().await.unwrap_or_default();
+    let docs = db.search_documents_by_title(doc_title).await.unwrap_or_default();
+    let doc = docs.first();
+    let thread = db.find_thread_by_name(thread_name).await.unwrap_or(None);
 
-    let doc_lower = doc_title.to_lowercase();
-    let thread_lower = thread_name.to_lowercase();
-    let doc = docs
-        .iter()
-        .find(|d| d.title.to_lowercase().contains(&doc_lower));
-    let thread = threads
-        .iter()
-        .find(|t| t.name.to_lowercase().contains(&thread_lower));
-
-    if let (Some(doc), Some(thread)) = (doc, thread) {
+    if let (Some(doc), Some(thread)) = (doc, thread.as_ref()) {
         let doc_id = doc.id_string().unwrap_or_default();
         let tid = thread.id_string().unwrap_or_default();
         match db.move_document_to_thread(&doc_id, &tid).await {
@@ -486,7 +474,7 @@ async fn execute_move_document(call: &ToolCall, db: &SurrealGraphDB) -> WriteToo
 }
 
 /// Execute a read-only tool call against the database. Returns a result with truncated output.
-pub async fn execute_tool(call: &ToolCall, db: &SurrealGraphDB) -> ToolResult {
+pub async fn execute_tool(call: &ToolCall, db: &dyn GraphDB) -> ToolResult {
     let output = match call.name.as_str() {
         "search_documents" => execute_search_documents(call, db).await,
         "list_threads" => execute_list_threads(db).await,
@@ -504,18 +492,16 @@ pub async fn execute_tool(call: &ToolCall, db: &SurrealGraphDB) -> ToolResult {
     }
 }
 
-async fn execute_search_documents(call: &ToolCall, db: &SurrealGraphDB) -> String {
+async fn execute_search_documents(call: &ToolCall, db: &dyn GraphDB) -> String {
     let query = call
         .arguments
         .get("query")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let query_lower = query.to_lowercase();
 
-    let docs = db.list_documents(None).await.unwrap_or_default();
+    let docs = db.search_documents_by_title(query).await.unwrap_or_default();
     let matches: Vec<String> = docs
         .iter()
-        .filter(|d| d.title.to_lowercase().contains(&query_lower))
         .take(8)
         .map(|d| {
             let ownership = if d.is_owned { "owned" } else { "external" };
@@ -530,7 +516,7 @@ async fn execute_search_documents(call: &ToolCall, db: &SurrealGraphDB) -> Strin
     }
 }
 
-async fn execute_list_threads(db: &SurrealGraphDB) -> String {
+async fn execute_list_threads(db: &dyn GraphDB) -> String {
     let threads = db.list_threads().await.unwrap_or_default();
     let docs = db.list_documents(None).await.unwrap_or_default();
 
@@ -550,19 +536,15 @@ async fn execute_list_threads(db: &SurrealGraphDB) -> String {
     }
 }
 
-async fn execute_get_document(call: &ToolCall, db: &SurrealGraphDB) -> String {
+async fn execute_get_document(call: &ToolCall, db: &dyn GraphDB) -> String {
     let title = call
         .arguments
         .get("title")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let title_lower = title.to_lowercase();
 
-    let docs = db.list_documents(None).await.unwrap_or_default();
-    if let Some(doc) = docs
-        .iter()
-        .find(|d| d.title.to_lowercase().contains(&title_lower))
-    {
+    let docs = db.search_documents_by_title(title).await.unwrap_or_default();
+    if let Some(doc) = docs.first() {
         let ownership = if doc.is_owned { "owned" } else { "external" };
         let body = &doc.content;
         let truncated = if body.len() > 500 { &body[..500] } else { body };
@@ -575,27 +557,21 @@ async fn execute_get_document(call: &ToolCall, db: &SurrealGraphDB) -> String {
     }
 }
 
-async fn execute_list_documents(call: &ToolCall, db: &SurrealGraphDB) -> String {
+async fn execute_list_documents(call: &ToolCall, db: &dyn GraphDB) -> String {
     let thread_name = call.arguments.get("thread").and_then(|v| v.as_str());
-    let docs = db.list_documents(None).await.unwrap_or_default();
 
-    let filtered: Vec<_> = if let Some(tname) = thread_name {
-        let tname_lower = tname.to_lowercase();
-        let threads = db.list_threads().await.unwrap_or_default();
-        if let Some(thread) = threads
-            .iter()
-            .find(|t| t.name.to_lowercase().contains(&tname_lower))
-        {
+    let docs = if let Some(tname) = thread_name {
+        if let Some(thread) = db.find_thread_by_name(tname).await.unwrap_or(None) {
             let tid = thread.id_string().unwrap_or_default();
-            docs.iter().filter(|d| d.thread_id == tid).collect()
+            db.list_documents(Some(&tid)).await.unwrap_or_default()
         } else {
             return format!("Thread '{tname}' not found.");
         }
     } else {
-        docs.iter().collect()
+        db.list_documents(None).await.unwrap_or_default()
     };
 
-    let lines: Vec<String> = filtered
+    let lines: Vec<String> = docs
         .iter()
         .take(15)
         .map(|d| {
@@ -607,11 +583,11 @@ async fn execute_list_documents(call: &ToolCall, db: &SurrealGraphDB) -> String 
     if lines.is_empty() {
         "No documents found.".into()
     } else {
-        format!("{} documents:\n{}", filtered.len(), lines.join("\n"))
+        format!("{} documents:\n{}", docs.len(), lines.join("\n"))
     }
 }
 
-async fn execute_search_messages(call: &ToolCall, db: &SurrealGraphDB) -> String {
+async fn execute_search_messages(call: &ToolCall, db: &dyn GraphDB) -> String {
     let query = call
         .arguments
         .get("query")
@@ -647,7 +623,7 @@ async fn execute_search_messages(call: &ToolCall, db: &SurrealGraphDB) -> String
     }
 }
 
-async fn execute_list_contacts(db: &SurrealGraphDB) -> String {
+async fn execute_list_contacts(db: &dyn GraphDB) -> String {
     let contacts = db.list_contacts().await.unwrap_or_default();
 
     let lines: Vec<String> = contacts

@@ -4,7 +4,6 @@
 //! converting session log entries into chat turns, and assembling multi-turn
 //! ChatML prompts within a token budget.
 
-use sovereign_db::surreal::SurrealGraphDB;
 use sovereign_db::GraphDB;
 
 use crate::session_log::SessionEntry;
@@ -36,7 +35,7 @@ pub struct WorkspaceContext {
 }
 
 /// Gather workspace context from the database (fast read-only queries).
-pub async fn gather_workspace_context(db: &SurrealGraphDB) -> WorkspaceContext {
+pub async fn gather_workspace_context(db: &dyn GraphDB) -> WorkspaceContext {
     let threads = db.list_threads().await.unwrap_or_default();
     let docs = db.list_documents(None).await.unwrap_or_default();
     let contacts = db.list_contacts().await.unwrap_or_default();
