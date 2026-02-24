@@ -778,4 +778,178 @@ mod tests {
         assert!(names.contains(&"list_threads"));
         assert!(!names.contains(&"create_document"));
     }
+
+    // --- Async tests using MockGraphDB ---
+
+    use sovereign_db::mock::MockGraphDB;
+    use sovereign_db::schema::{Document, Thread};
+
+    fn mock_db() -> MockGraphDB {
+        MockGraphDB::new()
+    }
+
+    fn tool_call(name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall { name: name.into(), arguments: args }
+    }
+
+    #[tokio::test]
+    async fn execute_search_documents_finds_match() {
+        let db = mock_db();
+        db.create_document(Document::new("Meeting Notes".into(), "t:1".into(), true)).await.unwrap();
+        db.create_document(Document::new("Grocery List".into(), "t:1".into(), false)).await.unwrap();
+
+        let call = tool_call("search_documents", serde_json::json!({"query": "meeting"}));
+        let result = execute_tool(&call, &db).await;
+        assert!(result.success);
+        assert!(result.output.contains("Meeting Notes"));
+        assert!(!result.output.contains("Grocery"));
+    }
+
+    #[tokio::test]
+    async fn execute_search_documents_no_match() {
+        let db = mock_db();
+        db.create_document(Document::new("Alpha".into(), "t:1".into(), true)).await.unwrap();
+
+        let call = tool_call("search_documents", serde_json::json!({"query": "zzz"}));
+        let result = execute_tool(&call, &db).await;
+        assert!(result.success);
+        assert!(result.output.contains("No documents found"));
+    }
+
+    #[tokio::test]
+    async fn execute_list_threads_with_counts() {
+        let db = mock_db();
+        let t = db.create_thread(Thread::new("Work".into(), "".into())).await.unwrap();
+        let tid = t.id_string().unwrap();
+        db.create_document(Document::new("Doc A".into(), tid.clone(), true)).await.unwrap();
+        db.create_document(Document::new("Doc B".into(), tid.clone(), true)).await.unwrap();
+
+        let call = tool_call("list_threads", serde_json::json!({}));
+        let result = execute_tool(&call, &db).await;
+        assert!(result.success);
+        assert!(result.output.contains("Work"));
+        assert!(result.output.contains("2 documents"));
+    }
+
+    #[tokio::test]
+    async fn execute_get_document_found() {
+        let db = mock_db();
+        db.create_document(Document::new("My Notes".into(), "t:1".into(), true)).await.unwrap();
+
+        let call = tool_call("get_document", serde_json::json!({"title": "notes"}));
+        let result = execute_tool(&call, &db).await;
+        assert!(result.success);
+        assert!(result.output.contains("My Notes"));
+        assert!(result.output.contains("owned"));
+    }
+
+    #[tokio::test]
+    async fn execute_get_document_not_found() {
+        let db = mock_db();
+        let call = tool_call("get_document", serde_json::json!({"title": "nonexistent"}));
+        let result = execute_tool(&call, &db).await;
+        assert!(result.success);
+        assert!(result.output.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn execute_list_documents_all() {
+        let db = mock_db();
+        db.create_document(Document::new("A".into(), "t:1".into(), true)).await.unwrap();
+        db.create_document(Document::new("B".into(), "t:1".into(), false)).await.unwrap();
+
+        let call = tool_call("list_documents", serde_json::json!({}));
+        let result = execute_tool(&call, &db).await;
+        assert!(result.success);
+        assert!(result.output.contains("2 documents"));
+    }
+
+    #[tokio::test]
+    async fn execute_list_documents_filtered_by_thread() {
+        let db = mock_db();
+        let t1 = db.create_thread(Thread::new("Work".into(), "".into())).await.unwrap();
+        let t2 = db.create_thread(Thread::new("Personal".into(), "".into())).await.unwrap();
+        let tid1 = t1.id_string().unwrap();
+        let tid2 = t2.id_string().unwrap();
+        db.create_document(Document::new("Work Doc".into(), tid1, true)).await.unwrap();
+        db.create_document(Document::new("Home Doc".into(), tid2, true)).await.unwrap();
+
+        let call = tool_call("list_documents", serde_json::json!({"thread": "Work"}));
+        let result = execute_tool(&call, &db).await;
+        assert!(result.success);
+        assert!(result.output.contains("1 documents"));
+        assert!(result.output.contains("Work Doc"));
+    }
+
+    #[tokio::test]
+    async fn execute_list_contacts_returns_formatted() {
+        let db = mock_db();
+        let mut contact = sovereign_db::schema::Contact::new("Alice".into(), false);
+        contact.addresses.push(sovereign_db::schema::ChannelAddress {
+            channel: sovereign_db::schema::ChannelType::Email,
+            address: "alice@example.com".into(),
+            display_name: None,
+            is_primary: true,
+        });
+        db.create_contact(contact).await.unwrap();
+
+        let call = tool_call("list_contacts", serde_json::json!({}));
+        let result = execute_tool(&call, &db).await;
+        assert!(result.success);
+        assert!(result.output.contains("Alice"));
+        assert!(result.output.contains("email"));
+    }
+
+    #[tokio::test]
+    async fn execute_write_tool_create_document() {
+        let db = mock_db();
+        let t = db.create_thread(Thread::new("Default".into(), "".into())).await.unwrap();
+        let _tid = t.id_string().unwrap();
+
+        let call = tool_call("create_document", serde_json::json!({"title": "New Doc"}));
+        let result = execute_write_tool(&call, &db).await;
+        assert!(result.success);
+        assert!(result.output.contains("New Doc"));
+        assert!(result.event.is_some());
+
+        let docs = db.list_documents(None).await.unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].title, "New Doc");
+    }
+
+    #[tokio::test]
+    async fn execute_write_tool_create_thread() {
+        let db = mock_db();
+        let call = tool_call("create_thread", serde_json::json!({"name": "Marketing"}));
+        let result = execute_write_tool(&call, &db).await;
+        assert!(result.success);
+        assert!(result.output.contains("Marketing"));
+        assert!(result.event.is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_write_tool_rename_thread() {
+        let db = mock_db();
+        db.create_thread(Thread::new("Old Name".into(), "".into())).await.unwrap();
+
+        let call = tool_call("rename_thread", serde_json::json!({"old_name": "Old", "new_name": "New Name"}));
+        let result = execute_write_tool(&call, &db).await;
+        assert!(result.success);
+        assert!(result.output.contains("Renamed"));
+    }
+
+    #[tokio::test]
+    async fn execute_write_tool_move_document() {
+        let db = mock_db();
+        let t1 = db.create_thread(Thread::new("Source".into(), "".into())).await.unwrap();
+        let t2 = db.create_thread(Thread::new("Dest".into(), "".into())).await.unwrap();
+        let tid1 = t1.id_string().unwrap();
+        let _tid2 = t2.id_string().unwrap();
+        db.create_document(Document::new("My Doc".into(), tid1, true)).await.unwrap();
+
+        let call = tool_call("move_document", serde_json::json!({"document_title": "My Doc", "thread_name": "Dest"}));
+        let result = execute_write_tool(&call, &db).await;
+        assert!(result.success);
+        assert!(result.output.contains("Moved"));
+    }
 }
