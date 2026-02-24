@@ -246,9 +246,10 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
 
         // Try to initialize AI orchestrator
         let db_arc = db_arc_for_skills;
+        let db_dyn: std::sync::Arc<dyn sovereign_db::GraphDB> = db_arc.clone();
         let orchestrator = match sovereign_ai::Orchestrator::new(
             config.ai.clone(),
-            db_arc.clone(),
+            db_dyn,
             orch_tx.clone(),
         )
         .await

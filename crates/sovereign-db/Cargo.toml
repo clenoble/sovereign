@@ -19,3 +19,4 @@ tracing = { version = "0.1", optional = true }
 
 [features]
 encryption = ["sovereign-crypto", "base64", "tracing"]
+test-utils = []

@@ -29,6 +29,9 @@ rustpotter = { workspace = true, optional = true }
 sovereign-crypto = { workspace = true, optional = true }
 sovereign-p2p = { workspace = true, optional = true }
 
+[dev-dependencies]
+sovereign-db = { workspace = true, features = ["test-utils"] }
+
 [features]
 default = ["cuda"]
 cuda = ["llama-cpp-2/cuda"]
