@@ -7,6 +7,7 @@ use sovereign_db::schema::{
     ChannelAddress, ChannelType, Contact, Conversation, Message, MessageDirection,
 };
 use sovereign_db::GraphDB;
+use zeroize::Zeroizing;
 
 use crate::channel::{ChannelStatus, CommunicationChannel, OutgoingMessage, SyncResult};
 use crate::config::EmailAccountConfig;
@@ -16,7 +17,7 @@ use crate::error::CommsError;
 pub struct EmailChannel {
     config: EmailAccountConfig,
     db: Arc<dyn GraphDB>,
-    password: String,
+    password: Zeroizing<String>,
     status: ChannelStatus,
     last_sync: Option<DateTime<Utc>>,
 }
@@ -30,7 +31,7 @@ impl EmailChannel {
         Self {
             config,
             db,
-            password,
+            password: Zeroizing::new(password),
             status: ChannelStatus::Disconnected,
             last_sync: None,
         }
@@ -328,7 +329,7 @@ impl CommunicationChannel for EmailChannel {
 
             let creds = Credentials::new(
                 self.config.username.clone(),
-                self.password.clone(),
+                (*self.password).clone(),
             );
 
             let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&self.config.smtp_host)

@@ -251,4 +251,97 @@ mod tests {
         assert_eq!(back.state, RecoveryState::AwaitingShards);
         assert_eq!(back.approval_count(), 1);
     }
+
+    #[test]
+    fn double_approval_same_guardian_does_not_double_count() {
+        let ids = guardian_ids();
+        let mut req = RecoveryRequest::new("req-1".into(), 3, &ids);
+        req.force_advance_past_waiting();
+
+        req.record_approval(&ids[0], "shard-a".into());
+        req.record_approval(&ids[0], "shard-b".into());
+
+        // Only one shard stored (overwritten), only one Approved response
+        assert_eq!(req.approval_count(), 1);
+        assert_eq!(req.collected_shards.len(), 1);
+        assert_eq!(req.collected_shards[&ids[0]], "shard-b");
+    }
+
+    #[test]
+    fn threshold_boundary_exactly_at_threshold() {
+        let ids = guardian_ids();
+        let mut req = RecoveryRequest::new("req-1".into(), 3, &ids);
+        req.force_advance_past_waiting();
+
+        req.record_approval(&ids[0], "s0".into());
+        req.record_approval(&ids[1], "s1".into());
+        assert!(!req.can_reconstruct());
+
+        // Exactly at threshold
+        req.record_approval(&ids[2], "s2".into());
+        assert!(req.can_reconstruct());
+        assert!(req.begin_reconstruction());
+    }
+
+    #[test]
+    fn cannot_begin_reconstruction_when_already_reconstructing() {
+        let ids = guardian_ids();
+        let mut req = RecoveryRequest::new("req-1".into(), 3, &ids);
+        req.force_advance_past_waiting();
+        req.record_approval(&ids[0], "s0".into());
+        req.record_approval(&ids[1], "s1".into());
+        req.record_approval(&ids[2], "s2".into());
+
+        assert!(req.begin_reconstruction());
+        assert_eq!(req.state, RecoveryState::Reconstructing);
+
+        // Second begin_reconstruction must fail — wrong state
+        assert!(!req.begin_reconstruction());
+    }
+
+    #[test]
+    fn cannot_advance_past_waiting_when_not_in_waiting() {
+        let ids = guardian_ids();
+        let mut req = RecoveryRequest::new("req-1".into(), 3, &ids);
+        req.force_advance_past_waiting();
+        assert_eq!(req.state, RecoveryState::AwaitingShards);
+
+        // Already past waiting — advance should be no-op
+        assert!(!req.advance_past_waiting());
+        // force_advance also no-op
+        req.force_advance_past_waiting();
+        assert_eq!(req.state, RecoveryState::AwaitingShards);
+    }
+
+    #[test]
+    fn complete_then_abort_is_still_aborted() {
+        let ids = guardian_ids();
+        let mut req = RecoveryRequest::new("req-1".into(), 3, &ids);
+        req.force_advance_past_waiting();
+        req.record_approval(&ids[0], "s0".into());
+        req.record_approval(&ids[1], "s1".into());
+        req.record_approval(&ids[2], "s2".into());
+        req.begin_reconstruction();
+        req.complete();
+        assert_eq!(req.state, RecoveryState::Complete);
+
+        // Abort after completion — state overwritten (abort is unconditional)
+        req.abort("admin override");
+        assert_eq!(req.state, RecoveryState::Aborted);
+    }
+
+    #[test]
+    fn unknown_guardian_approval_collected_but_not_counted() {
+        let ids = guardian_ids();
+        let mut req = RecoveryRequest::new("req-1".into(), 3, &ids);
+        req.force_advance_past_waiting();
+
+        // Unknown guardian — not in guardian_responses
+        req.record_approval("unknown-guardian", "shard-x".into());
+
+        // Shard is stored (collected_shards is a plain HashMap)
+        assert_eq!(req.collected_shards.len(), 1);
+        // But approval_count only counts known guardians with Approved status
+        assert_eq!(req.approval_count(), 0);
+    }
 }
