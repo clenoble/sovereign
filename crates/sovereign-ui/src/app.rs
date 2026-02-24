@@ -415,265 +415,32 @@ impl SovereignApp {
             }
 
             // ── Document panels ──────────────────────────────────────────
-            Message::OpenDocument(doc_id) => {
-                self.open_document(&doc_id);
-                Task::none()
-            }
-            Message::CloseDocument(idx) => {
-                if idx < self.doc_panels.len() {
-                    let doc_id = self.doc_panels[idx].doc_id.clone();
-                    self.doc_panels.remove(idx);
-                    if let Some(ref cb) = self.close_callback {
-                        cb(doc_id);
-                    }
-                }
-                Task::none()
-            }
-            Message::SaveDocument(idx) => {
-                if let Some(panel) = self.doc_panels.get(idx) {
-                    let doc_id = panel.doc_id.clone();
-                    let title = panel.title.clone();
-                    let body = panel.get_body_text();
-                    let images = panel.images.clone();
-                    let videos = panel.videos.clone();
-                    let cf = ContentFields { body, images, videos };
-                    let serialized = cf.serialize();
-                    if let Some(ref cb) = self.save_callback {
-                        cb(doc_id.clone(), title, serialized.clone());
-                    }
-                    // Update local doc map
-                    if let Some(doc) = self.doc_map.get_mut(&doc_id) {
-                        doc.content = serialized;
-                    }
-                }
-                Task::none()
-            }
-            Message::DocTitleChanged { panel_idx, title } => {
-                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
-                    panel.title = title;
-                }
-                Task::none()
-            }
-            Message::DocBodyAction { panel_idx, action } => {
-                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
-                    panel.body.perform(action);
-                }
-                Task::none()
-            }
-            Message::ToggleHistory(idx) => {
-                if let Some(panel) = self.doc_panels.get_mut(idx) {
-                    panel.show_history = !panel.show_history;
-                    panel.selected_commit = None;
-                }
-                Task::none()
-            }
-            Message::SelectCommit { panel_idx, commit_idx } => {
-                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
-                    if panel.selected_commit == Some(commit_idx) {
-                        panel.selected_commit = None;
-                    } else {
-                        panel.selected_commit = Some(commit_idx);
-                    }
-                }
-                Task::none()
-            }
+            msg @ (Message::OpenDocument(..)
+                | Message::CloseDocument(..)
+                | Message::SaveDocument(..)
+                | Message::DocTitleChanged { .. }
+                | Message::DocBodyAction { .. }
+                | Message::ToggleHistory(..)
+                | Message::SelectCommit { .. }) => self.handle_document_panel(msg),
 
             // ── Contact panels ──────────────────────────────────────────
-            Message::OpenContact(contact_id) => {
-                self.open_contact(&contact_id);
-                Task::none()
-            }
-            Message::CloseContactPanel(idx) => {
-                if idx < self.contact_panels.len() {
-                    self.contact_panels.remove(idx);
-                }
-                Task::none()
-            }
-            Message::SelectConversation { panel_idx, conv_idx } => {
-                if let Some(panel) = self.contact_panels.get_mut(panel_idx) {
-                    if conv_idx == usize::MAX {
-                        // "Back" button
-                        panel.selected_conversation = None;
-                    } else {
-                        panel.selected_conversation = Some(conv_idx);
-                    }
-                }
-                Task::none()
-            }
-            Message::ContactPanelDragStart(idx) => {
-                if let Some(panel) = self.contact_panels.get_mut(idx) {
-                    let local_y = panel.last_local_cursor.y;
-                    if local_y >= DEAD_ZONE && local_y < DEAD_ZONE + DRAG_BAR_HEIGHT {
-                        let screen = iced::Point::new(
-                            (panel.position.x - DEAD_ZONE) + panel.last_local_cursor.x,
-                            (panel.position.y - DEAD_ZONE) + panel.last_local_cursor.y,
-                        );
-                        panel.drag_start_screen = Some(screen);
-                        panel.drag_start_panel = Some(panel.position);
-                    }
-                }
-                Task::none()
-            }
-            Message::ContactPanelDragMove { panel_idx, local } => {
-                if let Some(panel) = self.contact_panels.get_mut(panel_idx) {
-                    panel.last_local_cursor = local;
-                    if let (Some(start_screen), Some(start_panel)) =
-                        (panel.drag_start_screen, panel.drag_start_panel)
-                    {
-                        let screen = iced::Point::new(
-                            (panel.position.x - DEAD_ZONE) + local.x,
-                            (panel.position.y - DEAD_ZONE) + local.y,
-                        );
-                        let dx = screen.x - start_screen.x;
-                        let dy = screen.y - start_screen.y;
-                        if !panel.dragging && (dx.abs() > 3.0 || dy.abs() > 3.0) {
-                            panel.dragging = true;
-                        }
-                        if panel.dragging {
-                            panel.position = iced::Point::new(
-                                (start_panel.x + dx).max(0.0),
-                                (start_panel.y + dy).max(0.0),
-                            );
-                        }
-                    }
-                }
-                Task::none()
-            }
-            Message::ContactPanelDragEnd(idx) => {
-                if let Some(panel) = self.contact_panels.get_mut(idx) {
-                    panel.dragging = false;
-                    panel.drag_start_screen = None;
-                    panel.drag_start_panel = None;
-                }
-                Task::none()
-            }
+            msg @ (Message::OpenContact(..)
+                | Message::CloseContactPanel(..)
+                | Message::SelectConversation { .. }
+                | Message::ContactPanelDragStart(..)
+                | Message::ContactPanelDragMove { .. }
+                | Message::ContactPanelDragEnd(..)) => self.handle_contact_panel(msg),
 
             // ── Inbox panel ─────────────────────────────────────────────
-            Message::InboxToggled => {
-                if self.inbox_panel.is_some() {
-                    self.inbox_panel = None;
-                } else {
-                    let panel = InboxPanel::new(
-                        self.conversations.clone(),
-                        self.messages.clone(),
-                    );
-                    self.taskbar.inbox_unread = panel.total_unread();
-                    self.inbox_panel = Some(panel);
-                }
-                Task::none()
-            }
-            Message::InboxClose => {
-                self.inbox_panel = None;
-                Task::none()
-            }
-            Message::InboxSelectConversation(idx) => {
-                if let Some(ref mut panel) = self.inbox_panel {
-                    panel.selected_conversation = Some(idx);
-                }
-                Task::none()
-            }
-            Message::InboxBack => {
-                if let Some(ref mut panel) = self.inbox_panel {
-                    panel.selected_conversation = None;
-                }
-                Task::none()
-            }
-            Message::InboxReplyChanged(text) => {
-                if let Some(ref mut panel) = self.inbox_panel {
-                    panel.reply_input = text;
-                }
-                Task::none()
-            }
-            Message::InboxReplySubmit => {
-                if let Some(ref mut panel) = self.inbox_panel {
-                    let body = panel.reply_input.clone();
-                    if body.is_empty() {
-                        return Task::none();
-                    }
-
-                    // Build send request from current conversation context
-                    if let Some(conv_idx) = panel.selected_conversation {
-                        if let Some(conv) = panel.conversations.get(conv_idx) {
-                            let conv_id = conv.id_string().unwrap_or_default();
-
-                            // Get recipient addresses from conversation participants
-                            // (all participants except self — but we don't track self here,
-                            // so we send to all participant IDs and let the backend resolve)
-                            let to_addresses = conv.participant_contact_ids.clone();
-
-                            let subject = Some(format!("Re: {}", conv.title));
-
-                            // Find the last message's external_id for In-Reply-To header
-                            let in_reply_to = panel.messages.iter()
-                                .filter(|m| m.conversation_id == conv_id)
-                                .last()
-                                .and_then(|m| m.external_id.clone());
-
-                            let request = crate::panels::inbox_panel::SendRequest {
-                                conversation_id: conv_id,
-                                to_addresses,
-                                subject,
-                                body,
-                                in_reply_to,
-                            };
-
-                            if let Some(ref tx) = self.send_message_tx {
-                                let _ = tx.try_send(request);
-                            }
-                        }
-                    }
-
-                    panel.reply_input.clear();
-                }
-                Task::none()
-            }
-            Message::InboxDragStart => {
-                if let Some(ref mut panel) = self.inbox_panel {
-                    let local_y = panel.last_local_cursor.y;
-                    if local_y >= DEAD_ZONE && local_y < DEAD_ZONE + DRAG_BAR_HEIGHT {
-                        let screen = iced::Point::new(
-                            (panel.position.x - DEAD_ZONE) + panel.last_local_cursor.x,
-                            (panel.position.y - DEAD_ZONE) + panel.last_local_cursor.y,
-                        );
-                        panel.drag_start_screen = Some(screen);
-                        panel.drag_start_panel = Some(panel.position);
-                    }
-                }
-                Task::none()
-            }
-            Message::InboxDragMove(local) => {
-                if let Some(ref mut panel) = self.inbox_panel {
-                    panel.last_local_cursor = local;
-                    if let (Some(start_screen), Some(start_panel)) =
-                        (panel.drag_start_screen, panel.drag_start_panel)
-                    {
-                        let screen = iced::Point::new(
-                            (panel.position.x - DEAD_ZONE) + local.x,
-                            (panel.position.y - DEAD_ZONE) + local.y,
-                        );
-                        let dx = screen.x - start_screen.x;
-                        let dy = screen.y - start_screen.y;
-                        if !panel.dragging && (dx.abs() > 3.0 || dy.abs() > 3.0) {
-                            panel.dragging = true;
-                        }
-                        if panel.dragging {
-                            panel.position = iced::Point::new(
-                                (start_panel.x + dx).max(0.0),
-                                (start_panel.y + dy).max(0.0),
-                            );
-                        }
-                    }
-                }
-                Task::none()
-            }
-            Message::InboxDragEnd => {
-                if let Some(ref mut panel) = self.inbox_panel {
-                    panel.dragging = false;
-                    panel.drag_start_screen = None;
-                    panel.drag_start_panel = None;
-                }
-                Task::none()
-            }
+            msg @ (Message::InboxToggled
+                | Message::InboxClose
+                | Message::InboxSelectConversation(..)
+                | Message::InboxBack
+                | Message::InboxReplyChanged(..)
+                | Message::InboxReplySubmit
+                | Message::InboxDragStart
+                | Message::InboxDragMove(..)
+                | Message::InboxDragEnd) => self.handle_inbox(msg),
 
             // ── Panel drag ──────────────────────────────────────────────
             Message::PanelDragStart(idx) => {
@@ -918,151 +685,24 @@ impl SovereignApp {
             }
 
             // ── Onboarding ────────────────────────────────────────────────
-            Message::OnboardingNext => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.next_step();
-                    return crate::onboarding::focus_first_input(ob.step);
-                }
-                Task::none()
-            }
-            Message::OnboardingBack => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.prev_step();
-                    return crate::onboarding::focus_first_input(ob.step);
-                }
-                Task::none()
-            }
-            Message::OnboardingNicknameChanged(name) => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.nickname = name;
-                }
-                Task::none()
-            }
-            Message::OnboardingBubbleSelected(style) => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.bubble_style = style;
-                }
-                Task::none()
-            }
-            Message::OnboardingThemeToggled => {
-                theme::toggle_theme();
-                Task::none()
-            }
-            Message::OnboardingSeedToggled => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.seed_sample_data = !ob.seed_sample_data;
-                }
-                Task::none()
-            }
-            Message::OnboardingPrimaryChanged(val) => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.primary_password = val;
-                    ob.validate_primary();
-                }
-                Task::none()
-            }
-            Message::OnboardingPrimaryConfirmChanged(val) => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.primary_confirm = val;
-                    ob.validate_primary();
-                }
-                Task::none()
-            }
-            Message::OnboardingDuressChanged(val) => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.duress_password = val;
-                    ob.validate_duress();
-                }
-                Task::none()
-            }
-            Message::OnboardingDuressConfirmChanged(val) => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.duress_confirm = val;
-                    ob.validate_duress();
-                }
-                Task::none()
-            }
-            Message::OnboardingCanaryChanged(val) => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.canary_phrase = val;
-                }
-                Task::none()
-            }
-            Message::OnboardingCanaryConfirmChanged(val) => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.canary_confirm = val;
-                }
-                Task::none()
-            }
-            Message::OnboardingEnrollInputChanged(val) => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.current_enrollment_input = val;
-                }
-                Task::none()
-            }
-            Message::OnboardingEnrollSubmit => {
-                if let Some(ref mut ob) = self.onboarding {
-                    if ob.current_enrollment_input == ob.primary_password {
-                        let keystrokes =
-                            std::mem::take(&mut ob.current_enrollment_keystrokes);
-                        ob.enrollment_samples.push(keystrokes);
-                        ob.current_enrollment_input.clear();
-                        ob.enrollment_error = None;
-                    } else {
-                        ob.enrollment_error =
-                            Some("Password doesn't match — try again.".into());
-                        ob.current_enrollment_input.clear();
-                        ob.current_enrollment_keystrokes.clear();
-                    }
-                }
-                Task::none()
-            }
-            Message::OnboardingFocusField(id) => {
-                iced::widget::operation::focus(iced::widget::Id::new(id))
-            }
-            Message::OnboardingTryAdvance => {
-                if let Some(ref mut ob) = self.onboarding {
-                    if ob.can_advance() {
-                        ob.next_step();
-                        if ob.step == crate::onboarding::OnboardingStep::Complete {
-                            return self.update(Message::OnboardingComplete);
-                        }
-                        return crate::onboarding::focus_first_input(ob.step);
-                    }
-                }
-                Task::none()
-            }
-            Message::OnboardingSkipAuth => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.next_step();
-                    if ob.step == crate::onboarding::OnboardingStep::Complete {
-                        return self.update(Message::OnboardingComplete);
-                    }
-                    return crate::onboarding::focus_first_input(ob.step);
-                }
-                Task::none()
-            }
-            Message::OnboardingComplete => {
-                // Persist designation, nickname, and bubble style to profile
-                if let Some(ref ob) = self.onboarding {
-                    self.bubble.bubble_style = ob.bubble_style;
-                    let dir = sovereign_data_dir();
-                    if let Ok(mut profile) = sovereign_core::profile::UserProfile::load(&dir) {
-                        profile.designation = ob.designation.clone();
-                        if !ob.nickname.is_empty() {
-                            profile.nickname = Some(ob.nickname.clone());
-                        }
-                        profile.bubble_style = ob.bubble_style;
-                        let _ = profile.save(&dir);
-                    }
-                }
-                self.onboarding = None;
-                // Write marker file so onboarding doesn't show again
-                let dir = sovereign_data_dir();
-                let _ = std::fs::create_dir_all(&dir);
-                let _ = std::fs::write(dir.join("onboarding_done"), "1");
-                Task::none()
-            }
+            msg @ (Message::OnboardingNext
+                | Message::OnboardingBack
+                | Message::OnboardingNicknameChanged(..)
+                | Message::OnboardingBubbleSelected(..)
+                | Message::OnboardingThemeToggled
+                | Message::OnboardingSeedToggled
+                | Message::OnboardingPrimaryChanged(..)
+                | Message::OnboardingPrimaryConfirmChanged(..)
+                | Message::OnboardingDuressChanged(..)
+                | Message::OnboardingDuressConfirmChanged(..)
+                | Message::OnboardingCanaryChanged(..)
+                | Message::OnboardingCanaryConfirmChanged(..)
+                | Message::OnboardingEnrollInputChanged(..)
+                | Message::OnboardingEnrollSubmit
+                | Message::OnboardingFocusField(..)
+                | Message::OnboardingTryAdvance
+                | Message::OnboardingSkipAuth
+                | Message::OnboardingComplete) => self.handle_onboarding(msg),
 
             // ── Login ─────────────────────────────────────────────────────
             Message::LoginPasswordChanged(val) => {
@@ -1238,6 +878,420 @@ impl SovereignApp {
             }
         }
         false
+    }
+
+    // ── Handler methods (extracted from update()) ─────────────────────────
+
+    fn handle_document_panel(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::OpenDocument(doc_id) => {
+                self.open_document(&doc_id);
+                Task::none()
+            }
+            Message::CloseDocument(idx) => {
+                if idx < self.doc_panels.len() {
+                    let doc_id = self.doc_panels[idx].doc_id.clone();
+                    self.doc_panels.remove(idx);
+                    if let Some(ref cb) = self.close_callback {
+                        cb(doc_id);
+                    }
+                }
+                Task::none()
+            }
+            Message::SaveDocument(idx) => {
+                if let Some(panel) = self.doc_panels.get(idx) {
+                    let doc_id = panel.doc_id.clone();
+                    let title = panel.title.clone();
+                    let body = panel.get_body_text();
+                    let images = panel.images.clone();
+                    let videos = panel.videos.clone();
+                    let cf = ContentFields { body, images, videos };
+                    let serialized = cf.serialize();
+                    if let Some(ref cb) = self.save_callback {
+                        cb(doc_id.clone(), title, serialized.clone());
+                    }
+                    if let Some(doc) = self.doc_map.get_mut(&doc_id) {
+                        doc.content = serialized;
+                    }
+                }
+                Task::none()
+            }
+            Message::DocTitleChanged { panel_idx, title } => {
+                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
+                    panel.title = title;
+                }
+                Task::none()
+            }
+            Message::DocBodyAction { panel_idx, action } => {
+                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
+                    panel.body.perform(action);
+                }
+                Task::none()
+            }
+            Message::ToggleHistory(idx) => {
+                if let Some(panel) = self.doc_panels.get_mut(idx) {
+                    panel.show_history = !panel.show_history;
+                    panel.selected_commit = None;
+                }
+                Task::none()
+            }
+            Message::SelectCommit { panel_idx, commit_idx } => {
+                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
+                    if panel.selected_commit == Some(commit_idx) {
+                        panel.selected_commit = None;
+                    } else {
+                        panel.selected_commit = Some(commit_idx);
+                    }
+                }
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    fn handle_contact_panel(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::OpenContact(contact_id) => {
+                self.open_contact(&contact_id);
+                Task::none()
+            }
+            Message::CloseContactPanel(idx) => {
+                if idx < self.contact_panels.len() {
+                    self.contact_panels.remove(idx);
+                }
+                Task::none()
+            }
+            Message::SelectConversation { panel_idx, conv_idx } => {
+                if let Some(panel) = self.contact_panels.get_mut(panel_idx) {
+                    if conv_idx == usize::MAX {
+                        panel.selected_conversation = None;
+                    } else {
+                        panel.selected_conversation = Some(conv_idx);
+                    }
+                }
+                Task::none()
+            }
+            Message::ContactPanelDragStart(idx) => {
+                if let Some(panel) = self.contact_panels.get_mut(idx) {
+                    let local_y = panel.last_local_cursor.y;
+                    if local_y >= DEAD_ZONE && local_y < DEAD_ZONE + DRAG_BAR_HEIGHT {
+                        let screen = iced::Point::new(
+                            (panel.position.x - DEAD_ZONE) + panel.last_local_cursor.x,
+                            (panel.position.y - DEAD_ZONE) + panel.last_local_cursor.y,
+                        );
+                        panel.drag_start_screen = Some(screen);
+                        panel.drag_start_panel = Some(panel.position);
+                    }
+                }
+                Task::none()
+            }
+            Message::ContactPanelDragMove { panel_idx, local } => {
+                if let Some(panel) = self.contact_panels.get_mut(panel_idx) {
+                    panel.last_local_cursor = local;
+                    if let (Some(start_screen), Some(start_panel)) =
+                        (panel.drag_start_screen, panel.drag_start_panel)
+                    {
+                        let screen = iced::Point::new(
+                            (panel.position.x - DEAD_ZONE) + local.x,
+                            (panel.position.y - DEAD_ZONE) + local.y,
+                        );
+                        let dx = screen.x - start_screen.x;
+                        let dy = screen.y - start_screen.y;
+                        if !panel.dragging && (dx.abs() > 3.0 || dy.abs() > 3.0) {
+                            panel.dragging = true;
+                        }
+                        if panel.dragging {
+                            panel.position = iced::Point::new(
+                                (start_panel.x + dx).max(0.0),
+                                (start_panel.y + dy).max(0.0),
+                            );
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::ContactPanelDragEnd(idx) => {
+                if let Some(panel) = self.contact_panels.get_mut(idx) {
+                    panel.dragging = false;
+                    panel.drag_start_screen = None;
+                    panel.drag_start_panel = None;
+                }
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    fn handle_inbox(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::InboxToggled => {
+                if self.inbox_panel.is_some() {
+                    self.inbox_panel = None;
+                } else {
+                    let panel = InboxPanel::new(
+                        self.conversations.clone(),
+                        self.messages.clone(),
+                    );
+                    self.taskbar.inbox_unread = panel.total_unread();
+                    self.inbox_panel = Some(panel);
+                }
+                Task::none()
+            }
+            Message::InboxClose => {
+                self.inbox_panel = None;
+                Task::none()
+            }
+            Message::InboxSelectConversation(idx) => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.selected_conversation = Some(idx);
+                }
+                Task::none()
+            }
+            Message::InboxBack => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.selected_conversation = None;
+                }
+                Task::none()
+            }
+            Message::InboxReplyChanged(text) => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.reply_input = text;
+                }
+                Task::none()
+            }
+            Message::InboxReplySubmit => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    let body = panel.reply_input.clone();
+                    if body.is_empty() {
+                        return Task::none();
+                    }
+
+                    if let Some(conv_idx) = panel.selected_conversation {
+                        if let Some(conv) = panel.conversations.get(conv_idx) {
+                            let conv_id = conv.id_string().unwrap_or_default();
+                            let to_addresses = conv.participant_contact_ids.clone();
+                            let subject = Some(format!("Re: {}", conv.title));
+                            let in_reply_to = panel.messages.iter()
+                                .filter(|m| m.conversation_id == conv_id)
+                                .last()
+                                .and_then(|m| m.external_id.clone());
+
+                            let request = crate::panels::inbox_panel::SendRequest {
+                                conversation_id: conv_id,
+                                to_addresses,
+                                subject,
+                                body,
+                                in_reply_to,
+                            };
+
+                            if let Some(ref tx) = self.send_message_tx {
+                                let _ = tx.try_send(request);
+                            }
+                        }
+                    }
+
+                    panel.reply_input.clear();
+                }
+                Task::none()
+            }
+            Message::InboxDragStart => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    let local_y = panel.last_local_cursor.y;
+                    if local_y >= DEAD_ZONE && local_y < DEAD_ZONE + DRAG_BAR_HEIGHT {
+                        let screen = iced::Point::new(
+                            (panel.position.x - DEAD_ZONE) + panel.last_local_cursor.x,
+                            (panel.position.y - DEAD_ZONE) + panel.last_local_cursor.y,
+                        );
+                        panel.drag_start_screen = Some(screen);
+                        panel.drag_start_panel = Some(panel.position);
+                    }
+                }
+                Task::none()
+            }
+            Message::InboxDragMove(local) => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.last_local_cursor = local;
+                    if let (Some(start_screen), Some(start_panel)) =
+                        (panel.drag_start_screen, panel.drag_start_panel)
+                    {
+                        let screen = iced::Point::new(
+                            (panel.position.x - DEAD_ZONE) + local.x,
+                            (panel.position.y - DEAD_ZONE) + local.y,
+                        );
+                        let dx = screen.x - start_screen.x;
+                        let dy = screen.y - start_screen.y;
+                        if !panel.dragging && (dx.abs() > 3.0 || dy.abs() > 3.0) {
+                            panel.dragging = true;
+                        }
+                        if panel.dragging {
+                            panel.position = iced::Point::new(
+                                (start_panel.x + dx).max(0.0),
+                                (start_panel.y + dy).max(0.0),
+                            );
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::InboxDragEnd => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.dragging = false;
+                    panel.drag_start_screen = None;
+                    panel.drag_start_panel = None;
+                }
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    fn handle_onboarding(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::OnboardingNext => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.next_step();
+                    return crate::onboarding::focus_first_input(ob.step);
+                }
+                Task::none()
+            }
+            Message::OnboardingBack => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.prev_step();
+                    return crate::onboarding::focus_first_input(ob.step);
+                }
+                Task::none()
+            }
+            Message::OnboardingNicknameChanged(name) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.nickname = name;
+                }
+                Task::none()
+            }
+            Message::OnboardingBubbleSelected(style) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.bubble_style = style;
+                }
+                Task::none()
+            }
+            Message::OnboardingThemeToggled => {
+                theme::toggle_theme();
+                Task::none()
+            }
+            Message::OnboardingSeedToggled => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.seed_sample_data = !ob.seed_sample_data;
+                }
+                Task::none()
+            }
+            Message::OnboardingPrimaryChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.primary_password = val;
+                    ob.validate_primary();
+                }
+                Task::none()
+            }
+            Message::OnboardingPrimaryConfirmChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.primary_confirm = val;
+                    ob.validate_primary();
+                }
+                Task::none()
+            }
+            Message::OnboardingDuressChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.duress_password = val;
+                    ob.validate_duress();
+                }
+                Task::none()
+            }
+            Message::OnboardingDuressConfirmChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.duress_confirm = val;
+                    ob.validate_duress();
+                }
+                Task::none()
+            }
+            Message::OnboardingCanaryChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.canary_phrase = val;
+                }
+                Task::none()
+            }
+            Message::OnboardingCanaryConfirmChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.canary_confirm = val;
+                }
+                Task::none()
+            }
+            Message::OnboardingEnrollInputChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.current_enrollment_input = val;
+                }
+                Task::none()
+            }
+            Message::OnboardingEnrollSubmit => {
+                if let Some(ref mut ob) = self.onboarding {
+                    if ob.current_enrollment_input == ob.primary_password {
+                        let keystrokes =
+                            std::mem::take(&mut ob.current_enrollment_keystrokes);
+                        ob.enrollment_samples.push(keystrokes);
+                        ob.current_enrollment_input.clear();
+                        ob.enrollment_error = None;
+                    } else {
+                        ob.enrollment_error =
+                            Some("Password doesn't match — try again.".into());
+                        ob.current_enrollment_input.clear();
+                        ob.current_enrollment_keystrokes.clear();
+                    }
+                }
+                Task::none()
+            }
+            Message::OnboardingFocusField(id) => {
+                iced::widget::operation::focus(iced::widget::Id::new(id))
+            }
+            Message::OnboardingTryAdvance => {
+                if let Some(ref mut ob) = self.onboarding {
+                    if ob.can_advance() {
+                        ob.next_step();
+                        if ob.step == crate::onboarding::OnboardingStep::Complete {
+                            return self.handle_onboarding(Message::OnboardingComplete);
+                        }
+                        return crate::onboarding::focus_first_input(ob.step);
+                    }
+                }
+                Task::none()
+            }
+            Message::OnboardingSkipAuth => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.next_step();
+                    if ob.step == crate::onboarding::OnboardingStep::Complete {
+                        return self.handle_onboarding(Message::OnboardingComplete);
+                    }
+                    return crate::onboarding::focus_first_input(ob.step);
+                }
+                Task::none()
+            }
+            Message::OnboardingComplete => {
+                if let Some(ref ob) = self.onboarding {
+                    self.bubble.bubble_style = ob.bubble_style;
+                    let dir = sovereign_data_dir();
+                    if let Ok(mut profile) = sovereign_core::profile::UserProfile::load(&dir) {
+                        profile.designation = ob.designation.clone();
+                        if !ob.nickname.is_empty() {
+                            profile.nickname = Some(ob.nickname.clone());
+                        }
+                        profile.bubble_style = ob.bubble_style;
+                        let _ = profile.save(&dir);
+                    }
+                }
+                self.onboarding = None;
+                let dir = sovereign_data_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::fs::write(dir.join("onboarding_done"), "1");
+                Task::none()
+            }
+            _ => Task::none(),
+        }
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────────
