@@ -37,7 +37,7 @@ impl AdoptionAnim {
 pub struct CanvasFilter {
     pub show_owned: bool,
     pub show_external: bool,
-    pub thread_ids: Option<Vec<String>>,
+    pub thread_ids: Option<HashSet<String>>,
 }
 
 impl Default for CanvasFilter {
@@ -302,7 +302,7 @@ mod tests {
         let f = CanvasFilter {
             show_owned: true,
             show_external: true,
-            thread_ids: Some(vec!["t1".into()]),
+            thread_ids: Some(HashSet::from(["t1".into()])),
         };
         assert!(f.matches(&make_card("d1", true, "t1")));
         assert!(!f.matches(&make_card("d2", true, "t2")));
