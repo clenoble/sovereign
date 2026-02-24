@@ -54,8 +54,9 @@ impl GraphDB for MockGraphDB {
 
     async fn create_document(&self, mut doc: Document) -> DbResult<Document> {
         let key = self.next_key();
-        let id_str = format!("document:{key}");
-        doc.id = Some(Self::make_thing("document", &key));
+        let thing = Self::make_thing("document", &key);
+        let id_str = thing_to_raw(&thing);
+        doc.id = Some(thing);
         self.documents.write().unwrap().insert(id_str, doc.clone());
         Ok(doc)
     }
@@ -107,8 +108,9 @@ impl GraphDB for MockGraphDB {
 
     async fn create_thread(&self, mut thread: Thread) -> DbResult<Thread> {
         let key = self.next_key();
-        let id_str = format!("thread:{key}");
-        thread.id = Some(Self::make_thing("thread", &key));
+        let thing = Self::make_thing("thread", &key);
+        let id_str = thing_to_raw(&thing);
+        thread.id = Some(thing);
         self.threads.write().unwrap().insert(id_str, thread.clone());
         Ok(thread)
     }
@@ -319,8 +321,9 @@ impl GraphDB for MockGraphDB {
 
     async fn create_contact(&self, mut contact: Contact) -> DbResult<Contact> {
         let key = self.next_key();
-        let id_str = format!("contact:{key}");
-        contact.id = Some(Self::make_thing("contact", &key));
+        let thing = Self::make_thing("contact", &key);
+        let id_str = thing_to_raw(&thing);
+        contact.id = Some(thing);
         self.contacts.write().unwrap().insert(id_str, contact.clone());
         Ok(contact)
     }
@@ -377,8 +380,9 @@ impl GraphDB for MockGraphDB {
 
     async fn create_message(&self, mut message: Message) -> DbResult<Message> {
         let key = self.next_key();
-        let id_str = format!("message:{key}");
-        message.id = Some(Self::make_thing("message", &key));
+        let thing = Self::make_thing("message", &key);
+        let id_str = thing_to_raw(&thing);
+        message.id = Some(thing);
         self.messages.write().unwrap().insert(id_str, message.clone());
         Ok(message)
     }
@@ -424,8 +428,9 @@ impl GraphDB for MockGraphDB {
 
     async fn create_conversation(&self, mut conv: Conversation) -> DbResult<Conversation> {
         let key = self.next_key();
-        let id_str = format!("conversation:{key}");
-        conv.id = Some(Self::make_thing("conversation", &key));
+        let thing = Self::make_thing("conversation", &key);
+        let id_str = thing_to_raw(&thing);
+        conv.id = Some(thing);
         self.conversations.write().unwrap().insert(id_str, conv.clone());
         Ok(conv)
     }

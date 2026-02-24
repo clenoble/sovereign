@@ -262,6 +262,174 @@ fn transport_to_snapshot(ec: &EncryptedCommit) -> sovereign_db::schema::Document
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sovereign_db::mock::MockGraphDB;
+    use sovereign_db::schema::{Document, Thread};
+
+    fn mock_sync_service() -> (Arc<MockGraphDB>, SyncService) {
+        let db = Arc::new(MockGraphDB::new());
+        let svc = SyncService::new(db.clone(), "device-1".into());
+        (db, svc)
+    }
+
+    #[tokio::test]
+    async fn build_manifest_includes_all_docs() {
+        let (db, svc) = mock_sync_service();
+        let t = db.create_thread(Thread::new("T".into(), "".into())).await.unwrap();
+        let tid = t.id_string().unwrap();
+
+        db.create_document(Document::new("Doc A".into(), tid.clone(), true)).await.unwrap();
+        db.create_document(Document::new("Doc B".into(), tid.clone(), true)).await.unwrap();
+
+        let manifest = svc.build_manifest().await.unwrap();
+        assert_eq!(manifest.device_id, "device-1");
+        assert_eq!(manifest.entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn build_manifest_empty_db() {
+        let (_db, svc) = mock_sync_service();
+        let manifest = svc.build_manifest().await.unwrap();
+        assert!(manifest.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn is_ancestor_true_for_parent() {
+        let (db, svc) = mock_sync_service();
+        let t = db.create_thread(Thread::new("T".into(), "".into())).await.unwrap();
+        let tid = t.id_string().unwrap();
+
+        let doc = db.create_document(Document::new("Doc".into(), tid, true)).await.unwrap();
+        let doc_id = doc.id_string().unwrap();
+
+        let c1 = db.commit_document(&doc_id, "first").await.unwrap();
+        let c1_id = c1.id_string().unwrap();
+        let c2 = db.commit_document(&doc_id, "second").await.unwrap();
+        let c2_id = c2.id_string().unwrap();
+
+        assert!(svc.is_ancestor(&doc_id, &c1_id, &c2_id).await);
+    }
+
+    #[tokio::test]
+    async fn is_ancestor_false_for_unrelated() {
+        let (db, svc) = mock_sync_service();
+        let t = db.create_thread(Thread::new("T".into(), "".into())).await.unwrap();
+        let tid = t.id_string().unwrap();
+
+        let doc = db.create_document(Document::new("Doc".into(), tid, true)).await.unwrap();
+        let doc_id = doc.id_string().unwrap();
+
+        let c1 = db.commit_document(&doc_id, "first").await.unwrap();
+        let c1_id = c1.id_string().unwrap();
+
+        // c1 is not an ancestor of itself in the parent chain (it IS itself, not its ancestor)
+        // A commit with no parent should return false for a non-existent ancestor
+        assert!(!svc.is_ancestor(&doc_id, "commit:nonexistent", &c1_id).await);
+    }
+
+    #[tokio::test]
+    async fn get_commits_retrieves_by_id() {
+        let (db, svc) = mock_sync_service();
+        let t = db.create_thread(Thread::new("T".into(), "".into())).await.unwrap();
+        let tid = t.id_string().unwrap();
+
+        let doc = db.create_document(Document::new("Doc".into(), tid, true)).await.unwrap();
+        let doc_id = doc.id_string().unwrap();
+
+        let c = db.commit_document(&doc_id, "snapshot").await.unwrap();
+        let cid = c.id_string().unwrap();
+
+        let result = svc.get_commits(&[cid.clone()]).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].commit_id, cid);
+        assert_eq!(result[0].message, "snapshot");
+    }
+
+    #[tokio::test]
+    async fn get_commits_since_filters_correctly() {
+        let (db, svc) = mock_sync_service();
+        let t = db.create_thread(Thread::new("T".into(), "".into())).await.unwrap();
+        let tid = t.id_string().unwrap();
+
+        let doc = db.create_document(Document::new("Doc".into(), tid, true)).await.unwrap();
+        let doc_id = doc.id_string().unwrap();
+
+        let c1 = db.commit_document(&doc_id, "first").await.unwrap();
+        let c1_id = c1.id_string().unwrap();
+        db.commit_document(&doc_id, "second").await.unwrap();
+        db.commit_document(&doc_id, "third").await.unwrap();
+
+        // Get commits since c1 — should return only newer commits (second, third)
+        let result = svc.get_commits_since(&doc_id, Some(&c1_id)).await.unwrap();
+        assert_eq!(result.len(), 2);
+
+        // Get all commits (no since)
+        let all = svc.get_commits_since(&doc_id, None).await.unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn apply_commits_creates_new_doc() {
+        let (db, svc) = mock_sync_service();
+
+        let ec = EncryptedCommit {
+            commit_id: "commit:remote1".into(),
+            document_id: "document:remote_doc".into(),
+            parent_commit: None,
+            encrypted_snapshot: base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                serde_json::to_string(&sovereign_db::schema::DocumentSnapshot {
+                    document_id: "document:remote_doc".into(),
+                    title: "Remote Doc".into(),
+                    content: "synced content".into(),
+                }).unwrap(),
+            ),
+            nonce: String::new(),
+            message: "remote commit".into(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        };
+
+        let count = svc.apply_commits(vec![ec]).await.unwrap();
+        assert_eq!(count, 1);
+
+        // Verify a document was created
+        let docs = db.list_documents(None).await.unwrap();
+        assert_eq!(docs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn apply_commits_updates_existing_doc() {
+        let (db, svc) = mock_sync_service();
+        let t = db.create_thread(Thread::new("T".into(), "".into())).await.unwrap();
+        let tid = t.id_string().unwrap();
+
+        let doc = db.create_document(Document::new("Existing".into(), tid, true)).await.unwrap();
+        let doc_id = doc.id_string().unwrap();
+
+        let ec = EncryptedCommit {
+            commit_id: "commit:sync1".into(),
+            document_id: doc_id.clone(),
+            parent_commit: None,
+            encrypted_snapshot: base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                serde_json::to_string(&sovereign_db::schema::DocumentSnapshot {
+                    document_id: doc_id.clone(),
+                    title: "Updated Title".into(),
+                    content: "updated content".into(),
+                }).unwrap(),
+            ),
+            nonce: String::new(),
+            message: "sync update".into(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        };
+
+        let count = svc.apply_commits(vec![ec]).await.unwrap();
+        assert_eq!(count, 1);
+
+        // Verify the document was updated
+        let updated = db.get_document(&doc_id).await.unwrap();
+        assert_eq!(updated.title, "Updated Title");
+        assert_eq!(updated.content, "updated content");
+    }
 
     #[test]
     fn content_hash_deterministic() {
