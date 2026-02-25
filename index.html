@@ -4862,11 +4862,21 @@ const PAGE_LINKS = {
   'spatial canvas': '#/spatial-canvas',
 };
 
+function findPageRoute(text) {
+  const lower = text.toLowerCase();
+  // Exact match first
+  if (PAGE_LINKS[lower]) return PAGE_LINKS[lower];
+  // Keyword match: find first page name contained in the text
+  for (const [name, route] of Object.entries(PAGE_LINKS)) {
+    if (lower.includes(name)) return route;
+  }
+  return null;
+}
+
 function linkifySources(html) {
-  // Match patterns like (see: Page Name) or (see Page Name)
+  // Match patterns like (see: ...) or (see ...)
   html = html.replace(/\(see:?\s*([^)]+)\)/gi, (match, name) => {
-    const key = name.trim().toLowerCase();
-    const route = PAGE_LINKS[key];
+    const route = findPageRoute(name.trim());
     if (route) return `(<a href="${route}" class="chat-nav-link">see: ${name.trim()}</a>)`;
     return match;
   });
