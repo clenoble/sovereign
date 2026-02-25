@@ -8,6 +8,7 @@ use iced::{ContentFit, Element, Length, Padding};
 
 use sovereign_core::content::{ContentImage, ContentVideo};
 use sovereign_db::schema::Commit;
+use sovereign_skills::registry::SkillRegistry;
 
 use crate::app::Message;
 use crate::theme;
@@ -54,6 +55,8 @@ pub struct FloatingPanel {
     pub last_local_cursor: iced::Point,
     pub drag_start_screen: Option<iced::Point>,
     pub drag_start_panel: Option<iced::Point>,
+    // Skills sidebar overflow
+    pub skills_overflow_open: bool,
 }
 
 impl FloatingPanel {
@@ -83,6 +86,7 @@ impl FloatingPanel {
             last_local_cursor: iced::Point::ORIGIN,
             drag_start_screen: None,
             drag_start_panel: None,
+            skills_overflow_open: false,
         }
     }
 
@@ -120,7 +124,7 @@ impl FloatingPanel {
         self.markdown_items = markdown::parse(&body).collect();
     }
 
-    pub fn view(&self, index: usize) -> Element<'_, Message> {
+    pub fn view<'a>(&'a self, index: usize, registry: &'a SkillRegistry) -> Element<'a, Message> {
         // Row 1 (toolbar): History toggle + right-aligned Save + Close
         let history_label = if self.show_history { "Editor" } else { "History" };
         let history_btn = button(text(history_label).size(13))
@@ -163,7 +167,7 @@ impl FloatingPanel {
 
         let header = column![toolbar, title_row].spacing(0);
 
-        let content = if self.show_history {
+        let main_content = if self.show_history {
             // History view: scrollable commit list
             let history_content = self.view_history(index);
             column![header, history_content].spacing(0)
@@ -201,6 +205,15 @@ impl FloatingPanel {
             col = self.append_media_gallery(col, index);
             col
         };
+
+        // Skills sidebar on the right
+        let sidebar = self.view_skills_sidebar(index, registry);
+
+        let content = row![
+            main_content.width(Length::Fill),
+            sidebar,
+        ]
+        .spacing(0);
 
         // mouse_area captures all events in the dead-zone + panel area,
         // preventing leakthrough to the canvas shader underneath.
@@ -255,6 +268,93 @@ impl FloatingPanel {
         .spacing(4)
         .padding(Padding::from([4, 12]))
         .into()
+    }
+
+    /// Skills sidebar: top 3 file-type-matched skills + "..." overflow.
+    fn view_skills_sidebar<'a>(
+        &'a self,
+        index: usize,
+        registry: &'a SkillRegistry,
+    ) -> Element<'a, Message> {
+        let mut col = column![
+            text("Skills").size(11).color(theme::text_dim()),
+        ]
+        .spacing(4)
+        .padding(Padding::from([8, 4]));
+
+        // Detect file type from title extension, default to "md"
+        let ext = self.title
+            .rsplit('.')
+            .next()
+            .filter(|e| e.len() <= 8 && !e.contains(' '))
+            .map(|e| e.to_lowercase())
+            .unwrap_or_else(|| "md".into());
+
+        // Collect all actions: type-matched first, then universal
+        let filtered = registry.skills_for_file_type(&ext);
+        let all_actions: Vec<(String, String, String)> = filtered
+            .iter()
+            .flat_map(|(skill_name, actions)| {
+                actions.iter().map(move |(aid, label)| {
+                    (skill_name.to_string(), aid.clone(), label.clone())
+                })
+            })
+            .collect();
+
+        // Show top 3 skill actions
+        for (skill_name, action_id, label) in all_actions.iter().take(3) {
+            let btn = button(text(label.clone()).size(11))
+                .on_press(Message::DocSkillExecuted {
+                    panel_idx: index,
+                    skill_name: skill_name.clone(),
+                    action_id: action_id.clone(),
+                })
+                .style(theme::skill_button_style)
+                .padding(Padding::from([4, 6]))
+                .width(Length::Fill);
+            col = col.push(btn);
+        }
+
+        // "..." button if there are more actions
+        if all_actions.len() > 3 {
+            col = col.push(
+                button(text("...").size(11))
+                    .on_press(Message::DocSkillsOverflowToggled(index))
+                    .style(theme::skill_button_style)
+                    .padding(Padding::from([4, 6]))
+                    .width(Length::Fill),
+            );
+
+            // Overflow dropdown
+            if self.skills_overflow_open {
+                let mut overflow_col = column![].spacing(2);
+                for (skill_name, action_id, label) in all_actions.iter().skip(3) {
+                    let btn = button(text(label.clone()).size(10))
+                        .on_press(Message::DocSkillExecuted {
+                            panel_idx: index,
+                            skill_name: skill_name.clone(),
+                            action_id: action_id.clone(),
+                        })
+                        .style(theme::skill_button_style)
+                        .padding(Padding::from([3, 5]))
+                        .width(Length::Fill);
+                    overflow_col = overflow_col.push(btn);
+                }
+                col = col.push(
+                    scrollable(
+                        container(overflow_col)
+                            .style(theme::skill_panel_style)
+                            .padding(4),
+                    )
+                    .height(Length::Shrink),
+                );
+            }
+        }
+
+        container(col)
+            .width(120)
+            .height(Length::Fill)
+            .into()
     }
 
     /// Append image and video galleries to the content column.

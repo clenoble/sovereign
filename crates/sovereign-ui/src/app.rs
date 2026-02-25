@@ -54,6 +54,10 @@ pub enum Message {
     // Bubble
     BubbleClicked,
     SkillExecuted(String, String), // skill_name, action_id
+    // Skills
+    TaskbarSkillsToggled,
+    DocSkillsOverflowToggled(usize),
+    DocSkillExecuted { panel_idx: usize, skill_name: String, action_id: String },
     ApproveAction,
     RejectAction,
     DismissSuggestion,
@@ -186,6 +190,7 @@ pub struct SovereignApp {
     feedback_tx: Option<tokio::sync::mpsc::Sender<FeedbackEvent>>,
     send_message_tx: Option<tokio::sync::mpsc::Sender<crate::panels::inbox_panel::SendRequest>>,
     skill_registry: SkillRegistry,
+    taskbar_skills_dropdown_open: bool,
 }
 
 impl SovereignApp {
@@ -295,6 +300,7 @@ impl SovereignApp {
             feedback_tx,
             send_message_tx,
             skill_registry: skill_registry.unwrap_or_default(),
+            taskbar_skills_dropdown_open: false,
         };
 
         (app, Task::none())
@@ -376,10 +382,26 @@ impl SovereignApp {
 
             // ── Bubble ───────────────────────────────────────────────────
             Message::BubbleClicked => {
-                self.bubble.skills_panel_visible = !self.bubble.skills_panel_visible;
+                self.chat.visible = !self.chat.visible;
                 Task::none()
             }
             Message::SkillExecuted(skill_name, action_id) => {
+                self.execute_skill(&skill_name, &action_id)
+            }
+            Message::TaskbarSkillsToggled => {
+                self.taskbar_skills_dropdown_open = !self.taskbar_skills_dropdown_open;
+                Task::none()
+            }
+            Message::DocSkillsOverflowToggled(idx) => {
+                if let Some(panel) = self.doc_panels.get_mut(idx) {
+                    panel.skills_overflow_open = !panel.skills_overflow_open;
+                }
+                Task::none()
+            }
+            Message::DocSkillExecuted { panel_idx, skill_name, action_id } => {
+                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
+                    panel.skills_overflow_open = false;
+                }
                 self.execute_skill(&skill_name, &action_id)
             }
             Message::ApproveAction => {
@@ -587,6 +609,10 @@ impl SovereignApp {
                             }
                             self.search.visible = false;
                             self.chat.visible = false;
+                            self.taskbar_skills_dropdown_open = false;
+                            for panel in &mut self.doc_panels {
+                                panel.skills_overflow_open = false;
+                            }
                         }
                         _ => {}
                     }
@@ -763,7 +789,7 @@ impl SovereignApp {
         // Floating document panels
         for (i, panel) in self.doc_panels.iter().enumerate() {
             if panel.visible {
-                layers.push(panel.view(i));
+                layers.push(panel.view(i, &self.skill_registry));
             }
         }
 
@@ -782,8 +808,7 @@ impl SovereignApp {
         }
 
         // Orchestrator bubble
-        let has_active_doc = !self.doc_panels.is_empty();
-        layers.push(self.bubble.view(&self.skill_registry, has_active_doc));
+        layers.push(self.bubble.view());
 
         // Chat panel (next to bubble)
         if self.chat.visible {
@@ -812,6 +837,11 @@ impl SovereignApp {
         // Camera panel (bottom-right)
         if self.camera_panel.visible {
             layers.push(self.camera_panel.view());
+        }
+
+        // Taskbar skills dropdown
+        if self.taskbar_skills_dropdown_open {
+            layers.push(self.view_taskbar_skills_dropdown());
         }
 
         // Search overlay (conditional)
@@ -1648,7 +1678,6 @@ impl SovereignApp {
         if (skill_name == "image" && action_id == "add")
             || (skill_name == "file-import" && action_id == "import")
         {
-            self.bubble.skills_panel_visible = false;
             let skill_name_owned = skill_name.to_string();
             let action_id_owned = action_id.to_string();
             let is_image = skill_name_owned == "image";
@@ -1672,7 +1701,6 @@ impl SovereignApp {
 
         // Special case: PDF export
         if skill_name == "pdf-export" && action_id == "export" {
-            self.bubble.skills_panel_visible = false;
             if let Some((doc_data, _)) = self.get_active_doc_data() {
                 if let Some(skill) = self.skill_registry.find_skill("pdf-export") {
                     match skill.execute("export", &doc_data, "") {
@@ -1777,6 +1805,42 @@ impl SovereignApp {
             );
             (doc, 0)
         })
+    }
+
+    fn view_taskbar_skills_dropdown(&self) -> Element<'_, Message> {
+        use iced::widget::{button, column, container, scrollable, text};
+        use iced::Padding;
+
+        let has_active_doc = !self.doc_panels.is_empty();
+        let mut col = column![].spacing(4).padding(8);
+
+        for skill in self.skill_registry.all_skills() {
+            let skill_name = skill.name().to_string();
+            for (action_id, action_label) in skill.actions() {
+                let enabled = has_active_doc
+                    || action_id == "search"
+                    || action_id == "import";
+                let btn = button(text(action_label).size(13))
+                    .on_press_maybe(
+                        enabled.then(|| Message::SkillExecuted(skill_name.clone(), action_id.clone())),
+                    )
+                    .style(theme::skill_button_style)
+                    .padding(Padding::from([6, 14]));
+                col = col.push(btn);
+            }
+        }
+
+        container(
+            container(scrollable(col).height(Length::Shrink))
+                .max_height(400.0)
+                .style(theme::skill_panel_style),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_right(Length::Fill)
+        .align_bottom(Length::Fill)
+        .padding(Padding::ZERO.right(200.0).bottom(48.0))
+        .into()
     }
 }
 

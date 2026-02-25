@@ -4,7 +4,6 @@ use iced::{Element, Length, Padding};
 use sovereign_core::content::{ContentFields, ContentImage};
 use sovereign_core::profile::BubbleStyle;
 use sovereign_core::security::BubbleVisualState;
-use sovereign_skills::registry::SkillRegistry;
 use sovereign_skills::traits::SkillDocument;
 
 use crate::app::Message;
@@ -17,7 +16,6 @@ pub struct BubbleState {
     pub visual_state: BubbleVisualState,
     pub bubble_style: BubbleStyle,
     pub elapsed: f32,
-    pub skills_panel_visible: bool,
     pub confirmation: Option<String>,
     pub suggestion: Option<(String, String)>, // (text, action)
     pub skill_result: Option<String>,
@@ -33,7 +31,6 @@ impl BubbleState {
             visual_state: BubbleVisualState::Idle,
             bubble_style: BubbleStyle::default(),
             elapsed: 0.0,
-            skills_panel_visible: false,
             confirmation: None,
             suggestion: None,
             skill_result: None,
@@ -82,10 +79,10 @@ impl BubbleState {
         self.skill_result = Some(txt.to_string());
     }
 
-    pub fn view<'a>(&'a self, registry: &'a SkillRegistry, has_active_doc: bool) -> Element<'a, Message> {
+    pub fn view(&self) -> Element<'_, Message> {
         let mut layers = column![].spacing(8);
 
-        // Animated bubble avatar
+        // Animated bubble avatar — click opens chat
         let bubble = canvas(BubbleProgram {
             style: self.bubble_style,
             state_color: self.bubble_color(),
@@ -98,49 +95,6 @@ impl BubbleState {
             iced::widget::mouse_area(bubble)
                 .on_press(Message::BubbleClicked)
         );
-
-        // Skills panel
-        if self.skills_panel_visible {
-            let mut skills_col = column![].spacing(4).padding(8);
-
-            for skill in registry.all_skills() {
-                let skill_name = skill.name().to_string();
-                for (action_id, action_label) in skill.actions() {
-                    let enabled = has_active_doc
-                        || action_id == "search"
-                        || action_id == "import";
-                    let btn = button(text(action_label.clone()).size(13))
-                        .on_press_maybe(
-                            enabled.then(|| Message::SkillExecuted(skill_name.clone(), action_id.clone())),
-                        )
-                        .style(theme::skill_button_style)
-                        .padding(Padding::from([8, 16]));
-                    skills_col = skills_col.push(btn);
-                }
-            }
-
-            // Status label
-            if let Some(ref result) = self.skill_result {
-                skills_col = skills_col.push(
-                    text(result.as_str())
-                        .size(12)
-                        .color(theme::text_label())
-                        .wrapping(text::Wrapping::Word),
-                );
-            } else if !has_active_doc {
-                skills_col = skills_col.push(
-                    text("Open a document to use skills")
-                        .size(12)
-                        .color(theme::text_dim()),
-                );
-            }
-
-            layers = layers.push(
-                container(skills_col).style(theme::skill_panel_style),
-            );
-        }
-
-        // Confirmation panel rendered separately via view_confirmation()
 
         // Rejection toast
         if let Some(ref reason) = self.rejection_toast {

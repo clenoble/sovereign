@@ -193,6 +193,14 @@ impl TaskbarState {
                 .padding(Padding::from([4, 12])),
         );
 
+        // Skills button
+        items_row = items_row.push(
+            button(text("Skills").size(13))
+                .on_press(Message::TaskbarSkillsToggled)
+                .style(theme::taskbar_button_style)
+                .padding(Padding::from([4, 12])),
+        );
+
         // Chat button
         items_row = items_row.push(
             button(text("Chat").size(13))
