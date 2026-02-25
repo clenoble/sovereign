@@ -1,0 +1,4 @@
+mistralai>=1.12
+numpy
+gradio>=5.12,<6
+beautifulsoup4
