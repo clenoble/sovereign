@@ -1,0 +1,32 @@
+name: Keep HF Space Alive
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC — well within the 48h inactivity window
+    - cron: '0 6 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping HuggingFace Space
+        run: |
+          echo "Pinging Sovereign Guide Space..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://clenoble-sovereign-guide.hf.space/call/health" \
+            -X POST -H "Content-Type: application/json" \
+            -d '{"data": []}' \
+            --max-time 120)
+          echo "Space responded with HTTP $HTTP_STATUS"
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Space may be waking up, waiting 90 seconds..."
+            sleep 90
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              "https://clenoble-sovereign-guide.hf.space/call/health" \
+              -X POST -H "Content-Type: application/json" \
+              -d '{"data": []}' \
+              --max-time 120)
+            echo "Second attempt: HTTP $HTTP_STATUS"
+          fi
