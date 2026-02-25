@@ -509,19 +509,27 @@ def load_design_docs(code_dir: str) -> list[dict]:
 
 
 def embed_chunks(chunks: list[dict], api_key: str) -> np.ndarray:
-    """Embed all chunks using Mistral embed API."""
+    """Embed all chunks using Mistral embed API (rate-limited for free tier)."""
+    import time
     from mistralai import Mistral
 
     client = Mistral(api_key=api_key)
 
     BATCH_SIZE = 25
+    RATE_LIMIT_PAUSE = 35  # seconds between batches (free tier: 2 req/min)
     all_embeddings = []
+    total_batches = (len(chunks) + BATCH_SIZE - 1) // BATCH_SIZE
 
     for i in range(0, len(chunks), BATCH_SIZE):
         batch = chunks[i : i + BATCH_SIZE]
         texts = [c["text"] for c in batch]
+        batch_num = i // BATCH_SIZE + 1
 
-        print(f"  Embedding batch {i // BATCH_SIZE + 1}/{(len(chunks) + BATCH_SIZE - 1) // BATCH_SIZE} ({len(texts)} texts)...")
+        if batch_num > 1:
+            print(f"  Rate limit pause ({RATE_LIMIT_PAUSE}s)...")
+            time.sleep(RATE_LIMIT_PAUSE)
+
+        print(f"  Embedding batch {batch_num}/{total_batches} ({len(texts)} texts)...")
         response = client.embeddings.create(model="mistral-embed", inputs=texts)
 
         for item in response.data:
