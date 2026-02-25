@@ -4867,7 +4867,7 @@ function renderMarkdown(text) {
 // --- RAG API call ---
 async function queryRAG(question) {
   // Step 1: Submit request
-  const submitRes = await fetch(`${SPACE_URL}/call/query`, {
+  const submitRes = await fetch(`${SPACE_URL}/gradio_api/call/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ data: [question, chatHistory] }),
@@ -4881,7 +4881,7 @@ async function queryRAG(question) {
   const { event_id } = await submitRes.json();
 
   // Step 2: Get result via SSE stream
-  const resultRes = await fetch(`${SPACE_URL}/call/query/${event_id}`);
+  const resultRes = await fetch(`${SPACE_URL}/gradio_api/call/query/${event_id}`);
   const text = await resultRes.text();
 
   // Parse SSE format: lines starting with "data: "
