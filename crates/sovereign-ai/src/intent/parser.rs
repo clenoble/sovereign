@@ -49,6 +49,26 @@ fn try_parse_json(response: &str) -> Result<UserIntent> {
     })
 }
 
+/// Known model family names used to detect swap intents without the word "model".
+const MODEL_FAMILIES: &[&str] = &[
+    "ministral", "mistral", "llama", "qwen", "phi", "gemma", "hermes",
+];
+
+/// Check if text contains a model-swap intent by combining action verbs with model names.
+/// E.g. "switch to Ministral", "use llama", "load qwen 7b".
+fn contains_model_swap_intent(lower: &str) -> bool {
+    let has_model_name = MODEL_FAMILIES.iter().any(|name| lower.contains(name));
+    if !has_model_name {
+        return false;
+    }
+    lower.contains("switch")
+        || lower.contains("swap")
+        || lower.contains("change to")
+        || lower.contains("load ")
+        || lower.starts_with("use ")
+        || lower.contains(" use ")
+}
+
 fn extract_intent_heuristic(response: &str) -> UserIntent {
     let lower = response.to_lowercase();
 
@@ -57,6 +77,7 @@ fn extract_intent_heuristic(response: &str) -> UserIntent {
         || lower.contains("switch model")
         || lower.contains("change model")
         || lower.contains("use model")
+        || contains_model_swap_intent(&lower)
     {
         "swap_model"
     } else if lower.contains("list models")
@@ -408,5 +429,43 @@ mod tests {
     fn heuristic_view_conversations() {
         let intent = parse_intent_response("open conversation with Alice").unwrap();
         assert_eq!(intent.action, "view_messages");
+    }
+
+    // --- Model-name-based swap detection (no "model" keyword) ---
+
+    #[test]
+    fn heuristic_switch_to_ministral() {
+        let intent = parse_intent_response("switch to Ministral").unwrap();
+        assert_eq!(intent.action, "swap_model");
+    }
+
+    #[test]
+    fn heuristic_switch_to_llama() {
+        let intent = parse_intent_response("switch to llama").unwrap();
+        assert_eq!(intent.action, "swap_model");
+    }
+
+    #[test]
+    fn heuristic_use_qwen() {
+        let intent = parse_intent_response("use qwen for the router").unwrap();
+        assert_eq!(intent.action, "swap_model");
+    }
+
+    #[test]
+    fn heuristic_swap_to_mistral() {
+        let intent = parse_intent_response("swap to the mistral 7b").unwrap();
+        assert_eq!(intent.action, "swap_model");
+    }
+
+    #[test]
+    fn heuristic_load_phi() {
+        let intent = parse_intent_response("load phi instead").unwrap();
+        assert_eq!(intent.action, "swap_model");
+    }
+
+    #[test]
+    fn heuristic_change_to_hermes() {
+        let intent = parse_intent_response("change to hermes please").unwrap();
+        assert_eq!(intent.action, "swap_model");
     }
 }

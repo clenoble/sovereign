@@ -1,11 +1,13 @@
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
 use sovereign_core::config::AiConfig;
 use sovereign_core::interfaces::{ModelBackend, UserIntent};
 
-use crate::llm::prompt::{build_reasoning_system_prompt, build_router_system_prompt, qwen_chat_prompt};
+use crate::llm::format::{self, PromptFormatter};
+use crate::llm::prompt::{build_reasoning_system_prompt, build_router_system_prompt, format_single_turn};
 use crate::llm::AsyncLlmBackend;
 
 use super::parser::parse_intent_response;
@@ -23,17 +25,22 @@ pub struct IntentClassifier {
     reasoning: Option<AsyncLlmBackend>,
     /// Timestamp of the last reasoning model use, for idle-timeout unloading.
     last_escalation: Option<Instant>,
+    /// Model-family prompt formatter, created from config.
+    pub(crate) formatter: Arc<dyn PromptFormatter>,
 }
 
 impl IntentClassifier {
     /// Create a new classifier. Does not load the model yet — call `load_router()` first.
     pub fn new(config: AiConfig) -> Self {
+        let fmt = format::PromptFormat::from_str(&config.prompt_format);
+        let formatter: Arc<dyn PromptFormatter> = Arc::from(format::create_formatter(fmt));
         Self {
             router: AsyncLlmBackend::new(config.n_ctx),
             config,
             confidence_threshold: 0.7,
             reasoning: None,
             last_escalation: None,
+            formatter,
         }
     }
 
@@ -64,6 +71,19 @@ impl IntentClassifier {
         Ok(())
     }
 
+    /// Replace the prompt formatter at runtime (e.g. after a model hot-swap).
+    pub(crate) fn swap_formatter(&mut self, new_format: format::PromptFormat) {
+        let old = self.config.prompt_format.clone();
+        let new_name = match new_format {
+            format::PromptFormat::ChatML => "chatml",
+            format::PromptFormat::Mistral => "mistral",
+            format::PromptFormat::Llama3 => "llama3",
+        };
+        tracing::info!("Swapping prompt formatter: {old} → {new_name}");
+        self.formatter = Arc::from(format::create_formatter(new_format));
+        self.config.prompt_format = new_name.to_string();
+    }
+
     /// Classify user text into an intent. Uses 3B router, escalates to 7B if low confidence.
     pub async fn classify(&mut self, user_text: &str) -> Result<UserIntent> {
         // Lazy cleanup: if reasoning model has been idle too long, unload to free VRAM.
@@ -78,7 +98,7 @@ impl IntentClassifier {
         }
 
         let system = build_router_system_prompt();
-        let prompt = qwen_chat_prompt(&system, user_text);
+        let prompt = format_single_turn(&*self.formatter, &system, user_text);
         let response = self.router.generate(&prompt, 200).await?;
         tracing::debug!("Router response: {response}");
 
@@ -126,7 +146,7 @@ impl IntentClassifier {
         self.last_escalation = Some(Instant::now());
 
         let system = build_reasoning_system_prompt();
-        let prompt = qwen_chat_prompt(&system, user_text);
+        let prompt = format_single_turn(&*self.formatter, &system, user_text);
         let response = reasoning.generate(&prompt, 300).await?;
         tracing::debug!("Reasoning response: {response}");
 
