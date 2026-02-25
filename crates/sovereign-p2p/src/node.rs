@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use libp2p::futures::StreamExt;
@@ -11,6 +12,7 @@ use crate::behaviour::{SovereignBehaviour, SovereignBehaviourEvent};
 use crate::config::P2pConfig;
 use crate::error::{P2pError, P2pResult};
 use crate::protocol::{SovereignRequest, SovereignResponse};
+use crate::sync_service::SyncService;
 
 const PROTOCOL_NAME: &str = "/sovereign/sync/1";
 
@@ -42,6 +44,7 @@ pub struct SovereignNode {
     swarm: Swarm<SovereignBehaviour>,
     event_tx: mpsc::Sender<P2pEvent>,
     command_rx: mpsc::Receiver<P2pCommand>,
+    sync_service: Arc<SyncService>,
 }
 
 impl SovereignNode {
@@ -51,6 +54,7 @@ impl SovereignNode {
         keypair: libp2p::identity::Keypair,
         event_tx: mpsc::Sender<P2pEvent>,
         command_rx: mpsc::Receiver<P2pCommand>,
+        sync_service: Arc<SyncService>,
     ) -> P2pResult<Self> {
         let peer_id = keypair.public().to_peer_id();
         info!("P2P node starting with PeerId: {}", peer_id);
@@ -103,6 +107,7 @@ impl SovereignNode {
             swarm,
             event_tx,
             command_rx,
+            sync_service,
         })
     }
 
@@ -210,7 +215,7 @@ impl SovereignNode {
                 match message {
                     Message::Request { request, channel, .. } => {
                         info!("Request from {}: {:?}", peer, std::mem::discriminant(&request));
-                        let response = process_request(request, &self.event_tx).await;
+                        let response = process_request(request, &self.event_tx, &self.sync_service).await;
                         if self.swarm.behaviour_mut().request_response.send_response(channel, response).is_err() {
                             warn!("Failed to send response to {}", peer);
                         }
@@ -286,11 +291,20 @@ impl SovereignNode {
 async fn process_request(
     request: SovereignRequest,
     event_tx: &mpsc::Sender<P2pEvent>,
+    sync_service: &SyncService,
 ) -> SovereignResponse {
     match request {
-        SovereignRequest::GetManifest => SovereignResponse::Error {
-            message: "manifest not implemented yet".into(),
-        },
+        SovereignRequest::GetManifest => {
+            match sync_service.build_manifest().await {
+                Ok(manifest) => SovereignResponse::Manifest(manifest.to_plaintext()),
+                Err(e) => {
+                    warn!("Failed to build manifest: {e}");
+                    SovereignResponse::Error {
+                        message: format!("manifest build failed: {e}"),
+                    }
+                }
+            }
+        }
         SovereignRequest::DeliverShard(delivery) => {
             let _ = event_tx
                 .send(P2pEvent::ShardReceived {

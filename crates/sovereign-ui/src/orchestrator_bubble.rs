@@ -1,18 +1,22 @@
-use iced::widget::{button, column, container, row, text};
-use iced::{Element, Padding};
+use iced::widget::{button, canvas, column, container, row, text};
+use iced::{Element, Length, Padding};
 
 use sovereign_core::content::{ContentFields, ContentImage};
+use sovereign_core::profile::BubbleStyle;
 use sovereign_core::security::BubbleVisualState;
 use sovereign_skills::registry::SkillRegistry;
 use sovereign_skills::traits::SkillDocument;
 
 use crate::app::Message;
+use crate::bubble_canvas::BubbleProgram;
 use crate::theme;
 
 /// State for the orchestrator bubble.
 pub struct BubbleState {
     pub position: iced::Point,
     pub visual_state: BubbleVisualState,
+    pub bubble_style: BubbleStyle,
+    pub elapsed: f32,
     pub skills_panel_visible: bool,
     pub confirmation: Option<String>,
     pub suggestion: Option<(String, String)>, // (text, action)
@@ -27,6 +31,8 @@ impl BubbleState {
         Self {
             position: iced::Point::new(20.0, 20.0),
             visual_state: BubbleVisualState::Idle,
+            bubble_style: BubbleStyle::default(),
+            elapsed: 0.0,
             skills_panel_visible: false,
             confirmation: None,
             suggestion: None,
@@ -79,12 +85,14 @@ impl BubbleState {
     pub fn view<'a>(&'a self, registry: &'a SkillRegistry, has_active_doc: bool) -> Element<'a, Message> {
         let mut layers = column![].spacing(8);
 
-        // Bubble circle
-        let bubble = container(
-            text("AI").size(16),
-        )
-        .padding(Padding::from([14, 18]))
-        .style(theme::bubble_style(self.bubble_color()));
+        // Animated bubble avatar
+        let bubble = canvas(BubbleProgram {
+            style: self.bubble_style,
+            state_color: self.bubble_color(),
+            elapsed: self.elapsed,
+        })
+        .width(Length::Fixed(56.0))
+        .height(Length::Fixed(56.0));
 
         layers = layers.push(
             iced::widget::mouse_area(bubble)
@@ -132,33 +140,7 @@ impl BubbleState {
             );
         }
 
-        // Confirmation panel
-        if let Some(ref desc) = self.confirmation {
-            let confirm = container(
-                column![
-                    text(desc.as_str())
-                        .size(13)
-                        .color(theme::text_primary())
-                        .wrapping(text::Wrapping::Word),
-                    row![
-                        button(text("Approve").size(13))
-                            .on_press(Message::ApproveAction)
-                            .style(theme::approve_button_style)
-                            .padding(Padding::from([6, 16])),
-                        button(text("Reject").size(13))
-                            .on_press(Message::RejectAction)
-                            .style(theme::reject_button_style)
-                            .padding(Padding::from([6, 16])),
-                    ]
-                    .spacing(8)
-                ]
-                .spacing(8)
-                .padding(12),
-            )
-            .style(theme::confirmation_panel_style);
-
-            layers = layers.push(confirm);
-        }
+        // Confirmation panel rendered separately via view_confirmation()
 
         // Rejection toast
         if let Some(ref reason) = self.rejection_toast {
@@ -197,6 +179,45 @@ impl BubbleState {
                     .left(self.position.x),
             )
             .into()
+    }
+
+    /// Render the action-gate confirmation dialog as a screen-centered overlay.
+    /// Returns `None` if no confirmation is pending.
+    pub fn view_confirmation(&self) -> Option<Element<'_, Message>> {
+        let desc = self.confirmation.as_ref()?;
+
+        let panel = container(
+            column![
+                text(desc.as_str())
+                    .size(14)
+                    .color(theme::text_primary())
+                    .wrapping(text::Wrapping::Word),
+                row![
+                    button(text("Approve").size(13))
+                        .on_press(Message::ApproveAction)
+                        .style(theme::approve_button_style)
+                        .padding(Padding::from([6, 16])),
+                    button(text("Reject").size(13))
+                        .on_press(Message::RejectAction)
+                        .style(theme::reject_button_style)
+                        .padding(Padding::from([6, 16])),
+                ]
+                .spacing(8)
+            ]
+            .spacing(10)
+            .padding(16),
+        )
+        .style(theme::confirmation_panel_style)
+        .max_width(360.0);
+
+        // Center the panel on screen
+        let centered = container(panel)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill);
+
+        Some(centered.into())
     }
 }
 

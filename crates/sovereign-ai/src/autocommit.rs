@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use sovereign_db::surreal::SurrealGraphDB;
 use sovereign_db::GraphDB;
 
 /// Auto-commit threshold: commit after this many edits.
@@ -16,13 +15,13 @@ const TIME_THRESHOLD_SECS: u64 = 300; // 5 minutes
 /// - High activity: commit after 50 edits OR 5 minutes since last commit
 /// - Low activity: commit on context switch (document close) or session end
 pub struct AutoCommitEngine {
-    db: Arc<SurrealGraphDB>,
+    db: Arc<dyn GraphDB>,
     edit_counts: HashMap<String, u32>,
     last_commit_times: HashMap<String, Instant>,
 }
 
 impl AutoCommitEngine {
-    pub fn new(db: Arc<SurrealGraphDB>) -> Self {
+    pub fn new(db: Arc<dyn GraphDB>) -> Self {
         Self {
             db,
             edit_counts: HashMap::new(),
@@ -104,9 +103,9 @@ impl AutoCommitEngine {
 mod tests {
     use super::*;
     use sovereign_db::schema::Document;
-    use sovereign_db::surreal::StorageMode;
+    use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
 
-    async fn setup() -> (Arc<SurrealGraphDB>, String) {
+    async fn setup() -> (Arc<dyn GraphDB>, String) {
         let db = SurrealGraphDB::new(StorageMode::Memory).await.unwrap();
         db.connect().await.unwrap();
         db.init_schema().await.unwrap();

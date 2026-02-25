@@ -21,6 +21,8 @@ pub struct OutgoingMessage {
     pub body: String,
     pub body_html: Option<String>,
     pub in_reply_to: Option<String>,
+    /// Conversation to attribute this message to (for persistence).
+    pub conversation_id: Option<String>,
 }
 
 /// Result of a sync operation.
@@ -80,6 +82,7 @@ mod tests {
             body: "Hello".into(),
             body_html: None,
             in_reply_to: None,
+            conversation_id: None,
         };
         let cloned = msg.clone();
         assert_eq!(cloned.to, msg.to);

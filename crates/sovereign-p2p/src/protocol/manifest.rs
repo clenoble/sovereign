@@ -45,6 +45,25 @@ impl SyncManifest {
         }
     }
 
+    /// Wrap as plaintext EncryptedManifest (empty nonce = plaintext marker).
+    /// Used for Phase 1 LAN sync before pair-key encryption is available.
+    pub fn to_plaintext(&self) -> EncryptedManifest {
+        let json = serde_json::to_vec(self).unwrap_or_default();
+        EncryptedManifest {
+            ciphertext: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &json),
+            nonce: String::new(),
+        }
+    }
+
+    /// Decode a plaintext EncryptedManifest (empty nonce = plaintext marker).
+    pub fn from_plaintext(encrypted: &EncryptedManifest) -> Option<Self> {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&encrypted.ciphertext)
+            .ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
     /// Encrypt this manifest for transport using a shared pair key.
     pub fn encrypt(&self, pair_key: &[u8; 32]) -> Result<EncryptedManifest, sovereign_crypto::CryptoError> {
         let json = serde_json::to_vec(self)

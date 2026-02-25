@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod duress;
 mod seed;
 mod setup;
 
@@ -285,10 +286,11 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
 
         // Try to initialize AI orchestrator
         let db_arc = db_arc_for_skills;
+        let db_dyn: std::sync::Arc<dyn sovereign_db::GraphDB> = db_arc.clone();
         let orchestrator = match sovereign_ai::Orchestrator::new(
             config.ai.clone(),
-            db_arc.clone(),
-            orch_tx,
+            db_dyn,
+            orch_tx.clone(),
         )
         .await
         {
@@ -313,8 +315,14 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                                 let (p2p_cmd_tx, p2p_cmd_rx) =
                                     tokio::sync::mpsc::channel(64);
 
+                                let sync_service = Arc::new(
+                                    sovereign_p2p::SyncService::new(
+                                        db_arc.clone(),
+                                        p2p_config.device_name.clone(),
+                                    ),
+                                );
                                 match sovereign_p2p::node::SovereignNode::new(
-                                    &p2p_config, keypair, p2p_event_tx, p2p_cmd_rx,
+                                    &p2p_config, keypair, p2p_event_tx, p2p_cmd_rx, sync_service,
                                 ) {
                                     Ok(node) => {
                                         tokio::spawn(node.run());
@@ -346,6 +354,10 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             }
         };
 
+        // Channel for inbox reply → async send task
+        let send_message_tx: Option<
+            tokio::sync::mpsc::Sender<sovereign_ui::panels::inbox_panel::SendRequest>,
+        > = None;
         // Wire comms sync if enabled
         #[cfg(feature = "comms")]
         if config.comms.enabled {
@@ -379,13 +391,44 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                     };
 
                     if !email_config.imap_host.is_empty() {
-                        let email_channel =
+                        // Sync instance (moved into CommsSync)
+                        let email_channel_sync =
+                            sovereign_comms::channels::email::EmailChannel::new(
+                                email_config.clone(),
+                                db_arc.clone(),
+                                password.clone(),
+                            );
+                        comms_sync.add_channel(Box::new(email_channel_sync));
+
+                        // Send instance (for inbox reply)
+                        let email_channel_send =
                             sovereign_comms::channels::email::EmailChannel::new(
                                 email_config,
                                 db_arc.clone(),
                                 password,
                             );
-                        comms_sync.add_channel(Box::new(email_channel));
+                        let (stx, mut srx) = tokio::sync::mpsc::channel::<
+                            sovereign_ui::panels::inbox_panel::SendRequest,
+                        >(32);
+                        send_message_tx = Some(stx);
+                        tokio::spawn(async move {
+                            use sovereign_comms::channel::{CommunicationChannel, OutgoingMessage};
+                            while let Some(req) = srx.recv().await {
+                                let msg = OutgoingMessage {
+                                    to: req.to_addresses,
+                                    subject: req.subject,
+                                    body: req.body,
+                                    body_html: None,
+                                    in_reply_to: req.in_reply_to,
+                                    conversation_id: Some(req.conversation_id),
+                                };
+                                match email_channel_send.send_message(&msg).await {
+                                    Ok(id) => tracing::info!("Reply sent: {id}"),
+                                    Err(e) => tracing::error!("Reply send failed: {e}"),
+                                }
+                            }
+                        });
+
                         tracing::info!("Email channel registered");
                     }
                 }
@@ -620,6 +663,11 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         // Detect first launch for onboarding wizard
         let first_launch = sovereign_ui::app::is_first_launch();
 
+        // Load bubble style from user profile
+        let bubble_style = sovereign_core::profile::UserProfile::load(&profile_dir)
+            .map(|p| p.bubble_style)
+            .ok();
+
         // Build SovereignApp (but don't launch Iced yet)
         let (app, _boot_task) = sovereign_ui::app::SovereignApp::new(
             &config.ui,
@@ -640,11 +688,13 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             Some(decision_tx),
             Some(registry),
             Some(feedback_tx),
+            send_message_tx,
             first_launch,
             config.ai.model_dir.clone(),
             config.ai.router_model.clone(),
             config.ai.reasoning_model.clone(),
             camera_frame,
+            bubble_style,
         );
         Ok::<_, anyhow::Error>((app, _boot_task))
     })?;

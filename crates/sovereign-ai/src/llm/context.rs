@@ -4,7 +4,6 @@
 //! converting session log entries into chat turns, and assembling multi-turn
 //! ChatML prompts within a token budget.
 
-use sovereign_db::surreal::SurrealGraphDB;
 use sovereign_db::GraphDB;
 
 use crate::session_log::SessionEntry;
@@ -36,7 +35,7 @@ pub struct WorkspaceContext {
 }
 
 /// Gather workspace context from the database (fast read-only queries).
-pub async fn gather_workspace_context(db: &SurrealGraphDB) -> WorkspaceContext {
+pub async fn gather_workspace_context(db: &dyn GraphDB) -> WorkspaceContext {
     let threads = db.list_threads().await.unwrap_or_default();
     let docs = db.list_documents(None).await.unwrap_or_default();
     let contacts = db.list_contacts().await.unwrap_or_default();
@@ -44,20 +43,18 @@ pub async fn gather_workspace_context(db: &SurrealGraphDB) -> WorkspaceContext {
 
     let unread = conversations.iter().filter(|c| c.unread_count > 0).count();
 
-    let mut recent_titles: Vec<(String, chrono::DateTime<chrono::Utc>)> = docs
-        .iter()
-        .map(|d| (d.title.clone(), d.modified_at))
-        .collect();
-    recent_titles.sort_by(|a, b| b.1.cmp(&a.1));
+    // Sort by index to avoid cloning all titles — only clone the top 10.
+    let mut indices: Vec<usize> = (0..docs.len()).collect();
+    indices.sort_by(|&a, &b| docs[b].modified_at.cmp(&docs[a].modified_at));
 
     WorkspaceContext {
         thread_count: threads.len(),
         doc_count: docs.len(),
         thread_names: threads.iter().take(10).map(|t| t.name.clone()).collect(),
-        recent_doc_titles: recent_titles
+        recent_doc_titles: indices
             .iter()
             .take(10)
-            .map(|(t, _)| t.clone())
+            .map(|&i| docs[i].title.clone())
             .collect(),
         contact_count: contacts.len(),
         unread_conversations: unread,

@@ -42,7 +42,7 @@ impl LlamaCppBackend {
         // Disable flash attention to avoid ggml symbol conflict with whisper-rs-sys.
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(n_ctx))
-            .with_n_batch(512)
+            .with_n_batch(2048)
             .with_flash_attention_policy(0);
 
         let ctx = model
@@ -76,7 +76,7 @@ impl LlamaCppBackend {
             .str_to_token(prompt, AddBos::Always)
             .map_err(|e| anyhow::anyhow!("Tokenization failed: {:?}", e))?;
 
-        let mut batch = LlamaBatch::new(512, 1);
+        let mut batch = LlamaBatch::new(2048, 1);
         let last_index = tokens_list.len() as i32 - 1;
         for (i, token) in (0_i32..).zip(tokens_list.into_iter()) {
             batch

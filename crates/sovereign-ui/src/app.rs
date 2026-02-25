@@ -23,6 +23,7 @@ use crate::orchestrator_bubble::{build_skill_doc, format_structured_data, Bubble
 use crate::panels::camera_panel::{CameraPanel, SharedFrame};
 use crate::panels::contact_panel::ContactPanel;
 use crate::panels::document_panel::{FloatingPanel, FormatKind, DEAD_ZONE, DRAG_BAR_HEIGHT};
+use crate::panels::inbox_panel::InboxPanel;
 use crate::panels::model_panel::{ModelEntry, ModelPanel, ModelRole};
 use crate::search::SearchState;
 use crate::taskbar::TaskbarState;
@@ -48,6 +49,8 @@ pub enum Message {
     SearchToggled,
     SearchQueryChanged(String),
     SearchSubmitted,
+    SearchResultNavigate(String),
+    SearchResultOpen(String),
     // Bubble
     BubbleClicked,
     SkillExecuted(String, String), // skill_name, action_id
@@ -69,6 +72,16 @@ pub enum Message {
     ContactPanelDragStart(usize),
     ContactPanelDragMove { panel_idx: usize, local: iced::Point },
     ContactPanelDragEnd(usize),
+    // Inbox panel
+    InboxToggled,
+    InboxClose,
+    InboxSelectConversation(usize),
+    InboxBack,
+    InboxReplyChanged(String),
+    InboxReplySubmit,
+    InboxDragStart,
+    InboxDragMove(iced::Point),
+    InboxDragEnd,
     // Taskbar
     TaskbarDocClicked(String),
     TaskbarDocPinToggled(String),
@@ -104,13 +117,30 @@ pub enum Message {
     CameraToggled,
     // Theme
     ThemeToggled,
+    // Login
+    LoginPasswordChanged(String),
+    LoginSubmit,
     // Onboarding
     OnboardingNext,
     OnboardingBack,
-    OnboardingDeviceNameChanged(String),
+    OnboardingNicknameChanged(String),
+    OnboardingBubbleSelected(sovereign_core::profile::BubbleStyle),
     OnboardingThemeToggled,
     OnboardingSeedToggled,
+    OnboardingPrimaryChanged(String),
+    OnboardingPrimaryConfirmChanged(String),
+    OnboardingDuressChanged(String),
+    OnboardingDuressConfirmChanged(String),
+    OnboardingCanaryChanged(String),
+    OnboardingCanaryConfirmChanged(String),
+    OnboardingEnrollInputChanged(String),
+    OnboardingEnrollSubmit,
+    OnboardingSkipAuth,
+    OnboardingFocusField(&'static str),
+    OnboardingTryAdvance,
     OnboardingComplete,
+    // Canary / lockdown
+    CanaryTriggered,
     // No-op
     Ignore,
 }
@@ -140,6 +170,11 @@ pub struct SovereignApp {
     // Panels
     model_panel: ModelPanel,
     camera_panel: CameraPanel,
+    inbox_panel: Option<InboxPanel>,
+    // Auth
+    login: Option<crate::login::LoginState>,
+    canary_detector: Option<sovereign_crypto::canary::CanaryDetector>,
+    lockdown_triggered: bool,
     // Onboarding
     onboarding: Option<OnboardingState>,
     // Callbacks
@@ -149,6 +184,7 @@ pub struct SovereignApp {
     close_callback: Option<Box<dyn Fn(String) + Send>>,
     decision_tx: Option<tokio::sync::mpsc::Sender<ActionDecision>>,
     feedback_tx: Option<tokio::sync::mpsc::Sender<FeedbackEvent>>,
+    send_message_tx: Option<tokio::sync::mpsc::Sender<crate::panels::inbox_panel::SendRequest>>,
     skill_registry: SkillRegistry,
 }
 
@@ -173,11 +209,13 @@ impl SovereignApp {
         decision_tx: Option<tokio::sync::mpsc::Sender<ActionDecision>>,
         skill_registry: Option<SkillRegistry>,
         feedback_tx: Option<tokio::sync::mpsc::Sender<FeedbackEvent>>,
+        send_message_tx: Option<tokio::sync::mpsc::Sender<crate::panels::inbox_panel::SendRequest>>,
         first_launch: bool,
         model_dir: String,
         router_model: String,
         reasoning_model: String,
         camera_frame: Option<SharedFrame>,
+        bubble_style: Option<sovereign_core::profile::BubbleStyle>,
     ) -> (Self, Task<Message>) {
         let doc_map: HashMap<String, Document> = documents
             .iter()
@@ -218,7 +256,13 @@ impl SovereignApp {
             canvas_cmd_rx: Some(canvas_cmd_rx),
             search: SearchState::new(),
             chat: ChatState::new(),
-            bubble: BubbleState::new(),
+            bubble: {
+                let mut b = BubbleState::new();
+                if let Some(style) = bubble_style {
+                    b.bubble_style = style;
+                }
+                b
+            },
             taskbar,
             doc_panels: Vec::new(),
             contact_panels: Vec::new(),
@@ -238,6 +282,10 @@ impl SovereignApp {
             camera_panel: CameraPanel::new(
                 camera_frame.unwrap_or_else(|| Arc::new(Mutex::new(None))),
             ),
+            inbox_panel: None,
+            login: None,
+            canary_detector: None,
+            lockdown_triggered: false,
             decision_tx,
             onboarding: if first_launch {
                 Some(OnboardingState::new())
@@ -245,6 +293,7 @@ impl SovereignApp {
                 None
             },
             feedback_tx,
+            send_message_tx,
             skill_registry: skill_registry.unwrap_or_default(),
         };
 
@@ -262,6 +311,10 @@ impl SovereignApp {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick => {
+                self.bubble.elapsed += 1.0 / 60.0;
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.elapsed += 1.0 / 60.0;
+                }
                 self.poll_channels();
                 Task::none()
             }
@@ -272,6 +325,29 @@ impl SovereignApp {
                 Task::none()
             }
             Message::SearchQueryChanged(query) => {
+                if self.feed_canary(&query) {
+                    return self.update(Message::CanaryTriggered);
+                }
+                // Instant client-side filtering by title and content
+                let q = query.to_lowercase();
+                if q.is_empty() {
+                    self.search.results.clear();
+                } else {
+                    self.search.results = self
+                        .doc_map
+                        .values()
+                        .filter(|d| {
+                            d.title.to_lowercase().contains(&q)
+                                || d.content.to_lowercase().contains(&q)
+                        })
+                        .filter_map(|d| {
+                            d.id_string().map(|id| crate::search::SearchResult {
+                                id,
+                                title: d.title.clone(),
+                            })
+                        })
+                        .collect();
+                }
                 self.search.query = query;
                 Task::none()
             }
@@ -282,6 +358,19 @@ impl SovereignApp {
                         cb(query);
                     }
                 }
+                Task::none()
+            }
+            Message::SearchResultNavigate(doc_id) => {
+                sovereign_canvas::apply_command(
+                    &self.canvas_state,
+                    CanvasCommand::NavigateTo(doc_id),
+                );
+                self.search.visible = false;
+                Task::none()
+            }
+            Message::SearchResultOpen(doc_id) => {
+                self.open_document(&doc_id);
+                self.search.visible = false;
                 Task::none()
             }
 
@@ -326,138 +415,32 @@ impl SovereignApp {
             }
 
             // ── Document panels ──────────────────────────────────────────
-            Message::OpenDocument(doc_id) => {
-                self.open_document(&doc_id);
-                Task::none()
-            }
-            Message::CloseDocument(idx) => {
-                if idx < self.doc_panels.len() {
-                    let doc_id = self.doc_panels[idx].doc_id.clone();
-                    self.doc_panels.remove(idx);
-                    if let Some(ref cb) = self.close_callback {
-                        cb(doc_id);
-                    }
-                }
-                Task::none()
-            }
-            Message::SaveDocument(idx) => {
-                if let Some(panel) = self.doc_panels.get(idx) {
-                    let doc_id = panel.doc_id.clone();
-                    let title = panel.title.clone();
-                    let body = panel.get_body_text();
-                    let images = panel.images.clone();
-                    let videos = panel.videos.clone();
-                    let cf = ContentFields { body, images, videos };
-                    let serialized = cf.serialize();
-                    if let Some(ref cb) = self.save_callback {
-                        cb(doc_id.clone(), title, serialized.clone());
-                    }
-                    // Update local doc map
-                    if let Some(doc) = self.doc_map.get_mut(&doc_id) {
-                        doc.content = serialized;
-                    }
-                }
-                Task::none()
-            }
-            Message::DocTitleChanged { panel_idx, title } => {
-                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
-                    panel.title = title;
-                }
-                Task::none()
-            }
-            Message::DocBodyAction { panel_idx, action } => {
-                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
-                    panel.body.perform(action);
-                }
-                Task::none()
-            }
-            Message::ToggleHistory(idx) => {
-                if let Some(panel) = self.doc_panels.get_mut(idx) {
-                    panel.show_history = !panel.show_history;
-                    panel.selected_commit = None;
-                }
-                Task::none()
-            }
-            Message::SelectCommit { panel_idx, commit_idx } => {
-                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
-                    if panel.selected_commit == Some(commit_idx) {
-                        panel.selected_commit = None;
-                    } else {
-                        panel.selected_commit = Some(commit_idx);
-                    }
-                }
-                Task::none()
-            }
+            msg @ (Message::OpenDocument(..)
+                | Message::CloseDocument(..)
+                | Message::SaveDocument(..)
+                | Message::DocTitleChanged { .. }
+                | Message::DocBodyAction { .. }
+                | Message::ToggleHistory(..)
+                | Message::SelectCommit { .. }) => self.handle_document_panel(msg),
 
             // ── Contact panels ──────────────────────────────────────────
-            Message::OpenContact(contact_id) => {
-                self.open_contact(&contact_id);
-                Task::none()
-            }
-            Message::CloseContactPanel(idx) => {
-                if idx < self.contact_panels.len() {
-                    self.contact_panels.remove(idx);
-                }
-                Task::none()
-            }
-            Message::SelectConversation { panel_idx, conv_idx } => {
-                if let Some(panel) = self.contact_panels.get_mut(panel_idx) {
-                    if conv_idx == usize::MAX {
-                        // "Back" button
-                        panel.selected_conversation = None;
-                    } else {
-                        panel.selected_conversation = Some(conv_idx);
-                    }
-                }
-                Task::none()
-            }
-            Message::ContactPanelDragStart(idx) => {
-                if let Some(panel) = self.contact_panels.get_mut(idx) {
-                    let local_y = panel.last_local_cursor.y;
-                    if local_y >= DEAD_ZONE && local_y < DEAD_ZONE + DRAG_BAR_HEIGHT {
-                        let screen = iced::Point::new(
-                            (panel.position.x - DEAD_ZONE) + panel.last_local_cursor.x,
-                            (panel.position.y - DEAD_ZONE) + panel.last_local_cursor.y,
-                        );
-                        panel.drag_start_screen = Some(screen);
-                        panel.drag_start_panel = Some(panel.position);
-                    }
-                }
-                Task::none()
-            }
-            Message::ContactPanelDragMove { panel_idx, local } => {
-                if let Some(panel) = self.contact_panels.get_mut(panel_idx) {
-                    panel.last_local_cursor = local;
-                    if let (Some(start_screen), Some(start_panel)) =
-                        (panel.drag_start_screen, panel.drag_start_panel)
-                    {
-                        let screen = iced::Point::new(
-                            (panel.position.x - DEAD_ZONE) + local.x,
-                            (panel.position.y - DEAD_ZONE) + local.y,
-                        );
-                        let dx = screen.x - start_screen.x;
-                        let dy = screen.y - start_screen.y;
-                        if !panel.dragging && (dx.abs() > 3.0 || dy.abs() > 3.0) {
-                            panel.dragging = true;
-                        }
-                        if panel.dragging {
-                            panel.position = iced::Point::new(
-                                (start_panel.x + dx).max(0.0),
-                                (start_panel.y + dy).max(0.0),
-                            );
-                        }
-                    }
-                }
-                Task::none()
-            }
-            Message::ContactPanelDragEnd(idx) => {
-                if let Some(panel) = self.contact_panels.get_mut(idx) {
-                    panel.dragging = false;
-                    panel.drag_start_screen = None;
-                    panel.drag_start_panel = None;
-                }
-                Task::none()
-            }
+            msg @ (Message::OpenContact(..)
+                | Message::CloseContactPanel(..)
+                | Message::SelectConversation { .. }
+                | Message::ContactPanelDragStart(..)
+                | Message::ContactPanelDragMove { .. }
+                | Message::ContactPanelDragEnd(..)) => self.handle_contact_panel(msg),
+
+            // ── Inbox panel ─────────────────────────────────────────────
+            msg @ (Message::InboxToggled
+                | Message::InboxClose
+                | Message::InboxSelectConversation(..)
+                | Message::InboxBack
+                | Message::InboxReplyChanged(..)
+                | Message::InboxReplySubmit
+                | Message::InboxDragStart
+                | Message::InboxDragMove(..)
+                | Message::InboxDragEnd) => self.handle_inbox(msg),
 
             // ── Panel drag ──────────────────────────────────────────────
             Message::PanelDragStart(idx) => {
@@ -540,6 +523,9 @@ impl SovereignApp {
                 Task::none()
             }
             Message::ChatInputChanged(input) => {
+                if self.feed_canary(&input) {
+                    return self.update(Message::CanaryTriggered);
+                }
                 self.chat.input = input;
                 Task::none()
             }
@@ -596,6 +582,9 @@ impl SovereignApp {
                             self.chat.visible = !self.chat.visible;
                         }
                         keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                            if self.onboarding.is_some() {
+                                return self.update(Message::OnboardingBack);
+                            }
                             self.search.visible = false;
                             self.chat.visible = false;
                         }
@@ -696,40 +685,53 @@ impl SovereignApp {
             }
 
             // ── Onboarding ────────────────────────────────────────────────
-            Message::OnboardingNext => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.next_step();
+            msg @ (Message::OnboardingNext
+                | Message::OnboardingBack
+                | Message::OnboardingNicknameChanged(..)
+                | Message::OnboardingBubbleSelected(..)
+                | Message::OnboardingThemeToggled
+                | Message::OnboardingSeedToggled
+                | Message::OnboardingPrimaryChanged(..)
+                | Message::OnboardingPrimaryConfirmChanged(..)
+                | Message::OnboardingDuressChanged(..)
+                | Message::OnboardingDuressConfirmChanged(..)
+                | Message::OnboardingCanaryChanged(..)
+                | Message::OnboardingCanaryConfirmChanged(..)
+                | Message::OnboardingEnrollInputChanged(..)
+                | Message::OnboardingEnrollSubmit
+                | Message::OnboardingFocusField(..)
+                | Message::OnboardingTryAdvance
+                | Message::OnboardingSkipAuth
+                | Message::OnboardingComplete) => self.handle_onboarding(msg),
+
+            // ── Login ─────────────────────────────────────────────────────
+            Message::LoginPasswordChanged(val) => {
+                if let Some(ref mut login) = self.login {
+                    login.password_input = val;
                 }
                 Task::none()
             }
-            Message::OnboardingBack => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.prev_step();
+            Message::LoginSubmit => {
+                // Auth logic will be wired in main.rs bootstrap
+                // For now, just clear the login screen
+                if let Some(ref mut login) = self.login {
+                    login.error_message =
+                        Some("Auth not yet wired — restart app".into());
                 }
                 Task::none()
             }
-            Message::OnboardingDeviceNameChanged(name) => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.device_name = name;
-                }
-                Task::none()
-            }
-            Message::OnboardingThemeToggled => {
-                theme::toggle_theme();
-                Task::none()
-            }
-            Message::OnboardingSeedToggled => {
-                if let Some(ref mut ob) = self.onboarding {
-                    ob.seed_sample_data = !ob.seed_sample_data;
-                }
-                Task::none()
-            }
-            Message::OnboardingComplete => {
-                self.onboarding = None;
-                // Write marker file so onboarding doesn't show again
-                let dir = sovereign_data_dir();
-                let _ = std::fs::create_dir_all(&dir);
-                let _ = std::fs::write(dir.join("onboarding_done"), "1");
+
+            // ── Canary / Lockdown ─────────────────────────────────────────
+            Message::CanaryTriggered => {
+                tracing::warn!("Canary phrase detected — initiating lockdown");
+                self.lockdown_triggered = true;
+                // Zeroize canary detector
+                self.canary_detector = None;
+                // Clear sensitive UI state
+                self.chat = ChatState::new();
+                self.search = SearchState::new();
+                self.doc_panels.clear();
+                self.contact_panels.clear();
                 Task::none()
             }
 
@@ -738,6 +740,14 @@ impl SovereignApp {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        // Login screen (highest priority — blocks everything)
+        if let Some(ref login) = self.login {
+            return login.view();
+        }
+        // Lockdown screen (canary triggered)
+        if self.lockdown_triggered {
+            return self.view_lockdown();
+        }
         // Onboarding overlay (full-screen, blocks everything else)
         if let Some(ref onboarding) = self.onboarding {
             return onboarding.view();
@@ -761,6 +771,13 @@ impl SovereignApp {
         for (i, panel) in self.contact_panels.iter().enumerate() {
             if panel.visible {
                 layers.push(panel.view(i));
+            }
+        }
+
+        // Inbox panel
+        if let Some(ref inbox) = self.inbox_panel {
+            if inbox.visible {
+                layers.push(inbox.view());
             }
         }
 
@@ -802,6 +819,11 @@ impl SovereignApp {
             layers.push(self.search.view());
         }
 
+        // Action-gate confirmation overlay (above everything)
+        if let Some(confirm_overlay) = self.bubble.view_confirmation() {
+            layers.push(confirm_overlay);
+        }
+
         // Compose: stack of layers + taskbar at bottom
         let content = column![
             stack(layers).width(Length::Fill).height(Length::Fill),
@@ -822,6 +844,454 @@ impl SovereignApp {
             // Keyboard events
             keyboard::listen().map(Message::KeyEvent),
         ])
+    }
+
+    fn view_lockdown(&self) -> Element<'_, Message> {
+        use iced::widget::{column, container, text, Space};
+        let content = column![
+            text("Session expired")
+                .size(24)
+                .color(theme::text_primary()),
+            Space::new().height(12),
+            text("Please restart the application.")
+                .size(14)
+                .color(theme::text_dim()),
+        ]
+        .spacing(0)
+        .padding(40)
+        .width(420);
+
+        container(container(content).style(theme::skill_panel_style))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(theme::dark_background)
+            .into()
+    }
+
+    /// Feed text into the canary detector. Returns true if canary triggered.
+    fn feed_canary(&mut self, text: &str) -> bool {
+        if let Some(ref mut detector) = self.canary_detector {
+            if detector.feed_str(text) {
+                return true;
+            }
+        }
+        false
+    }
+
+    // ── Handler methods (extracted from update()) ─────────────────────────
+
+    fn handle_document_panel(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::OpenDocument(doc_id) => {
+                self.open_document(&doc_id);
+                Task::none()
+            }
+            Message::CloseDocument(idx) => {
+                if idx < self.doc_panels.len() {
+                    let doc_id = self.doc_panels[idx].doc_id.clone();
+                    self.doc_panels.remove(idx);
+                    if let Some(ref cb) = self.close_callback {
+                        cb(doc_id);
+                    }
+                }
+                Task::none()
+            }
+            Message::SaveDocument(idx) => {
+                if let Some(panel) = self.doc_panels.get(idx) {
+                    let doc_id = panel.doc_id.clone();
+                    let title = panel.title.clone();
+                    let body = panel.get_body_text();
+                    let images = panel.images.clone();
+                    let videos = panel.videos.clone();
+                    let cf = ContentFields { body, images, videos };
+                    let serialized = cf.serialize();
+                    if let Some(ref cb) = self.save_callback {
+                        cb(doc_id.clone(), title, serialized.clone());
+                    }
+                    if let Some(doc) = self.doc_map.get_mut(&doc_id) {
+                        doc.content = serialized;
+                    }
+                }
+                Task::none()
+            }
+            Message::DocTitleChanged { panel_idx, title } => {
+                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
+                    panel.title = title;
+                }
+                Task::none()
+            }
+            Message::DocBodyAction { panel_idx, action } => {
+                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
+                    panel.body.perform(action);
+                }
+                Task::none()
+            }
+            Message::ToggleHistory(idx) => {
+                if let Some(panel) = self.doc_panels.get_mut(idx) {
+                    panel.show_history = !panel.show_history;
+                    panel.selected_commit = None;
+                }
+                Task::none()
+            }
+            Message::SelectCommit { panel_idx, commit_idx } => {
+                if let Some(panel) = self.doc_panels.get_mut(panel_idx) {
+                    if panel.selected_commit == Some(commit_idx) {
+                        panel.selected_commit = None;
+                    } else {
+                        panel.selected_commit = Some(commit_idx);
+                    }
+                }
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    fn handle_contact_panel(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::OpenContact(contact_id) => {
+                self.open_contact(&contact_id);
+                Task::none()
+            }
+            Message::CloseContactPanel(idx) => {
+                if idx < self.contact_panels.len() {
+                    self.contact_panels.remove(idx);
+                }
+                Task::none()
+            }
+            Message::SelectConversation { panel_idx, conv_idx } => {
+                if let Some(panel) = self.contact_panels.get_mut(panel_idx) {
+                    if conv_idx == usize::MAX {
+                        panel.selected_conversation = None;
+                    } else {
+                        panel.selected_conversation = Some(conv_idx);
+                    }
+                }
+                Task::none()
+            }
+            Message::ContactPanelDragStart(idx) => {
+                if let Some(panel) = self.contact_panels.get_mut(idx) {
+                    let local_y = panel.last_local_cursor.y;
+                    if local_y >= DEAD_ZONE && local_y < DEAD_ZONE + DRAG_BAR_HEIGHT {
+                        let screen = iced::Point::new(
+                            (panel.position.x - DEAD_ZONE) + panel.last_local_cursor.x,
+                            (panel.position.y - DEAD_ZONE) + panel.last_local_cursor.y,
+                        );
+                        panel.drag_start_screen = Some(screen);
+                        panel.drag_start_panel = Some(panel.position);
+                    }
+                }
+                Task::none()
+            }
+            Message::ContactPanelDragMove { panel_idx, local } => {
+                if let Some(panel) = self.contact_panels.get_mut(panel_idx) {
+                    panel.last_local_cursor = local;
+                    if let (Some(start_screen), Some(start_panel)) =
+                        (panel.drag_start_screen, panel.drag_start_panel)
+                    {
+                        let screen = iced::Point::new(
+                            (panel.position.x - DEAD_ZONE) + local.x,
+                            (panel.position.y - DEAD_ZONE) + local.y,
+                        );
+                        let dx = screen.x - start_screen.x;
+                        let dy = screen.y - start_screen.y;
+                        if !panel.dragging && (dx.abs() > 3.0 || dy.abs() > 3.0) {
+                            panel.dragging = true;
+                        }
+                        if panel.dragging {
+                            panel.position = iced::Point::new(
+                                (start_panel.x + dx).max(0.0),
+                                (start_panel.y + dy).max(0.0),
+                            );
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::ContactPanelDragEnd(idx) => {
+                if let Some(panel) = self.contact_panels.get_mut(idx) {
+                    panel.dragging = false;
+                    panel.drag_start_screen = None;
+                    panel.drag_start_panel = None;
+                }
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    fn handle_inbox(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::InboxToggled => {
+                if self.inbox_panel.is_some() {
+                    self.inbox_panel = None;
+                } else {
+                    let panel = InboxPanel::new(
+                        self.conversations.clone(),
+                        self.messages.clone(),
+                    );
+                    self.taskbar.inbox_unread = panel.total_unread();
+                    self.inbox_panel = Some(panel);
+                }
+                Task::none()
+            }
+            Message::InboxClose => {
+                self.inbox_panel = None;
+                Task::none()
+            }
+            Message::InboxSelectConversation(idx) => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.selected_conversation = Some(idx);
+                }
+                Task::none()
+            }
+            Message::InboxBack => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.selected_conversation = None;
+                }
+                Task::none()
+            }
+            Message::InboxReplyChanged(text) => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.reply_input = text;
+                }
+                Task::none()
+            }
+            Message::InboxReplySubmit => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    let body = panel.reply_input.clone();
+                    if body.is_empty() {
+                        return Task::none();
+                    }
+
+                    if let Some(conv_idx) = panel.selected_conversation {
+                        if let Some(conv) = panel.conversations.get(conv_idx) {
+                            let conv_id = conv.id_string().unwrap_or_default();
+                            let to_addresses = conv.participant_contact_ids.clone();
+                            let subject = Some(format!("Re: {}", conv.title));
+                            let in_reply_to = panel.messages.iter()
+                                .filter(|m| m.conversation_id == conv_id)
+                                .last()
+                                .and_then(|m| m.external_id.clone());
+
+                            let request = crate::panels::inbox_panel::SendRequest {
+                                conversation_id: conv_id,
+                                to_addresses,
+                                subject,
+                                body,
+                                in_reply_to,
+                            };
+
+                            if let Some(ref tx) = self.send_message_tx {
+                                let _ = tx.try_send(request);
+                            }
+                        }
+                    }
+
+                    panel.reply_input.clear();
+                }
+                Task::none()
+            }
+            Message::InboxDragStart => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    let local_y = panel.last_local_cursor.y;
+                    if local_y >= DEAD_ZONE && local_y < DEAD_ZONE + DRAG_BAR_HEIGHT {
+                        let screen = iced::Point::new(
+                            (panel.position.x - DEAD_ZONE) + panel.last_local_cursor.x,
+                            (panel.position.y - DEAD_ZONE) + panel.last_local_cursor.y,
+                        );
+                        panel.drag_start_screen = Some(screen);
+                        panel.drag_start_panel = Some(panel.position);
+                    }
+                }
+                Task::none()
+            }
+            Message::InboxDragMove(local) => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.last_local_cursor = local;
+                    if let (Some(start_screen), Some(start_panel)) =
+                        (panel.drag_start_screen, panel.drag_start_panel)
+                    {
+                        let screen = iced::Point::new(
+                            (panel.position.x - DEAD_ZONE) + local.x,
+                            (panel.position.y - DEAD_ZONE) + local.y,
+                        );
+                        let dx = screen.x - start_screen.x;
+                        let dy = screen.y - start_screen.y;
+                        if !panel.dragging && (dx.abs() > 3.0 || dy.abs() > 3.0) {
+                            panel.dragging = true;
+                        }
+                        if panel.dragging {
+                            panel.position = iced::Point::new(
+                                (start_panel.x + dx).max(0.0),
+                                (start_panel.y + dy).max(0.0),
+                            );
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::InboxDragEnd => {
+                if let Some(ref mut panel) = self.inbox_panel {
+                    panel.dragging = false;
+                    panel.drag_start_screen = None;
+                    panel.drag_start_panel = None;
+                }
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    fn handle_onboarding(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::OnboardingNext => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.next_step();
+                    return crate::onboarding::focus_first_input(ob.step);
+                }
+                Task::none()
+            }
+            Message::OnboardingBack => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.prev_step();
+                    return crate::onboarding::focus_first_input(ob.step);
+                }
+                Task::none()
+            }
+            Message::OnboardingNicknameChanged(name) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.nickname = name;
+                }
+                Task::none()
+            }
+            Message::OnboardingBubbleSelected(style) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.bubble_style = style;
+                }
+                Task::none()
+            }
+            Message::OnboardingThemeToggled => {
+                theme::toggle_theme();
+                Task::none()
+            }
+            Message::OnboardingSeedToggled => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.seed_sample_data = !ob.seed_sample_data;
+                }
+                Task::none()
+            }
+            Message::OnboardingPrimaryChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.primary_password = val;
+                    ob.validate_primary();
+                }
+                Task::none()
+            }
+            Message::OnboardingPrimaryConfirmChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.primary_confirm = val;
+                    ob.validate_primary();
+                }
+                Task::none()
+            }
+            Message::OnboardingDuressChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.duress_password = val;
+                    ob.validate_duress();
+                }
+                Task::none()
+            }
+            Message::OnboardingDuressConfirmChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.duress_confirm = val;
+                    ob.validate_duress();
+                }
+                Task::none()
+            }
+            Message::OnboardingCanaryChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.canary_phrase = val;
+                }
+                Task::none()
+            }
+            Message::OnboardingCanaryConfirmChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.canary_confirm = val;
+                }
+                Task::none()
+            }
+            Message::OnboardingEnrollInputChanged(val) => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.current_enrollment_input = val;
+                }
+                Task::none()
+            }
+            Message::OnboardingEnrollSubmit => {
+                if let Some(ref mut ob) = self.onboarding {
+                    if ob.current_enrollment_input == ob.primary_password {
+                        let keystrokes =
+                            std::mem::take(&mut ob.current_enrollment_keystrokes);
+                        ob.enrollment_samples.push(keystrokes);
+                        ob.current_enrollment_input.clear();
+                        ob.enrollment_error = None;
+                    } else {
+                        ob.enrollment_error =
+                            Some("Password doesn't match — try again.".into());
+                        ob.current_enrollment_input.clear();
+                        ob.current_enrollment_keystrokes.clear();
+                    }
+                }
+                Task::none()
+            }
+            Message::OnboardingFocusField(id) => {
+                iced::widget::operation::focus(iced::widget::Id::new(id))
+            }
+            Message::OnboardingTryAdvance => {
+                if let Some(ref mut ob) = self.onboarding {
+                    if ob.can_advance() {
+                        ob.next_step();
+                        if ob.step == crate::onboarding::OnboardingStep::Complete {
+                            return self.handle_onboarding(Message::OnboardingComplete);
+                        }
+                        return crate::onboarding::focus_first_input(ob.step);
+                    }
+                }
+                Task::none()
+            }
+            Message::OnboardingSkipAuth => {
+                if let Some(ref mut ob) = self.onboarding {
+                    ob.next_step();
+                    if ob.step == crate::onboarding::OnboardingStep::Complete {
+                        return self.handle_onboarding(Message::OnboardingComplete);
+                    }
+                    return crate::onboarding::focus_first_input(ob.step);
+                }
+                Task::none()
+            }
+            Message::OnboardingComplete => {
+                if let Some(ref ob) = self.onboarding {
+                    self.bubble.bubble_style = ob.bubble_style;
+                    let dir = sovereign_data_dir();
+                    if let Ok(mut profile) = sovereign_core::profile::UserProfile::load(&dir) {
+                        profile.designation = ob.designation.clone();
+                        if !ob.nickname.is_empty() {
+                            profile.nickname = Some(ob.nickname.clone());
+                        }
+                        profile.bubble_style = ob.bubble_style;
+                        let _ = profile.save(&dir);
+                    }
+                }
+                self.onboarding = None;
+                let dir = sovereign_data_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::fs::write(dir.join("onboarding_done"), "1");
+                Task::none()
+            }
+            _ => Task::none(),
+        }
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────────
@@ -931,7 +1401,20 @@ impl SovereignApp {
     fn handle_orchestrator_event(&mut self, event: OrchestratorEvent) {
         match event {
             OrchestratorEvent::SearchResults { ref doc_ids, .. } => {
-                self.search.results = doc_ids.clone();
+                self.search.results = doc_ids
+                    .iter()
+                    .map(|id| {
+                        let title = self
+                            .doc_map
+                            .get(id)
+                            .map(|d| d.title.clone())
+                            .unwrap_or_else(|| id.clone());
+                        crate::search::SearchResult {
+                            id: id.clone(),
+                            title,
+                        }
+                    })
+                    .collect();
                 let mut st = self.canvas_state.lock().unwrap();
                 for id in doc_ids {
                     st.highlighted.insert(id.clone());
@@ -943,6 +1426,7 @@ impl SovereignApp {
                     &self.canvas_state,
                     CanvasCommand::NavigateTo(doc_id.clone()),
                 );
+                self.open_document(doc_id);
             }
             OrchestratorEvent::BubbleState(state) => {
                 self.bubble.set_state(state);
@@ -968,6 +1452,50 @@ impl SovereignApp {
                     true,
                 );
                 self.doc_map.insert(doc_id.clone(), new_doc);
+
+                // Add a card to the canvas layout so it appears immediately
+                {
+                    let mut st = self.canvas_state.lock().unwrap();
+                    // Find the lane for this thread and place after the last card in it
+                    let lane_y = st
+                        .layout
+                        .lanes
+                        .iter()
+                        .find(|l| l.thread_id == *thread_id)
+                        .map(|l| l.y + sovereign_canvas::layout::LANE_PADDING_TOP)
+                        .unwrap_or(0.0);
+                    // Place at the global "Now" edge (rightmost card across ALL
+                    // threads), so the new card appears at the current moment on
+                    // the timeline — not squeezed among older cards in the lane.
+                    let global_now_x = st
+                        .layout
+                        .cards
+                        .iter()
+                        .map(|c| c.x + c.w + sovereign_canvas::layout::CARD_SPACING_H)
+                        .fold(sovereign_canvas::layout::LANE_HEADER_WIDTH, f32::max);
+                    st.layout.cards.push(sovereign_canvas::layout::CardLayout {
+                        doc_id: doc_id.clone(),
+                        title: title.clone(),
+                        is_owned: true,
+                        thread_id: thread_id.clone(),
+                        created_at_ts: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0),
+                        x: global_now_x,
+                        y: lane_y,
+                        w: sovereign_canvas::layout::CARD_WIDTH,
+                        h: sovereign_canvas::layout::CARD_HEIGHT,
+                    });
+                    st.mark_dirty();
+                }
+
+                // Navigate to the new document and open it
+                sovereign_canvas::apply_command(
+                    &self.canvas_state,
+                    CanvasCommand::NavigateTo(doc_id.clone()),
+                );
+                self.open_document(doc_id);
             }
             OrchestratorEvent::SkillResult { ref kind, ref data, .. } => {
                 let display = match kind.as_str() {
@@ -1001,7 +1529,46 @@ impl SovereignApp {
                 self.chat.push_assistant_message(text.clone());
                 // TODO: Trigger TTS when cross-platform audio playback is available
             }
-            _ => {}
+            // P2P sync events
+            OrchestratorEvent::SyncStatus { ref status, .. } => {
+                self.bubble.show_skill_result(&format!("Sync: {status}"));
+            }
+            OrchestratorEvent::SyncConflict { ref doc_id, ref description } => {
+                self.bubble.show_skill_result(&format!("Conflict on {doc_id}: {description}"));
+                let mut st = self.canvas_state.lock().unwrap();
+                st.highlighted.insert(doc_id.clone());
+                st.mark_dirty();
+            }
+            OrchestratorEvent::DeviceDiscovered { ref device_name, .. } => {
+                self.bubble.show_skill_result(&format!("Device found: {device_name}"));
+            }
+            OrchestratorEvent::DevicePaired { ref device_id } => {
+                self.bubble.show_skill_result(&format!("Paired with {device_id}"));
+            }
+            // Comms events — refresh inbox
+            OrchestratorEvent::NewMessagesReceived { ref channel, count, .. } => {
+                self.bubble.show_skill_result(&format!("{count} new {channel} messages"));
+                if let Some(ref mut inbox) = self.inbox_panel {
+                    inbox.refresh(self.conversations.clone(), self.messages.clone());
+                    self.taskbar.inbox_unread = inbox.total_unread();
+                }
+            }
+            OrchestratorEvent::CommsSyncComplete { ref channel, new_messages } => {
+                if new_messages > 0 {
+                    self.bubble.show_skill_result(
+                        &format!("{channel} sync: {new_messages} new messages"),
+                    );
+                }
+            }
+            OrchestratorEvent::CommsSyncError { ref channel, ref error } => {
+                self.bubble.show_skill_result(&format!("{channel} sync error: {error}"));
+            }
+            OrchestratorEvent::ContactCreated { ref name, .. } => {
+                self.bubble.show_skill_result(&format!("New contact: {name}"));
+            }
+            _ => {
+                tracing::debug!("Unhandled orchestrator event: {:?}", event);
+            }
         }
     }
 

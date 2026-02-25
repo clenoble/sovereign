@@ -10,7 +10,6 @@ use sovereign_core::interfaces::{
 use sovereign_core::profile::{AdaptiveParams, SuggestionFeedback, UserProfile};
 use sovereign_core::security::{self, ActionDecision, BubbleVisualState, ProposedAction};
 use sovereign_db::schema::{Milestone, Thread};
-use sovereign_db::surreal::SurrealGraphDB;
 use sovereign_db::GraphDB;
 
 use crate::action_gate;
@@ -24,7 +23,7 @@ use crate::trust::TrustTracker;
 /// classifies intent, executes actions, and emits events to the UI.
 pub struct Orchestrator {
     classifier: tokio::sync::Mutex<IntentClassifier>,
-    db: Arc<SurrealGraphDB>,
+    db: Arc<dyn GraphDB>,
     event_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
     session_log: Option<Mutex<SessionLog>>,
     decision_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ActionDecision>>>,
@@ -44,7 +43,7 @@ impl Orchestrator {
     /// Create a new orchestrator. Loads the 3B router model eagerly.
     pub async fn new(
         config: AiConfig,
-        db: Arc<SurrealGraphDB>,
+        db: Arc<dyn GraphDB>,
         event_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
     ) -> Result<Self> {
         let model_dir = config.model_dir.clone();
@@ -309,8 +308,8 @@ impl Orchestrator {
 
     /// Maximum iterations for the agent loop per chat message.
     const MAX_AGENT_ITERATIONS: usize = 5;
-    /// Maximum character budget for history in the prompt (~1800 tokens * 3.5 chars/token).
-    const MAX_HISTORY_CHARS: usize = 6300;
+    /// Maximum character budget for history in the prompt (~1000 tokens * 3.5 chars/token).
+    const MAX_HISTORY_CHARS: usize = 3500;
 
     /// Handle a chat message: load context, run agent loop with tool calling.
     pub async fn handle_chat(&self, message: &str) -> Result<()> {
@@ -336,15 +335,17 @@ impl Orchestrator {
         let workspace_ctx =
             crate::llm::context::gather_workspace_context(self.db.as_ref()).await;
 
-        // 4. Read user profile for verbosity + name
-        let (verbosity, user_name) = {
+        // 4. Read user profile for verbosity, name, designation, and nickname
+        let (verbosity, user_name, designation, nickname) = {
             if let Ok(profile) = self.profile.lock() {
                 (
                     profile.interaction_patterns.command_verbosity.clone(),
                     profile.display_name.clone(),
+                    if profile.designation.is_empty() { None } else { Some(profile.designation.clone()) },
+                    profile.nickname.clone(),
                 )
             } else {
-                ("detailed".into(), None)
+                ("detailed".into(), None, None, None)
             }
         };
 
@@ -353,6 +354,8 @@ impl Orchestrator {
             Some(&workspace_ctx),
             &verbosity,
             user_name.as_deref(),
+            designation.as_deref(),
+            nickname.as_deref(),
         );
 
         // 6. Append current user message to turns
@@ -388,7 +391,7 @@ impl Orchestrator {
                 .lock()
                 .await
                 .router
-                .generate(&full_prompt, 512)
+                .generate(&full_prompt, 300)
                 .await
             {
                 Ok(r) => r.trim().to_string(),
@@ -409,9 +412,84 @@ impl Orchestrator {
                 if let Some(call) = calls.first() {
                     tracing::info!("Tool call: {} (iteration {})", call.name, iterations);
 
-                    // Execute tool
-                    let result =
-                        crate::tools::execute_tool(call, self.db.as_ref()).await;
+                    let tool_output = if crate::tools::is_write_tool(&call.name) {
+                        // Write tool — gate through action gravity system
+                        let level = security::action_level(&call.name);
+                        let trusted = {
+                            if let Ok(trust) = self.trust.lock() {
+                                trust.should_auto_approve(&call.name, level)
+                            } else {
+                                false
+                            }
+                        };
+
+                        if !action_gate::requires_confirmation(level) || trusted {
+                            // Auto-execute (Observe/Annotate or trusted)
+                            let result = crate::tools::execute_write_tool(call, self.db.as_ref()).await;
+                            if let Some(event) = result.event {
+                                let _ = self.event_tx.send(event);
+                            }
+                            format!("[{}] {}", result.tool_name, result.output)
+                        } else {
+                            // Propose to user and wait for confirmation
+                            let proposal = security::ProposedAction {
+                                action: call.name.clone(),
+                                level,
+                                plane: security::Plane::Control,
+                                doc_id: None,
+                                thread_id: None,
+                                description: format!(
+                                    "{}: {}",
+                                    call.name,
+                                    call.arguments
+                                ),
+                            };
+                            let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                                BubbleVisualState::Proposing,
+                            ));
+                            let _ = self.event_tx.send(OrchestratorEvent::ActionProposed {
+                                proposal: proposal.clone(),
+                            });
+
+                            match self.wait_for_decision().await {
+                                ActionDecision::Approve => {
+                                    if let Ok(mut trust) = self.trust.lock() {
+                                        trust.record_approval(&call.name);
+                                        if let Err(e) = trust.save(&self.profile_dir) {
+                                            tracing::warn!("Failed to save trust: {e}");
+                                        }
+                                    }
+                                    let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                                        BubbleVisualState::Executing,
+                                    ));
+                                    let result = crate::tools::execute_write_tool(call, self.db.as_ref()).await;
+                                    if let Some(event) = result.event {
+                                        let _ = self.event_tx.send(event);
+                                    }
+                                    let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                                        BubbleVisualState::ProcessingOwned,
+                                    ));
+                                    format!("[{}] {}", result.tool_name, result.output)
+                                }
+                                ActionDecision::Reject(reason) => {
+                                    if let Ok(mut trust) = self.trust.lock() {
+                                        trust.record_rejection(&call.name);
+                                        if let Err(e) = trust.save(&self.profile_dir) {
+                                            tracing::warn!("Failed to save trust: {e}");
+                                        }
+                                    }
+                                    let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                                        BubbleVisualState::ProcessingOwned,
+                                    ));
+                                    format!("[{}] Action rejected by user: {}", call.name, reason)
+                                }
+                            }
+                        }
+                    } else {
+                        // Read-only tool — execute immediately
+                        let result = crate::tools::execute_tool(call, self.db.as_ref()).await;
+                        format!("[{}] {}", result.tool_name, result.output)
+                    };
 
                     // Append assistant turn (tool call) and tool result to history
                     turns.push(crate::llm::context::ChatTurn {
@@ -420,7 +498,7 @@ impl Orchestrator {
                     });
                     turns.push(crate::llm::context::ChatTurn {
                         role: crate::llm::context::ChatRole::Tool,
-                        content: format!("[{}] {}", result.tool_name, result.output),
+                        content: tool_output,
                     });
 
                     // Continue loop — model will see tool result and generate again
@@ -471,7 +549,7 @@ impl Orchestrator {
     async fn wait_for_decision(&self) -> ActionDecision {
         if let Some(ref rx_mutex) = self.decision_rx {
             let mut rx = rx_mutex.lock().await;
-            match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
+            match tokio::time::timeout(Duration::from_secs(120), rx.recv()).await {
                 Ok(Some(decision)) => return decision,
                 Ok(None) => {
                     tracing::warn!("Decision channel closed — rejecting action");
@@ -496,12 +574,11 @@ impl Orchestrator {
     ) -> Result<()> {
         match action {
             "search" => {
-                let search_term = target.unwrap_or(query).to_lowercase();
+                let search_term = target.unwrap_or(query);
 
-                let docs = self.db.list_documents(None).await?;
+                let docs = self.db.search_documents_by_title(search_term).await?;
                 let matches: Vec<String> = docs
                     .iter()
-                    .filter(|d| d.title.to_lowercase().contains(&search_term))
                     .filter_map(|d| d.id_string())
                     .collect();
 
@@ -517,11 +594,8 @@ impl Orchestrator {
             }
             "open" | "navigate" => {
                 if let Some(target) = target {
-                    let docs = self.db.list_documents(None).await?;
-                    if let Some(doc) = docs
-                        .iter()
-                        .find(|d| d.title.to_lowercase().contains(&target.to_lowercase()))
-                    {
+                    let docs = self.db.search_documents_by_title(target).await?;
+                    if let Some(doc) = docs.first() {
                         if let Some(id) = doc.id_string() {
                             let _ = self
                                 .event_tx
@@ -549,11 +623,7 @@ impl Orchestrator {
             "rename_thread" => {
                 if let Some(target) = target {
                     let (old_name, new_name) = parse_rename_target(target);
-                    let threads = self.db.list_threads().await?;
-                    if let Some(thread) = threads
-                        .iter()
-                        .find(|t| t.name.to_lowercase().contains(&old_name.to_lowercase()))
-                    {
+                    if let Some(thread) = self.db.find_thread_by_name(&old_name).await? {
                         if let Some(tid) = thread.id_string() {
                             match self.db.update_thread(&tid, Some(&new_name), None).await {
                                 Ok(_) => {
@@ -576,11 +646,7 @@ impl Orchestrator {
             }
             "delete_thread" => {
                 if let Some(target) = target {
-                    let threads = self.db.list_threads().await?;
-                    if let Some(thread) = threads
-                        .iter()
-                        .find(|t| t.name.to_lowercase().contains(&target.to_lowercase()))
-                    {
+                    if let Some(thread) = self.db.find_thread_by_name(target).await? {
                         if let Some(tid) = thread.id_string() {
                             match self.db.soft_delete_thread(&tid).await {
                                 Ok(()) => {
@@ -599,17 +665,10 @@ impl Orchestrator {
             "move_document" => {
                 if let Some(target) = target {
                     let (doc_name, thread_name) = parse_move_target(target);
-                    let docs = self.db.list_documents(None).await?;
-                    let threads = self.db.list_threads().await?;
+                    let docs = self.db.search_documents_by_title(&doc_name).await?;
+                    let thread = self.db.find_thread_by_name(&thread_name).await?;
 
-                    let doc = docs
-                        .iter()
-                        .find(|d| d.title.to_lowercase().contains(&doc_name.to_lowercase()));
-                    let thread = threads
-                        .iter()
-                        .find(|t| t.name.to_lowercase().contains(&thread_name.to_lowercase()));
-
-                    if let (Some(doc), Some(thread)) = (doc, thread) {
+                    if let (Some(doc), Some(thread)) = (docs.first(), thread.as_ref()) {
                         let doc_id = doc.id_string().unwrap_or_default();
                         let tid = thread.id_string().unwrap_or_default();
                         match self.db.move_document_to_thread(&doc_id, &tid).await {
@@ -628,11 +687,8 @@ impl Orchestrator {
             }
             "history" => {
                 if let Some(target) = target {
-                    let docs = self.db.list_documents(None).await?;
-                    if let Some(doc) = docs
-                        .iter()
-                        .find(|d| d.title.to_lowercase().contains(&target.to_lowercase()))
-                    {
+                    let docs = self.db.search_documents_by_title(target).await?;
+                    if let Some(doc) = docs.first() {
                         if let Some(doc_id) = doc.id_string() {
                             let commits = self.db.list_document_commits(&doc_id).await?;
                             let summaries: Vec<CommitSummary> = commits
@@ -663,11 +719,8 @@ impl Orchestrator {
             }
             "summarize" => {
                 if let Some(target) = target {
-                    let docs = self.db.list_documents(None).await?;
-                    if let Some(doc) = docs
-                        .iter()
-                        .find(|d| d.title.to_lowercase().contains(&target.to_lowercase()))
-                    {
+                    let docs = self.db.search_documents_by_title(target).await?;
+                    if let Some(doc) = docs.first() {
                         let content = &doc.content;
                         let prompt = crate::llm::prompt::qwen_chat_prompt(
                             "You are a concise summarizer. Summarize the following document in 2-3 sentences.",
@@ -767,13 +820,8 @@ impl Orchestrator {
             "merge_threads" => {
                 if let Some(target) = target {
                     let (target_name, source_name) = parse_move_target(target);
-                    let threads = self.db.list_threads().await?;
-                    let target_thread = threads
-                        .iter()
-                        .find(|t| t.name.to_lowercase().contains(&target_name.to_lowercase()));
-                    let source_thread = threads
-                        .iter()
-                        .find(|t| t.name.to_lowercase().contains(&source_name.to_lowercase()));
+                    let target_thread = self.db.find_thread_by_name(&target_name).await?;
+                    let source_thread = self.db.find_thread_by_name(&source_name).await?;
 
                     if let (Some(tt), Some(st)) = (target_thread, source_thread) {
                         let target_id = tt.id_string().unwrap_or_default();
@@ -807,11 +855,7 @@ impl Orchestrator {
                     } else {
                         new_name
                     };
-                    let threads = self.db.list_threads().await?;
-                    if let Some(thread) = threads
-                        .iter()
-                        .find(|t| t.name.to_lowercase().contains(&thread_name.to_lowercase()))
-                    {
+                    if let Some(thread) = self.db.find_thread_by_name(&thread_name).await? {
                         if let Some(tid) = thread.id_string() {
                             // For now, split with no specific doc_ids — the user will
                             // refine via UI. Create empty thread as a target.
@@ -837,11 +881,8 @@ impl Orchestrator {
             }
             "adopt" => {
                 if let Some(target) = target {
-                    let docs = self.db.list_documents(None).await?;
-                    if let Some(doc) = docs
-                        .iter()
-                        .find(|d| d.title.to_lowercase().contains(&target.to_lowercase()))
-                    {
+                    let docs = self.db.search_documents_by_title(target).await?;
+                    if let Some(doc) = docs.first() {
                         if let Some(doc_id) = doc.id_string() {
                             // Set is_owned = true via adopt_document
                             match self.db.adopt_document(&doc_id).await {
@@ -874,13 +915,10 @@ impl Orchestrator {
                         (target.to_string(), String::new())
                     };
 
-                    let threads = self.db.list_threads().await?;
                     let thread = if thread_name.is_empty() {
-                        threads.first()
+                        self.db.list_threads().await?.into_iter().next()
                     } else {
-                        threads.iter().find(|t| {
-                            t.name.to_lowercase().contains(&thread_name.to_lowercase())
-                        })
+                        self.db.find_thread_by_name(&thread_name).await?
                     };
 
                     if let Some(thread) = thread {
@@ -903,13 +941,10 @@ impl Orchestrator {
                 }
             }
             "list_milestones" => {
-                let threads = self.db.list_threads().await?;
                 let thread = if let Some(target) = target {
-                    threads.iter().find(|t| {
-                        t.name.to_lowercase().contains(&target.to_lowercase())
-                    })
+                    self.db.find_thread_by_name(target).await?
                 } else {
-                    threads.first()
+                    self.db.list_threads().await?.into_iter().next()
                 };
 
                 if let Some(thread) = thread {
@@ -1041,11 +1076,8 @@ impl Orchestrator {
             "restore" => {
                 if let Some(target) = target {
                     let (doc_name, commit_ref) = parse_move_target(target);
-                    let docs = self.db.list_documents(None).await?;
-                    if let Some(doc) = docs
-                        .iter()
-                        .find(|d| d.title.to_lowercase().contains(&doc_name.to_lowercase()))
-                    {
+                    let docs = self.db.search_documents_by_title(&doc_name).await?;
+                    if let Some(doc) = docs.first() {
                         if let Some(doc_id) = doc.id_string() {
                             if commit_ref.starts_with("commit:") {
                                 match self.db.restore_document(&doc_id, &commit_ref).await {
