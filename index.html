@@ -4840,135 +4840,72 @@ document.addEventListener('click', (e) => {
 </script>
 
 <script>
-// ========== CHATBOT ENGINE ==========
-const SOVEREIGN_KNOWLEDGE = {
-  overview: `Sovereign GE is an experimental local-first graphical environment built in Rust. It explores alternatives to cloud-dependent apps with a unified, encrypted workspace powered by on-device AI. Your documents, communications, and AI assistant all run locally — data is designed to stay on your machine unless you explicitly choose to share it. It's open source under AGPL-3.0.`,
+// ========== CHATBOT ENGINE (RAG via HuggingFace Space + Mistral) ==========
+const SPACE_URL = 'https://clenoble-sovereign-guide.hf.space';
+const chatHistory = []; // {role: 'user'|'assistant', content: string}
 
-  ai: `The AI orchestrator runs Qwen2.5 models on your hardware via llama.cpp — designed to work without cloud services, API keys, or subscriptions. There are two models: a fast 3B router (always loaded, ~2 GB VRAM) for intent classification, and a 7B reasoning model loaded on demand for complex queries. The system supports multi-turn chat with tool calling, voice input (wake word + Whisper STT), and text-to-speech (Piper TTS). A key design choice is the data/control plane separation: the control plane handles user instructions and can invoke skills, while the data plane processes document content but has no ability to take actions — an architectural defense against prompt injection.`,
-
-  security: `Security in Sovereign is based on "Action Gravity" — friction scales with irreversibility. Reading is instant (Level 0). Editing gets conversational confirmation (Level 2). Deleting requires explicit approval and has a 30-day undo window (Level 4). Encryption uses XChaCha20-Poly1305 with a hierarchical key system: Master Key → Device Key → KEK → per-document keys. Keys auto-rotate every 90 days. The AI has hard barriers enforced by code: chat tools are read-only regardless of what the model outputs. Prompt injection is addressed architecturally — the data plane (which processes external content) has no access to skills or actions.`,
-
-  canvas: `The Spatial Canvas is an infinite 2D workspace replacing traditional folder hierarchies. The X-axis is a timeline (past → future), the Y-axis shows intent threads (project lanes), and documents appear as cards. Owned documents are rounded rectangles; external content appears as slanted parallelograms — you can tell at a glance what's yours. GPU-accelerated via Skia/WGPU, it handles 100K+ documents using Level-of-Detail rendering (cards become density blobs at extreme zoom-out). There's a minimap, smooth pan/zoom, and instant jump to any date.`,
-
-  encryption: `Sovereign uses XChaCha20-Poly1305 AEAD encryption with a hierarchical key derivation system. Your Master Key (256-bit, stored in TPM/secure enclave) derives Device Keys via HKDF. Each document gets its own random encryption key, wrapped by a Key-Encryption Key (KEK). This means compromising one document key is designed to reveal nothing about others. Keys auto-rotate every 90 days or every 100 commits. The goal is zero plaintext on disk.`,
-
-  recovery: `Guardian Social Recovery replaces corporate account recovery. You choose 5 trusted people as guardians. Your Master Recovery Key is split into 5 shards using Shamir's Secret Sharing (3-of-5 threshold). Each guardian holds one encrypted, opaque shard — they are not given access to your data. If you lose all devices: you initiate recovery on a new device, prove identity via a memorized passphrase, then wait 72 hours (all 5 guardians are notified so the real you can abort if it's fraud). After the waiting period, 3+ guardians approve, shards are reassembled, and your master key is restored.`,
-
-  p2p: `Peer-to-peer sync uses libp2p with QUIC transport for NAT traversal. Your devices discover each other via mDNS (local network) or a minimal rendezvous server (internet). Sync exchanges encrypted document manifests — the rendezvous server sees only opaque device IDs and connection timing, not content. Only changed commits are synced (not full documents), using a git-like merge model. Manifests are padded to obscure document count and size distribution.`,
-
-  skills: `Sovereign explores replacing monolithic apps with composable "Skills." There are 8 core skills built in: markdown editor, search, image viewer, PDF export, word count, find & replace, file import, and duplicate document. Community skills can be installed from a registry — they're sandboxed using Linux kernel security (Landlock + seccomp-bpf) and require cryptographic audit signatures. Sideloaded skills get the strictest sandbox: read-only document access, no network by default. The AI orchestrator composes skills into multi-step workflows.`,
-
-  comms: `Sovereign unifies your communications. Email (IMAP/SMTP), Signal (via the presage library), and WhatsApp (Business API) all appear in a single inbox. Contacts are merged across channels. Conversation threads are grouped by contact and archived in your local encrypted graph. Channels are optional compile-time features — you enable only what you need.`,
-
-  voice: `The voice pipeline runs locally by design. Rustpotter handles wake-word detection ("Sovereign") using a rolling 10-second audio buffer processed on-device. Whisper large-v3-turbo handles speech-to-text in real-time. Piper handles text-to-speech with multiple voice options. There's optional speaker verification via voiceprint enrollment. You can use push-to-talk instead if you prefer. The system distinguishes between dictation mode and command mode based on context.`,
-
-  tech: `Sovereign GE is a 10-crate Rust workspace with ~16K+ lines of code and 367 tests. It uses SurrealDB for graph storage, Iced 0.14 for the GUI, Skia for canvas rendering, llama.cpp for AI inference, libp2p for networking, and XChaCha20-Poly1305 for encryption. It runs on Linux, Windows (MSVC), WSL2, and macOS. Minimum hardware: 6-core CPU, 16 GB RAM, 512 GB SSD. GPU optional but recommended (RTX 3060 or equivalent). The project is AGPL-3.0 licensed.`,
-
-  philosophy: `Sovereign is built on a content-centric paradigm — the opposite of the app-centric model that dominates today. Instead of your data being trapped inside applications (Google Docs, Notion, Outlook), data is the primary citizen. Skills (lightweight, composable tools) operate on your data, but they don't own it. This means you can switch skills freely without migration pain. Combined with local-first storage, end-to-end encryption, and no cloud dependency, the goal is to give you control of your digital life.`,
-
-  status: `Sovereign GE is an experimental prototype (February 2026). Phases 0-4 are complete: data layer, UI shell, spatial canvas, AI orchestrator, and skill system. Phase 5 (thread management, version tracking, timeline layout) is in progress. The codebase has ~24K lines of Rust across 10 crates with 367 tests. This is very much a work in progress — we're testing ideas, not shipping a finished product. Post-MVP roadmap includes: identity firewall, community skill registry, stylus/drawing input, handwriting recognition, and more.`,
-
-  contribute: `Sovereign is open source under AGPL-3.0. You can contribute by: filing issues on GitHub, submitting pull requests, building community skills, testing the prototype and reporting bugs, writing documentation, or spreading the word. The codebase is Rust — edition 2021, favoring safe code. Check the README for build instructions (supports Linux, Windows MSVC, WSL2, macOS).`,
-
-  comparison: `Unlike cloud-dependent tools (Google Workspace, Notion, Obsidian Sync), Sovereign stores everything locally with encryption. Unlike traditional desktop environments, it replaces the file/folder metaphor with a spatial canvas and graph database. Unlike ChatGPT or Copilot, its AI runs on-device with no subscription. Unlike Signal or ProtonMail alone, it aims to unify communications in one encrypted workspace. The closest comparison might be a self-hosted Notion + local AI + encrypted sync — but built from the ground up as a graphical environment rather than bolted together. It's an experimental prototype exploring these ideas.`,
-
-  built: `Sovereign GE is co-developed by Céline Lenoble — a solution-finder with a background in teaching, UX research, product management, and CRO marketing — and Claude Opus 4.6, Anthropic's AI. The initial brainstorming and specs came from working with Gemini; the Rust implementation comes from Claude. Céline provides the vision, UX principles, and architectural decisions; Claude contributes code generation, algorithm implementation, debugging, and iterative refinement across the 10-crate Rust workspace. This website and the marketing plan were also co-created the same way. It's a real-world example of what human-AI collaboration can produce — not a developer replaced by AI, but a non-developer building an experimental prototype by combining domain expertise with AI capabilities.`
-};
-
-const TOPIC_PATTERNS = [
-  { keys: ['overview', 'what is', 'about', 'sovereign', 'tell me', 'explain', 'introduction', 'intro'], topic: 'overview' },
-  { keys: ['ai', 'orchestrat', 'llm', 'model', 'qwen', 'llama', 'chat', 'intent', 'assistant', 'intelligent'], topic: 'ai' },
-  { keys: ['secur', 'safe', 'action gravity', 'gravity', 'trust', 'inject', 'prompt inject', 'barrier'], topic: 'security' },
-  { keys: ['canvas', 'spatial', 'timeline', 'visual', 'map', 'navigate', 'thread', 'lane'], topic: 'canvas' },
-  { keys: ['encrypt', 'key', 'xchacha', 'aes', 'crypto', 'cipher', 'master key'], topic: 'encryption' },
-  { keys: ['recover', 'guardian', 'shamir', 'shard', 'backup', 'lost', 'lost device'], topic: 'recovery' },
-  { keys: ['p2p', 'peer', 'sync', 'device', 'libp2p', 'quic'], topic: 'p2p' },
-  { keys: ['skill', 'plugin', 'module', 'app', 'markdown editor', 'pdf', 'extensi'], topic: 'skills' },
-  { keys: ['comm', 'email', 'signal', 'whatsapp', 'imap', 'smtp', 'messag', 'inbox'], topic: 'comms' },
-  { keys: ['voice', 'speech', 'whisper', 'piper', 'wake', 'dictation', 'microphone', 'speak'], topic: 'voice' },
-  { keys: ['tech', 'rust', 'crate', 'stack', 'surrealdb', 'iced', 'hardware', 'require', 'spec', 'run on'], topic: 'tech' },
-  { keys: ['philos', 'vision', 'why', 'different', 'approach', 'content-centric', 'paradigm', 'principle'], topic: 'philosophy' },
-  { keys: ['status', 'alpha', 'beta', 'progress', 'phase', 'roadmap', 'when', 'release', 'ready'], topic: 'status' },
-  { keys: ['contribut', 'open source', 'github', 'help', 'develop', 'agpl', 'license', 'code'], topic: 'contribute' },
-  { keys: ['compar', 'vs', 'versus', 'better', 'notion', 'obsidian', 'google', 'alternative'], topic: 'comparison' },
-  { keys: ['built', 'claude', 'anthropic', 'who built', 'who made', 'human', 'ai collab', 'co-develop', 'created by'], topic: 'built' },
+const DEFAULT_SUGGESTIONS = [
+  "What is Sovereign OS?",
+  "How does the AI orchestrator work?",
+  "What encryption does Sovereign use?",
+  "How are the Rust crates organized?"
 ];
 
-function detectTopic(input) {
-  const lower = input.toLowerCase();
-  let best = null, bestScore = 0;
-  for (const pat of TOPIC_PATTERNS) {
-    let score = 0;
-    for (const k of pat.keys) {
-      if (lower.includes(k)) score += k.length;
-    }
-    if (score > bestScore) { bestScore = score; best = pat.topic; }
+// --- Markdown-lite rendering ---
+function renderMarkdown(text) {
+  return text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/^\s*[-*]\s+(.+)/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>')
+    .replace(/<\/ul>\s*<ul>/g, '')
+    .replace(/\n{2,}/g, '<br><br>')
+    .replace(/\n/g, '<br>');
+}
+
+// --- RAG API call ---
+async function queryRAG(question) {
+  // Step 1: Submit request
+  const submitRes = await fetch(`${SPACE_URL}/call/query`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: [question, chatHistory] }),
+  });
+
+  if (!submitRes.ok) {
+    if (submitRes.status === 503) throw new Error('waking');
+    throw new Error(`HTTP ${submitRes.status}`);
   }
-  return best;
-}
 
-const TOPIC_LINKS = {
-  overview:    { label: 'Explore features', href: '#features' },
-  ai:          { label: 'AI orchestrator deep dive', href: '#/ai-orchestrator' },
-  security:    { label: 'Action Gravity deep dive', href: '#/action-gravity' },
-  canvas:      { label: 'Spatial Canvas deep dive', href: '#/spatial-canvas' },
-  encryption:  { label: 'Encryption deep dive', href: '#/encryption' },
-  recovery:    { label: 'Social Recovery deep dive', href: '#/social-recovery' },
-  p2p:         { label: 'Encryption & sync details', href: '#/encryption' },
-  skills:      { label: 'Content & Skills deep dive', href: '#/content-skills' },
-  comms:       { label: 'Communications deep dive', href: '#/communications' },
-  voice:       { label: 'AI orchestrator deep dive', href: '#/ai-orchestrator' },
-  tech:        { label: 'Content & Skills architecture', href: '#/content-skills' },
-  philosophy:  { label: 'Ethics & design constraints', href: '#/ethics' },
-  status:      { label: 'View on GitHub', href: 'https://github.com/clenoble/sovereign' },
-  contribute:  { label: 'View on GitHub', href: 'https://github.com/clenoble/sovereign' },
-  comparison:  { label: 'Content & Skills architecture', href: '#/content-skills' },
-  built:       { label: 'Ethics & design philosophy', href: '#/ethics' },
-};
+  const { event_id } = await submitRes.json();
 
-function getResponse(input) {
-  const topic = detectTopic(input);
-  if (topic && SOVEREIGN_KNOWLEDGE[topic]) {
-    let response = SOVEREIGN_KNOWLEDGE[topic];
-    const link = TOPIC_LINKS[topic];
-    if (link) {
-      const isExternal = link.href.startsWith('http');
-      const target = isExternal ? ' target="_blank" rel="noopener"' : '';
-      response = `<a href="${link.href}" class="chat-nav-link"${target}>${link.label} →</a><br><br>` + response;
+  // Step 2: Get result via SSE stream
+  const resultRes = await fetch(`${SPACE_URL}/call/query/${event_id}`);
+  const text = await resultRes.text();
+
+  // Parse SSE format: lines starting with "data: "
+  for (const line of text.split('\n')) {
+    if (line.startsWith('data: ')) {
+      const data = JSON.parse(line.slice(6));
+      // ChatInterface returns [response_text, updated_history]
+      // or just the response string depending on Gradio version
+      if (Array.isArray(data)) {
+        // If it's the chat response (string), return it
+        if (typeof data[0] === 'string') return data[0];
+        // If it's [chatbot_value, ...], extract last assistant message
+        if (Array.isArray(data[0])) {
+          const last = data[0][data[0].length - 1];
+          return last?.[1] || last?.content || String(last);
+        }
+      }
+      return String(data);
     }
-    return response;
   }
-  return `That's a great question! I can tell you about any aspect of Sovereign — the AI orchestrator, encryption, the spatial canvas, guardian recovery, the skill system, voice pipeline, P2P sync, communications, or the project's philosophy and status. What interests you most?`;
+  throw new Error('No response data');
 }
 
-function getSuggestions(lastTopic) {
-  const allSuggestions = {
-    _default: [
-      "What is Sovereign GE?",
-      "How does the AI work?",
-      "Who built this?",
-      "Tell me about encryption"
-    ],
-    overview: ["How does the AI work?", "What about security?", "How is it different from Notion?", "What's the current status?"],
-    ai: ["How is prompt injection handled?", "Tell me about the voice pipeline", "What about the skill system?", "What hardware do I need?"],
-    security: ["Explain the encryption", "How does guardian recovery work?", "Tell me about the AI architecture", "How can I contribute?"],
-    canvas: ["How does P2P sync work?", "Tell me about skills", "What's the philosophy behind it?", "What hardware do I need?"],
-    encryption: ["How does guardian recovery work?", "Tell me about P2P sync", "What about security levels?", "How is it different?"],
-    recovery: ["How does encryption work?", "Tell me about P2P sync", "What's the project status?", "How can I contribute?"],
-    p2p: ["How does encryption work?", "Tell me about the canvas", "What communications are supported?", "What's the roadmap?"],
-    skills: ["How does the AI orchestrate skills?", "What about security?", "How can I contribute?", "Compare with other tools"],
-    comms: ["How does encryption work?", "Tell me about P2P sync", "What's the voice pipeline?", "What's the current status?"],
-    voice: ["How does the AI work?", "What about security?", "Tell me about skills", "What hardware do I need?"],
-    tech: ["How does the AI work?", "Tell me about encryption", "What's the canvas?", "How can I contribute?"],
-    philosophy: ["What is the spatial canvas?", "How does the AI work?", "Compare with other tools", "What's the roadmap?"],
-    status: ["How can I contribute?", "What hardware do I need?", "Tell me about encryption", "How does the AI work?"],
-    contribute: ["What's the tech stack?", "Tell me about the AI", "What's the current status?", "How does encryption work?"],
-    comparison: ["What is Sovereign GE?", "Tell me about the AI", "How does encryption work?", "How can I contribute?"],
-    built: ["How does the AI orchestrator work?", "What's the tech stack?", "How can I contribute?", "Compare with other tools"],
-  };
-  return allSuggestions[lastTopic] || allSuggestions._default;
-}
-
+// --- DOM references ---
 const chatToggle = document.getElementById('chatToggle');
 const chatbox = document.getElementById('chatbox');
 const chatMessages = document.getElementById('chatMessages');
@@ -4976,7 +4913,6 @@ const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
 const chatSend = document.getElementById('chatSend');
 const chatSuggestions = document.getElementById('chatSuggestions');
-let lastTopic = '_default';
 
 function toggleChat() {
   const isOpen = chatbox.classList.toggle('open');
@@ -4985,8 +4921,8 @@ function toggleChat() {
   if (isOpen) {
     chatInput.focus();
     if (chatMessages.children.length === 0) {
-      addBotMessage("Welcome! I'm the Sovereign AI guide. I can tell you about Sovereign GE — its architecture, security model, AI orchestrator, and more. What would you like to explore?");
-      renderSuggestions('_default');
+      addBotMessage("Welcome! I'm the Sovereign AI guide. Ask me anything about Sovereign — its architecture, code, encryption, AI orchestrator, and more. Powered by RAG over the project docs and source code.");
+      renderSuggestions(DEFAULT_SUGGESTIONS);
     }
   }
 }
@@ -4994,7 +4930,7 @@ function toggleChat() {
 function addBotMessage(text) {
   const div = document.createElement('div');
   div.className = 'chat-msg bot';
-  div.innerHTML = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+  div.innerHTML = renderMarkdown(text);
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
@@ -5021,8 +4957,7 @@ function removeTypingIndicator() {
   if (el) el.remove();
 }
 
-function renderSuggestions(topic) {
-  const suggestions = getSuggestions(topic);
+function renderSuggestions(suggestions) {
   chatSuggestions.innerHTML = '';
   suggestions.forEach(s => {
     const btn = document.createElement('button');
@@ -5033,48 +4968,35 @@ function renderSuggestions(topic) {
   });
 }
 
-function handleUserInput(text) {
+async function handleUserInput(text) {
   if (!text.trim()) return;
   addUserMessage(text);
   chatInput.value = '';
   chatSend.disabled = true;
   chatSuggestions.innerHTML = '';
-
   addTypingIndicator();
 
-  const delay = 400 + Math.random() * 600;
-  setTimeout(() => {
-    removeTypingIndicator();
-    const topic = detectTopic(text);
-    lastTopic = topic || '_default';
-    addBotMessage(getResponse(text));
-    renderSuggestions(lastTopic);
-    chatSend.disabled = false;
-    chatInput.focus();
+  chatHistory.push({ role: 'user', content: text });
 
-    // Auto-navigate to the relevant page
-    if (topic) {
-      const link = TOPIC_LINKS[topic];
-      if (link && !link.href.startsWith('http')) {
-        if (link.href.startsWith('#/')) {
-          location.hash = link.href;
-        } else if (link.href.startsWith('#')) {
-          // Section anchor (e.g. #features) — go home first if needed, then scroll
-          const currentHash = location.hash.slice(1) || '/';
-          if (currentHash !== '/') {
-            location.hash = '#/';
-            setTimeout(() => {
-              const el = document.querySelector(link.href);
-              if (el) el.scrollIntoView({ behavior: 'smooth' });
-            }, 150);
-          } else {
-            const el = document.querySelector(link.href);
-            if (el) el.scrollIntoView({ behavior: 'smooth' });
-          }
-        }
-      }
+  try {
+    const answer = await queryRAG(text);
+    removeTypingIndicator();
+    addBotMessage(answer);
+    chatHistory.push({ role: 'assistant', content: answer });
+    renderSuggestions(DEFAULT_SUGGESTIONS);
+  } catch (err) {
+    removeTypingIndicator();
+    if (err.message === 'waking') {
+      addBotMessage("The assistant is waking up — this takes about 30 seconds on first use. Please try again in a moment.");
+    } else {
+      addBotMessage("Sorry, I couldn't reach the assistant right now. Please try again in a moment, or browse the documentation pages on the site.");
+      console.error('RAG query failed:', err);
     }
-  }, delay);
+    renderSuggestions(DEFAULT_SUGGESTIONS);
+  }
+
+  chatSend.disabled = false;
+  chatInput.focus();
 }
 
 chatToggle.addEventListener('click', toggleChat);
