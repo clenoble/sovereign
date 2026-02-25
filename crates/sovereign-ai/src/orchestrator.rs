@@ -312,7 +312,16 @@ impl Orchestrator {
     const MAX_HISTORY_TOKENS: usize = 1000;
 
     /// Handle a chat message: load context, run agent loop with tool calling.
+    /// Handle chat input. Delegates to handle_query so that all user input
+    /// — whether from the search bar or chat panel — goes through the same
+    /// classify → gate → dispatch path.
     pub async fn handle_chat(&self, message: &str) -> Result<()> {
+        self.handle_query(message).await
+    }
+
+    /// Multi-turn chat agent loop with tool calling and conversation history.
+    /// Called from execute_action when the classified intent is "chat" or "unknown".
+    async fn run_chat_agent_loop(&self, message: &str) -> Result<()> {
         // 1. Log user input
         if let Some(ref log) = self.session_log {
             if let Ok(mut log) = log.lock() {
@@ -1140,9 +1149,9 @@ impl Orchestrator {
                     }
                 }
             }
-            "chat" => {
+            "chat" | "unknown" => {
                 // Delegate to the agent loop which handles context, tools, and history
-                self.handle_chat(query).await?;
+                self.run_chat_agent_loop(query).await?;
             }
             _ => {
                 let level = security::action_level(action);
@@ -1405,12 +1414,71 @@ pub(crate) fn scan_gguf_models(model_dir: &str) -> Vec<(String, u64)> {
 
 /// Resolve a model target name to a full path, appending .gguf if needed.
 pub(crate) fn resolve_model_path(model_dir: &str, target: &str) -> std::path::PathBuf {
-    let model_name = if target.ends_with(".gguf") {
+    let dir = std::path::Path::new(model_dir);
+
+    // 1. Exact filename match (with or without .gguf extension)
+    let exact_name = if target.ends_with(".gguf") {
         target.to_string()
     } else {
         format!("{}.gguf", target)
     };
-    std::path::Path::new(model_dir).join(model_name)
+    let exact_path = dir.join(&exact_name);
+    if exact_path.exists() {
+        return exact_path;
+    }
+
+    // 2. Fuzzy match: scan .gguf files for a name that matches the target.
+    //    Checks substring containment, then expands the target with known aliases
+    //    (e.g. "mistral" also matches "ministral" product names).
+    let target_lower = target.to_lowercase();
+    let aliases = expand_model_aliases(&target_lower);
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        let mut best: Option<std::path::PathBuf> = None;
+        let mut best_len = usize::MAX; // prefer shortest filename (most specific match)
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("gguf") {
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_lowercase();
+                let matched = aliases.iter().any(|alias| name.contains(alias));
+                if matched && name.len() < best_len {
+                    best_len = name.len();
+                    best = Some(path);
+                }
+            }
+        }
+        if let Some(matched) = best {
+            return matched;
+        }
+    }
+
+    // 3. Fallback: return the exact path (will fail exists() check in caller)
+    exact_path
+}
+
+/// Expand a target name into a list of search terms including known aliases.
+/// E.g. "mistral" → ["mistral", "ministral"] so that the user saying "switch to mistral"
+/// matches files named "Ministral-3-3B-Instruct-...".
+fn expand_model_aliases(target_lower: &str) -> Vec<String> {
+    // Alias groups: names that users might use interchangeably.
+    const ALIAS_GROUPS: &[&[&str]] = &[
+        &["mistral", "ministral"],
+    ];
+    let mut result = vec![target_lower.to_string()];
+    for group in ALIAS_GROUPS {
+        if group.iter().any(|a| target_lower.contains(a) || a.contains(target_lower)) {
+            for alias in *group {
+                if *alias != target_lower && !result.iter().any(|r| r == alias) {
+                    result.push(alias.to_string());
+                }
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -1465,6 +1533,33 @@ mod tests {
     fn resolve_model_path_keeps_existing_gguf() {
         let path = resolve_model_path("/models", "Qwen2.5-7B.gguf");
         assert_eq!(path, std::path::PathBuf::from("/models/Qwen2.5-7B.gguf"));
+    }
+
+    #[test]
+    fn resolve_model_path_fuzzy_matches() {
+        let dir = make_test_dir("resolve_fuzzy");
+        std::fs::write(dir.join("Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"), "fake").unwrap();
+        std::fs::write(dir.join("llama-3.2-1b-instruct-q4_k_m.gguf"), "fake").unwrap();
+
+        // "mistral" should fuzzy-match "Ministral-..."
+        let path = resolve_model_path(dir.to_str().unwrap(), "mistral");
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"
+        );
+
+        // "llama" should fuzzy-match "llama-3.2-..."
+        let path = resolve_model_path(dir.to_str().unwrap(), "llama");
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            "llama-3.2-1b-instruct-q4_k_m.gguf"
+        );
+
+        // No match returns fallback exact path
+        let path = resolve_model_path(dir.to_str().unwrap(), "gemma");
+        assert_eq!(path.file_name().unwrap().to_string_lossy(), "gemma.gguf");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -60,6 +60,27 @@ impl SkillRegistry {
     pub fn all_skills(&self) -> &[Box<dyn CoreSkill>] {
         &self.skills
     }
+
+    /// Return skills relevant to the given file extension.
+    /// Type-matched skills come first, then universal ones (empty `file_types()`).
+    /// Each entry is `(skill_name, actions)`.
+    pub fn skills_for_file_type(&self, ext: &str) -> Vec<(&str, Vec<(String, String)>)> {
+        let ext_lower = ext.to_lowercase();
+        let mut matched = Vec::new();
+        let mut universal = Vec::new();
+
+        for skill in &self.skills {
+            let ftypes = skill.file_types();
+            if ftypes.is_empty() {
+                universal.push((skill.name(), skill.actions()));
+            } else if ftypes.iter().any(|ft| ft == &ext_lower) {
+                matched.push((skill.name(), skill.actions()));
+            }
+        }
+
+        matched.extend(universal);
+        matched
+    }
 }
 
 impl Default for SkillRegistry {

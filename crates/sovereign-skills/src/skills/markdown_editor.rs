@@ -50,6 +50,10 @@ impl CoreSkill for MarkdownEditorSkill {
             ("preview".into(), "Preview".into()),
         ]
     }
+
+    fn file_types(&self) -> Vec<String> {
+        vec!["md".into()]
+    }
 }
 
 /// Normalize markdown: ensure blank lines around headings, trim trailing whitespace,

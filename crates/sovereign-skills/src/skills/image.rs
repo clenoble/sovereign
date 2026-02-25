@@ -52,6 +52,10 @@ impl CoreSkill for ImageSkill {
             ("remove".into(), "Remove Image".into()),
         ]
     }
+
+    fn file_types(&self) -> Vec<String> {
+        vec!["md".into(), "txt".into()]
+    }
 }
 
 #[cfg(test)]

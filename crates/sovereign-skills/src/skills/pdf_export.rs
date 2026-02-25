@@ -105,6 +105,10 @@ impl CoreSkill for PdfExportSkill {
     fn actions(&self) -> Vec<(String, String)> {
         vec![("export".into(), "Export PDF".into())]
     }
+
+    fn file_types(&self) -> Vec<String> {
+        vec!["md".into(), "txt".into()]
+    }
 }
 
 #[cfg(test)]

@@ -48,6 +48,10 @@ impl CoreSkill for WordCountSkill {
     fn actions(&self) -> Vec<(String, String)> {
         vec![("count".into(), "Word Count".into())]
     }
+
+    fn file_types(&self) -> Vec<String> {
+        vec!["md".into(), "txt".into()]
+    }
 }
 
 #[cfg(test)]

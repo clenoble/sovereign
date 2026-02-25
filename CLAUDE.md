@@ -157,6 +157,8 @@ cargo.exe test --target-dir "C:/cargo-target" -j 2
 
 ## Git & NAS Push/Merge Workflow
 
+**VSCode `git.untrackedChanges` is set to `hidden`** because SurrealDB `.db` files (10k+) flood source control despite being in `.gitignore`. This means new files won't appear in the Source Control panel — you must `git add <file>` explicitly.
+
 The repo on the NAS is at `\\nas\home\Current\Projets\03 - user-centered OS` (bare repo).
 
 ### Windows (from bash — Claude Code / Git Bash)
@@ -173,6 +175,14 @@ git config --global --add safe.directory '//nas/home/Current/Projets/03 - user-c
 # Push / pull
 git push origin main
 git pull origin main
+```
+
+### GitHub
+
+Public repo: `https://github.com/clenoble/sovereign.git` (remote name: `github`)
+```bash
+git push github main
+git push github --tags
 ```
 
 ### WSL2 / Linux
