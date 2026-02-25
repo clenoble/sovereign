@@ -1,4 +1,4 @@
-//! Schema definitions for Sovereign OS document graph
+//! Schema definitions for Sovereign GE document graph
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

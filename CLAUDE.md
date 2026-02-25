@@ -1,4 +1,4 @@
-# Sovereign OS — Project Instructions
+# Sovereign GE — Project Instructions
 
 ## Library Version Rule
 Before writing or modifying any code that uses an external library (crate, pip package, npm module, etc.):

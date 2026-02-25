@@ -2,7 +2,7 @@
     "name": "Word Count",
     "version": "0.1.0",
     "description": "Count words, characters, lines, and estimate reading time",
-    "author": "Sovereign OS",
+    "author": "Sovereign GE",
     "skill_type": "core",
     "capabilities": ["count"],
     "file_types": ["md", "txt"]

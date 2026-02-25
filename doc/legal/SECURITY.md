@@ -1,6 +1,6 @@
 # Security Policy
 
-## Sovereign OS — Security Disclosure Policy
+## Sovereign GE — Security Disclosure Policy
 
 ---
 
@@ -136,7 +136,7 @@ Activities conducted consistent with this policy are considered authorized. We w
 
 ## Threat Model
 
-Sovereign OS considers the following threat actors in its security model:
+Sovereign GE considers the following threat actors in its security model:
 
 | Threat Actor | Assumed Capability | Primary Defense |
 |---|---|---|

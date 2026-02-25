@@ -2,7 +2,7 @@
 name = "sovereign-p2p"
 version = "0.1.0"
 edition = "2021"
-description = "P2P device sync and Guardian shard transport for Sovereign OS"
+description = "P2P device sync and Guardian shard transport for Sovereign GE"
 
 [dependencies]
 sovereign-crypto = { workspace = true }

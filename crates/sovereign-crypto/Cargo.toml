@@ -2,7 +2,7 @@
 name = "sovereign-crypto"
 version = "0.1.0"
 edition = "2021"
-description = "Key hierarchy, AEAD encryption, and Guardian social recovery for Sovereign OS"
+description = "Key hierarchy, AEAD encryption, and Guardian social recovery for Sovereign GE"
 
 [dependencies]
 chacha20poly1305 = "0.10"

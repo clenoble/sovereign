@@ -1,4 +1,4 @@
-# Sovereign OS — Todo List
+# Sovereign GE — Todo List
 
 ## Open Issues
 

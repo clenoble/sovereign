@@ -2,7 +2,7 @@
 name = "sovereign-core"
 version = "0.1.0"
 edition = "2021"
-description = "Core configuration, lifecycle, and interface definitions for Sovereign OS"
+description = "Core configuration, lifecycle, and interface definitions for Sovereign GE"
 
 [dependencies]
 serde = { workspace = true }

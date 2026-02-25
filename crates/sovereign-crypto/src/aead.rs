@@ -44,7 +44,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt_roundtrip() {
         let key = [42u8; KEY_SIZE];
-        let plaintext = b"hello sovereign OS";
+        let plaintext = b"hello sovereign GE";
         let (ct, nonce) = encrypt(plaintext, &key).unwrap();
         let recovered = decrypt(&ct, &nonce, &key).unwrap();
         assert_eq!(recovered, plaintext);

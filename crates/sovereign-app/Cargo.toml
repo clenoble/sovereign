@@ -2,7 +2,7 @@
 name = "sovereign-app"
 version = "0.1.0"
 edition = "2021"
-description = "Sovereign OS binary — CLI and GUI entry point"
+description = "Sovereign GE binary — CLI and GUI entry point"
 
 [[bin]]
 name = "sovereign"

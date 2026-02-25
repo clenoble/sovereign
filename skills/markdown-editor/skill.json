@@ -2,7 +2,7 @@
     "name": "Markdown Editor",
     "version": "0.1.0",
     "description": "Edit and preview Markdown documents with live rendering",
-    "author": "Sovereign OS",
+    "author": "Sovereign GE",
     "skill_type": "core",
     "capabilities": ["edit", "preview", "export"],
     "file_types": ["md", "markdown"]

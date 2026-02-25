@@ -7,7 +7,7 @@ use crate::schema::{
     ReadStatus, RelatedTo, RelationType, Thread,
 };
 
-/// Core database abstraction for the Sovereign OS document graph.
+/// Core database abstraction for the Sovereign GE document graph.
 ///
 /// Uses `async-trait` for object safety (`dyn GraphDB`).
 #[async_trait]

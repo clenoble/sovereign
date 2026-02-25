@@ -2,7 +2,7 @@
     "name": "Summarizer",
     "version": "0.1.0",
     "description": "Generate concise summaries of documents using the local LLM",
-    "author": "Sovereign OS",
+    "author": "Sovereign GE",
     "skill_type": "core",
     "capabilities": ["summarize"],
     "file_types": ["md", "txt"]

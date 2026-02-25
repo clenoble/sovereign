@@ -1,4 +1,4 @@
-# Sovereign OS — Implementation Plan
+# Sovereign GE — Implementation Plan
 
 **Date:** February 6, 2026
 **Updated:** February 8, 2026

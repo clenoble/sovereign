@@ -1,7 +1,7 @@
-//! System prompt builders for the Sovereign OS orchestrator.
+//! System prompt builders for the Sovereign GE orchestrator.
 //!
 //! Replaces bare constant strings with rich, context-aware prompt builders
-//! that include the Sovereign OS identity, few-shot examples, UX principles,
+//! that include the Sovereign GE identity, few-shot examples, UX principles,
 //! workspace context, and tool definitions.
 
 use super::context::WorkspaceContext;
@@ -10,8 +10,8 @@ use crate::tools::format_tool_descriptions;
 
 /// Core identity shared across all prompts.
 const SOVEREIGN_IDENTITY: &str = "\
-You are the AI assistant for Sovereign OS, a local-first personal operating system. \
-Sovereign OS organizes the user's documents, threads (projects), contacts, and \
+You are the AI assistant for Sovereign GE, a local-first personal graphic environment. \
+Sovereign GE organizes the user's documents, threads (projects), contacts, and \
 conversations on their own device. Everything is private and local — no cloud, no \
 external servers. You help the user navigate, search, organize, and understand \
 their workspace.";

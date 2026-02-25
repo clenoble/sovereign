@@ -1,4 +1,4 @@
-# Sovereign OS — Appendix C: Ethics, Misuse Analysis & Design Constraints
+# Sovereign GE — Appendix C: Ethics, Misuse Analysis & Design Constraints
 
 **Version:** 1.0  
 **Date:** February 22, 2026  
@@ -9,7 +9,7 @@
 
 ## Purpose
 
-This document examines the ethical implications of Sovereign OS, assesses whether the system materially increases criminal capability beyond existing tools, and establishes binding design constraints that narrow the misuse surface without compromising the sovereignty thesis.
+This document examines the ethical implications of Sovereign GE, assesses whether the system materially increases criminal capability beyond existing tools, and establishes binding design constraints that narrow the misuse surface without compromising the sovereignty thesis.
 
 ---
 
@@ -17,9 +17,9 @@ This document examines the ethical implications of Sovereign OS, assesses whethe
 
 ### 1.1 Existing Tool Equivalence
 
-Every core capability in Sovereign OS has a standalone equivalent already available:
+Every core capability in Sovereign GE has a standalone equivalent already available:
 
-| Sovereign OS Feature | Existing Equivalent | Availability |
+| Sovereign GE Feature | Existing Equivalent | Availability |
 |---|---|---|
 | Identity Firewall (synthetic identities) | Firefox containers, SimpleLogin, temp-mail services, VPNs | Free, widely used |
 | Encrypted P2P storage | Syncthing, IPFS, Resilio Sync | Free, open-source |
@@ -31,17 +31,17 @@ Every core capability in Sovereign OS has a standalone equivalent already availa
 
 ### 1.2 The Bundling Effect
 
-The legitimate concern is not capability but **accessibility**. Sovereign OS packages strong OPSEC into a turnkey system, lowering the skill floor.
+The legitimate concern is not capability but **accessibility**. Sovereign GE packages strong OPSEC into a turnkey system, lowering the skill floor.
 
 **Precedent analysis:**
 
 - **Signal (2014):** Bundled end-to-end encryption into a consumer messenger. Enabled criminal communication, but society broadly accepted the tradeoff because the benefit to ordinary users (journalists, activists, citizens) vastly outweighed the marginal increase in criminal utility. Criminals already had PGP.
-- **Tor (2002):** Bundled network anonymity into a browser. Higher misuse surface than Signal because it enabled actions (dark web marketplaces) that were previously impractical. Sovereign OS does **not** include network anonymity (see Section 3.2).
+- **Tor (2002):** Bundled network anonymity into a browser. Higher misuse surface than Signal because it enabled actions (dark web marketplaces) that were previously impractical. Sovereign GE does **not** include network anonymity (see Section 3.2).
 - **Full-disk encryption (2003–present):** LUKS, BitLocker, and FileVault are shipped by default on every major OS. Law enforcement adapted.
 
-**Sovereign OS falls closer to the Signal precedent than the Tor precedent.** It strengthens data sovereignty and privacy for ordinary users while offering criminals only marginal improvement over existing tooling.
+**Sovereign GE falls closer to the Signal precedent than the Tor precedent.** It strengthens data sovereignty and privacy for ordinary users while offering criminals only marginal improvement over existing tooling.
 
-### 1.3 What Sovereign OS Does NOT Provide
+### 1.3 What Sovereign GE Does NOT Provide
 
 The system does not address the operationally hard parts of criminal activity:
 
@@ -76,15 +76,15 @@ The system does not address the operationally hard parts of criminal activity:
 
 **Dual-use tension:** Uncensored local models could generate harmful content without cloud-side safety filters.
 
-**Risk:** Low. The shipped models (1–8B parameters) are insufficient for sophisticated misuse. Users who want uncensored models can already run them via Ollama on any Linux machine. Sovereign OS adds no new capability here.
+**Risk:** Low. The shipped models (1–8B parameters) are insufficient for sophisticated misuse. Users who want uncensored models can already run them via Ollama on any Linux machine. Sovereign GE adds no new capability here.
 
-**Design position:** Sovereign OS ships safety-filtered default models. Users can install alternative models — this is consistent with the sovereignty principle and no different from the current state of local inference tooling.
+**Design position:** Sovereign GE ships safety-filtered default models. Users can install alternative models — this is consistent with the sovereignty principle and no different from the current state of local inference tooling.
 
 ### 2.4 Encrypted Storage
 
 **Dual-use tension:** Strong encryption protects legitimate users and criminals equally.
 
-**Risk:** This is the oldest debate in digital privacy. Sovereign OS does not advance the state of the art in encryption; it uses standard AES-256 and established key derivation functions.
+**Risk:** This is the oldest debate in digital privacy. Sovereign GE does not advance the state of the art in encryption; it uses standard AES-256 and established key derivation functions.
 
 **Design position:** Full-disk and per-document encryption are non-negotiable for a sovereignty-focused system. This is consistent with the position taken by every major OS vendor (Apple, Microsoft, Google) who now ship encryption by default.
 
@@ -131,18 +131,18 @@ The following constraints are architectural decisions that narrow the misuse sur
 
 ### 3.2 No Built-In Network Anonymity
 
-**Constraint:** Sovereign OS does not include Tor, VPN, onion routing, or any network-level anonymity tool as a bundled feature.
+**Constraint:** Sovereign GE does not include Tor, VPN, onion routing, or any network-level anonymity tool as a bundled feature.
 
-**Rationale:** Network anonymity is the single feature that most meaningfully enables activities that would otherwise be impractical (dark web access, untraceable communication). Sovereign OS is about **data sovereignty** — control over your own data, on your own devices. It is not about **network anonymity** — hiding your network identity from service providers and law enforcement.
+**Rationale:** Network anonymity is the single feature that most meaningfully enables activities that would otherwise be impractical (dark web access, untraceable communication). Sovereign GE is about **data sovereignty** — control over your own data, on your own devices. It is not about **network anonymity** — hiding your network identity from service providers and law enforcement.
 
 **Implementation rules:**
 
 1. No Tor integration in the default install.
 2. No VPN client shipped or configured by default.
 3. No proxy configuration that routes traffic through anonymizing relays.
-4. Users who want network anonymity can install Tor, a VPN, or any other tool themselves — Sovereign OS does not prevent this, but it does not facilitate it either.
+4. Users who want network anonymity can install Tor, a VPN, or any other tool themselves — Sovereign GE does not prevent this, but it does not facilitate it either.
 
-**This is an intentional ethical design choice.** It meaningfully narrows the misuse surface by ensuring that Sovereign OS protects data-at-rest and data-in-use, but does not obscure the user's network presence. This distinction separates Sovereign OS from tools like Tails or Whonix, which are designed for network anonymity.
+**This is an intentional ethical design choice.** It meaningfully narrows the misuse surface by ensuring that Sovereign GE protects data-at-rest and data-in-use, but does not obscure the user's network presence. This distinction separates Sovereign GE from tools like Tails or Whonix, which are designed for network anonymity.
 
 ### 3.3 Guardian Protocol Transparency
 
@@ -160,7 +160,7 @@ The following constraints are architectural decisions that narrow the misuse sur
 
 5. **No dead man's switch.** The protocol does not support time-delayed shard release, conditional release, or any trigger-based mechanism. Shard release requires active, biometric-authenticated Guardian approval.
 
-6. **Guardian software is minimal.** The Guardian application (for non-Sovereign OS users) is a single-purpose tool: store shard, approve release, delete shard. No additional features.
+6. **Guardian software is minimal.** The Guardian application (for non-Sovereign GE users) is a single-purpose tool: store shard, approve release, delete shard. No additional features.
 
 **Rationale:** By keeping the Guardian protocol architecturally minimal, it cannot be repurposed as a covert communication channel, distributed storage system, or coordination tool. It does exactly one thing: enable key recovery.
 
@@ -174,7 +174,7 @@ The following constraints are architectural decisions that narrow the misuse sur
 2. Hash chain: each log entry includes the hash of the previous entry (lightweight blockchain-style integrity).
 3. The user can read, export, and delete their audit log — but they cannot selectively edit entries. Deletion is all-or-nothing.
 
-**Rationale:** The audit log serves two purposes — user transparency (you can see everything the system did) and forensic integrity (if a device is seized, the log provides a tamper-evident record). This is a design choice that makes Sovereign OS *worse* for criminals than ephemeral tools.
+**Rationale:** The audit log serves two purposes — user transparency (you can see everything the system did) and forensic integrity (if a device is seized, the log provides a tamper-evident record). This is a design choice that makes Sovereign GE *worse* for criminals than ephemeral tools.
 
 ---
 
@@ -182,7 +182,7 @@ The following constraints are architectural decisions that narrow the misuse sur
 
 ### 4.1 Privacy as a Right, Not a Feature
 
-Sovereign OS treats privacy as a fundamental right, consistent with:
+Sovereign GE treats privacy as a fundamental right, consistent with:
 - Article 12 of the Universal Declaration of Human Rights
 - Article 8 of the European Convention on Human Rights
 - The Swiss Federal Act on Data Protection (FADP/nDSG)
@@ -192,7 +192,7 @@ The system does not require users to justify their desire for privacy. Privacy i
 
 ### 4.2 Transparency Over Obscurity
 
-Sovereign OS is fully open-source. There are no hidden data flows, no telemetry, no analytics. The system's behavior is auditable by anyone. This transparency is itself a misuse mitigation — the community can identify and flag any feature that expands the misuse surface.
+Sovereign GE is fully open-source. There are no hidden data flows, no telemetry, no analytics. The system's behavior is auditable by anyone. This transparency is itself a misuse mitigation — the community can identify and flag any feature that expands the misuse surface.
 
 ### 4.3 The Privacy Tradeoff — Stated Honestly
 
@@ -207,7 +207,7 @@ Strong privacy tools also protect:
 - Tax evaders hiding assets
 - Bad actors avoiding accountability
 
-**This tradeoff cannot be resolved at the technical layer** without introducing the surveillance that the system is designed to prevent. Sovereign OS accepts this tradeoff explicitly — as Signal, HTTPS, and full-disk encryption have before it — on the basis that the benefit to the many outweighs the marginal gain to the few.
+**This tradeoff cannot be resolved at the technical layer** without introducing the surveillance that the system is designed to prevent. Sovereign GE accepts this tradeoff explicitly — as Signal, HTTPS, and full-disk encryption have before it — on the basis that the benefit to the many outweighs the marginal gain to the few.
 
 The design constraints in Section 3 narrow the misuse surface as far as possible without compromising the sovereignty thesis. They represent the ethical boundary: privacy without anonymity, sovereignty without fabrication, resilience without coordination.
 
@@ -217,7 +217,7 @@ The design constraints in Section 3 narrow the misuse surface as far as possible
 
 ### 5.1 Core Position
 
-Sovereign OS is **distributed software**, not a hosted service. The project:
+Sovereign GE is **distributed software**, not a hosted service. The project:
 
 - Ships source code under AGPL-3.0 via public repositories (GitHub)
 - Does not operate servers, hold user data, or provide cloud infrastructure
