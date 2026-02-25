@@ -301,7 +301,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 .chat-toggle[aria-expanded="true"] .chat-icon-open { display: none; }
 .chat-toggle[aria-expanded="false"] .chat-icon-close { display: none; }
 
-.chatbox { position: fixed; bottom: 92px; right: 24px; z-index: 200; width: 400px; max-width: calc(100vw - 48px); height: 520px; max-height: calc(100vh - 140px); background: var(--c-chat-bg); border: 1px solid var(--c-border); border-radius: var(--radius-lg); display: flex; flex-direction: column; box-shadow: 0 8px 40px rgba(0,0,0,0.4); transform: translateY(10px); opacity: 0; pointer-events: none; transition: transform 0.2s ease, opacity 0.2s ease; }
+.chatbox { position: fixed; bottom: 92px; right: 24px; z-index: 200; width: 400px; max-width: calc(100vw - 48px); height: 80vh; max-height: calc(100vh - 100px); background: var(--c-chat-bg); border: 1px solid var(--c-border); border-radius: var(--radius-lg); display: flex; flex-direction: column; box-shadow: 0 8px 40px rgba(0,0,0,0.4); transform: translateY(10px); opacity: 0; pointer-events: none; transition: transform 0.2s ease, opacity 0.2s ease; }
 .chatbox.open { transform: translateY(0); opacity: 1; pointer-events: auto; }
 
 .chatbox-header { padding: 16px 20px; border-bottom: 1px solid var(--c-border-subtle); display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
@@ -4847,13 +4847,43 @@ const chatHistory = []; // {role: 'user'|'assistant', content: string}
 const DEFAULT_SUGGESTIONS = [
   "What is Sovereign OS?",
   "How does the AI orchestrator work?",
-  "What encryption does Sovereign use?",
-  "How are the Rust crates organized?"
 ];
+
+// --- Page link mapping (source names -> hash routes) ---
+const PAGE_LINKS = {
+  'action gravity': '#/action-gravity',
+  'ai orchestrator': '#/ai-orchestrator',
+  'communications': '#/communications',
+  'content skills': '#/content-skills',
+  'encryption': '#/encryption',
+  'ethics': '#/ethics',
+  'prompt injection': '#/prompt-injection',
+  'social recovery': '#/social-recovery',
+  'spatial canvas': '#/spatial-canvas',
+};
+
+function linkifySources(html) {
+  // Match patterns like (see: Page Name) or (see Page Name)
+  html = html.replace(/\(see:?\s*([^)]+)\)/gi, (match, name) => {
+    const key = name.trim().toLowerCase();
+    const route = PAGE_LINKS[key];
+    if (route) return `(<a href="${route}" class="chat-nav-link">see: ${name.trim()}</a>)`;
+    return match;
+  });
+  // Also match standalone page names as links when they appear in bold
+  for (const [name, route] of Object.entries(PAGE_LINKS)) {
+    const titleCase = name.replace(/\b\w/g, c => c.toUpperCase());
+    html = html.replace(
+      new RegExp(`<strong>(${titleCase})</strong>`, 'g'),
+      `<strong><a href="${route}" class="chat-nav-link">$1</a></strong>`
+    );
+  }
+  return html;
+}
 
 // --- Markdown-lite rendering ---
 function renderMarkdown(text) {
-  return text
+  let html = text
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -4862,6 +4892,7 @@ function renderMarkdown(text) {
     .replace(/<\/ul>\s*<ul>/g, '')
     .replace(/\n{2,}/g, '<br><br>')
     .replace(/\n/g, '<br>');
+  return linkifySources(html);
 }
 
 // --- RAG API call ---
@@ -4921,7 +4952,7 @@ function toggleChat() {
   if (isOpen) {
     chatInput.focus();
     if (chatMessages.children.length === 0) {
-      addBotMessage("Welcome! I'm the Sovereign AI guide. Ask me anything about Sovereign — its architecture, code, encryption, AI orchestrator, and more. Powered by RAG over the project docs and source code.");
+      addBotMessage("Welcome! I'm the Sovereign AI guide. Ask me anything about Sovereign — its architecture, code, encryption, AI orchestrator, and more.\n\nPowered by RAG + Mistral AI on Hugging Face. Coded by Claude.ai");
       renderSuggestions(DEFAULT_SUGGESTIONS);
     }
   }
