@@ -1,4 +1,4 @@
-# Sovereign OS â€” Consolidated Design Decisions
+# Sovereign GE â€” Consolidated Design Decisions
 
 ## Canvas Model
 - **Metaphor**: Infinite canvas viewed through a viewport (like a microfiche reader / Miro)

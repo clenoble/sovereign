@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "sovereign", about = "Sovereign OS — your data, your rules")]
+#[command(name = "sovereign", about = "Sovereign GE — your data, your rules")]
 pub struct Cli {
     /// Path to config file
     #[arg(long)]

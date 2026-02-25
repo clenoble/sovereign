@@ -1,4 +1,4 @@
-//! Security type system for Sovereign OS.
+//! Security type system for Sovereign GE.
 //!
 //! Defines action levels, data/control plane separation,
 //! and the authorization primitives that every other phase depends on.

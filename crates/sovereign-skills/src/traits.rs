@@ -26,7 +26,7 @@ pub enum SkillOutput {
     StructuredData { kind: String, json: String },
 }
 
-/// Trait for core skills that are compiled into the Sovereign OS binary.
+/// Trait for core skills that are compiled into the Sovereign GE binary.
 ///
 /// Core skills use direct Rust trait calls (no IPC).
 /// Community/sideloaded skills will use IPC instead.

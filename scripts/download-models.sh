@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Download GGUF models for Sovereign OS.
+# Download GGUF models for Sovereign GE.
 #
 # Usage:
 #   ./scripts/download-models.sh          # download all models
@@ -54,7 +54,7 @@ mkdir -p "$MODEL_DIR"
 
 target="${1:-all}"
 
-echo "Sovereign OS — Model Downloader"
+echo "Sovereign GE — Model Downloader"
 echo "================================"
 echo "Model directory: $MODEL_DIR"
 echo ""

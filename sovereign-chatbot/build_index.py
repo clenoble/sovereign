@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the RAG embedding index for the Sovereign OS chatbot.
+"""Build the RAG embedding index for the Sovereign GE chatbot.
 
 Indexes three source types:
   A) Website documentation HTML pages (from gh-pages branch)
@@ -92,7 +92,7 @@ DESIGN_DOCS = [
     ("CLAUDE.md", "Project Architecture"),
     ("doc/spec/sovereign_os_ux_principles.md", "UX Principles"),
     ("doc/design/design_decisions.md", "Design Decisions"),
-    ("doc/spec/sovereign_os_specification.md", "OS Specification"),
+    ("doc/spec/sovereign_os_specification.md", "GE Specification"),
     ("doc/legal/sovereign_os_ethics.md", "Ethics Charter"),
 ]
 
@@ -542,7 +542,7 @@ def embed_chunks(chunks: list[dict], api_key: str) -> np.ndarray:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build RAG index for Sovereign OS chatbot")
+    parser = argparse.ArgumentParser(description="Build RAG index for Sovereign GE chatbot")
     parser.add_argument("--html-dir", help="Local directory with gh-pages HTML files")
     parser.add_argument("--fetch-html", action="store_true", help="Fetch HTML from live GitHub Pages site")
     parser.add_argument("--code-dir", default=".", help="Root of the project (main branch checkout)")

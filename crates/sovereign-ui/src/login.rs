@@ -48,7 +48,7 @@ impl LoginState {
             }
         }
 
-        let title = text("Sovereign OS")
+        let title = text("Sovereign GE")
             .size(28)
             .color(theme::text_primary());
 

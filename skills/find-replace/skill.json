@@ -2,7 +2,7 @@
     "name": "Find & Replace",
     "version": "0.1.0",
     "description": "Find and replace text within documents",
-    "author": "Sovereign OS",
+    "author": "Sovereign GE",
     "skill_type": "core",
     "capabilities": ["find_replace"],
     "file_types": ["md", "txt"]

@@ -307,7 +307,7 @@ impl SovereignApp {
     }
 
     pub fn title(&self) -> String {
-        "Sovereign OS".to_string()
+        "Sovereign GE".to_string()
     }
 
     pub fn theme(&self) -> Theme {

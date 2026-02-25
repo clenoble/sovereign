@@ -83,7 +83,7 @@ const NON_LATIN_POOL: &[char] = &[
 ///
 /// - 4 Latin/numeric chars from [`LATIN_POOL`] (30^4 = 810,000 combos)
 /// - 1 non-Latin char from [`NON_LATIN_POOL`] (20 chars)
-/// - Total: ~16.2M combinations — no collision check needed for a personal OS.
+/// - Total: ~16.2M combinations — no collision check needed for a personal GE.
 pub fn generate_designation() -> String {
     let mut rng = rand::rng();
     let latin: String = (0..4)

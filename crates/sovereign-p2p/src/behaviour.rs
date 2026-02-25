@@ -2,7 +2,7 @@ use libp2p::swarm::NetworkBehaviour;
 
 use crate::protocol::{SovereignRequest, SovereignResponse};
 
-/// Composite network behaviour for Sovereign OS.
+/// Composite network behaviour for Sovereign GE.
 #[derive(NetworkBehaviour)]
 pub struct SovereignBehaviour {
     pub mdns: libp2p::mdns::tokio::Behaviour,

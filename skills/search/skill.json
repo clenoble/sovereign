@@ -2,7 +2,7 @@
     "name": "Search Documents",
     "version": "0.1.0",
     "description": "Search across all documents by title and content",
-    "author": "Sovereign OS",
+    "author": "Sovereign GE",
     "skill_type": "core",
     "capabilities": ["search"],
     "file_types": []

@@ -14,9 +14,9 @@ pub fn init_tracing() {
 }
 
 pub fn log_startup() {
-    tracing::info!("Sovereign OS starting up");
+    tracing::info!("Sovereign GE starting up");
 }
 
 pub fn log_shutdown() {
-    tracing::info!("Sovereign OS shutting down");
+    tracing::info!("Sovereign GE shutting down");
 }

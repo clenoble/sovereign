@@ -60,7 +60,7 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
     let owned_docs: Vec<(&str, &str, usize)> = vec![
         ("Research Notes", "# Research Notes\n\nExploring Rust + GTK4 for desktop OS development.\n\n## Key Findings\n- GTK4 bindings are solid\n- Skia provides GPU rendering", 0),
         ("Project Plan", "# Project Plan\n\n## Phase 1: Foundation\n- Data layer\n- UI shell\n\n## Phase 2: Canvas\n- Spatial layout\n- GPU rendering", 1),
-        ("Architecture Diagram", "# Architecture\n\nComponent overview for Sovereign OS.", 1),
+        ("Architecture Diagram", "# Architecture\n\nComponent overview for Sovereign GE.", 1),
         ("API Specification", "# API Spec\n\n## Endpoints\n- Document CRUD\n- Thread management\n- Relationship graph", 1),
         ("Budget Overview", "# Budget 2026\n\n| Item | Cost |\n|------|------|\n| Infrastructure | $500 |\n| Tools | $200 |", 3),
         ("Meeting Notes Q1", "# Meeting Notes — Q1 2026\n\n## Jan 15\n- Discussed architecture\n- Agreed on Rust + GTK4 stack", 3),
@@ -370,7 +370,7 @@ pub fn seed_profile_and_history(profile_dir: &Path) -> Result<()> {
             r#"{"ts":"2026-02-19T10:00:00Z","type":"user_input","mode":"text","content":"find architecture","intent":"search"}"#,
             r#"{"ts":"2026-02-19T10:00:01Z","type":"orchestrator_action","action":"search","details":"found 1 match: Architecture Diagram"}"#,
             r#"{"ts":"2026-02-19T11:15:00Z","type":"user_input","mode":"chat","content":"summarize the design document","intent":"chat"}"#,
-            r#"{"ts":"2026-02-19T11:15:04Z","type":"chat_response","content":"From your Design Document (owned): it defines the visual system for Sovereign OS — dark background (#0e0e10), accent blue (#5a9fd4), with system font at 13-16px. It references the Architecture Diagram for component structure."}"#,
+            r#"{"ts":"2026-02-19T11:15:04Z","type":"chat_response","content":"From your Design Document (owned): it defines the visual system for Sovereign GE — dark background (#0e0e10), accent blue (#5a9fd4), with system font at 13-16px. It references the Architecture Diagram for component structure."}"#,
             r#"{"ts":"2026-02-19T14:00:00Z","type":"user_input","mode":"chat","content":"who are my contacts?","intent":"chat"}"#,
             r#"{"ts":"2026-02-19T14:00:03Z","type":"chat_response","content":"You have 4 contacts: Alice Chen (email, Signal), Bob Martinez (email, WhatsApp), Carol Nguyen (email, SMS), and David Park (Signal)."}"#,
             r#"{"ts":"2026-02-19T15:00:00Z","type":"user_input","mode":"text","content":"create thread Prototyping","intent":"create_thread"}"#,

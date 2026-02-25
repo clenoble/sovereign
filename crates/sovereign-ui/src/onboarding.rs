@@ -279,11 +279,11 @@ impl OnboardingState {
 
     fn view_welcome(&self) -> Element<'_, Message> {
         column![
-            text("Welcome to Sovereign OS")
+            text("Welcome to Sovereign GE")
                 .size(24)
                 .color(theme::text_primary()),
             Space::new().height(12),
-            text("Your personal operating system for documents, knowledge, and communication.")
+            text("Your personal graphic environment for documents, knowledge, and communication.")
                 .size(14)
                 .color(theme::text_dim())
                 .wrapping(text::Wrapping::Word),
@@ -462,7 +462,7 @@ impl OnboardingState {
                 .size(20)
                 .color(theme::text_primary()),
             Space::new().height(12),
-            text("Sovereign OS can create sample documents, threads, contacts, and conversations so you can explore the interface right away.")
+            text("Sovereign GE can create sample documents, threads, contacts, and conversations so you can explore the interface right away.")
                 .size(14)
                 .color(theme::text_dim())
                 .wrapping(text::Wrapping::Word),
