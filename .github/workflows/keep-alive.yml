@@ -14,7 +14,7 @@ jobs:
         run: |
           echo "Pinging Sovereign Guide Space..."
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            "https://clenoble-sovereign-guide.hf.space/call/health" \
+            "https://clenoble-sovereign-guide.hf.space/gradio_api/call/health" \
             -X POST -H "Content-Type: application/json" \
             -d '{"data": []}' \
             --max-time 120)
@@ -24,7 +24,7 @@ jobs:
             echo "Space may be waking up, waiting 90 seconds..."
             sleep 90
             HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-              "https://clenoble-sovereign-guide.hf.space/call/health" \
+              "https://clenoble-sovereign-guide.hf.space/gradio_api/call/health" \
               -X POST -H "Content-Type: application/json" \
               -d '{"data": []}' \
               --max-time 120)
