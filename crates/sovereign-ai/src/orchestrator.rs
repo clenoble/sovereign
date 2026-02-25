@@ -308,8 +308,8 @@ impl Orchestrator {
 
     /// Maximum iterations for the agent loop per chat message.
     const MAX_AGENT_ITERATIONS: usize = 5;
-    /// Maximum character budget for history in the prompt (~1000 tokens * 3.5 chars/token).
-    const MAX_HISTORY_CHARS: usize = 3500;
+    /// Maximum token budget for history (~1000 tokens).
+    const MAX_HISTORY_TOKENS: usize = 1000;
 
     /// Handle a chat message: load context, run agent loop with tool calling.
     pub async fn handle_chat(&self, message: &str) -> Result<()> {
@@ -350,12 +350,14 @@ impl Orchestrator {
         };
 
         // 5. Build system prompt with context and UX principles
+        let formatter = self.classifier.lock().await.formatter.clone();
         let system_prompt = crate::llm::prompt::build_chat_system_prompt(
             Some(&workspace_ctx),
             &verbosity,
             user_name.as_deref(),
             designation.as_deref(),
             nickname.as_deref(),
+            Some(&*formatter),
         );
 
         // 6. Append current user message to turns
@@ -378,11 +380,13 @@ impl Orchestrator {
                 break;
             }
 
-            // Build prompt from full history
+            // Build prompt from full history (budget in chars = tokens * chars_per_token)
+            let max_chars = (Self::MAX_HISTORY_TOKENS as f64 * formatter.chars_per_token()) as usize;
             let full_prompt = crate::llm::context::build_prompt_from_full_history(
                 &system_prompt,
                 &turns,
-                Self::MAX_HISTORY_CHARS,
+                max_chars,
+                Some(&*formatter),
             );
 
             // Generate
@@ -407,8 +411,8 @@ impl Orchestrator {
             };
 
             // Check for tool calls
-            if crate::tools::has_tool_call(&response) {
-                let calls = crate::tools::parse_tool_calls(&response);
+            if crate::tools::has_tool_call(&response, Some(&*formatter)) {
+                let calls = crate::tools::parse_tool_calls(&response, Some(&*formatter));
                 if let Some(call) = calls.first() {
                     tracing::info!("Tool call: {} (iteration {})", call.name, iterations);
 
@@ -507,7 +511,7 @@ impl Orchestrator {
             }
 
             // No tool call — this is the final response
-            let text_response = crate::tools::extract_text_response(&response);
+            let text_response = crate::tools::extract_text_response(&response, Some(&*formatter));
             tracing::info!(
                 "Chat response: {} chars, {} iterations",
                 text_response.len(),
@@ -722,7 +726,9 @@ impl Orchestrator {
                     let docs = self.db.search_documents_by_title(target).await?;
                     if let Some(doc) = docs.first() {
                         let content = &doc.content;
-                        let prompt = crate::llm::prompt::qwen_chat_prompt(
+                        let fmt = self.classifier.lock().await.formatter.clone();
+                        let prompt = crate::llm::prompt::format_single_turn(
+                            &*fmt,
                             "You are a concise summarizer. Summarize the following document in 2-3 sentences.",
                             content,
                         );
@@ -783,13 +789,22 @@ impl Orchestrator {
                         });
                     } else {
                         let path_str = full_path.to_string_lossy().to_string();
-                        match self
-                            .classifier.lock().await
+                        let mut classifier = self.classifier.lock().await;
+                        match classifier
                             .swap_router(&path_str, self.n_gpu_layers)
                             .await
                         {
                             Ok(()) => {
-                                tracing::info!("Model swapped to: {model_name}");
+                                // Auto-detect prompt format from the model filename.
+                                let detected = crate::llm::format::detect_format_from_filename(&model_name);
+                                classifier.swap_formatter(detected);
+                                let format_name = match detected {
+                                    crate::llm::format::PromptFormat::ChatML => "chatml",
+                                    crate::llm::format::PromptFormat::Mistral => "mistral",
+                                    crate::llm::format::PromptFormat::Llama3 => "llama3",
+                                };
+
+                                tracing::info!("Model swapped to: {model_name} (format: {format_name})");
                                 self.log_action("swap_model", &model_name);
                                 let _ = self.event_tx.send(OrchestratorEvent::SkillResult {
                                     skill: "model_manager".into(),
@@ -797,6 +812,7 @@ impl Orchestrator {
                                     kind: "model_swapped".into(),
                                     data: serde_json::json!({
                                         "model": model_name,
+                                        "prompt_format": format_name,
                                     })
                                     .to_string(),
                                 });

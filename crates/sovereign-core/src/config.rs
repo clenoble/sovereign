@@ -61,6 +61,8 @@ pub struct AiConfig {
     pub reasoning_model: String,
     pub n_gpu_layers: i32,
     pub n_ctx: u32,
+    /// Prompt format: "chatml" (default), "mistral", "llama3".
+    pub prompt_format: String,
 }
 
 impl Default for AiConfig {
@@ -71,6 +73,7 @@ impl Default for AiConfig {
             reasoning_model: String::new(),
             n_gpu_layers: 99,
             n_ctx: 4096,
+            prompt_format: "chatml".into(),
         }
     }
 }

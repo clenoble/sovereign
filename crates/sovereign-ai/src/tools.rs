@@ -7,6 +7,8 @@
 use serde::Deserialize;
 use sovereign_db::GraphDB;
 
+use crate::llm::format::PromptFormatter;
+
 /// Definition of a tool the model can call.
 pub struct ToolDef {
     pub name: &'static str,
@@ -144,7 +146,8 @@ pub const TOOLS: &[ToolDef] = &[
 ];
 
 /// Format tool definitions as a text block for the system prompt.
-pub fn format_tool_descriptions() -> String {
+/// Uses the formatter's tool-call instruction format.
+pub fn format_tool_descriptions(formatter: &dyn PromptFormatter) -> String {
     let mut out = String::from("You have access to these tools:\n");
     for tool in TOOLS {
         out.push_str(&format!(
@@ -152,20 +155,16 @@ pub fn format_tool_descriptions() -> String {
             tool.name, tool.description, tool.parameters
         ));
     }
-    out.push_str(
-        "\nTo use a tool, you MUST output exactly this format (no markdown, no code fences):\n\
-         <tool_call>\n\
-         {\"name\": \"tool_name\", \"arguments\": {\"key\": \"value\"}}\n\
-         </tool_call>\n\n\
-         You can call one tool per turn. After seeing the result, either call another tool or give your final answer.\n\
-         For create/rename/move actions, ALWAYS use the tool — never just describe the action in text.\n",
-    );
+    out.push('\n');
+    out.push_str(&formatter.tool_call_format_instruction());
     out
 }
 
 /// Check if model output contains a tool call.
-pub fn has_tool_call(output: &str) -> bool {
-    output.contains("<tool_call>") || has_bare_tool_json(output)
+/// Uses the formatter's open tag; falls back to bare JSON detection.
+pub fn has_tool_call(output: &str, formatter: Option<&dyn PromptFormatter>) -> bool {
+    let open_tag = formatter.map_or("<tool_call>", |f| f.tool_call_open_tag());
+    output.contains(open_tag) || has_bare_tool_json(output)
 }
 
 /// Check if the output contains bare tool-call JSON without `<tool_call>` tags.
@@ -196,21 +195,23 @@ fn strip_code_fences(output: &str) -> String {
 }
 
 /// Parse tool calls from model output.
-/// Looks for `<tool_call>...</tool_call>` delimiters containing JSON,
-/// with fallback to bare JSON or code-fenced JSON.
-pub fn parse_tool_calls(output: &str) -> Vec<ToolCall> {
+/// Uses the formatter's open/close tags, with fallback to bare JSON.
+pub fn parse_tool_calls(output: &str, formatter: Option<&dyn PromptFormatter>) -> Vec<ToolCall> {
+    let open_tag = formatter.map_or("<tool_call>", |f| f.tool_call_open_tag());
+    let close_tag = formatter.map_or("</tool_call>", |f| f.tool_call_close_tag());
+
     let mut calls = Vec::new();
     let mut remaining = output;
 
-    // Primary: look for <tool_call>...</tool_call> tags
-    while let Some(start) = remaining.find("<tool_call>") {
-        let after_tag = &remaining[start + 11..];
-        if let Some(end) = after_tag.find("</tool_call>") {
+    // Primary: look for open_tag...close_tag delimiters containing JSON
+    while let Some(start) = remaining.find(open_tag) {
+        let after_tag = &remaining[start + open_tag.len()..];
+        if let Some(end) = after_tag.find(close_tag) {
             let json_str = after_tag[..end].trim();
             if let Ok(call) = serde_json::from_str::<ToolCall>(json_str) {
                 calls.push(call);
             }
-            remaining = &after_tag[end + 12..];
+            remaining = &after_tag[end + close_tag.len()..];
         } else {
             break;
         }
@@ -230,12 +231,15 @@ pub fn parse_tool_calls(output: &str) -> Vec<ToolCall> {
 }
 
 /// Extract the text response (non-tool-call portion) from model output.
-pub fn extract_text_response(output: &str) -> String {
+pub fn extract_text_response(output: &str, formatter: Option<&dyn PromptFormatter>) -> String {
+    let open_tag = formatter.map_or("<tool_call>", |f| f.tool_call_open_tag());
+    let close_tag = formatter.map_or("</tool_call>", |f| f.tool_call_close_tag());
+
     let mut text = output.to_string();
-    // Remove all <tool_call>...</tool_call> blocks
-    while let Some(start) = text.find("<tool_call>") {
-        if let Some(end_offset) = text[start..].find("</tool_call>") {
-            text.replace_range(start..start + end_offset + 12, "");
+    // Remove all open_tag...close_tag blocks
+    while let Some(start) = text.find(open_tag) {
+        if let Some(end_offset) = text[start..].find(close_tag) {
+            text.replace_range(start..start + end_offset + close_tag.len(), "");
         } else {
             break;
         }
@@ -653,7 +657,7 @@ mod tests {
 <tool_call>
 {"name": "search_documents", "arguments": {"query": "meeting notes"}}
 </tool_call>"#;
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "search_documents");
         assert_eq!(
@@ -665,50 +669,50 @@ mod tests {
     #[test]
     fn parse_tool_calls_empty() {
         let output = "Hello! I can help with that.";
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert!(calls.is_empty());
     }
 
     #[test]
     fn parse_tool_calls_malformed_json() {
         let output = "<tool_call>\n{not valid json}\n</tool_call>";
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert!(calls.is_empty());
     }
 
     #[test]
     fn parse_tool_calls_no_closing_tag() {
         let output = "<tool_call>\n{\"name\": \"test\", \"arguments\": {}}";
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert!(calls.is_empty());
     }
 
     #[test]
     fn has_tool_call_true() {
-        assert!(has_tool_call("some text <tool_call> stuff </tool_call>"));
+        assert!(has_tool_call("some text <tool_call> stuff </tool_call>", None));
     }
 
     #[test]
     fn has_tool_call_false() {
-        assert!(!has_tool_call("just a normal response"));
+        assert!(!has_tool_call("just a normal response", None));
     }
 
     #[test]
     fn has_tool_call_bare_json() {
         let output = r#"{"name": "create_document", "arguments": {"title": "Test"}}"#;
-        assert!(has_tool_call(output));
+        assert!(has_tool_call(output, None));
     }
 
     #[test]
     fn has_tool_call_code_fenced() {
         let output = "```json\n{\"name\": \"create_document\", \"arguments\": {\"title\": \"Test\"}}\n```";
-        assert!(has_tool_call(output));
+        assert!(has_tool_call(output, None));
     }
 
     #[test]
     fn parse_tool_calls_bare_json() {
         let output = r#"{"name": "create_document", "arguments": {"title": "Test"}}"#;
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "create_document");
     }
@@ -716,7 +720,7 @@ mod tests {
     #[test]
     fn parse_tool_calls_code_fenced() {
         let output = "```json\n{\"name\": \"create_thread\", \"arguments\": {\"name\": \"Marketing\"}}\n```";
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "create_thread");
     }
@@ -724,27 +728,28 @@ mod tests {
     #[test]
     fn parse_tool_calls_bare_json_unknown_tool_ignored() {
         let output = r#"{"name": "unknown_tool", "arguments": {}}"#;
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert!(calls.is_empty());
     }
 
     #[test]
     fn extract_text_response_strips_tool_blocks() {
         let output = "Here's what I found:\n<tool_call>\n{\"name\":\"search\",\"arguments\":{}}\n</tool_call>\nDone!";
-        let text = extract_text_response(output);
+        let text = extract_text_response(output, None);
         assert_eq!(text, "Here's what I found:\n\nDone!");
     }
 
     #[test]
     fn extract_text_response_no_tool() {
         let output = "Just a response.";
-        let text = extract_text_response(output);
+        let text = extract_text_response(output, None);
         assert_eq!(text, "Just a response.");
     }
 
     #[test]
     fn format_tool_descriptions_contains_all_tools() {
-        let desc = format_tool_descriptions();
+        let fmt = crate::llm::format::ChatMLFormatter;
+        let desc = format_tool_descriptions(&fmt);
         for tool in TOOLS {
             assert!(desc.contains(tool.name), "Missing tool: {}", tool.name);
         }

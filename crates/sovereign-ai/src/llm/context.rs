@@ -6,6 +6,7 @@
 
 use sovereign_db::GraphDB;
 
+use super::format::PromptFormatter;
 use crate::session_log::SessionEntry;
 
 /// A single turn in conversation history.
@@ -116,17 +117,18 @@ pub fn session_entries_to_chat_turns(entries: &[SessionEntry]) -> Vec<ChatTurn> 
     turns
 }
 
-/// Build a ChatML prompt from a full history where the conversation turns
-/// (including the latest user message) are already in the history vec.
+/// Build a prompt from a full history using the given formatter.
 ///
 /// Truncates history from the oldest turns to fit within `max_history_chars`.
-/// The resulting prompt ends with `<|im_start|>assistant\n` for generation.
+/// If no formatter is provided, defaults to ChatML.
 pub fn build_prompt_from_full_history(
     system: &str,
     history: &[ChatTurn],
     max_history_chars: usize,
+    formatter: Option<&dyn PromptFormatter>,
 ) -> String {
-    let mut prompt = format!("<|im_start|>system\n{system}\n<|im_end|>\n");
+    let default_fmt = super::format::ChatMLFormatter;
+    let fmt: &dyn PromptFormatter = formatter.unwrap_or(&default_fmt);
 
     // Walk backward, accumulating character count to fit budget.
     let mut kept_turns: Vec<&ChatTurn> = Vec::new();
@@ -141,25 +143,15 @@ pub fn build_prompt_from_full_history(
     }
     kept_turns.reverse();
 
-    for turn in kept_turns {
-        let role = match turn.role {
-            ChatRole::User => "user",
-            ChatRole::Assistant => "assistant",
-            ChatRole::Tool => "tool",
-        };
-        prompt.push_str(&format!(
-            "<|im_start|>{role}\n{}\n<|im_end|>\n",
-            turn.content
-        ));
-    }
-
-    prompt.push_str("<|im_start|>assistant\n");
-    prompt
+    let owned_turns: Vec<ChatTurn> = kept_turns.into_iter().cloned().collect();
+    fmt.format_conversation(system, &owned_turns)
 }
 
-/// Rough character-to-token estimate for Qwen2.5 (conservative: 3.5 chars/token).
-pub fn estimate_tokens(text: &str) -> usize {
-    (text.len() as f64 / 3.5).ceil() as usize
+/// Character-to-token estimate using the formatter's chars-per-token ratio.
+/// Defaults to 3.5 (Qwen/ChatML) if no formatter provided.
+pub fn estimate_tokens(text: &str, formatter: Option<&dyn PromptFormatter>) -> usize {
+    let cpt = formatter.map_or(3.5, |f| f.chars_per_token());
+    (text.len() as f64 / cpt).ceil() as usize
 }
 
 #[cfg(test)]
@@ -168,7 +160,7 @@ mod tests {
 
     #[test]
     fn empty_history_produces_valid_chatml() {
-        let prompt = build_prompt_from_full_history("You are helpful.", &[], 6000);
+        let prompt = build_prompt_from_full_history("You are helpful.", &[], 6000, None);
         assert!(prompt.starts_with("<|im_start|>system\n"));
         assert!(prompt.contains("You are helpful."));
         assert!(prompt.ends_with("<|im_start|>assistant\n"));
@@ -190,7 +182,7 @@ mod tests {
                 content: "list threads".into(),
             },
         ];
-        let prompt = build_prompt_from_full_history("sys", &turns, 6000);
+        let prompt = build_prompt_from_full_history("sys", &turns, 6000, None);
         assert!(prompt.contains("<|im_start|>user\nhello\n<|im_end|>"));
         assert!(prompt.contains("<|im_start|>assistant\nhi there\n<|im_end|>"));
         assert!(prompt.contains("<|im_start|>user\nlist threads\n<|im_end|>"));
@@ -205,7 +197,7 @@ mod tests {
             })
             .collect();
         // Very small budget — only a few turns should fit
-        let prompt = build_prompt_from_full_history("sys", &turns, 200);
+        let prompt = build_prompt_from_full_history("sys", &turns, 200, None);
         // Should NOT contain the earliest messages
         assert!(!prompt.contains("message number 0"));
         // Should contain the latest
@@ -297,14 +289,14 @@ mod tests {
                 content: "[search] Found 2 results.".into(),
             },
         ];
-        let prompt = build_prompt_from_full_history("sys", &turns, 6000);
+        let prompt = build_prompt_from_full_history("sys", &turns, 6000, None);
         assert!(prompt.contains("<|im_start|>tool\n[search] Found 2 results.\n<|im_end|>"));
     }
 
     #[test]
     fn estimate_tokens_rough() {
         // "hello world" = 11 chars → ~4 tokens
-        let tokens = estimate_tokens("hello world");
+        let tokens = estimate_tokens("hello world", None);
         assert!(tokens >= 3 && tokens <= 5);
     }
 }
