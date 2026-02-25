@@ -60,6 +60,10 @@ impl CoreSkill for FindReplaceSkill {
     fn actions(&self) -> Vec<(String, String)> {
         vec![("find_replace".into(), "Find & Replace".into())]
     }
+
+    fn file_types(&self) -> Vec<String> {
+        vec!["md".into(), "txt".into()]
+    }
 }
 
 #[cfg(test)]

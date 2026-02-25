@@ -47,6 +47,12 @@ pub trait CoreSkill: Send + Sync {
     /// List available actions this skill provides.
     /// Returns vec of (action_id, display_label).
     fn actions(&self) -> Vec<(String, String)>;
+
+    /// File extensions this skill applies to (e.g. `["md", "txt"]`).
+    /// Empty means universal — the skill works on any document type.
+    fn file_types(&self) -> Vec<String> {
+        vec![]
+    }
 }
 
 #[cfg(test)]

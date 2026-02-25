@@ -88,6 +88,10 @@ impl CoreSkill for VideoSkill {
             ("play".into(), "Play Video".into()),
         ]
     }
+
+    fn file_types(&self) -> Vec<String> {
+        vec!["md".into(), "txt".into()]
+    }
 }
 
 #[cfg(test)]

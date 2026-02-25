@@ -38,6 +38,10 @@ impl CoreSkill for TextEditorSkill {
     fn actions(&self) -> Vec<(String, String)> {
         vec![("save".into(), "Save".into())]
     }
+
+    fn file_types(&self) -> Vec<String> {
+        vec!["md".into(), "txt".into()]
+    }
 }
 
 #[cfg(test)]

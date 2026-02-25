@@ -2,6 +2,46 @@ use anyhow::Result;
 use sovereign_core::interfaces::UserIntent;
 use sovereign_core::security::Plane;
 
+/// Post-classification override: if the *user text* (not the LLM response)
+/// clearly signals a model swap or model list, correct a misclassified intent.
+/// This guards against the 3B router treating model names as search targets.
+pub fn override_model_intent(user_text: &str, intent: &mut UserIntent) {
+    let lower = user_text.to_lowercase();
+
+    // Check for swap_model signals in the original user text
+    if intent.action != "swap_model" && intent.action != "list_models" {
+        let explicit_swap = lower.contains("swap model")
+            || lower.contains("switch model")
+            || lower.contains("change model")
+            || lower.contains("use model");
+        if explicit_swap || contains_model_swap_intent(&lower) {
+            tracing::info!(
+                "Overriding action '{}' → 'swap_model' (user text matches model swap pattern)",
+                intent.action
+            );
+            intent.action = "swap_model".to_string();
+            intent.confidence = 0.9;
+            return;
+        }
+    }
+
+    // Check for list_models signals
+    if intent.action != "list_models" {
+        if lower.contains("list models")
+            || lower.contains("available models")
+            || lower.contains("what models")
+            || lower.contains("show models")
+        {
+            tracing::info!(
+                "Overriding action '{}' → 'list_models' (user text matches list models pattern)",
+                intent.action
+            );
+            intent.action = "list_models".to_string();
+            intent.confidence = 0.9;
+        }
+    }
+}
+
 /// Parse the LLM's JSON response into a UserIntent.
 /// Falls back to keyword extraction if JSON is malformed.
 pub fn parse_intent_response(response: &str) -> Result<UserIntent> {
@@ -50,7 +90,7 @@ fn try_parse_json(response: &str) -> Result<UserIntent> {
 }
 
 /// Known model family names used to detect swap intents without the word "model".
-const MODEL_FAMILIES: &[&str] = &[
+pub(crate) const MODEL_FAMILIES: &[&str] = &[
     "ministral", "mistral", "llama", "qwen", "phi", "gemma", "hermes",
 ];
 
@@ -467,5 +507,75 @@ mod tests {
     fn heuristic_change_to_hermes() {
         let intent = parse_intent_response("change to hermes please").unwrap();
         assert_eq!(intent.action, "swap_model");
+    }
+
+    // --- Post-classification override tests ---
+
+    #[test]
+    fn override_corrects_search_to_swap_model() {
+        let mut intent = UserIntent {
+            action: "search".to_string(),
+            target: Some("Ministral".to_string()),
+            confidence: 0.85,
+            entities: vec![],
+            origin: Plane::Control,
+        };
+        override_model_intent("switch to Ministral", &mut intent);
+        assert_eq!(intent.action, "swap_model");
+        assert!((intent.confidence - 0.9).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn override_corrects_open_to_swap_model() {
+        let mut intent = UserIntent {
+            action: "open".to_string(),
+            target: Some("llama".to_string()),
+            confidence: 0.80,
+            entities: vec![],
+            origin: Plane::Control,
+        };
+        override_model_intent("use llama", &mut intent);
+        assert_eq!(intent.action, "swap_model");
+    }
+
+    #[test]
+    fn override_does_not_touch_correct_swap() {
+        let mut intent = UserIntent {
+            action: "swap_model".to_string(),
+            target: Some("Ministral".to_string()),
+            confidence: 0.95,
+            entities: vec![],
+            origin: Plane::Control,
+        };
+        override_model_intent("switch to Ministral", &mut intent);
+        assert_eq!(intent.action, "swap_model");
+        // Confidence stays at original value, not overridden
+        assert!((intent.confidence - 0.95).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn override_does_not_trigger_for_unrelated() {
+        let mut intent = UserIntent {
+            action: "search".to_string(),
+            target: Some("meeting notes".to_string()),
+            confidence: 0.90,
+            entities: vec![],
+            origin: Plane::Control,
+        };
+        override_model_intent("find my meeting notes", &mut intent);
+        assert_eq!(intent.action, "search");
+    }
+
+    #[test]
+    fn override_corrects_to_list_models() {
+        let mut intent = UserIntent {
+            action: "chat".to_string(),
+            target: None,
+            confidence: 0.70,
+            entities: vec![],
+            origin: Plane::Control,
+        };
+        override_model_intent("what models are available?", &mut intent);
+        assert_eq!(intent.action, "list_models");
     }
 }

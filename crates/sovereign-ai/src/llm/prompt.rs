@@ -72,7 +72,13 @@ User: how's the weather today?\n\
 User: rename thread Alpha to Beta\n\
 {{\"action\": \"rename_thread\", \"target\": \"Alpha\", \"confidence\": 0.95, \"entities\": [[\"old_name\", \"Alpha\"], [\"new_name\", \"Beta\"]]}}\n\n\
 User: delete the old drafts thread\n\
-{{\"action\": \"delete_thread\", \"target\": \"old drafts\", \"confidence\": 0.88, \"entities\": []}}"
+{{\"action\": \"delete_thread\", \"target\": \"old drafts\", \"confidence\": 0.88, \"entities\": []}}\n\n\
+User: switch to Ministral\n\
+{{\"action\": \"swap_model\", \"target\": \"Ministral\", \"confidence\": 0.95, \"entities\": []}}\n\n\
+User: use the llama model\n\
+{{\"action\": \"swap_model\", \"target\": \"llama\", \"confidence\": 0.92, \"entities\": []}}\n\n\
+User: what models are available?\n\
+{{\"action\": \"list_models\", \"target\": null, \"confidence\": 0.95, \"entities\": []}}"
     )
 }
 
