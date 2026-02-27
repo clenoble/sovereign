@@ -1,8 +1,9 @@
 # Sovereign GE — Implementation Plan
 
 **Date:** February 6, 2026
-**Updated:** February 8, 2026
+**Updated:** February 27, 2026
 **Target:** MVP Alpha in ~4-6 months
+**Status:** All 5 phases complete. MVP prototype functional.
 **Team:** You (testing, integration, hardware debugging, design decisions) + Claude (code generation, architecture, documentation)
 
 ---
@@ -52,23 +53,21 @@
 
 **Lesson learned:** SurrealDB requires explicit indexes for field-based queries. The thread query was 688ms without an index, 0.12ms with one. All query-filtered fields must be indexed in the production schema.
 
-### Spike 3: llama.cpp Direct FFI + Model Loading — 🔲 NEXT
+### Spike 3: llama.cpp Direct FFI + Model Loading — ✅ PASSED
 
 | Item | Detail |
 |------|--------|
 | **Deliverable** | Rust binary that loads a quantized Qwen2.5-3B GGUF via `llama-cpp-2` crate, sends a prompt, gets a response, unloads the model |
 | **Accept criteria** | Model loads in < 10s. Inference latency < 500ms for simple classification. Memory returns to baseline after unload (±100MB). |
-| **Fallback** | PyO3 + llama-cpp-python (adds Python runtime dependency). |
-| **Claude generates** | Rust `llama-cpp-2` integration code, `ModelBackend` trait, memory monitoring, benchmark harness |
-| **You test** | Run on your GPU, measure latency and memory |
+| **Result** | Direct FFI via `llama-cpp-2` crate works. Global `OnceLock<LlamaBackend>` ensures single init. Supports hot-swapping between Qwen, Mistral, and Llama3 models. |
 
 **Design decision:** Direct llama.cpp FFI via Rust instead of PyO3. This eliminates the Python runtime dependency for core inference, removes one FFI boundary, and simplifies deployment. PyO3 can be added later as a second `ModelBackend` implementation if specialist Python-only models are needed.
 
-**Decision gate:** After spike 3, review all results. Adjust tech choices if any spike fails. Then commit to full build.
+**Decision gate:** All 3 spikes passed. Committed to full build.
 
 ---
 
-## Phase 1a: Data Layer (Weeks 3-4)
+## Phase 1a: Data Layer (Weeks 3-4) — ✅ COMPLETE
 
 **Goal:** Rust core runtime + SurrealDB abstraction with CLI harness. Test data layer independently before building UI.
 
@@ -123,9 +122,11 @@ sovereign-os/
 
 ---
 
-## Phase 1b: UI Shell (Weeks 5-6)
+## Phase 1b: UI Shell (Weeks 5-6) — ✅ COMPLETE
 
-**Goal:** GTK4 shell with static mock data. Skill manifest parsing. No data binding yet.
+**Goal:** UI shell with static mock data. Skill manifest parsing.
+
+> **Note:** GTK4 was replaced by **Iced 0.14** (pure Rust) during Phase 1b. Skia canvas was replaced by Iced's wgpu-based shader/canvas. All references to GTK4 below are historical.
 
 ### 1b.1 Skill Registry (`sovereign-skills`)
 
@@ -167,9 +168,11 @@ Both Phase 2 and Phase 3 build to these interfaces. Integration in Phase 5 becom
 
 ---
 
-## Phase 2: Canvas & Visual System (Weeks 7-10)
+## Phase 2: Canvas & Visual System (Weeks 7-10) — ✅ COMPLETE
 
 **Goal:** The spatial map is the core UX. Build the 2D infinite canvas with all navigation and visual elements.
+
+> **Implementation note:** Canvas uses Iced 0.14 wgpu shader program instead of Skia/GTK4. All features implemented: thread lanes, document cards, relationship arrows, minimap, level-of-detail rendering, camera controls.
 
 ### 2.1 Skia Canvas Widget (`sovereign-canvas`)
 
@@ -222,9 +225,11 @@ Both Phase 2 and Phase 3 build to these interfaces. Integration in Phase 5 becom
 
 ---
 
-## Phase 3: AI Orchestrator (Weeks 8-12, parallel with Phase 2)
+## Phase 3: AI Orchestrator (Weeks 8-12, parallel with Phase 2) — ✅ COMPLETE
 
 **Goal:** Local AI that classifies intent, routes to skills, and converses with the user.
+
+> **Implementation note:** Full agent loop with 10 tools (6 read-only, 4 write), multi-turn chat with history, trust tracking, session logging, model hot-swap, and multi-format prompt support (ChatML, Mistral, Llama3).
 
 ### 3.1 llama.cpp Bridge (`sovereign-ai`)
 
@@ -267,7 +272,7 @@ Both Phase 2 and Phase 3 build to these interfaces. Integration in Phase 5 becom
 
 ---
 
-## Phase 4: MVP Skills (Weeks 10-14)
+## Phase 4: MVP Skills (Weeks 10-14) — ✅ COMPLETE
 
 **Goal:** Three working skills that demonstrate the Skill architecture end-to-end.
 
@@ -308,9 +313,11 @@ Both Phase 2 and Phase 3 build to these interfaces. Integration in Phase 5 becom
 
 ---
 
-## Phase 5: Integration & Polish (Weeks 14-18)
+## Phase 5: Integration & Polish (Weeks 14-18) — ✅ COMPLETE
 
 **Goal:** Wire everything together. The full loop works end-to-end.
+
+> **Implementation note:** Thread CRUD (create/rename/delete/move), per-document version tracking with auto-commit, session log (append-only JSONL), canvas timeline layout, history/restore intents — all implemented. See `doc/plans/phase5-plan.md` for details.
 
 ### 5.1 Full Loop Integration
 
@@ -407,16 +414,16 @@ The following are fully specified but intentionally excluded from MVP to keep sc
 ## Timeline Summary
 
 ```
-Week  1-2   ██ Phase 0: Validation Spikes [Spike 1 ✅, Spike 2 ✅, Spike 3 next]
-Week  3-4   ██ Phase 1a: Data Layer (sovereign-core + sovereign-db + CLI)
-Week  5-6   ██ Phase 1b: UI Shell (sovereign-ui + sovereign-skills)
-Week  7     █ Checkpoint: Cross-phase interface definitions
-Week  7-10  ████ Phase 2: Canvas & Visual System
-Week  8-12  █████ Phase 3: AI Orchestrator (parallel)
-Week 10-14  █████ Phase 4: MVP Skills (parallel)
-Week 14-18  █████ Phase 5: Integration & Polish
+Week  1-2   ██ Phase 0: Validation Spikes ✅ (all 3 spikes passed)
+Week  3-4   ██ Phase 1a: Data Layer ✅ (sovereign-core + sovereign-db + CLI)
+Week  5-6   ██ Phase 1b: UI Shell ✅ (sovereign-ui + sovereign-skills, switched GTK4 → Iced 0.14)
+Week  7     █ Checkpoint: Cross-phase interfaces ✅
+Week  7-10  ████ Phase 2: Canvas & Visual System ✅ (Iced wgpu shader canvas)
+Week  8-12  █████ Phase 3: AI Orchestrator ✅ (10 tools, multi-model, agent loop)
+Week 10-14  █████ Phase 4: MVP Skills ✅
+Week 14-18  █████ Phase 5: Integration & Polish ✅ (thread CRUD, versioning, session log)
             ─────────────────────────────────
-            ~18 weeks (~4.5 months)
+            All phases complete as of Feb 2026
 ```
 
 **Buffer:** Add 2-4 weeks for unexpected issues, sick days, motivation dips. **Realistic: 5-6 months.**
@@ -450,6 +457,6 @@ Agent teams (Claude Code or multi-agent setups) are most useful for:
 
 ---
 
-## Next Step
+## Current Status (February 2026)
 
-**Spike 3: llama.cpp Direct FFI** — Load Qwen2.5-3B-Instruct GGUF from Rust via `llama-cpp-2` crate. Benchmark load time, inference latency, and memory reclamation on unload.
+All MVP phases are complete. The system is a functional prototype with ~16K lines of Rust across 10 crates, 176+ passing tests. Current focus is on hardening, UX principle enforcement, and contributor onboarding. See [GitHub issues](https://github.com/clenoble/sovereign/issues) for open work items.

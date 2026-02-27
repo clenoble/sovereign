@@ -1,3 +1,6 @@
+> **Archive — Early Design Exploration (Superseded)**
+> This document was an early design draft. The current authoritative spec is [`sovereign_os_specification.md`](sovereign_os_specification.md) (v1.2). Key differences: this doc references "Ikshal" orchestrator naming (abandoned), 3D spatial interface (replaced by 2D infinite canvas), and swarm identity (not implemented). Kept for historical reference.
+
 # **Functional Specification: Sovereign Content-Centric OS (2026)**
 
 ## **1\. Vision & Philosophy**

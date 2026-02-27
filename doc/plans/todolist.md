@@ -16,19 +16,10 @@
 
 ---
 
-### 3. C: drive nearly full (3.5 GB free)
+### 3. ~~C: drive nearly full (3.5 GB free)~~ — RESOLVED
 
-**Status:** Ongoing constraint
-**Severity:** Medium — prevents local debug builds
-
-**Problem:**
-Debug build artifacts require ~17 GB. The C: drive only has ~3.5 GB free, forcing all builds to the NAS (`Z:\cargo-target`), which is slower (~16 min) and prone to intermittent write failures (see issue #2).
-
-**Suggested solutions:**
-1. Use `--release` builds which produce smaller artifacts
-2. Clean up C: drive (temp files, old build artifacts, Windows Update cache)
-3. Move the project to a larger drive
-4. Use `cargo clean` regularly on local target directories
+**Status:** Resolved — C: drive freed up, local builds now use `C:/cargo-target`
+**Resolution:** Disk cleaned up. Debug builds work locally (~15 min). NAS (`Z:\cargo-target`) available as fallback.
 
 ---
 
@@ -71,3 +62,36 @@ Debug build artifacts require ~17 GB. The C: drive only has ~3.5 GB free, forcin
 - [x] Light theme: ThemeMode enum, palette functions, taskbar toggle button
 - [x] Onboarding flow: 4-step wizard, first-launch detection, marker file
 - [x] Model management GUI: GGUF model list, role assignment, delete, taskbar button
+- [x] Unified input path: search bar and chat panel both go through classify → gate → dispatch
+- [x] Model-agnostic inference: hot-swap between Qwen, Mistral, Llama3 at runtime; fuzzy model resolution with alias expansion
+- [x] Global LlamaBackend (`OnceLock`): fix concurrent model init crash, support router + reasoning coexistence
+- [x] Multi-format prompts: ChatML, Mistral, Llama3 via `PromptFormatter` trait; automatic format detection on model swap
+- [x] Phase 5 thread CRUD: create/rename/delete threads, move documents via AI orchestrator
+- [x] Per-document version tracking: commit chains, auto-commit engine, restore from history
+- [x] Session log: append-only JSONL at `~/.sovereign/orchestrator/session_log.jsonl`
+- [x] Soft-delete: documents and threads use `deleted_at` field (purge deferred)
+- [x] Write tools: `create_document`, `create_thread`, `rename_thread`, `move_document` (Level 3, require confirmation)
+- [x] Rich chat agent loop: multi-turn with 10 tools, workspace context, few-shot examples
+- [x] Trust tracking: per-workflow approval history with persistent JSON storage
+- [x] Milestones: create/list/delete milestones on threads
+
+---
+
+## Post-MVP — Open Issues
+
+See [GitHub Issues](https://github.com/clenoble/sovereign/issues) for contributor-friendly tasks:
+
+- [ ] [#1](https://github.com/clenoble/sovereign/issues/1) Wire injection scanner into orchestrator (`good first issue`)
+- [ ] [#2](https://github.com/clenoble/sovereign/issues/2) Add soft-delete (`deleted_at`) for documents (`good first issue`)
+- [ ] [#3](https://github.com/clenoble/sovereign/issues/3) Add provenance styling to chat bubbles (`good first issue`)
+- [ ] [#4](https://github.com/clenoble/sovereign/issues/4) Add tracing for reasoning model load/unload lifecycle (`good first issue`)
+- [ ] [#5](https://github.com/clenoble/sovereign/issues/5) Implement conversational confirmation flow
+- [ ] Trust dashboard read-only view (Settings panel)
+- [ ] Session log encryption (AES-256-GCM at rest)
+- [ ] Progressive canvas density (cards → heatmap blobs at zoom-out)
+- [ ] Rich document format (WYSIWYG / markdown editor)
+- [ ] WhatsApp channel (currently stub)
+- [ ] Skill sandbox / confinement (Landlock on Linux, AppContainer on Windows)
+- [ ] Wake word detection (always-on VAD streaming)
+- [ ] P2P CRDT-based conflict resolution
+- [ ] Guardian recovery UI flow
