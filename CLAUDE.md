@@ -210,7 +210,7 @@ git push origin main
 
 ## sovereign-app Module Structure
 The binary crate (`sovereign-app`) is split into focused modules:
-- `cli.rs` — Clap CLI struct and Commands enum
+- `cli.rs` — Clap CLI struct and Commands enum. **Subcommand is optional** — running `sovereign.exe` with no args defaults to `run` (launches GUI).
 - `commands.rs` — Async CLI handler functions (create/get/list/update/delete for docs, threads, relationships, commits, contacts, conversations)
 - `setup.rs` — DB creation, crypto initialization, orchestrator callback wiring
 - `seed.rs` — Sample data seeding on first launch (DB data + user profile + session log history)

@@ -32,7 +32,7 @@ fn main() -> Result<()> {
     // when calling run_app().
     let rt = tokio::runtime::Runtime::new()?;
 
-    match cli.command {
+    match cli.command.unwrap_or(Commands::Run) {
         Commands::Run => run_gui(&config, &rt)?,
 
         Commands::CreateDoc { title, thread_id, is_owned } => {
