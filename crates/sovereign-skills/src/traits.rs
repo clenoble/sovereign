@@ -1,4 +1,9 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use sovereign_core::content::ContentFields;
+
+use crate::manifest::Capability;
 
 /// A document passed to a skill for execution.
 #[derive(Debug, Clone)]
@@ -26,12 +31,36 @@ pub enum SkillOutput {
     StructuredData { kind: String, json: String },
 }
 
+/// Narrow DB interface exposed to skills.
+/// Skills never see the full database — only this subset.
+pub trait SkillDbAccess: Send + Sync {
+    /// Search documents matching query. Returns (id, title, snippet).
+    fn search_documents(&self, query: &str) -> anyhow::Result<Vec<(String, String, String)>>;
+    /// Get a single document by ID. Returns (title, thread_id, content).
+    fn get_document(&self, id: &str) -> anyhow::Result<(String, String, String)>;
+    /// List documents, optionally filtered by thread. Returns (id, title).
+    fn list_documents(&self, thread_id: Option<&str>) -> anyhow::Result<Vec<(String, String)>>;
+    /// Create a new document, returns the document ID.
+    fn create_document(&self, title: &str, thread_id: &str, content: &str) -> anyhow::Result<String>;
+}
+
+/// Resources available to a skill during execution.
+/// The registry checks that required_capabilities() is a subset of granted.
+pub struct SkillContext {
+    pub granted: HashSet<Capability>,
+    pub db: Option<Arc<dyn SkillDbAccess>>,
+}
+
 /// Trait for core skills that are compiled into the Sovereign GE binary.
 ///
 /// Core skills use direct Rust trait calls (no IPC).
 /// Community/sideloaded skills will use IPC instead.
 pub trait CoreSkill: Send + Sync {
     fn name(&self) -> &str;
+
+    /// Capabilities this skill requires to function.
+    fn required_capabilities(&self) -> Vec<Capability>;
+
     fn activate(&mut self) -> anyhow::Result<()>;
     fn deactivate(&mut self) -> anyhow::Result<()>;
 
@@ -42,6 +71,7 @@ pub trait CoreSkill: Send + Sync {
         action: &str,
         doc: &SkillDocument,
         params: &str,
+        ctx: &SkillContext,
     ) -> anyhow::Result<SkillOutput>;
 
     /// List available actions this skill provides.
@@ -67,6 +97,9 @@ mod tests {
         fn name(&self) -> &str {
             "mock-skill"
         }
+        fn required_capabilities(&self) -> Vec<Capability> {
+            vec![Capability::ReadDocument, Capability::WriteDocument]
+        }
         fn activate(&mut self) -> anyhow::Result<()> {
             self.active = true;
             Ok(())
@@ -80,6 +113,7 @@ mod tests {
             action: &str,
             doc: &SkillDocument,
             _params: &str,
+            _ctx: &SkillContext,
         ) -> anyhow::Result<SkillOutput> {
             match action {
                 "save" => {
@@ -112,7 +146,11 @@ mod tests {
                 ..Default::default()
             },
         };
-        let result = skill.execute("save", &doc, "").unwrap();
+        let ctx = SkillContext {
+            granted: skill.required_capabilities().into_iter().collect(),
+            db: None,
+        };
+        let result = skill.execute("save", &doc, "", &ctx).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => assert_eq!(cf.body, "saved: hello"),
             _ => panic!("Expected ContentUpdate"),

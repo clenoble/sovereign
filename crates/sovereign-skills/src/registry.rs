@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::manifest::SkillManifest;
-use crate::traits::CoreSkill;
+use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
 pub struct SkillRegistry {
     manifests: Vec<SkillManifest>,
@@ -81,6 +81,37 @@ impl SkillRegistry {
         matched.extend(universal);
         matched
     }
+
+    /// Execute a skill with capability enforcement.
+    /// Returns an error if the skill requires capabilities not granted by the context.
+    pub fn execute_skill(
+        &self,
+        name: &str,
+        action: &str,
+        doc: &SkillDocument,
+        params: &str,
+        ctx: &SkillContext,
+    ) -> anyhow::Result<SkillOutput> {
+        let skill = self
+            .find_skill(name)
+            .ok_or_else(|| anyhow::anyhow!("Skill '{}' not found", name))?;
+
+        let required = skill.required_capabilities();
+        let missing: Vec<_> = required
+            .iter()
+            .filter(|c| !ctx.granted.contains(c))
+            .collect();
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "Skill '{}' requires capabilities {:?} but context only grants {:?}",
+                name,
+                missing,
+                ctx.granted
+            );
+        }
+
+        skill.execute(action, doc, params, ctx)
+    }
 }
 
 impl Default for SkillRegistry {
@@ -92,7 +123,7 @@ impl Default for SkillRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::{SkillDocument, SkillOutput};
+    use crate::manifest::Capability;
     use std::path::PathBuf;
 
     struct DummySkill(&'static str);
@@ -100,6 +131,9 @@ mod tests {
     impl CoreSkill for DummySkill {
         fn name(&self) -> &str {
             self.0
+        }
+        fn required_capabilities(&self) -> Vec<Capability> {
+            vec![Capability::ReadDocument]
         }
         fn activate(&mut self) -> anyhow::Result<()> {
             Ok(())
@@ -112,6 +146,7 @@ mod tests {
             _action: &str,
             _doc: &SkillDocument,
             _params: &str,
+            _ctx: &SkillContext,
         ) -> anyhow::Result<SkillOutput> {
             Ok(SkillOutput::None)
         }
@@ -176,6 +211,62 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_skill_grants_sufficient() {
+        let mut registry = SkillRegistry::new();
+        registry.register(Box::new(DummySkill("test")));
+
+        let doc = SkillDocument {
+            id: "document:1".into(),
+            title: "T".into(),
+            content: sovereign_core::content::ContentFields::default(),
+        };
+        let ctx = SkillContext {
+            granted: [Capability::ReadDocument].into_iter().collect(),
+            db: None,
+        };
+        let result = registry.execute_skill("test", "any", &doc, "", &ctx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_skill_rejects_missing_capability() {
+        let mut registry = SkillRegistry::new();
+        registry.register(Box::new(DummySkill("test")));
+
+        let doc = SkillDocument {
+            id: "document:1".into(),
+            title: "T".into(),
+            content: sovereign_core::content::ContentFields::default(),
+        };
+        // Grant nothing — DummySkill requires ReadDocument
+        let ctx = SkillContext {
+            granted: std::collections::HashSet::new(),
+            db: None,
+        };
+        let result = registry.execute_skill("test", "any", &doc, "", &ctx);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("requires capabilities"));
+    }
+
+    #[test]
+    fn test_execute_skill_not_found() {
+        let registry = SkillRegistry::new();
+        let doc = SkillDocument {
+            id: "document:1".into(),
+            title: "T".into(),
+            content: sovereign_core::content::ContentFields::default(),
+        };
+        let ctx = SkillContext {
+            granted: std::collections::HashSet::new(),
+            db: None,
+        };
+        let result = registry.execute_skill("nonexistent", "any", &doc, "", &ctx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
     fn test_registry_with_all_core_skills() {
         use crate::skills::text_editor::TextEditorSkill;
         use crate::skills::image::ImageSkill;
@@ -184,6 +275,9 @@ mod tests {
         use crate::skills::find_replace::FindReplaceSkill;
         use crate::skills::markdown_editor::MarkdownEditorSkill;
         use crate::skills::video::VideoSkill;
+        use crate::skills::search::SearchSkill;
+        use crate::skills::file_import::FileImportSkill;
+        use crate::skills::duplicate_document::DuplicateDocumentSkill;
 
         let mut registry = SkillRegistry::new();
         registry.register(Box::new(TextEditorSkill));
@@ -193,9 +287,11 @@ mod tests {
         registry.register(Box::new(FindReplaceSkill));
         registry.register(Box::new(MarkdownEditorSkill));
         registry.register(Box::new(VideoSkill));
-        // DB-dependent skills would need Arc<SurrealGraphDB>, tested in async tests below
+        registry.register(Box::new(SearchSkill));
+        registry.register(Box::new(FileImportSkill));
+        registry.register(Box::new(DuplicateDocumentSkill));
 
-        assert_eq!(registry.all_skills().len(), 7);
+        assert_eq!(registry.all_skills().len(), 10);
         assert!(registry.find_skill("text-editor").is_some());
         assert!(registry.find_skill("image").is_some());
         assert!(registry.find_skill("pdf-export").is_some());
@@ -203,5 +299,8 @@ mod tests {
         assert!(registry.find_skill("find-replace").is_some());
         assert!(registry.find_skill("markdown-editor").is_some());
         assert!(registry.find_skill("video").is_some());
+        assert!(registry.find_skill("search").is_some());
+        assert!(registry.find_skill("file-import").is_some());
+        assert!(registry.find_skill("duplicate-document").is_some());
     }
 }

@@ -1,9 +1,9 @@
 {
     "name": "Find & Replace",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Find and replace text within documents",
     "author": "Sovereign GE",
     "skill_type": "core",
-    "capabilities": ["find_replace"],
+    "capabilities": ["read_document", "write_document"],
     "file_types": ["md", "txt"]
 }

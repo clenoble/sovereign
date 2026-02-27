@@ -1,25 +1,15 @@
-use std::sync::Arc;
+use crate::manifest::Capability;
+use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
-use sovereign_core::content::ContentFields;
-use sovereign_db::schema::Document;
-use sovereign_db::surreal::SurrealGraphDB;
-use sovereign_db::GraphDB;
-
-use crate::traits::{CoreSkill, SkillDocument, SkillOutput};
-
-pub struct FileImportSkill {
-    db: Arc<SurrealGraphDB>,
-}
-
-impl FileImportSkill {
-    pub fn new(db: Arc<SurrealGraphDB>) -> Self {
-        Self { db }
-    }
-}
+pub struct FileImportSkill;
 
 impl CoreSkill for FileImportSkill {
     fn name(&self) -> &str {
         "file-import"
+    }
+
+    fn required_capabilities(&self) -> Vec<Capability> {
+        vec![Capability::ReadFilesystem, Capability::WriteAllDocuments]
     }
 
     fn activate(&mut self) -> anyhow::Result<()> {
@@ -35,6 +25,7 @@ impl CoreSkill for FileImportSkill {
         action: &str,
         _doc: &SkillDocument,
         params: &str,
+        ctx: &SkillContext,
     ) -> anyhow::Result<SkillOutput> {
         match action {
             "import" => {
@@ -60,7 +51,6 @@ impl CoreSkill for FileImportSkill {
                             .map_err(|e| anyhow::anyhow!("Failed to extract PDF text: {e}"))?
                     }
                     _ => {
-                        // Try reading as UTF-8 text, fall back to lossy conversion
                         match std::fs::read_to_string(path) {
                             Ok(s) => s,
                             Err(_) => {
@@ -77,20 +67,13 @@ impl CoreSkill for FileImportSkill {
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| "Imported Document".into());
 
-                let cf = ContentFields {
-                    body: text,
-                    ..Default::default()
-                };
+                let db = ctx
+                    .db
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("File import skill requires DB access"))?;
 
-                let mut doc = Document::new(title.clone(), String::new(), true);
-                doc.content = cf.serialize();
+                let doc_id = db.create_document(&title, "", &text)?;
 
-                let db = self.db.clone();
-                let created = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(db.create_document(doc))
-                })?;
-
-                let doc_id = created.id_string().unwrap_or_default();
                 let json = serde_json::json!({
                     "doc_id": doc_id,
                     "title": title,
@@ -113,14 +96,26 @@ impl CoreSkill for FileImportSkill {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sovereign_db::surreal::StorageMode;
+    use sovereign_core::content::ContentFields;
+    use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
+    use sovereign_db::GraphDB;
     use std::io::Write;
+    use std::sync::Arc;
 
     async fn setup_db() -> Arc<SurrealGraphDB> {
         let db = SurrealGraphDB::new(StorageMode::Memory).await.unwrap();
         db.connect().await.unwrap();
         db.init_schema().await.unwrap();
         Arc::new(db)
+    }
+
+    fn make_ctx(db: Arc<SurrealGraphDB>) -> SkillContext {
+        SkillContext {
+            granted: [Capability::ReadFilesystem, Capability::WriteAllDocuments]
+                .into_iter()
+                .collect(),
+            db: Some(crate::db_bridge::wrap_db(db)),
+        }
     }
 
     fn make_doc() -> SkillDocument {
@@ -139,8 +134,9 @@ mod tests {
         writeln!(tmp, "Hello from imported file").unwrap();
         let path = tmp.path().to_string_lossy().to_string();
 
-        let skill = FileImportSkill::new(db.clone());
-        let result = skill.execute("import", &make_doc(), &path).unwrap();
+        let ctx = make_ctx(db.clone());
+        let skill = FileImportSkill;
+        let result = skill.execute("import", &make_doc(), &path, &ctx).unwrap();
         match result {
             SkillOutput::StructuredData { kind, json } => {
                 assert_eq!(kind, "import_result");
@@ -150,7 +146,6 @@ mod tests {
             _ => panic!("Expected StructuredData"),
         }
 
-        // Verify document was created in DB
         let docs = db.list_documents(None).await.unwrap();
         assert_eq!(docs.len(), 1);
     }
@@ -158,8 +153,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn import_nonexistent_file_errors() {
         let db = setup_db().await;
-        let skill = FileImportSkill::new(db);
-        let result = skill.execute("import", &make_doc(), "/nonexistent/file.txt");
+        let ctx = make_ctx(db);
+        let skill = FileImportSkill;
+        let result = skill.execute("import", &make_doc(), "/nonexistent/file.txt", &ctx);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -171,14 +167,13 @@ mod tests {
             .suffix(".bin")
             .tempfile()
             .unwrap();
-        // Write some bytes including non-UTF-8
-        use std::io::Write;
         tmp.write_all(&[0x48, 0x65, 0x6c, 0x6c, 0x6f, 0xff, 0xfe])
             .unwrap();
         let path = tmp.path().to_string_lossy().to_string();
 
-        let skill = FileImportSkill::new(db.clone());
-        let result = skill.execute("import", &make_doc(), &path);
+        let ctx = make_ctx(db.clone());
+        let skill = FileImportSkill;
+        let result = skill.execute("import", &make_doc(), &path, &ctx);
         assert!(result.is_ok());
 
         let docs = db.list_documents(None).await.unwrap();

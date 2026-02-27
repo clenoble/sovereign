@@ -1,6 +1,7 @@
 use std::io::Cursor;
 
-use crate::traits::{CoreSkill, SkillDocument, SkillOutput};
+use crate::manifest::Capability;
+use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
 /// Try multiple font paths for cross-platform support.
 fn load_font_family() -> anyhow::Result<genpdf::fonts::FontFamily<genpdf::fonts::FontData>> {
@@ -27,6 +28,10 @@ impl CoreSkill for PdfExportSkill {
         "pdf-export"
     }
 
+    fn required_capabilities(&self) -> Vec<Capability> {
+        vec![Capability::ReadDocument, Capability::WriteFilesystem]
+    }
+
     fn activate(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
@@ -40,6 +45,7 @@ impl CoreSkill for PdfExportSkill {
         action: &str,
         doc: &SkillDocument,
         _params: &str,
+        _ctx: &SkillContext,
     ) -> anyhow::Result<SkillOutput> {
         match action {
             "export" => {
@@ -135,7 +141,8 @@ mod tests {
     fn export_returns_nonempty_pdf_bytes() {
         let skill = PdfExportSkill;
         let doc = make_doc();
-        let result = skill.execute("export", &doc, "");
+        let ctx = SkillContext { granted: std::collections::HashSet::new(), db: None };
+        let result = skill.execute("export", &doc, "", &ctx);
         // May fail if fonts not installed — that's expected in CI
         match result {
             Ok(SkillOutput::File { name, mime_type, data }) => {

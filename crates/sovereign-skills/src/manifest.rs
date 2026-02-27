@@ -8,6 +8,19 @@ pub enum SkillType {
     Community,
 }
 
+/// Capabilities a skill may request. Enforced by the registry at execution time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    ReadDocument,
+    WriteDocument,
+    ReadAllDocuments,
+    WriteAllDocuments,
+    ReadFilesystem,
+    WriteFilesystem,
+    Network,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillManifest {
     pub name: String,
@@ -15,7 +28,7 @@ pub struct SkillManifest {
     pub description: String,
     pub author: String,
     pub skill_type: SkillType,
-    pub capabilities: Vec<String>,
+    pub capabilities: Vec<Capability>,
     pub file_types: Vec<String>,
 }
 
@@ -44,13 +57,16 @@ mod tests {
             "description": "A test skill",
             "author": "Test Author",
             "skill_type": "core",
-            "capabilities": ["edit"],
+            "capabilities": ["read_document", "write_document"],
             "file_types": ["txt"]
         }"#;
         let manifest = SkillManifest::from_json(json).unwrap();
         assert_eq!(manifest.name, "Test Skill");
         assert_eq!(manifest.skill_type, SkillType::Core);
-        assert_eq!(manifest.capabilities, vec!["edit"]);
+        assert_eq!(
+            manifest.capabilities,
+            vec![Capability::ReadDocument, Capability::WriteDocument]
+        );
     }
 
     #[test]
@@ -61,11 +77,12 @@ mod tests {
             "description": "A community skill",
             "author": "Community",
             "skill_type": "community",
-            "capabilities": ["export"],
+            "capabilities": ["write_filesystem"],
             "file_types": ["pdf"]
         }"#;
         let manifest = SkillManifest::from_json(json).unwrap();
         assert_eq!(manifest.skill_type, SkillType::Community);
+        assert_eq!(manifest.capabilities, vec![Capability::WriteFilesystem]);
     }
 
     #[test]

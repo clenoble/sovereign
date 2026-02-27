@@ -203,6 +203,8 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
 
         // Register all core skills
         let db_arc_for_skills = Arc::new(db);
+        let skill_db: std::sync::Arc<dyn sovereign_skills::SkillDbAccess> =
+            sovereign_skills::wrap_db(db_arc_for_skills.clone());
         registry.register(Box::new(
             sovereign_skills::skills::text_editor::TextEditorSkill,
         ));
@@ -216,18 +218,14 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         registry.register(Box::new(
             sovereign_skills::skills::find_replace::FindReplaceSkill,
         ));
-        registry.register(Box::new(sovereign_skills::skills::search::SearchSkill::new(
-            db_arc_for_skills.clone(),
-        )));
         registry.register(Box::new(
-            sovereign_skills::skills::file_import::FileImportSkill::new(
-                db_arc_for_skills.clone(),
-            ),
+            sovereign_skills::skills::search::SearchSkill,
         ));
         registry.register(Box::new(
-            sovereign_skills::skills::duplicate_document::DuplicateDocumentSkill::new(
-                db_arc_for_skills.clone(),
-            ),
+            sovereign_skills::skills::file_import::FileImportSkill,
+        ));
+        registry.register(Box::new(
+            sovereign_skills::skills::duplicate_document::DuplicateDocumentSkill,
         ));
         registry.register(Box::new(
             sovereign_skills::skills::markdown_editor::MarkdownEditorSkill,
@@ -645,6 +643,7 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             Some(close_cb),
             Some(decision_tx),
             Some(registry),
+            Some(skill_db),
             Some(feedback_tx),
             send_message_tx,
             first_launch,

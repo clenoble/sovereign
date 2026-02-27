@@ -1,9 +1,9 @@
 {
     "name": "Summarizer",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Generate concise summaries of documents using the local LLM",
     "author": "Sovereign GE",
     "skill_type": "core",
-    "capabilities": ["summarize"],
+    "capabilities": ["read_document"],
     "file_types": ["md", "txt"]
 }

@@ -1,9 +1,9 @@
 {
     "name": "Duplicate Document",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Create a copy of an existing document",
     "author": "Sovereign GE",
     "skill_type": "core",
-    "capabilities": ["duplicate"],
+    "capabilities": ["read_all_documents", "write_all_documents"],
     "file_types": []
 }

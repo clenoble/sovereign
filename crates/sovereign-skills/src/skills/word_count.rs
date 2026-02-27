@@ -1,10 +1,15 @@
-use crate::traits::{CoreSkill, SkillDocument, SkillOutput};
+use crate::manifest::Capability;
+use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
 pub struct WordCountSkill;
 
 impl CoreSkill for WordCountSkill {
     fn name(&self) -> &str {
         "word-count"
+    }
+
+    fn required_capabilities(&self) -> Vec<Capability> {
+        vec![Capability::ReadDocument]
     }
 
     fn activate(&mut self) -> anyhow::Result<()> {
@@ -20,6 +25,7 @@ impl CoreSkill for WordCountSkill {
         action: &str,
         doc: &SkillDocument,
         _params: &str,
+        _ctx: &SkillContext,
     ) -> anyhow::Result<SkillOutput> {
         match action {
             "count" => {
@@ -59,6 +65,10 @@ mod tests {
     use super::*;
     use sovereign_core::content::ContentFields;
 
+    fn dummy_ctx() -> SkillContext {
+        SkillContext { granted: std::collections::HashSet::new(), db: None }
+    }
+
     fn make_doc(body: &str) -> SkillDocument {
         SkillDocument {
             id: "document:test".into(),
@@ -74,7 +84,7 @@ mod tests {
     fn count_basic() {
         let skill = WordCountSkill;
         let doc = make_doc("hello world foo bar");
-        let result = skill.execute("count", &doc, "").unwrap();
+        let result = skill.execute("count", &doc, "", &dummy_ctx()).unwrap();
         match result {
             SkillOutput::StructuredData { kind, json } => {
                 assert_eq!(kind, "word_count");
@@ -92,7 +102,7 @@ mod tests {
     fn count_empty() {
         let skill = WordCountSkill;
         let doc = make_doc("");
-        let result = skill.execute("count", &doc, "").unwrap();
+        let result = skill.execute("count", &doc, "", &dummy_ctx()).unwrap();
         match result {
             SkillOutput::StructuredData { kind, json } => {
                 assert_eq!(kind, "word_count");
@@ -110,7 +120,7 @@ mod tests {
     fn count_multiline() {
         let skill = WordCountSkill;
         let doc = make_doc("line one\nline two\nline three");
-        let result = skill.execute("count", &doc, "").unwrap();
+        let result = skill.execute("count", &doc, "", &dummy_ctx()).unwrap();
         match result {
             SkillOutput::StructuredData { json, .. } => {
                 let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -127,7 +137,7 @@ mod tests {
         // 400 words -> 2 min reading time
         let body = "word ".repeat(400);
         let doc = make_doc(body.trim());
-        let result = skill.execute("count", &doc, "").unwrap();
+        let result = skill.execute("count", &doc, "", &dummy_ctx()).unwrap();
         match result {
             SkillOutput::StructuredData { json, .. } => {
                 let v: serde_json::Value = serde_json::from_str(&json).unwrap();

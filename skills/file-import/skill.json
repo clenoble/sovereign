@@ -1,9 +1,9 @@
 {
     "name": "File Import",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Import UTF-8 text files as new documents",
     "author": "Sovereign GE",
     "skill_type": "core",
-    "capabilities": ["import"],
+    "capabilities": ["read_filesystem", "write_all_documents"],
     "file_types": ["txt", "md", "csv", "json"]
 }

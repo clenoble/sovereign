@@ -1,9 +1,9 @@
 {
     "name": "Search Documents",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Search across all documents by title and content",
     "author": "Sovereign GE",
     "skill_type": "core",
-    "capabilities": ["search"],
+    "capabilities": ["read_all_documents"],
     "file_types": []
 }

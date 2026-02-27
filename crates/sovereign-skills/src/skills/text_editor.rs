@@ -1,4 +1,5 @@
-use crate::traits::{CoreSkill, SkillDocument, SkillOutput};
+use crate::manifest::Capability;
+use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 use sovereign_core::content::ContentFields;
 
 pub struct TextEditorSkill;
@@ -6,6 +7,10 @@ pub struct TextEditorSkill;
 impl CoreSkill for TextEditorSkill {
     fn name(&self) -> &str {
         "text-editor"
+    }
+
+    fn required_capabilities(&self) -> Vec<Capability> {
+        vec![Capability::ReadDocument, Capability::WriteDocument]
     }
 
     fn activate(&mut self) -> anyhow::Result<()> {
@@ -21,6 +26,7 @@ impl CoreSkill for TextEditorSkill {
         action: &str,
         doc: &SkillDocument,
         params: &str,
+        _ctx: &SkillContext,
     ) -> anyhow::Result<SkillOutput> {
         match action {
             "save" => {
@@ -63,7 +69,8 @@ mod tests {
     fn save_returns_content_update_with_new_body() {
         let skill = TextEditorSkill;
         let doc = make_doc();
-        let result = skill.execute("save", &doc, "new body text").unwrap();
+        let ctx = SkillContext { granted: std::collections::HashSet::new(), db: None };
+        let result = skill.execute("save", &doc, "new body text", &ctx).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
                 assert_eq!(cf.body, "new body text");

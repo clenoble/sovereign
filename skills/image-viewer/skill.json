@@ -1,9 +1,9 @@
 {
     "name": "Image Viewer",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "View and annotate images with zoom and pan controls",
     "author": "Sovereign GE",
     "skill_type": "core",
-    "capabilities": ["view", "zoom", "annotate"],
+    "capabilities": ["read_document", "write_document", "read_filesystem"],
     "file_types": ["png", "jpg", "jpeg", "gif", "webp", "svg"]
 }
