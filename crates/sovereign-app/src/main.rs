@@ -178,20 +178,18 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tracing::warn!("Profile/history seed failed: {e}");
         }
 
-        // Parallelize the 5 independent DB queries.
-        let (threads, documents, relationships, contacts, conversations) = tokio::try_join!(
+        // Parallelize the 6 independent DB queries.
+        let (threads, documents, relationships, contacts, conversations, all_messages) = tokio::try_join!(
             db.list_threads(),
             db.list_documents(None),
             db.list_all_relationships(),
             db.list_contacts(),
             db.list_conversations(None),
+            db.list_all_messages(),
         )?;
 
         // Lazy-load commits: pass empty map, load on demand when user opens version history.
         let commits_map = std::collections::HashMap::new();
-
-        // Lazy-load messages: pass empty vec, load on demand when user opens a contact panel.
-        let all_messages = Vec::new();
 
         tracing::info!(
             "Loaded {} documents, {} threads, {} relationships, {} contacts, {} conversations, {} messages",

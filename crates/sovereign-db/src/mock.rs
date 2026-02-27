@@ -417,6 +417,13 @@ impl GraphDB for MockGraphDB {
         Ok(())
     }
 
+    async fn list_all_messages(&self) -> DbResult<Vec<Message>> {
+        let msgs = self.messages.read().unwrap();
+        let mut all: Vec<Message> = msgs.values().cloned().collect();
+        all.sort_by(|a, b| b.sent_at.cmp(&a.sent_at));
+        Ok(all)
+    }
+
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>> {
         let q = query.to_lowercase();
         let msgs = self.messages.read().unwrap();

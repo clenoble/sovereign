@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Space};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, Space};
 use iced::{Element, Length, Padding};
 
-use sovereign_db::schema::{ChannelType, Conversation, Message as DbMessage, MessageDirection, ReadStatus};
+use sovereign_db::schema::{ChannelType, Contact, Conversation};
 
 use crate::app::Message as AppMessage;
 use crate::panels::document_panel::DEAD_ZONE;
@@ -19,14 +19,15 @@ pub struct SendRequest {
     pub in_reply_to: Option<String>,
 }
 
-/// A floating panel showing the unified inbox: conversations list + message thread view.
+/// A floating panel showing a contact-centric inbox: contacts list with unread badges.
+/// Clicking a contact opens their ContactPanel with all communications.
 pub struct InboxPanel {
-    pub conversations: Vec<Conversation>,
-    pub messages: Vec<DbMessage>,
-    /// Messages pre-grouped by conversation_id for O(1) lookup.
-    messages_by_conv: HashMap<String, Vec<usize>>,
-    pub selected_conversation: Option<usize>,
-    pub reply_input: String,
+    /// (contact_id, contact) pairs, sorted by unread count descending.
+    pub contacts: Vec<(String, Contact)>,
+    /// Per-contact unread count aggregated from conversations.
+    pub unread_by_contact: HashMap<String, u32>,
+    /// Per-contact channel badges.
+    pub channels_by_contact: HashMap<String, Vec<ChannelType>>,
     pub position: iced::Point,
     pub size: iced::Size,
     pub visible: bool,
@@ -38,16 +39,24 @@ pub struct InboxPanel {
 }
 
 impl InboxPanel {
-    pub fn new(conversations: Vec<Conversation>, messages: Vec<DbMessage>) -> Self {
-        let messages_by_conv = group_messages(&messages);
+    pub fn new(contacts: Vec<(String, Contact)>, conversations: &[Conversation]) -> Self {
+        let (unread_by_contact, channels_by_contact) =
+            compute_contact_stats(&contacts, conversations);
+
+        // Sort contacts: unread first, then alphabetical
+        let mut sorted = contacts;
+        sorted.sort_by(|a, b| {
+            let ua = unread_by_contact.get(&a.0).copied().unwrap_or(0);
+            let ub = unread_by_contact.get(&b.0).copied().unwrap_or(0);
+            ub.cmp(&ua).then_with(|| a.1.name.cmp(&b.1.name))
+        });
+
         Self {
-            conversations,
-            messages,
-            messages_by_conv,
-            selected_conversation: None,
-            reply_input: String::new(),
+            contacts: sorted,
+            unread_by_contact,
+            channels_by_contact,
             position: iced::Point::new(200.0, 60.0),
-            size: iced::Size::new(520.0, 520.0),
+            size: iced::Size::new(400.0, 480.0),
             visible: true,
             dragging: false,
             last_local_cursor: iced::Point::ORIGIN,
@@ -56,25 +65,18 @@ impl InboxPanel {
         }
     }
 
-    /// Refresh data (called when new messages arrive).
-    pub fn refresh(&mut self, conversations: Vec<Conversation>, messages: Vec<DbMessage>) {
-        self.messages_by_conv = group_messages(&messages);
-        self.conversations = conversations;
-        self.messages = messages;
-    }
-
-    /// Total unread count across all conversations.
+    /// Total unread count across all contacts.
     pub fn total_unread(&self) -> u32 {
-        self.conversations.iter().map(|c| c.unread_count).sum()
+        self.unread_by_contact.values().sum()
     }
 
     pub fn view(&self) -> Element<'_, AppMessage> {
         // Toolbar: title + unread badge + close button
         let unread = self.total_unread();
         let title_text = if unread > 0 {
-            format!("Inbox ({})", unread)
+            format!("Contacts ({})", unread)
         } else {
-            "Inbox".to_string()
+            "Contacts".to_string()
         };
 
         let toolbar = row![
@@ -88,12 +90,7 @@ impl InboxPanel {
         .spacing(8)
         .padding(Padding::from([8, 12]));
 
-        // Body: conversation list or message thread
-        let body = if let Some(conv_idx) = self.selected_conversation {
-            self.view_messages(conv_idx)
-        } else {
-            self.view_conversations()
-        };
+        let body = self.view_contacts();
 
         let content = column![toolbar, body].spacing(4);
 
@@ -122,10 +119,10 @@ impl InboxPanel {
             .into()
     }
 
-    fn view_conversations(&self) -> Element<'_, AppMessage> {
-        if self.conversations.is_empty() {
+    fn view_contacts(&self) -> Element<'_, AppMessage> {
+        if self.contacts.is_empty() {
             return container(
-                text("No conversations yet").size(13).color(theme::text_dim()),
+                text("No contacts yet").size(13).color(theme::text_dim()),
             )
             .padding(12)
             .width(Length::Fill)
@@ -135,34 +132,59 @@ impl InboxPanel {
 
         let mut list = column![].spacing(4).padding(Padding::from([8, 12]));
 
-        for (i, conv) in self.conversations.iter().enumerate() {
-            let ch_label = channel_label(&conv.channel);
-            let unread_badge = if conv.unread_count > 0 {
-                format!(" ({})", conv.unread_count)
+        for (contact_id, contact) in &self.contacts {
+            // Skip the "You" contact (owned)
+            if contact.is_owned {
+                continue;
+            }
+
+            let initial = contact.name.chars().next().unwrap_or('?');
+            let unread = self.unread_by_contact.get(contact_id).copied().unwrap_or(0);
+            let unread_badge = if unread > 0 {
+                format!(" ({})", unread)
             } else {
                 String::new()
             };
 
-            // Preview: last message snippet
-            let conv_id = conv.id_string().unwrap_or_default();
-            let preview = self.last_message_preview(&conv_id);
+            // Channel badges
+            let channels = self
+                .channels_by_contact
+                .get(contact_id)
+                .cloned()
+                .unwrap_or_default();
+            let channel_labels: String = channels
+                .iter()
+                .map(channel_label)
+                .collect::<Vec<_>>()
+                .join(" · ");
 
-            let title_row = row![
-                text(ch_label).size(11).color(theme::text_dim()),
-                Space::new().width(4),
-                text(&conv.title).size(13).color(theme::text_primary()),
+            let name_row = row![
+                container(
+                    text(initial.to_string()).size(16).color(theme::text_primary()),
+                )
+                .width(28)
+                .height(28)
+                .center_x(28)
+                .center_y(28)
+                .style(theme::skill_panel_style),
+                Space::new().width(8),
+                text(&contact.name).size(13).color(theme::text_primary()),
                 text(unread_badge).size(13).color(theme::approve_green()),
             ]
             .spacing(0);
 
-            let preview_text = text(preview)
-                .size(11)
-                .color(theme::text_dim());
+            let mut item = column![name_row].spacing(2);
+            if !channel_labels.is_empty() {
+                item = item.push(
+                    text(channel_labels)
+                        .size(10)
+                        .color(theme::text_dim()),
+                );
+            }
 
-            let item = column![title_row, preview_text].spacing(2);
-
+            let cid = contact_id.clone();
             let btn = button(item)
-                .on_press(AppMessage::InboxSelectConversation(i))
+                .on_press(AppMessage::OpenContact(cid))
                 .style(theme::skill_button_style)
                 .padding(Padding::from([8, 10]))
                 .width(Length::Fill);
@@ -175,113 +197,31 @@ impl InboxPanel {
             .width(Length::Fill)
             .into()
     }
-
-    fn view_messages(&self, conv_idx: usize) -> Element<'_, AppMessage> {
-        let conv = &self.conversations[conv_idx];
-        let conv_id = conv.id_string().unwrap_or_default();
-
-        let empty = Vec::new();
-        let msg_indices = self.messages_by_conv.get(&conv_id).unwrap_or(&empty);
-        let conv_messages: Vec<&DbMessage> = msg_indices.iter().map(|&i| &self.messages[i]).collect();
-
-        let back_btn = button(text("< Back").size(12))
-            .on_press(AppMessage::InboxBack)
-            .style(theme::skill_button_style)
-            .padding(Padding::from([4, 8]));
-
-        let header = row![
-            back_btn,
-            Space::new().width(8),
-            text(format!("{} — {}", channel_label(&conv.channel), conv.title))
-                .size(13)
-                .color(theme::text_primary()),
-        ]
-        .spacing(0)
-        .padding(Padding::from([4, 12]));
-
-        let mut msg_list = column![].spacing(6).padding(Padding::from([4, 12]));
-
-        if conv_messages.is_empty() {
-            msg_list = msg_list.push(
-                text("No messages yet").size(12).color(theme::text_dim()),
-            );
-        } else {
-            for msg in &conv_messages {
-                let ts = msg.sent_at.format("%m/%d %H:%M").to_string();
-                let dir_indicator = match msg.direction {
-                    MessageDirection::Outbound => "> You",
-                    MessageDirection::Inbound => "<",
-                };
-                let read_mark = match msg.read_status {
-                    ReadStatus::Unread => " [new]",
-                    _ => "",
-                };
-                let preview: String = msg.body.chars().take(200).collect();
-
-                let meta_row = row![
-                    text(ts).size(10).color(theme::text_dim()),
-                    Space::new().width(6),
-                    text(dir_indicator).size(10).color(theme::text_dim()),
-                    text(read_mark).size(10).color(theme::approve_green()),
-                ]
-                .spacing(0);
-
-                let body_text = text(preview).size(12).color(theme::text_primary());
-
-                msg_list = msg_list.push(column![meta_row, body_text].spacing(1));
-            }
-        }
-
-        // Reply input at the bottom
-        let reply_row = row![
-            text_input("Reply...", &self.reply_input)
-                .on_input(AppMessage::InboxReplyChanged)
-                .on_submit(AppMessage::InboxReplySubmit)
-                .size(13)
-                .padding(Padding::from([6, 10]))
-                .width(Length::Fill),
-            button(text("Send").size(12))
-                .on_press(AppMessage::InboxReplySubmit)
-                .style(theme::approve_button_style)
-                .padding(Padding::from([6, 12])),
-        ]
-        .spacing(6)
-        .padding(Padding::from([8, 12]));
-
-        column![
-            header,
-            scrollable(msg_list).height(Length::Fill),
-            reply_row,
-        ]
-        .spacing(2)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-    }
-
-    fn last_message_preview(&self, conv_id: &str) -> String {
-        let empty = Vec::new();
-        let indices = self.messages_by_conv.get(conv_id).unwrap_or(&empty);
-        if let Some(&last_idx) = indices.last() {
-            let msg = &self.messages[last_idx];
-            let preview: String = msg.body.chars().take(60).collect();
-            if msg.body.len() > 60 {
-                format!("{}...", preview)
-            } else {
-                preview
-            }
-        } else {
-            String::new()
-        }
-    }
 }
 
-fn group_messages(messages: &[DbMessage]) -> HashMap<String, Vec<usize>> {
-    let mut map: HashMap<String, Vec<usize>> = HashMap::new();
-    for (i, msg) in messages.iter().enumerate() {
-        map.entry(msg.conversation_id.clone()).or_default().push(i);
+fn compute_contact_stats(
+    contacts: &[(String, Contact)],
+    conversations: &[Conversation],
+) -> (HashMap<String, u32>, HashMap<String, Vec<ChannelType>>) {
+    let mut unread: HashMap<String, u32> = HashMap::new();
+    let mut channels: HashMap<String, Vec<ChannelType>> = HashMap::new();
+
+    for conv in conversations {
+        for pid in &conv.participant_contact_ids {
+            *unread.entry(pid.clone()).or_default() += conv.unread_count;
+            let ch = channels.entry(pid.clone()).or_default();
+            if !ch.contains(&conv.channel) {
+                ch.push(conv.channel.clone());
+            }
+        }
     }
-    map
+
+    // Also include contacts with no conversations (they'll show 0 unread)
+    for (cid, _) in contacts {
+        unread.entry(cid.clone()).or_default();
+    }
+
+    (unread, channels)
 }
 
 fn channel_label(ch: &ChannelType) -> &'static str {
@@ -301,14 +241,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn group_messages_empty() {
-        let map = group_messages(&[]);
-        assert!(map.is_empty());
+    fn inbox_panel_total_unread_empty() {
+        let panel = InboxPanel::new(vec![], &[]);
+        assert_eq!(panel.total_unread(), 0);
     }
 
     #[test]
-    fn inbox_panel_total_unread() {
-        let panel = InboxPanel::new(vec![], vec![]);
-        assert_eq!(panel.total_unread(), 0);
+    fn compute_contact_stats_empty() {
+        let (unread, channels) = compute_contact_stats(&[], &[]);
+        assert!(unread.is_empty());
+        assert!(channels.is_empty());
     }
 }

@@ -248,7 +248,7 @@ impl SovereignApp {
             .collect();
 
         let (canvas_program, canvas_cmd_rx, _controller) =
-            sovereign_canvas::build_canvas(documents, threads, relationships);
+            sovereign_canvas::build_canvas(documents, threads, relationships, messages.clone(), conversations.clone());
 
         let canvas_state = canvas_program.state.clone();
 
@@ -1058,10 +1058,12 @@ impl SovereignApp {
                 if self.inbox_panel.is_some() {
                     self.inbox_panel = None;
                 } else {
-                    let panel = InboxPanel::new(
-                        self.conversations.clone(),
-                        self.messages.clone(),
-                    );
+                    let contacts: Vec<(String, Contact)> = self
+                        .contact_map
+                        .iter()
+                        .map(|(id, c)| (id.clone(), c.clone()))
+                        .collect();
+                    let panel = InboxPanel::new(contacts, &self.conversations);
                     self.taskbar.inbox_unread = panel.total_unread();
                     self.inbox_panel = Some(panel);
                 }
@@ -1071,59 +1073,11 @@ impl SovereignApp {
                 self.inbox_panel = None;
                 Task::none()
             }
-            Message::InboxSelectConversation(idx) => {
-                if let Some(ref mut panel) = self.inbox_panel {
-                    panel.selected_conversation = Some(idx);
-                }
-                Task::none()
-            }
-            Message::InboxBack => {
-                if let Some(ref mut panel) = self.inbox_panel {
-                    panel.selected_conversation = None;
-                }
-                Task::none()
-            }
-            Message::InboxReplyChanged(text) => {
-                if let Some(ref mut panel) = self.inbox_panel {
-                    panel.reply_input = text;
-                }
-                Task::none()
-            }
-            Message::InboxReplySubmit => {
-                if let Some(ref mut panel) = self.inbox_panel {
-                    let body = panel.reply_input.clone();
-                    if body.is_empty() {
-                        return Task::none();
-                    }
-
-                    if let Some(conv_idx) = panel.selected_conversation {
-                        if let Some(conv) = panel.conversations.get(conv_idx) {
-                            let conv_id = conv.id_string().unwrap_or_default();
-                            let to_addresses = conv.participant_contact_ids.clone();
-                            let subject = Some(format!("Re: {}", conv.title));
-                            let in_reply_to = panel.messages.iter()
-                                .filter(|m| m.conversation_id == conv_id)
-                                .last()
-                                .and_then(|m| m.external_id.clone());
-
-                            let request = crate::panels::inbox_panel::SendRequest {
-                                conversation_id: conv_id,
-                                to_addresses,
-                                subject,
-                                body,
-                                in_reply_to,
-                            };
-
-                            if let Some(ref tx) = self.send_message_tx {
-                                let _ = tx.try_send(request);
-                            }
-                        }
-                    }
-
-                    panel.reply_input.clear();
-                }
-                Task::none()
-            }
+            // Legacy conversation-based handlers — kept as no-ops for now
+            Message::InboxSelectConversation(_) => Task::none(),
+            Message::InboxBack => Task::none(),
+            Message::InboxReplyChanged(_) => Task::none(),
+            Message::InboxReplySubmit => Task::none(),
             Message::InboxDragStart => {
                 if let Some(ref mut panel) = self.inbox_panel {
                     let local_y = panel.last_local_cursor.y;
@@ -1327,12 +1281,15 @@ impl SovereignApp {
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     fn poll_channels(&mut self) {
-        // Check for double-click → open document from the canvas shader
+        // Check for double-click → open document or contact from the canvas shader
         {
             let mut st = self.canvas_state.lock().unwrap();
             if let Some(doc_id) = st.pending_open.take() {
                 drop(st);
                 self.open_document(&doc_id);
+            } else if let Some(contact_id) = st.pending_open_contact.take() {
+                drop(st);
+                self.open_contact(&contact_id);
             }
         }
 
@@ -1578,9 +1535,15 @@ impl SovereignApp {
             // Comms events — refresh inbox
             OrchestratorEvent::NewMessagesReceived { ref channel, count, .. } => {
                 self.bubble.show_skill_result(&format!("{count} new {channel} messages"));
-                if let Some(ref mut inbox) = self.inbox_panel {
-                    inbox.refresh(self.conversations.clone(), self.messages.clone());
-                    self.taskbar.inbox_unread = inbox.total_unread();
+                if self.inbox_panel.is_some() {
+                    let contacts: Vec<(String, Contact)> = self
+                        .contact_map
+                        .iter()
+                        .map(|(id, c)| (id.clone(), c.clone()))
+                        .collect();
+                    let panel = InboxPanel::new(contacts, &self.conversations);
+                    self.taskbar.inbox_unread = panel.total_unread();
+                    self.inbox_panel = Some(panel);
                 }
             }
             OrchestratorEvent::CommsSyncComplete { ref channel, new_messages } => {

@@ -198,6 +198,9 @@ pub trait GraphDB: Send + Sync {
     /// Hard-delete a message.
     async fn delete_message(&self, id: &str) -> DbResult<()>;
 
+    /// List all messages across all conversations, ordered by sent_at descending.
+    async fn list_all_messages(&self) -> DbResult<Vec<Message>>;
+
     /// Search messages by body or subject text.
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>>;
 

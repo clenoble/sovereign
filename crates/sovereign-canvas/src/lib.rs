@@ -11,11 +11,11 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use sovereign_core::interfaces::{CanvasController, Viewport};
-use sovereign_db::schema::{Document, RelatedTo, Thread};
+use sovereign_db::schema::{Conversation, Document, Message, RelatedTo, Thread};
 
 use camera::home_position;
 use controller::{CanvasCommand, SovereignCanvasController};
-use layout::compute_layout_with_edges;
+use layout::{compute_layout_with_edges, compute_layout_with_messages};
 use renderer::CanvasProgram;
 use state::CanvasState;
 
@@ -29,8 +29,14 @@ pub fn build_canvas(
     documents: Vec<Document>,
     threads: Vec<Thread>,
     relationships: Vec<RelatedTo>,
+    messages: Vec<Message>,
+    conversations: Vec<Conversation>,
 ) -> (CanvasProgram, mpsc::Receiver<CanvasCommand>, Box<dyn CanvasController>) {
-    let canvas_layout = compute_layout_with_edges(&documents, &threads, &relationships);
+    let canvas_layout = if messages.is_empty() {
+        compute_layout_with_edges(&documents, &threads, &relationships)
+    } else {
+        compute_layout_with_messages(&documents, &threads, &relationships, &messages, &conversations)
+    };
     let (home_x, home_y) = home_position(&canvas_layout);
 
     let viewport = Arc::new(Mutex::new(Viewport {

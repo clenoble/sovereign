@@ -77,6 +77,12 @@ pub struct CanvasState {
     pub mouse_y: f64,
     pub hovered: Option<usize>,
     pub selected: Option<usize>,
+    /// Index into layout.messages of the hovered message circle.
+    pub hovered_message: Option<usize>,
+    /// Index into layout.messages of the selected message circle.
+    pub selected_message: Option<usize>,
+    /// Set by shader on double-click on a message; consumed by the app's Tick handler.
+    pub pending_open_contact: Option<String>,
     pub highlighted: HashSet<String>,
     pub minimap_visible: bool,
     pub adoption_animations: HashMap<String, AdoptionAnim>,
@@ -107,6 +113,9 @@ impl CanvasState {
             mouse_y: 0.0,
             hovered: None,
             selected: None,
+            hovered_message: None,
+            selected_message: None,
+            pending_open_contact: None,
             highlighted: HashSet::new(),
             minimap_visible: true,
             adoption_animations: HashMap::new(),
@@ -164,6 +173,19 @@ pub fn hit_test(state: &CanvasState, screen_x: f64, screen_y: f64) -> Option<usi
     None
 }
 
+/// Hit-test for message circles: find which message (if any) is under the given screen coordinates.
+pub fn hit_test_message(state: &CanvasState, screen_x: f64, screen_y: f64) -> Option<usize> {
+    let (wx, wy) = state.camera.screen_to_world(screen_x, screen_y);
+    for (i, msg) in state.layout.messages.iter().enumerate().rev() {
+        let dx = wx - msg.x as f64;
+        let dy = wy - msg.y as f64;
+        if dx * dx + dy * dy <= (msg.radius as f64) * (msg.radius as f64) {
+            return Some(i);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +217,7 @@ mod tests {
                     h: 80.0,
                 },
             ],
+            messages: vec![],
             lanes: vec![LaneLayout {
                 thread_id: "t1".into(),
                 thread_name: "Test".into(),
