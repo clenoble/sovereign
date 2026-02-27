@@ -17,7 +17,7 @@ This is critical — APIs change between versions and stale knowledge causes cas
 |-------|------|
 | `sovereign-core` | Shared types, config, interfaces, user profile, security primitives |
 | `sovereign-db` | SurrealDB graph database — documents, threads, relationships, contacts, conversations |
-| `sovereign-crypto` | Encryption (AES-256-GCM), key management, content signing |
+| `sovereign-crypto` | Encryption (XChaCha20-Poly1305), key management, content signing |
 | `sovereign-ai` | LLM orchestrator, intent classification, chat agent loop, tools, trust, voice pipeline |
 | `sovereign-ui` | Iced 0.14 GUI — panels, chat, search bar, theming |
 | `sovereign-canvas` | Spatial canvas — document cards, thread zones, drag-and-drop |
@@ -33,10 +33,14 @@ The orchestrator uses local Qwen2.5 models via llama-cpp-2 (no cloud, no externa
 - **Reasoning (7B)**: Escalation model for complex/ambiguous queries (loaded on demand, unloaded after 5min idle)
 - **Chat agent loop**: Multi-turn with tool calling — loads session history, gathers workspace context, iterates up to 5 rounds of generate → tool call → execute → feed back
 - **6 read-only tools**: `search_documents`, `list_threads`, `get_document`, `list_documents`, `search_messages`, `list_contacts` — all Observe level (Level 0), no confirmation needed
-- **Prompt format**: ChatML (`<|im_start|>role\n...\n<|im_end|>`)
+- **4 write tools**: `create_document`, `create_thread`, `rename_thread`, `move_document` — Modify level (Level 3), require confirmation
+- **Prompt format**: ChatML (`<|im_start|>role\n...\n<|im_end|>`), also supports Mistral and Llama3 formats via `PromptFormatter` trait
 - **Tool call format**: `<tool_call>{"name":"...","arguments":{...}}</tool_call>` — learned via few-shot
 
-Key modules: `intent/` (classifier + parser), `llm/` (backend, prompts, context), `orchestrator.rs`, `tools.rs`, `action_gate.rs`, `trust.rs`, `injection.rs`, `session_log.rs`, `voice/`
+- **Unified input path**: Both search bar and chat panel go through classify → gate → dispatch. `handle_chat()` delegates to `handle_query()`, avoiding duplicate routing logic.
+- **Model-agnostic**: Supports hot-swapping between Qwen, Mistral, Llama3 and other GGUF models at runtime. Fuzzy model resolution with alias expansion (e.g. "mistral" finds "Ministral-3B-...").
+
+Key modules: `intent/` (classifier + parser), `llm/` (backend, async_backend, prompts, context, format), `orchestrator.rs`, `tools.rs`, `action_gate.rs`, `trust.rs`, `injection.rs`, `session_log.rs`, `autocommit.rs`, `voice/`
 
 ### UX Principles (from `sovereign_os_ux_principles.md`)
 

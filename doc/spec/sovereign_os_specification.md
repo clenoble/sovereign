@@ -47,7 +47,7 @@ From **Application-Centric** (data imprisoned by software) to **Content-Centric*
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     USER INTERFACE LAYER                     │
-│  • Spatial Map (3D navigation)                               │
+│  • Spatial Map (2D infinite canvas)                           │
 │  • Document Taskbar (Intent Threads)                         │
 │  • Multimodal Input (Voice, Stylus, Keyboard)               │
 └────────────────────────┬────────────────────────────────────┘

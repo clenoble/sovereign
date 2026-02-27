@@ -27,7 +27,7 @@ Rust workspace with 10 crates:
 |---|---|
 | `sovereign-core` | Shared types, config, interfaces, user profile, security primitives |
 | `sovereign-db` | SurrealDB graph storage (in-memory and RocksDB persistent) |
-| `sovereign-crypto` | Key hierarchy, XChaCha20-Poly1305, Shamir secret sharing, guardian recovery |
+| `sovereign-crypto` | XChaCha20-Poly1305, key hierarchy, Shamir secret sharing, guardian recovery |
 | `sovereign-ai` | LLM orchestrator, intent classification, chat agent loop, tool calling, trust, voice |
 | `sovereign-ui` | Iced 0.14 GUI — taskbar, panels, chat, search, theming |
 | `sovereign-canvas` | Infinite canvas — thread lanes, document cards, relationship arrows, minimap |
@@ -104,9 +104,9 @@ cargo test -p sovereign-ai --no-default-features -j 4
 
 ## Status
 
-This is an experimental prototype. Try it, break it, contribute.
+This is an experimental prototype. Try it, break it, contribute. See [open issues](https://github.com/clenoble/sovereign/issues) for good starting points.
 
-Ideas we haven't built yet: federation, plugin marketplace, mobile companion, collaborative editing. See [Issues](https://github.com/clenoble/sovereign/issues).
+Ideas we haven't built yet: federation, plugin marketplace, mobile companion, collaborative editing, rich document format (WYSIWYG), progressive canvas density (cards → heatmap at zoom-out).
 
 ## License
 
