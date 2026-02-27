@@ -15,6 +15,7 @@ pub struct ChatMessage {
 pub enum ChatRole {
     User,
     Assistant,
+    System,
 }
 
 /// State for the chat panel.
@@ -51,6 +52,13 @@ impl ChatState {
         self.generating = false;
     }
 
+    pub fn push_system_message(&mut self, text: &str) {
+        self.messages.push(ChatMessage {
+            role: ChatRole::System,
+            text: text.to_string(),
+        });
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
         let mut col = column![].spacing(8).padding(12).width(380);
 
@@ -73,6 +81,7 @@ impl ChatState {
             let (color, prefix) = match msg.role {
                 ChatRole::User => (theme::owned_blue(), "You"),
                 ChatRole::Assistant => (theme::border_accent(), "AI"),
+                ChatRole::System => (theme::text_dim(), "⚙"),
             };
             messages_col = messages_col.push(
                 column![

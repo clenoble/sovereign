@@ -24,17 +24,23 @@ pub fn check_plane_violation(intent: &UserIntent) -> Option<String> {
 /// Wrap a classified intent into a ProposedAction with computed level.
 pub fn build_proposal(intent: &UserIntent) -> ProposedAction {
     let level = action_level(&intent.action);
+    let target = intent.target.as_deref().unwrap_or("?");
+    let description = match intent.action.as_str() {
+        "create_thread" => format!("Create thread '{}'", target),
+        "rename_thread" => format!("Rename thread '{}'", target),
+        "delete_thread" => format!("Delete thread '{}'", target),
+        "move_document" => format!("Move document: {}", target),
+        "create_document" => format!("Create document '{}'", target),
+        "delete_document" => format!("Delete document '{}'", target),
+        _ => format!("{} → {}", intent.action, target),
+    };
     ProposedAction {
         action: intent.action.clone(),
         level,
         plane: intent.origin,
         doc_id: None,
         thread_id: intent.target.clone(),
-        description: format!(
-            "{} → {}",
-            intent.action,
-            intent.target.as_deref().unwrap_or("(none)")
-        ),
+        description,
     }
 }
 
@@ -120,7 +126,7 @@ mod tests {
         let mut intent = make_intent("search", Plane::Control);
         intent.target = None;
         let proposal = build_proposal(&intent);
-        assert!(proposal.description.contains("(none)"));
+        assert!(proposal.description.contains("?"));
     }
 
     #[test]

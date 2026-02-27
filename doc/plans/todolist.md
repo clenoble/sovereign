@@ -1,53 +1,106 @@
 # Sovereign GE — Todo List
 
-## Open Issues
+## Resolved Issues
+
+<details>
+<summary>Click to expand (3 resolved)</summary>
 
 ### 1. ~~Voice pipeline crashes on Windows (ggml symbol conflict)~~ — RESOLVED
 
 **Status:** Fixed — whisper gated behind `voice-stt` feature flag (off by default)
 **Resolution:** Option 5 implemented. `whisper-rs`, `cpal`, and `ringbuf` are now optional dependencies in `sovereign-ai`, gated behind the `voice-stt` feature. Default builds exclude whisper entirely, eliminating the ggml symbol collision. Enable with `--features voice-stt` on Linux/WSL where it works.
 
----
-
 ### 2. ~~NAS target directory intermittent write failures~~ — MITIGATED
 
 **Status:** Mitigated — all batch scripts now kill stale processes before building
 **Resolution:** `_build.bat`, `_check.bat`, and `_run.bat` now kill orphaned `cargo.exe`/`rustc.exe` processes and clean stale sovereign artifacts before invoking cargo. This addresses the most common cause (stale SMB file locks). Windows Defender exclusion is still recommended for further reliability.
-
----
 
 ### 3. ~~C: drive nearly full (3.5 GB free)~~ — RESOLVED
 
 **Status:** Resolved — C: drive freed up, local builds now use `C:/cargo-target`
 **Resolution:** Disk cleaned up. Debug builds work locally (~15 min). NAS (`Z:\cargo-target`) available as fallback.
 
+</details>
+
 ---
 
-## Feature Roadmap
+## Post-MVP Roadmap
 
-### Canvas & Documents
+### Priority 1 — UX Principle Enforcement (spec gaps in working code)
 
-- [x] **Document links on canvas** — Visualize relationships between documents directly on the canvas (lines/arrows between cards based on `related_to` edges)
-- [x] **Version tracking on canvas** — History button in FloatingPanel toolbar toggles between editor and scrollable commit list with snapshot previews
+These are implemented in code but not yet wired into the user-facing flow. High ROI, mostly small changes.
 
-### Communications
+| # | Feature | Principle | Effort | GitHub | Status |
+|---|---------|-----------|--------|--------|--------|
+| 1 | **Wire injection scanner** — call `injection::scan()` on tool results before LLM sees them; surface warnings in chat | Injection Surfacing (P7) | Small | [#1](https://github.com/clenoble/sovereign/issues/1) | `good first issue` |
+| 2 | **Provenance styling on chat bubbles** — visual distinction for owned vs external content (border color, icon) | Sovereignty Halo (P3) | Small | [#3](https://github.com/clenoble/sovereign/issues/3) | `good first issue` |
+| 3 | **Reasoning model lifecycle tracing** — log load/unload timing, idle timer resets | Observability | Small | [#4](https://github.com/clenoble/sovereign/issues/4) | `good first issue` |
+| 4 | **Trust dashboard read-only view** — Settings panel showing per-workflow trust levels | Trust Calibration (P5) | Medium | — | Needs review |
+| 5 | **Conversational confirmation flow** — AI proposes → user confirms ("yes"/"no") → execute or cancel | Conversational Confirm (P2) | Medium | [#5](https://github.com/clenoble/sovereign/issues/5) | Needs design |
+| 6 | **Plan visibility UI** — structured plan widget for multi-step tasks (checkboxes, reorder, cancel) | Plan Visibility (P4) | Medium | — | Needs design |
 
-- [x] **Seed contacts & messaging data** — 5 contacts, 4 conversations (Email/Signal/WhatsApp/SMS), 15 messages with mixed read/unread status, 2 conversations linked to threads
-- [x] **Include calls and emails in intent threads** — Conversations linked to threads via `linked_thread_id`, `list_contacts` and `view_messages` intents routed through orchestrator
-- [x] **Pinned contact in taskbar** — Top 3 non-owned contacts auto-pinned with initial + name, click opens contact panel
-- [x] **Contact panel** — Floating panel showing contact info, addresses, conversation list, and message history with back navigation
+### Priority 2 — Architecture Decisions Required
 
-### Advanced Features
+These require design choices before implementation. Best done together.
 
-- [ ] **Rich document format** — Support formatted text (headings, bold, lists, embedded images) beyond plain-text content, with a WYSIWYG or markdown editor
-- [ ] **Video** — Video playback and annotation support (embedded player, video document type, thumbnail previews on canvas)
-- [x] **Light theme** — Dark/light toggle via atomic `ThemeMode` in theme module; all color constants replaced with palette functions (`pick(dark, light)`); taskbar toggle button switches instantly
-- [x] **Onboarding flow** — 4-step wizard (Welcome, Device Name, Theme Select, Sample Data) with `~/.sovereign/onboarding_done` marker; full-screen overlay on first launch
-- [x] **Model management GUI** — Settings panel listing installed GGUF models with size, role assignment (Router/Reasoning), refresh and delete; taskbar "Models" button; scans model_dir from config
+| # | Feature | Key Decision | Affected Crates | Effort |
+|---|---------|-------------|-----------------|--------|
+| 7 | **Rich document format (WYSIWYG)** | Markdown-only vs full rich text? Iced text_editor vs embedded webview (milkdown/ProseMirror)? How to store: raw markdown, HTML, or custom AST? | sovereign-skills, sovereign-ui, sovereign-db | Large |
+| 8 | **Progressive canvas density** | How to cluster semantically? Transition thresholds (card count per viewport)? Heatmap rendering (shader-based vs CPU rasterize)? | sovereign-canvas | Large |
+| 9 | **Skill sandbox / confinement** | Landlock (Linux) vs AppContainer (Windows) vs WASM? IPC protocol (JSON-RPC over Unix socket vs shared memory)? How to handle skill crashes? | sovereign-skills, sovereign-core | Large |
+| 10 | **P2P CRDT-based conflict resolution** | Which CRDT library (yrs/automerge-rs)? Per-document or per-field CRDTs? How to merge thread structure? Conflict UI for non-mergeable changes? | sovereign-p2p, sovereign-db | Large |
+| 11 | **Guardian recovery UI flow** | Full-screen wizard vs panel? How to discover guardians (QR, libp2p, manual ID)? Progress feedback during 3-of-5 shard collection? Timeout/retry UX? | sovereign-ui, sovereign-p2p, sovereign-crypto | Large |
+| 12 | **Session log encryption** | Encrypt per-entry or whole file? Key derivation (per-session key from master key)? Performance impact on append-only writes? XChaCha20 (consistent with rest) or simpler scheme? | sovereign-ai, sovereign-crypto | Medium |
+| 13 | **Wake word + streaming VAD** | Always-on audio capture: battery/CPU impact? Wake word engine (rustpotter vs custom)? How to handle false positives? Privacy indicator in UI? | sovereign-ai (voice/), sovereign-ui | Large |
+
+### Priority 3 — New Features (well-scoped, no major design needed)
+
+| # | Feature | Description | Affected Crates | Effort |
+|---|---------|-------------|-----------------|--------|
+| 14 | **Soft-delete for documents** — `deleted_at` field, filter in queries, trash view | [#2](https://github.com/clenoble/sovereign/issues/2) | sovereign-db | Small |
+| 15 | **30-day purge job** — background task to permanently delete items past retention window | sovereign-db, sovereign-app | Small |
+| 16 | **Video playback skill** — embedded player, video document type, thumbnail on canvas | sovereign-skills, sovereign-ui | Medium |
+| 17 | **File import pipeline** — .md/.txt direct, .pdf via pdf-extract, .docx via pandoc, .html via readability | sovereign-skills, sovereign-db | Medium |
+| 18 | **Semantic search via embeddings** — GGUF embedding model, vector index in SurrealDB, search overlay integration | sovereign-ai, sovereign-db | Medium |
+| 19 | **Minimap toggle/hover-reveal** — minimap hidden by default, show on hover or keyboard shortcut | sovereign-canvas | Small |
+| 20 | **Timebox instant-jump** — timeline navigation widget (jump to year/month/week) | sovereign-canvas, sovereign-ui | Medium |
+| 21 | **WhatsApp channel** — replace stub with whatsapp-web bridge or Business API integration | sovereign-comms | Large |
+| 22 | **Hardware-contextual skill suggestions** — detect connected hardware, suggest relevant skills | sovereign-skills, sovereign-core | Medium |
+
+### Priority 4 — Future / Exploratory
+
+| # | Feature | Notes |
+|---|---------|-------|
+| 23 | **Cognitive sovereignty features** | Entropy metric, blind spot detection, modal clarity — from archived `sovereign_os_model_user_system_instructions.md`. Revisit when core UX is stable. |
+| 24 | **Federation / multi-user** | Cross-user document sharing with access control. Depends on P2P maturity. |
+| 25 | **Plugin marketplace** | Community skill registry with PGP signatures. Depends on skill sandbox (#9). |
+| 26 | **Mobile companion** | Read-only or limited mobile client. Depends on P2P sync maturity. |
+| 27 | **Collaborative editing** | Real-time multi-cursor editing. Depends on CRDTs (#10) and P2P. |
+| 28 | **Identity Firewall** | Tracking prevention layer (cookies, fingerprints). Deferred — not core to document workflow. |
+| 29 | **Image generation skill** | On-device Stable Diffusion / FLUX. Saves ~3-4GB VRAM for router+reasoning. |
+
+---
+
+## Items to Implement Together (Design Sessions)
+
+These are the features where we should discuss architecture before coding. Ranked by impact and dependency order:
+
+1. **Conversational confirmation flow (#5)** — Enables the entire Level 2+ action system. Without this, the action gate is enforced but the UX is broken (user can't approve proposed actions inline). Unlocks: all write actions, plan visibility, trust escalation.
+
+2. **Rich document format (#7)** — The document panel currently handles plain text only. This is the most visible gap for end users. Decision: markdown-first (simpler, fits existing stack) vs rich text (more ambitious, needs editor widget choice).
+
+3. **Progressive canvas density (#8)** — Core to the spatial UX promise. The spec describes cards transitioning to heatmap blobs at zoom-out. Decision: rendering approach (shader LOD vs CPU), clustering algorithm, transition breakpoints.
+
+4. **Session log encryption (#12)** — The session log stores full chat history in plaintext. The crypto primitives exist (XChaCha20-Poly1305). Decision: encrypt per-entry (random access) vs whole-file (simpler, harder to append).
+
+5. **Skill sandbox (#9)** — Prerequisite for community skills. No urgency until third-party skills exist, but architecture should be decided early to avoid retrofitting.
 
 ---
 
 ## Completed
+
+<details>
+<summary>Click to expand (26 completed items)</summary>
 
 - [x] Fix cli_integration test on Windows (TOML backslash escaping) — commit 617ffc5
 - [x] Fix ggml flash-attention crash — commit 85fdf05
@@ -74,24 +127,6 @@
 - [x] Rich chat agent loop: multi-turn with 10 tools, workspace context, few-shot examples
 - [x] Trust tracking: per-workflow approval history with persistent JSON storage
 - [x] Milestones: create/list/delete milestones on threads
+- [x] Docs update: CONTRIBUTING.md, archive superseded specs, update implementation plan — commit ab6b6ab
 
----
-
-## Post-MVP — Open Issues
-
-See [GitHub Issues](https://github.com/clenoble/sovereign/issues) for contributor-friendly tasks:
-
-- [ ] [#1](https://github.com/clenoble/sovereign/issues/1) Wire injection scanner into orchestrator (`good first issue`)
-- [ ] [#2](https://github.com/clenoble/sovereign/issues/2) Add soft-delete (`deleted_at`) for documents (`good first issue`)
-- [ ] [#3](https://github.com/clenoble/sovereign/issues/3) Add provenance styling to chat bubbles (`good first issue`)
-- [ ] [#4](https://github.com/clenoble/sovereign/issues/4) Add tracing for reasoning model load/unload lifecycle (`good first issue`)
-- [ ] [#5](https://github.com/clenoble/sovereign/issues/5) Implement conversational confirmation flow
-- [ ] Trust dashboard read-only view (Settings panel)
-- [ ] Session log encryption (AES-256-GCM at rest)
-- [ ] Progressive canvas density (cards → heatmap blobs at zoom-out)
-- [ ] Rich document format (WYSIWYG / markdown editor)
-- [ ] WhatsApp channel (currently stub)
-- [ ] Skill sandbox / confinement (Landlock on Linux, AppContainer on Windows)
-- [ ] Wake word detection (always-on VAD streaming)
-- [ ] P2P CRDT-based conflict resolution
-- [ ] Guardian recovery UI flow
+</details>
