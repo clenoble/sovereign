@@ -160,11 +160,11 @@ impl TaskbarState {
         // Spacer
         items_row = items_row.push(Space::new().width(Length::Fill));
 
-        // Inbox button (with unread badge)
+        // Contacts button (with unread badge)
         let inbox_label = if self.inbox_unread > 0 {
-            format!("Inbox ({})", self.inbox_unread)
+            format!("Contacts ({})", self.inbox_unread)
         } else {
-            "Inbox".to_string()
+            "Contacts".to_string()
         };
         items_row = items_row.push(
             button(text(inbox_label).size(13))

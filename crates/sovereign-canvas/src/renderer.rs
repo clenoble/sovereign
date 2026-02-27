@@ -11,7 +11,7 @@ use skia_safe::{Canvas, Color4f, ColorType, Font, FontMgr, FontStyle, Paint, Pai
 use skia_safe::AlphaType;
 
 use crate::colors::*;
-use crate::layout::{CardLayout, LANE_HEADER_WIDTH};
+use crate::layout::{CardLayout, MessageLayout, LANE_HEADER_WIDTH};
 use crate::lod::{zoom_level, ZoomLevel};
 use crate::state::CanvasState;
 
@@ -363,9 +363,11 @@ where
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let mut st = self.state.lock().unwrap();
                 let old_hovered = st.hovered;
+                let old_hovered_msg = st.hovered_message;
                 st.mouse_x = x;
                 st.mouse_y = y;
                 st.hovered = crate::state::hit_test(&st, x, y);
+                st.hovered_message = crate::state::hit_test_message(&st, x, y);
 
                 // Drag panning
                 if let Some((start_x, start_y)) = wstate.drag_start_mouse {
@@ -384,9 +386,8 @@ where
                     }
                 }
 
-                if old_hovered != st.hovered {
+                if old_hovered != st.hovered || old_hovered_msg != st.hovered_message {
                     // Hover changed — redraw so mouse_interaction() updates the cursor.
-                    // No mark_dirty(): draw() returns cached pixels, no Skia re-render.
                     Some(Action::request_redraw().and_capture())
                 } else {
                     Some(Action::capture())
@@ -419,13 +420,25 @@ where
                             if let Some(i) = crate::state::hit_test(&st, cx, cy) {
                                 st.pending_open =
                                     Some(st.layout.cards[i].doc_id.clone());
+                            } else if let Some(i) = crate::state::hit_test_message(&st, cx, cy) {
+                                // Double-click on message → open contact panel
+                                st.pending_open_contact =
+                                    Some(st.layout.messages[i].from_contact_id.clone());
                             }
                             wstate.last_click_time = None;
                         } else {
-                            // Single click — select
+                            // Single click — select card or message
                             let hit = crate::state::hit_test(&st, cx, cy);
-                            if st.selected != hit {
+                            let hit_msg = crate::state::hit_test_message(&st, cx, cy);
+                            if hit.is_some() {
                                 st.selected = hit;
+                                st.selected_message = None;
+                            } else if hit_msg.is_some() {
+                                st.selected_message = hit_msg;
+                                st.selected = None;
+                            } else {
+                                st.selected = None;
+                                st.selected_message = None;
                             }
                             wstate.last_click_time = Some(now);
                             wstate.last_click_pos = Some((cx, cy));
@@ -463,7 +476,7 @@ where
     ) -> mouse::Interaction {
         if cursor.position_in(bounds).is_some() {
             let st = self.state.lock().unwrap();
-            if st.hovered.is_some() {
+            if st.hovered.is_some() || st.hovered_message.is_some() {
                 mouse::Interaction::Pointer
             } else {
                 mouse::Interaction::Grab
@@ -624,6 +637,26 @@ pub fn render(canvas: &Canvas, state: &CanvasState, w: f32, h: f32) {
                     draw_card(canvas, card, hovered, selected, highlighted);
                 }
             }
+        }
+    }
+
+    // Draw message circles
+    for (i, msg) in state.layout.messages.iter().enumerate() {
+        // AABB rejection: skip messages entirely outside the viewport.
+        if (msg.x + msg.radius) < vis_left as f32
+            || (msg.x - msg.radius) > vis_right as f32
+            || (msg.y + msg.radius) < vis_top as f32
+            || (msg.y - msg.radius) > vis_bottom as f32
+        {
+            continue;
+        }
+        let hovered = state.hovered_message == Some(i);
+        let selected = state.selected_message == Some(i);
+        let highlighted = state.highlighted.contains(&msg.message_id);
+        match lod {
+            ZoomLevel::Dots => draw_message_dot(canvas, msg),
+            ZoomLevel::Simplified => draw_message_simplified(canvas, msg, selected, highlighted),
+            ZoomLevel::Full => draw_message_full(canvas, msg, hovered, selected, highlighted),
         }
     }
 
@@ -1068,6 +1101,92 @@ fn draw_card(
     );
 }
 
+// --- Message circle drawing functions ---
+
+fn msg_colors(msg: &MessageLayout) -> (Color4f, Color4f) {
+    if msg.is_outbound {
+        (MSG_OUTBOUND_FILL, MSG_OUTBOUND_BORDER)
+    } else {
+        (MSG_INBOUND_FILL, MSG_INBOUND_BORDER)
+    }
+}
+
+fn draw_message_dot(canvas: &Canvas, msg: &MessageLayout) {
+    let (_, border) = msg_colors(msg);
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_color4f(border, None);
+    paint.set_style(PaintStyle::Fill);
+    canvas.draw_circle((msg.x, msg.y), 4.0, &paint);
+}
+
+fn draw_message_simplified(
+    canvas: &Canvas,
+    msg: &MessageLayout,
+    selected: bool,
+    highlighted: bool,
+) {
+    let (fill, border_color) = msg_colors(msg);
+    let fp = fill_paint(fill);
+    let (bc, bw) = if selected || highlighted {
+        (ACCENT, 2.5)
+    } else {
+        (border_color, 1.5)
+    };
+    let bp = border_paint(bc, bw);
+    canvas.draw_circle((msg.x, msg.y), msg.radius, &fp);
+    canvas.draw_circle((msg.x, msg.y), msg.radius, &bp);
+
+    // Truncated subject
+    let font = canvas_font(9.0);
+    let mut tp = Paint::default();
+    tp.set_anti_alias(true);
+    tp.set_color4f(TEXT_PRIMARY, None);
+    let max_chars = (msg.radius * 2.0 / 6.0) as usize;
+    let label = truncate_title(&msg.subject, max_chars);
+    canvas.draw_str(&label, (msg.x - msg.radius + 6.0, msg.y + 4.0), &font, &tp);
+}
+
+fn draw_message_full(
+    canvas: &Canvas,
+    msg: &MessageLayout,
+    hovered: bool,
+    selected: bool,
+    highlighted: bool,
+) {
+    let (fill, border_color) = msg_colors(msg);
+    let fp = fill_paint(fill);
+    let (bc, bw) = if selected {
+        (ACCENT, 3.0)
+    } else if highlighted {
+        (ACCENT, 2.5)
+    } else if hovered {
+        (border_color, 3.0)
+    } else {
+        (border_color, 1.5)
+    };
+    let bp = border_paint(bc, bw);
+    canvas.draw_circle((msg.x, msg.y), msg.radius, &fp);
+    canvas.draw_circle((msg.x, msg.y), msg.radius, &bp);
+
+    // Subject text
+    let font = canvas_font(10.0);
+    let mut tp = Paint::default();
+    tp.set_anti_alias(true);
+    tp.set_color4f(TEXT_PRIMARY, None);
+    let max_chars = (msg.radius * 2.0 / 7.0) as usize;
+    let label = truncate_title(&msg.subject, max_chars);
+    canvas.draw_str(&label, (msg.x - msg.radius + 8.0, msg.y - 2.0), &font, &tp);
+
+    // Direction badge
+    let badge_font = canvas_font(9.0);
+    let mut bp2 = Paint::default();
+    bp2.set_anti_alias(true);
+    bp2.set_color4f(border_color, None);
+    let dir_label = if msg.is_outbound { "out" } else { "in" };
+    canvas.draw_str(dir_label, (msg.x - 8.0, msg.y + 14.0), &badge_font, &bp2);
+}
+
 fn draw_hud(canvas: &Canvas, state: &CanvasState, w: f32, _h: f32) {
     let font = canvas_font(12.0);
     let mut p = Paint::default();
@@ -1077,10 +1196,11 @@ fn draw_hud(canvas: &Canvas, state: &CanvasState, w: f32, _h: f32) {
     let fps = state.avg_fps();
     let zoom_pct = (state.camera.zoom * 100.0) as i32;
     let info = format!(
-        "FPS: {:.0}  |  Zoom: {}%  |  Docs: {}  |  Threads: {}  |  Skia CPU",
+        "FPS: {:.0}  |  Zoom: {}%  |  Docs: {}  |  Msgs: {}  |  Threads: {}  |  Skia CPU",
         fps,
         zoom_pct,
         state.layout.cards.len(),
+        state.layout.messages.len(),
         state.layout.lanes.len(),
     );
 

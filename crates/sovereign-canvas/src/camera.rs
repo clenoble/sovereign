@@ -78,6 +78,7 @@ mod tests {
     fn home_position_empty_layout() {
         let layout = CanvasLayout {
             cards: vec![],
+            messages: vec![],
             lanes: vec![],
             timeline_markers: vec![],
             branch_edges: vec![],
@@ -115,6 +116,7 @@ mod tests {
                     h: 80.0,
                 },
             ],
+            messages: vec![],
             lanes: vec![LaneLayout {
                 thread_id: "t1".into(),
                 thread_name: "Test".into(),

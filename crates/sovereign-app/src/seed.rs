@@ -17,11 +17,16 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
     use chrono::{TimeZone, Utc};
 
     let threads = db.list_threads().await?;
-    if !threads.is_empty() {
+    let contacts = db.list_contacts().await?;
+
+    if !threads.is_empty() && !contacts.is_empty() {
         return Ok(());
     }
 
-    tracing::info!("Empty database — seeding sample data");
+    let needs_base = threads.is_empty();
+    let needs_comms = contacts.is_empty();
+
+    tracing::info!("Seeding sample data (base={}, comms={})", needs_base, needs_comms);
 
     let thread_defs = [
         ("Research", "Research and exploration"),
@@ -31,15 +36,31 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
     ];
 
     let mut thread_ids = Vec::new();
-    for (name, desc) in &thread_defs {
-        let t = Thread::new(name.to_string(), desc.to_string());
-        let created = db.create_thread(t).await?;
-        thread_ids.push(
-            created.id_string().ok_or_else(|| anyhow::anyhow!("Thread missing ID after creation"))?,
-        );
+    if needs_base {
+        for (name, desc) in &thread_defs {
+            let t = Thread::new(name.to_string(), desc.to_string());
+            let created = db.create_thread(t).await?;
+            thread_ids.push(
+                created.id_string().ok_or_else(|| anyhow::anyhow!("Thread missing ID after creation"))?,
+            );
+        }
+    } else {
+        // Threads already exist — collect their IDs in definition order
+        for (name, _) in &thread_defs {
+            let found = threads.iter().find(|t| t.name == *name);
+            if let Some(t) = found {
+                thread_ids.push(
+                    t.id_string().ok_or_else(|| anyhow::anyhow!("Existing thread missing ID"))?,
+                );
+            }
+        }
+        if thread_ids.len() < thread_defs.len() {
+            tracing::warn!("Could not find all expected threads; skipping comms seeding");
+            return Ok(());
+        }
     }
 
-    // Staggered creation times: Jan–Apr 2026
+    if needs_base {
     let timestamps = [
         Utc.with_ymd_and_hms(2026, 1, 5, 10, 0, 0).unwrap(),
         Utc.with_ymd_and_hms(2026, 1, 18, 14, 30, 0).unwrap(),
@@ -56,7 +77,6 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
         Utc.with_ymd_and_hms(2026, 4, 25, 10, 0, 0).unwrap(),
         Utc.with_ymd_and_hms(2026, 4, 28, 16, 0, 0).unwrap(),
     ];
-
     let owned_docs: Vec<(&str, &str, usize)> = vec![
         ("Research Notes", "# Research Notes\n\nExploring Rust + GTK4 for desktop OS development.\n\n## Key Findings\n- GTK4 bindings are solid\n- Skia provides GPU rendering", 0),
         ("Project Plan", "# Project Plan\n\n## Phase 1: Foundation\n- Data layer\n- UI shell\n\n## Phase 2: Canvas\n- Spatial layout\n- GPU rendering", 1),
@@ -121,35 +141,30 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
     }
 
     // Add relationships between related documents
-    // Research Notes (0) references Research Paper (11)
     if created_doc_ids.len() > 11 {
         db.create_relationship(
             &created_doc_ids[0], &created_doc_ids[11],
             RelationType::References, 0.8,
         ).await?;
     }
-    // Architecture Diagram (2) references API Specification (3)
     if created_doc_ids.len() > 3 {
         db.create_relationship(
             &created_doc_ids[2], &created_doc_ids[3],
             RelationType::References, 0.9,
         ).await?;
     }
-    // Design Document (6) references Architecture Diagram (2)
     if created_doc_ids.len() > 6 {
         db.create_relationship(
             &created_doc_ids[6], &created_doc_ids[2],
             RelationType::References, 0.7,
         ).await?;
     }
-    // Project Plan (1) branches to Architecture Diagram (2)
     if created_doc_ids.len() > 2 {
         db.create_relationship(
             &created_doc_ids[2], &created_doc_ids[1],
             RelationType::BranchesFrom, 0.85,
         ).await?;
     }
-    // Test Results (7) references GitHub Issue #42 (10)
     if created_doc_ids.len() > 10 {
         db.create_relationship(
             &created_doc_ids[7], &created_doc_ids[10],
@@ -157,7 +172,6 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
         ).await?;
     }
 
-    // Add commits for key documents to show version history
     let commit_targets = [
         (0, vec!["Initial research notes", "Added GTK4 findings"]),
         (1, vec!["Draft project plan", "Added Phase 2 details", "Finalized milestones"]),
@@ -172,8 +186,10 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
             }
         }
     }
+    } // needs_base
 
     // ── Contacts ───────────────────────────────────────────────────────────
+    if needs_comms {
     let contact_defs: Vec<(&str, bool, Vec<(ChannelType, &str, bool)>)> = vec![
         ("You", true, vec![
             (ChannelType::Email, "me@sovereign.local", true),
@@ -296,13 +312,13 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
     }
 
     tracing::info!(
-        "Seeded {} documents, {} threads, {} contacts, {} conversations, {} messages",
-        owned_docs.len() + external_docs.len(),
-        thread_ids.len(),
+        "Seeded {} contacts, {} conversations, {} messages",
         contact_ids.len(),
         conv_ids.len(),
         msg_defs.len(),
     );
+    } // needs_comms
+
     Ok(())
 }
 

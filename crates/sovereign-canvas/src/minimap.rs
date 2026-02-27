@@ -86,6 +86,25 @@ pub fn draw_minimap(canvas: &Canvas, state: &CanvasState, screen_w: f32, screen_
         canvas.draw_rect(Rect::from_xywh(rx, ry, rw, rh), paint);
     }
 
+    // Draw each message as a tiny circle
+    let mut msg_out_paint = Paint::default();
+    msg_out_paint.set_anti_alias(true);
+    msg_out_paint.set_color4f(MSG_OUTBOUND_BORDER, None);
+    msg_out_paint.set_style(PaintStyle::Fill);
+
+    let mut msg_in_paint = Paint::default();
+    msg_in_paint.set_anti_alias(true);
+    msg_in_paint.set_color4f(MSG_INBOUND_BORDER, None);
+    msg_in_paint.set_style(PaintStyle::Fill);
+
+    for msg in &state.layout.messages {
+        let rx = offset_x + (msg.x - world_bbox.left) * scale;
+        let ry = offset_y + (msg.y - world_bbox.top) * scale;
+        let r = (msg.radius * scale).max(1.5);
+        let paint = if msg.is_outbound { &msg_out_paint } else { &msg_in_paint };
+        canvas.draw_circle((rx, ry), r, paint);
+    }
+
     // Viewport rectangle
     let vp_left = state.camera.pan_x as f32;
     let vp_top = state.camera.pan_y as f32;
@@ -200,6 +219,7 @@ mod tests {
                     h: 80.0,
                 },
             ],
+            messages: vec![],
             lanes: vec![LaneLayout {
                 thread_id: "t1".into(),
                 thread_name: "Test".into(),

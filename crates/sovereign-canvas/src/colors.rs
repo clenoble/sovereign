@@ -21,6 +21,12 @@ pub const EDGE_SUPPORTS: Color4f = Color4f::new(0.50, 0.80, 0.60, 0.6);    // li
 pub const EDGE_CONTACT_OF: Color4f = Color4f::new(0.65, 0.45, 0.80, 0.6);  // purple
 pub const EDGE_ATTACHED: Color4f = Color4f::new(0.55, 0.55, 0.55, 0.5);    // gray
 
+// Message circle colors (outbound = green, inbound = purple)
+pub const MSG_OUTBOUND_FILL: Color4f = Color4f::new(0.15, 0.18, 0.12, 1.0);     // green-tinted dark
+pub const MSG_OUTBOUND_BORDER: Color4f = Color4f::new(0.45, 0.75, 0.50, 1.0);   // green border
+pub const MSG_INBOUND_FILL: Color4f = Color4f::new(0.18, 0.14, 0.20, 1.0);      // purple-tinted dark
+pub const MSG_INBOUND_BORDER: Color4f = Color4f::new(0.65, 0.45, 0.80, 1.0);    // purple border
+
 pub const LANE_COLORS: [Color4f; 8] = [
     Color4f::new(0.10, 0.12, 0.18, 0.35), // blue tint
     Color4f::new(0.18, 0.10, 0.12, 0.35), // red tint

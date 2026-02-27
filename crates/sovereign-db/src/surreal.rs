@@ -739,6 +739,15 @@ impl GraphDB for SurrealGraphDB {
         Ok(())
     }
 
+    async fn list_all_messages(&self) -> DbResult<Vec<Message>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM message WHERE deleted_at IS NONE ORDER BY sent_at DESC")
+            .await?;
+        let msgs: Vec<Message> = result.take(0)?;
+        Ok(msgs)
+    }
+
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>> {
         let q = query.to_string();
         let mut result = self

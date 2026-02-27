@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{Datelike, TimeZone, Utc};
-use sovereign_db::schema::{Document, Milestone, RelatedTo, RelationType, Thread};
+use sovereign_db::schema::{Conversation, Document, Message, MessageDirection, Milestone, RelatedTo, RelationType, Thread};
 
 // Layout constants
 pub const CARD_WIDTH: f32 = 200.0;
@@ -10,6 +10,7 @@ pub const CARD_SPACING_H: f32 = 20.0;
 pub const LANE_SPACING_V: f32 = 40.0;
 pub const LANE_HEADER_WIDTH: f32 = 160.0;
 pub const LANE_PADDING_TOP: f32 = 30.0;
+pub const MSG_RADIUS: f32 = 30.0;
 
 /// A positioned card on the canvas.
 #[derive(Debug, Clone)]
@@ -29,6 +30,27 @@ impl CardLayout {
     /// Center point of the card in world coordinates.
     pub fn center(&self) -> (f32, f32) {
         (self.x + self.w / 2.0, self.y + self.h / 2.0)
+    }
+}
+
+/// A positioned message circle on the canvas.
+#[derive(Debug, Clone)]
+pub struct MessageLayout {
+    pub message_id: String,
+    pub subject: String,
+    pub from_contact_id: String,
+    pub conversation_id: String,
+    pub is_outbound: bool,
+    pub sent_at_ts: i64,
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+}
+
+impl MessageLayout {
+    /// Center point of the message circle in world coordinates.
+    pub fn center(&self) -> (f32, f32) {
+        (self.x, self.y)
     }
 }
 
@@ -77,10 +99,11 @@ pub struct DocumentEdge {
     pub to_y: f32,
 }
 
-/// Complete canvas layout: all cards and lanes.
+/// Complete canvas layout: all cards, messages, and lanes.
 #[derive(Debug, Clone)]
 pub struct CanvasLayout {
     pub cards: Vec<CardLayout>,
+    pub messages: Vec<MessageLayout>,
     pub lanes: Vec<LaneLayout>,
     pub timeline_markers: Vec<TimelineMarker>,
     pub branch_edges: Vec<BranchEdge>,
@@ -94,7 +117,7 @@ pub struct CanvasLayout {
 /// are placed in an "Uncategorized" lane at the bottom.
 /// Documents with non-zero `spatial_x`/`spatial_y` keep their DB positions.
 pub fn compute_layout(docs: &[Document], threads: &[Thread]) -> CanvasLayout {
-    compute_layout_full(docs, threads, &[], &[])
+    compute_layout_full(docs, threads, &[], &[], &[], &[])
 }
 
 /// Like `compute_layout`, but also computes branch edges from relationships.
@@ -103,23 +126,59 @@ pub fn compute_layout_with_edges(
     threads: &[Thread],
     relationships: &[RelatedTo],
 ) -> CanvasLayout {
-    compute_layout_full(docs, threads, relationships, &[])
+    compute_layout_full(docs, threads, relationships, &[], &[], &[])
 }
 
-/// Full layout computation with relationships and milestones.
+/// Like `compute_layout_with_edges`, but also places messages on the canvas.
+pub fn compute_layout_with_messages(
+    docs: &[Document],
+    threads: &[Thread],
+    relationships: &[RelatedTo],
+    messages: &[Message],
+    conversations: &[Conversation],
+) -> CanvasLayout {
+    compute_layout_full(docs, threads, relationships, &[], messages, conversations)
+}
+
+/// Full layout computation with relationships, milestones, and messages.
 pub fn compute_layout_full(
     docs: &[Document],
     threads: &[Thread],
     relationships: &[RelatedTo],
     milestones: &[Milestone],
+    messages: &[Message],
+    conversations: &[Conversation],
 ) -> CanvasLayout {
+    // Build a map from conversation_id → linked_thread_id
+    let conv_thread_map: HashMap<String, String> = conversations
+        .iter()
+        .filter_map(|c| {
+            let cid = c.id_string()?;
+            let tid = c.linked_thread_id.clone()?;
+            Some((cid, tid))
+        })
+        .collect();
+
     // Group documents by thread_id
-    let mut by_thread: HashMap<String, Vec<&Document>> = HashMap::new();
+    let mut docs_by_thread: HashMap<String, Vec<&Document>> = HashMap::new();
     for doc in docs {
-        by_thread
+        docs_by_thread
             .entry(doc.thread_id.clone())
             .or_default()
             .push(doc);
+    }
+
+    // Group messages by thread_id (via conversation → linked_thread_id)
+    let mut msgs_by_thread: HashMap<String, Vec<&Message>> = HashMap::new();
+    for msg in messages {
+        let thread_id = conv_thread_map
+            .get(&msg.conversation_id)
+            .cloned()
+            .unwrap_or_default();
+        msgs_by_thread
+            .entry(thread_id)
+            .or_default()
+            .push(msg);
     }
 
     // Sort threads by creation date
@@ -132,13 +191,15 @@ pub fn compute_layout_full(
         .collect();
 
     let mut cards = Vec::new();
+    let mut msg_layouts = Vec::new();
     let mut lanes = Vec::new();
     let mut current_y: f32 = 0.0;
 
     // Lay out known threads
     for thread in &sorted_threads {
         let tid = thread.id_string().unwrap_or_default();
-        let thread_docs = by_thread.remove(&tid).unwrap_or_default();
+        let thread_docs = docs_by_thread.remove(&tid).unwrap_or_default();
+        let thread_msgs = msgs_by_thread.remove(&tid).unwrap_or_default();
 
         let lane_height = compute_lane_height(&thread_docs);
         lanes.push(LaneLayout {
@@ -148,30 +209,38 @@ pub fn compute_layout_full(
             height: lane_height,
         });
 
-        place_cards_in_lane(&thread_docs, &tid, current_y, &mut cards);
+        place_items_in_lane(&thread_docs, &thread_msgs, &tid, current_y, &mut cards, &mut msg_layouts);
         current_y += lane_height + LANE_SPACING_V;
     }
 
     // Collect uncategorized docs (thread_id not matching any known thread)
-    let mut uncategorized: Vec<&Document> = Vec::new();
-    for (tid, docs_in_thread) in by_thread.drain() {
+    let mut uncategorized_docs: Vec<&Document> = Vec::new();
+    for (tid, docs_in_thread) in docs_by_thread.drain() {
         if !known_thread_ids.contains(&tid) {
-            uncategorized.extend(docs_in_thread);
+            uncategorized_docs.extend(docs_in_thread);
         }
     }
 
-    if !uncategorized.is_empty() {
-        let lane_height = compute_lane_height(&uncategorized);
+    // Collect uncategorized messages (no linked_thread_id or unknown thread)
+    let mut uncategorized_msgs: Vec<&Message> = Vec::new();
+    for (tid, msgs_in_thread) in msgs_by_thread.drain() {
+        if tid.is_empty() || !known_thread_ids.contains(&tid) {
+            uncategorized_msgs.extend(msgs_in_thread);
+        }
+    }
+
+    if !uncategorized_docs.is_empty() || !uncategorized_msgs.is_empty() {
+        let lane_height = compute_lane_height(&uncategorized_docs);
         lanes.push(LaneLayout {
             thread_id: String::new(),
             thread_name: "Uncategorized".to_string(),
             y: current_y,
             height: lane_height,
         });
-        place_cards_in_lane(&uncategorized, "", current_y, &mut cards);
+        place_items_in_lane(&uncategorized_docs, &uncategorized_msgs, "", current_y, &mut cards, &mut msg_layouts);
     }
 
-    let mut timeline_markers = compute_timeline_markers(&cards);
+    let mut timeline_markers = compute_timeline_markers_with_messages(&cards, &msg_layouts);
     // Add milestone markers at appropriate X positions
     for ms in milestones {
         let ms_ts = ms.timestamp.timestamp();
@@ -192,6 +261,7 @@ pub fn compute_layout_full(
     let document_edges = compute_document_edges(relationships, &cards);
     CanvasLayout {
         cards,
+        messages: msg_layouts,
         lanes,
         timeline_markers,
         branch_edges,
@@ -303,11 +373,19 @@ pub fn compute_document_edges(
 /// Compute timeline markers by grouping cards by month/year.
 /// Each unique month gets a marker at the average X of its cards.
 pub fn compute_timeline_markers(cards: &[CardLayout]) -> Vec<TimelineMarker> {
-    if cards.is_empty() {
+    compute_timeline_markers_with_messages(cards, &[])
+}
+
+/// Compute timeline markers from both cards and message layouts.
+pub fn compute_timeline_markers_with_messages(
+    cards: &[CardLayout],
+    messages: &[MessageLayout],
+) -> Vec<TimelineMarker> {
+    if cards.is_empty() && messages.is_empty() {
         return Vec::new();
     }
 
-    // Group card x-positions by (year, month)
+    // Group x-positions by (year, month) from both cards and messages
     let mut by_month: BTreeMap<(i32, u32), Vec<f32>> = BTreeMap::new();
     for card in cards {
         let dt = Utc.timestamp_opt(card.created_at_ts, 0).single();
@@ -316,6 +394,15 @@ pub fn compute_timeline_markers(cards: &[CardLayout]) -> Vec<TimelineMarker> {
                 .entry((dt.year(), dt.month()))
                 .or_default()
                 .push(card.x);
+        }
+    }
+    for msg in messages {
+        let dt = Utc.timestamp_opt(msg.sent_at_ts, 0).single();
+        if let Some(dt) = dt {
+            by_month
+                .entry((dt.year(), dt.month()))
+                .or_default()
+                .push(msg.x);
         }
     }
 
@@ -341,40 +428,100 @@ fn compute_lane_height(docs: &[&Document]) -> f32 {
     }
 }
 
-fn place_cards_in_lane(
+/// A timeline item: either a document or a message, sorted together by timestamp.
+enum TimelineItem<'a> {
+    Doc(&'a Document),
+    Msg(&'a Message),
+}
+
+impl<'a> TimelineItem<'a> {
+    fn timestamp(&self) -> i64 {
+        match self {
+            TimelineItem::Doc(d) => d.modified_at.timestamp(),
+            TimelineItem::Msg(m) => m.sent_at.timestamp(),
+        }
+    }
+}
+
+fn place_items_in_lane(
     docs: &[&Document],
+    msgs: &[&Message],
     _thread_id: &str,
     lane_y: f32,
     cards: &mut Vec<CardLayout>,
+    msg_layouts: &mut Vec<MessageLayout>,
 ) {
-    // Sort by modified_at ascending (oldest → left, newest → right) for timeline layout
-    let mut sorted: Vec<&Document> = docs.to_vec();
-    sorted.sort_by_key(|d| d.modified_at);
+    // Merge documents and messages into a single timeline, sorted by timestamp
+    let mut items: Vec<TimelineItem> = Vec::with_capacity(docs.len() + msgs.len());
+    for doc in docs {
+        items.push(TimelineItem::Doc(doc));
+    }
+    for msg in msgs {
+        items.push(TimelineItem::Msg(msg));
+    }
+    items.sort_by_key(|item| item.timestamp());
 
-    for (i, doc) in sorted.iter().enumerate() {
-        let has_spatial = doc.spatial_x != 0.0 || doc.spatial_y != 0.0;
-        let (x, y) = if has_spatial {
-            (doc.spatial_x, doc.spatial_y)
-        } else {
-            (
-                LANE_HEADER_WIDTH + i as f32 * (CARD_WIDTH + CARD_SPACING_H),
-                lane_y + LANE_PADDING_TOP,
-            )
-        };
+    let mut cursor_x = LANE_HEADER_WIDTH;
 
-        cards.push(CardLayout {
-            doc_id: doc.id_string().unwrap_or_default(),
-            title: doc.title.clone(),
-            is_owned: doc.is_owned,
-            thread_id: doc.thread_id.clone(),
-            created_at_ts: doc.created_at.timestamp(),
-            x,
-            y,
-            w: CARD_WIDTH,
-            h: CARD_HEIGHT,
-        });
+    for item in &items {
+        match item {
+            TimelineItem::Doc(doc) => {
+                let has_spatial = doc.spatial_x != 0.0 || doc.spatial_y != 0.0;
+                let (x, y) = if has_spatial {
+                    (doc.spatial_x, doc.spatial_y)
+                } else {
+                    let x = cursor_x;
+                    cursor_x += CARD_WIDTH + CARD_SPACING_H;
+                    (x, lane_y + LANE_PADDING_TOP)
+                };
+
+                cards.push(CardLayout {
+                    doc_id: doc.id_string().unwrap_or_default(),
+                    title: doc.title.clone(),
+                    is_owned: doc.is_owned,
+                    thread_id: doc.thread_id.clone(),
+                    created_at_ts: doc.created_at.timestamp(),
+                    x,
+                    y,
+                    w: CARD_WIDTH,
+                    h: CARD_HEIGHT,
+                });
+
+                if !has_spatial {
+                    // cursor already advanced
+                } else {
+                    // Don't advance cursor for spatially-placed cards
+                }
+            }
+            TimelineItem::Msg(msg) => {
+                let x = cursor_x + MSG_RADIUS;
+                let y = lane_y + LANE_PADDING_TOP + CARD_HEIGHT / 2.0;
+                cursor_x += MSG_RADIUS * 2.0 + CARD_SPACING_H;
+
+                let subject = msg
+                    .subject
+                    .as_deref()
+                    .unwrap_or_else(|| {
+                        if msg.body.len() > 30 { &msg.body[..30] } else { &msg.body }
+                    })
+                    .to_string();
+
+                msg_layouts.push(MessageLayout {
+                    message_id: msg.id.as_ref().map(|t| sovereign_db::schema::thing_to_raw(t)).unwrap_or_default(),
+                    subject,
+                    from_contact_id: msg.from_contact_id.clone(),
+                    conversation_id: msg.conversation_id.clone(),
+                    is_outbound: msg.direction == MessageDirection::Outbound,
+                    sent_at_ts: msg.sent_at.timestamp(),
+                    x,
+                    y,
+                    radius: MSG_RADIUS,
+                });
+            }
+        }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -600,7 +747,7 @@ mod tests {
             thread_id: "thread:t1".into(),
             description: "First release".into(),
         };
-        let layout = compute_layout_full(&[doc], &[thread], &[], &[ms]);
+        let layout = compute_layout_full(&[doc], &[thread], &[], &[ms], &[], &[]);
         let milestone_markers: Vec<_> = layout
             .timeline_markers
             .iter()
