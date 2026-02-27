@@ -451,10 +451,9 @@ impl Orchestrator {
                                 plane: security::Plane::Control,
                                 doc_id: None,
                                 thread_id: None,
-                                description: format!(
-                                    "{}: {}",
-                                    call.name,
-                                    call.arguments
+                                description: format_tool_proposal(
+                                    &call.name,
+                                    &call.arguments,
                                 ),
                             };
                             let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
@@ -1312,6 +1311,31 @@ impl Orchestrator {
                 log.log_action(action, details);
             }
         }
+    }
+}
+
+/// Format a tool call proposal into a human-readable description.
+fn format_tool_proposal(name: &str, args: &serde_json::Value) -> String {
+    match name {
+        "create_document" => format!(
+            "Create document '{}'",
+            args["title"].as_str().unwrap_or("Untitled"),
+        ),
+        "create_thread" => format!(
+            "Create thread '{}'",
+            args["name"].as_str().unwrap_or("New Thread"),
+        ),
+        "rename_thread" => format!(
+            "Rename thread '{}' to '{}'",
+            args["old_name"].as_str().unwrap_or("?"),
+            args["new_name"].as_str().unwrap_or("?"),
+        ),
+        "move_document" => format!(
+            "Move '{}' to thread '{}'",
+            args["title"].as_str().unwrap_or("?"),
+            args["thread"].as_str().unwrap_or("?"),
+        ),
+        _ => format!("{}: {}", name, args),
     }
 }
 

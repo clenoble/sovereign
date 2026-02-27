@@ -149,6 +149,27 @@ pub enum Message {
     Ignore,
 }
 
+/// Check if a chat message is a confirmation or rejection of a pending action.
+/// Returns `Some(true)` for approval, `Some(false)` for rejection, `None` for neither.
+fn parse_confirmation(input: &str) -> Option<bool> {
+    let lower = input.trim().to_lowercase();
+    const CONFIRM: &[&str] = &[
+        "yes", "y", "go ahead", "do it", "sure", "ok", "okay",
+        "approve", "confirm", "proceed", "yep", "yeah",
+    ];
+    const REJECT: &[&str] = &[
+        "no", "n", "cancel", "reject", "stop", "never mind",
+        "nope", "nah", "don't", "abort",
+    ];
+    if CONFIRM.iter().any(|p| lower == *p) {
+        Some(true)
+    } else if REJECT.iter().any(|p| lower == *p) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// The central application state.
 pub struct SovereignApp {
     // Canvas
@@ -411,6 +432,7 @@ impl SovereignApp {
                     }
                 }
                 self.bubble.confirmation = None;
+                self.chat.push_system_message("Approved.");
                 Task::none()
             }
             Message::RejectAction => {
@@ -420,6 +442,7 @@ impl SovereignApp {
                     }
                 }
                 self.bubble.confirmation = None;
+                self.chat.push_system_message("Cancelled.");
                 Task::none()
             }
             Message::DismissSuggestion => {
@@ -556,6 +579,40 @@ impl SovereignApp {
                 if !input.is_empty() {
                     self.chat.push_user_message(input.clone());
                     self.chat.input.clear();
+
+                    // If a confirmation is pending, check for yes/no
+                    if self.bubble.confirmation.is_some() {
+                        match parse_confirmation(&input) {
+                            Some(true) => {
+                                if let Some(ref tx) = self.decision_tx {
+                                    let _ = tx.try_send(ActionDecision::Approve);
+                                }
+                                self.bubble.confirmation = None;
+                                self.chat.push_system_message("Approved.");
+                                return Task::none();
+                            }
+                            Some(false) => {
+                                if let Some(ref tx) = self.decision_tx {
+                                    let _ = tx.try_send(ActionDecision::Reject(
+                                        "User rejected".into(),
+                                    ));
+                                }
+                                self.bubble.confirmation = None;
+                                self.chat.push_system_message("Cancelled.");
+                                return Task::none();
+                            }
+                            None => {
+                                // Not a confirmation — cancel pending action, forward normally
+                                if let Some(ref tx) = self.decision_tx {
+                                    let _ = tx.try_send(ActionDecision::Reject(
+                                        "User moved on".into(),
+                                    ));
+                                }
+                                self.bubble.confirmation = None;
+                            }
+                        }
+                    }
+
                     if let Some(ref cb) = self.chat_callback {
                         cb(input);
                     }
@@ -1420,9 +1477,22 @@ impl SovereignApp {
             }
             OrchestratorEvent::ActionProposed { ref proposal } => {
                 self.bubble.show_confirmation(&proposal.description);
+                self.chat.push_system_message(
+                    &format!("Proposed: {}. Approve or reject?", proposal.description),
+                );
             }
-            OrchestratorEvent::ActionRejected { ref reason, .. } => {
+            OrchestratorEvent::ActionRejected { ref action, ref reason } => {
                 self.bubble.show_rejection(reason);
+                self.chat.push_system_message(
+                    &format!("Cancelled: {} — {}", action, reason),
+                );
+            }
+            OrchestratorEvent::ActionExecuted { ref action, success } => {
+                if success {
+                    self.chat.push_system_message(&format!("Done: {}", action));
+                } else {
+                    self.chat.push_system_message(&format!("Failed: {}", action));
+                }
             }
             OrchestratorEvent::Suggestion { ref text, ref action } => {
                 self.bubble.show_suggestion(text, action);
