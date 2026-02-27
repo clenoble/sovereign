@@ -211,6 +211,7 @@ pub struct SovereignApp {
     feedback_tx: Option<tokio::sync::mpsc::Sender<FeedbackEvent>>,
     send_message_tx: Option<tokio::sync::mpsc::Sender<crate::panels::inbox_panel::SendRequest>>,
     skill_registry: SkillRegistry,
+    skill_db: Option<Arc<dyn sovereign_skills::SkillDbAccess>>,
     taskbar_skills_dropdown_open: bool,
 }
 
@@ -234,6 +235,7 @@ impl SovereignApp {
         close_callback: Option<Box<dyn Fn(String) + Send + 'static>>,
         decision_tx: Option<tokio::sync::mpsc::Sender<ActionDecision>>,
         skill_registry: Option<SkillRegistry>,
+        skill_db: Option<Arc<dyn sovereign_skills::SkillDbAccess>>,
         feedback_tx: Option<tokio::sync::mpsc::Sender<FeedbackEvent>>,
         send_message_tx: Option<tokio::sync::mpsc::Sender<crate::panels::inbox_panel::SendRequest>>,
         first_launch: bool,
@@ -321,6 +323,7 @@ impl SovereignApp {
             feedback_tx,
             send_message_tx,
             skill_registry: skill_registry.unwrap_or_default(),
+            skill_db,
             taskbar_skills_dropdown_open: false,
         };
 
@@ -1706,6 +1709,19 @@ impl SovereignApp {
         }
     }
 
+    /// Build a SkillContext for the given skill, granting all its declared capabilities.
+    fn build_skill_context(&self, skill_name: &str) -> sovereign_skills::SkillContext {
+        let granted = self
+            .skill_registry
+            .find_skill(skill_name)
+            .map(|s| s.required_capabilities().into_iter().collect())
+            .unwrap_or_default();
+        sovereign_skills::SkillContext {
+            granted,
+            db: self.skill_db.clone(),
+        }
+    }
+
     fn execute_skill(&mut self, skill_name: &str, action_id: &str) -> Task<Message> {
         // Special cases: file dialogs
         if (skill_name == "image" && action_id == "add")
@@ -1735,8 +1751,9 @@ impl SovereignApp {
         // Special case: PDF export
         if skill_name == "pdf-export" && action_id == "export" {
             if let Some((doc_data, _)) = self.get_active_doc_data() {
+                let ctx = self.build_skill_context("pdf-export");
                 if let Some(skill) = self.skill_registry.find_skill("pdf-export") {
-                    match skill.execute("export", &doc_data, "") {
+                    match skill.execute("export", &doc_data, "", &ctx) {
                         Ok(SkillOutput::File { name, data: _, .. }) => {
                             tracing::info!("PDF generated: {name}");
                         }
@@ -1758,9 +1775,10 @@ impl SovereignApp {
 
         // Default: immediate execution
         if let Some((skill_doc, panel_idx)) = self.get_active_doc_data() {
+            let ctx = self.build_skill_context(skill_name);
             if let Some(skill) = self.skill_registry.find_skill(skill_name) {
                 tracing::debug!("Executing skill '{skill_name}' action '{action_id}'");
-                match skill.execute(action_id, &skill_doc, "") {
+                match skill.execute(action_id, &skill_doc, "", &ctx) {
                     Ok(SkillOutput::ContentUpdate(cf)) => {
                         let doc_id = skill_doc.id.clone();
                         let title = skill_doc.title.clone();
@@ -1806,8 +1824,9 @@ impl SovereignApp {
     ) {
         let path_str = path.to_string_lossy().to_string();
         if let Some((skill_doc, panel_idx)) = self.get_active_doc_data() {
+            let ctx = self.build_skill_context(skill_name);
             if let Some(skill) = self.skill_registry.find_skill(skill_name) {
-                match skill.execute(action_id, &skill_doc, &path_str) {
+                match skill.execute(action_id, &skill_doc, &path_str, &ctx) {
                     Ok(SkillOutput::ContentUpdate(cf)) => {
                         if let Some(ref cb) = self.save_callback {
                             cb(skill_doc.id.clone(), skill_doc.title.clone(), cf.serialize());

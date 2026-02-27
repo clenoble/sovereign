@@ -1,9 +1,9 @@
 {
-  "name": "Video",
-  "version": "0.1.0",
-  "description": "Manage video references in documents with external playback",
-  "author": "Sovereign GE",
-  "skill_type": "core",
-  "capabilities": ["add", "remove", "play"],
-  "file_types": ["mp4", "mkv", "avi", "webm", "mov"]
+    "name": "Video",
+    "version": "0.2.0",
+    "description": "Manage video references in documents with external playback",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_document", "write_document"],
+    "file_types": ["mp4", "mkv", "avi", "webm", "mov"]
 }

@@ -1,4 +1,5 @@
-use crate::traits::{CoreSkill, SkillDocument, SkillOutput};
+use crate::manifest::Capability;
+use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 use sovereign_core::content::ContentFields;
 
 /// Skill for document-level markdown operations.
@@ -10,6 +11,10 @@ pub struct MarkdownEditorSkill;
 impl CoreSkill for MarkdownEditorSkill {
     fn name(&self) -> &str {
         "markdown-editor"
+    }
+
+    fn required_capabilities(&self) -> Vec<Capability> {
+        vec![Capability::ReadDocument, Capability::WriteDocument]
     }
 
     fn activate(&mut self) -> anyhow::Result<()> {
@@ -25,6 +30,7 @@ impl CoreSkill for MarkdownEditorSkill {
         action: &str,
         doc: &SkillDocument,
         _params: &str,
+        _ctx: &SkillContext,
     ) -> anyhow::Result<SkillOutput> {
         match action {
             "normalize" => {
@@ -123,7 +129,7 @@ mod tests {
     fn normalize_adds_blank_lines_around_headings() {
         let doc = make_doc("text\n# Heading\nmore text");
         let skill = MarkdownEditorSkill;
-        let result = skill.execute("normalize", &doc, "").unwrap();
+        let result = skill.execute("normalize", &doc, "", &SkillContext { granted: std::collections::HashSet::new(), db: None }).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
                 assert!(cf.body.contains("text\n\n# Heading\n\nmore text"));
@@ -148,7 +154,7 @@ mod tests {
     fn preview_returns_structured_data() {
         let doc = make_doc("# Test");
         let skill = MarkdownEditorSkill;
-        let result = skill.execute("preview", &doc, "").unwrap();
+        let result = skill.execute("preview", &doc, "", &SkillContext { granted: std::collections::HashSet::new(), db: None }).unwrap();
         assert!(matches!(result, SkillOutput::StructuredData { .. }));
     }
 
@@ -156,7 +162,7 @@ mod tests {
     fn unknown_action_fails() {
         let doc = make_doc("");
         let skill = MarkdownEditorSkill;
-        assert!(skill.execute("unknown", &doc, "").is_err());
+        assert!(skill.execute("unknown", &doc, "", &SkillContext { granted: std::collections::HashSet::new(), db: None }).is_err());
     }
 
     #[test]

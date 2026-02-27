@@ -1,4 +1,5 @@
-use crate::traits::{CoreSkill, SkillDocument, SkillOutput};
+use crate::manifest::Capability;
+use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 use sovereign_core::content::ContentImage;
 
 pub struct ImageSkill;
@@ -6,6 +7,10 @@ pub struct ImageSkill;
 impl CoreSkill for ImageSkill {
     fn name(&self) -> &str {
         "image"
+    }
+
+    fn required_capabilities(&self) -> Vec<Capability> {
+        vec![Capability::ReadDocument, Capability::WriteDocument, Capability::ReadFilesystem]
     }
 
     fn activate(&mut self) -> anyhow::Result<()> {
@@ -21,6 +26,7 @@ impl CoreSkill for ImageSkill {
         action: &str,
         doc: &SkillDocument,
         params: &str,
+        _ctx: &SkillContext,
     ) -> anyhow::Result<SkillOutput> {
         match action {
             "add" => {
@@ -63,6 +69,10 @@ mod tests {
     use super::*;
     use sovereign_core::content::ContentFields;
 
+    fn dummy_ctx() -> SkillContext {
+        SkillContext { granted: std::collections::HashSet::new(), db: None }
+    }
+
     fn make_doc() -> SkillDocument {
         SkillDocument {
             id: "document:test".into(),
@@ -82,7 +92,7 @@ mod tests {
     fn add_appends_image() {
         let skill = ImageSkill;
         let doc = make_doc();
-        let result = skill.execute("add", &doc, "/new.png").unwrap();
+        let result = skill.execute("add", &doc, "/new.png", &dummy_ctx()).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
                 assert_eq!(cf.images.len(), 2);
@@ -96,7 +106,7 @@ mod tests {
     fn remove_deletes_image() {
         let skill = ImageSkill;
         let doc = make_doc();
-        let result = skill.execute("remove", &doc, "0").unwrap();
+        let result = skill.execute("remove", &doc, "0", &dummy_ctx()).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
                 assert!(cf.images.is_empty());

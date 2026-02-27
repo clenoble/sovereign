@@ -1,9 +1,9 @@
 {
     "name": "Word Count",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Count words, characters, lines, and estimate reading time",
     "author": "Sovereign GE",
     "skill_type": "core",
-    "capabilities": ["count"],
+    "capabilities": ["read_document"],
     "file_types": ["md", "txt"]
 }
