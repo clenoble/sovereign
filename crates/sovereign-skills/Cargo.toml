@@ -17,5 +17,12 @@ chrono = { workspace = true }
 genpdf = { workspace = true }
 pdf-extract = { workspace = true }
 
+# WASM plugin runtime (optional — heavy dependency)
+wasmtime = { workspace = true, optional = true }
+
+[features]
+default = []
+wasm-plugins = ["wasmtime"]
+
 [dev-dependencies]
 tempfile = "3"

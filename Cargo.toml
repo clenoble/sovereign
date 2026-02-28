@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = []
+exclude = ["skills/word-count-wasm"]
 members = [
     "crates/sovereign-core",
     "crates/sovereign-db",
@@ -69,6 +69,9 @@ open = "5.3"
 bytemuck = { version = "1.0", features = ["derive"] }
 wgpu = "24"
 rfd = "0.17"
+
+# WASM plugin runtime
+wasmtime = { version = "42", features = ["component-model"] }
 
 # RNG
 rand = "0.10"

@@ -1,0 +1,9 @@
+{
+    "name": "Word Count (WASM)",
+    "version": "0.1.0",
+    "description": "Word count skill running in a WASM sandbox",
+    "author": "Sovereign GE",
+    "skill_type": "community",
+    "capabilities": ["read_document"],
+    "file_types": ["md", "txt"]
+}
