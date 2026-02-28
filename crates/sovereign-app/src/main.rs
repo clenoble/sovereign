@@ -235,6 +235,16 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         ));
         tracing::info!("Registered {} core skills", registry.all_skills().len());
 
+        // Load WASM community skills (if feature enabled)
+        #[cfg(feature = "wasm-plugins")]
+        {
+            match registry.load_wasm_skills(&skills_dir) {
+                Ok(n) if n > 0 => tracing::info!("Loaded {n} WASM skills"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("WASM skill loading failed: {e}"),
+            }
+        }
+
         // Create event channels
         let (orch_tx, orch_rx) = mpsc::channel::<OrchestratorEvent>();
         let (decision_tx, decision_rx) = tokio::sync::mpsc::channel::<ActionDecision>(32);

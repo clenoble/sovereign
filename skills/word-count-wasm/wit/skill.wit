@@ -1,0 +1,102 @@
+package sovereign:skill@0.1.0;
+
+/// Types shared between host and guest.
+interface types {
+    /// A document passed to a skill for execution.
+    record skill-document {
+        id: string,
+        title: string,
+        /// Body text only. Images/videos are not sent across the WASM boundary.
+        body: string,
+    }
+
+    /// Output from a skill execution.
+    variant skill-output {
+        /// Updated body content to save back.
+        content-update(string),
+        /// Binary file output (e.g., PDF export).
+        file(file-output),
+        /// No output (side-effect only).
+        none,
+        /// Structured data result (e.g., search results, word count).
+        structured-data(structured-output),
+    }
+
+    record file-output {
+        name: string,
+        mime-type: string,
+        data: list<u8>,
+    }
+
+    record structured-output {
+        kind: string,
+        json: string,
+    }
+
+    /// Capabilities a skill may request.
+    enum capability {
+        read-document,
+        write-document,
+        read-all-documents,
+        write-all-documents,
+        read-filesystem,
+        write-filesystem,
+        network,
+    }
+
+    /// A search result: (id, title, snippet).
+    record search-result {
+        id: string,
+        title: string,
+        snippet: string,
+    }
+
+    /// A document list entry: (id, title).
+    record doc-entry {
+        id: string,
+        title: string,
+    }
+
+    /// A retrieved document's details.
+    record doc-detail {
+        title: string,
+        thread-id: string,
+        content: string,
+    }
+}
+
+/// Host functions exposed to WASM skills — maps to SkillDbAccess.
+interface host-db {
+    use types.{search-result, doc-entry, doc-detail};
+
+    /// Search documents matching query.
+    search-documents: func(query: string) -> result<list<search-result>, string>;
+    /// Get a single document by ID.
+    get-document: func(id: string) -> result<doc-detail, string>;
+    /// List documents, optionally filtered by thread.
+    list-documents: func(thread-id: option<string>) -> result<list<doc-entry>, string>;
+    /// Create a new document, returns the document ID.
+    create-document: func(title: string, thread-id: string, content: string) -> result<string, string>;
+}
+
+/// The world that WASM skill plugins must implement.
+world skill-plugin {
+    use types.{skill-document, skill-output, capability};
+
+    /// Host provides DB access.
+    import host-db;
+
+    /// Skill metadata exports.
+    export name: func() -> string;
+    export required-capabilities: func() -> list<capability>;
+    export actions: func() -> list<tuple<string, string>>;
+    export file-types: func() -> list<string>;
+
+    /// Execute a skill action on a document.
+    export execute: func(
+        action: string,
+        doc: skill-document,
+        params: string,
+        granted-capabilities: list<capability>,
+    ) -> result<skill-output, string>;
+}
