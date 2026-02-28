@@ -199,6 +199,20 @@ pub fn persona_db_path(
     }
 }
 
+/// Derive a 32-byte session log encryption key from the device key via HKDF-SHA256.
+#[cfg(all(feature = "encryption", feature = "encrypted-log"))]
+pub fn derive_session_log_key(
+    device_key: &sovereign_crypto::device_key::DeviceKey,
+) -> [u8; 32] {
+    use sovereign_crypto::aead::KEY_SIZE;
+
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, device_key.as_bytes());
+    let mut key = [0u8; KEY_SIZE];
+    hk.expand(b"sovereign-session-log", &mut key)
+        .expect("HKDF expand for session log key");
+    key
+}
+
 /// Wrap an orchestrator method call into a spawn-and-log callback.
 pub fn orch_callback(
     orch: &std::sync::Arc<sovereign_ai::orchestrator::Orchestrator>,

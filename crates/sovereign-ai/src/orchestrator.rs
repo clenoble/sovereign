@@ -33,6 +33,8 @@ pub struct Orchestrator {
     profile_dir: PathBuf,
     model_dir: String,
     n_gpu_layers: i32,
+    #[cfg(feature = "encrypted-log")]
+    session_log_key: Option<[u8; 32]>,
     #[cfg(feature = "p2p")]
     p2p_command_tx: Option<tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>>,
     #[cfg(feature = "p2p")]
@@ -100,6 +102,8 @@ impl Orchestrator {
             profile_dir,
             model_dir,
             n_gpu_layers,
+            #[cfg(feature = "encrypted-log")]
+            session_log_key: None,
             #[cfg(feature = "p2p")]
             p2p_command_tx: None,
             #[cfg(feature = "p2p")]
@@ -115,6 +119,25 @@ impl Orchestrator {
     /// Attach a feedback channel for suggestion accept/dismiss events from the UI.
     pub fn set_feedback_rx(&mut self, rx: tokio::sync::mpsc::Receiver<FeedbackEvent>) {
         self.feedback_rx = Some(tokio::sync::Mutex::new(rx));
+    }
+
+    /// Enable session log encryption with the given key.
+    ///
+    /// Re-opens the session log in encrypted mode. Each subsequent entry will be
+    /// encrypted with XChaCha20-Poly1305 and hash-chained to the previous entry
+    /// for tamper detection.
+    #[cfg(feature = "encrypted-log")]
+    pub fn set_session_log_key(&mut self, key: [u8; 32]) {
+        match SessionLog::open_encrypted(&self.profile_dir, key) {
+            Ok(log) => {
+                self.session_log = Some(Mutex::new(log));
+                self.session_log_key = Some(key);
+                tracing::info!("Session log encryption enabled");
+            }
+            Err(e) => {
+                tracing::warn!("Failed to enable session log encryption: {e}");
+            }
+        }
     }
 
     /// Attach P2P command/event channels for device sync and guardian transport.
@@ -334,10 +357,7 @@ impl Orchestrator {
         ));
 
         // 2. Load conversation history from persistent session log
-        let session_entries = crate::session_log::SessionLog::load_recent(
-            &self.profile_dir,
-            50,
-        );
+        let session_entries = self.load_session_entries(50);
         let mut turns = crate::llm::context::session_entries_to_chat_turns(&session_entries);
 
         // 3. Gather workspace context
@@ -1311,6 +1331,15 @@ impl Orchestrator {
                 log.log_action(action, details);
             }
         }
+    }
+
+    /// Load recent session entries, using encrypted decryption if a key is available.
+    fn load_session_entries(&self, max_entries: usize) -> Vec<crate::session_log::SessionEntry> {
+        #[cfg(feature = "encrypted-log")]
+        if let Some(ref key) = self.session_log_key {
+            return SessionLog::load_recent_encrypted(&self.profile_dir, max_entries, key);
+        }
+        SessionLog::load_recent(&self.profile_dir, max_entries)
     }
 }
 

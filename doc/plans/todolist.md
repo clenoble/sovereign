@@ -50,7 +50,7 @@ These require design choices before implementation. Best done together.
 | 9 | **Skill sandbox / confinement** | Landlock (Linux) vs AppContainer (Windows) vs WASM? IPC protocol (JSON-RPC over Unix socket vs shared memory)? How to handle skill crashes? | sovereign-skills, sovereign-core | Large |
 | 10 | **P2P CRDT-based conflict resolution** | Which CRDT library (yrs/automerge-rs)? Per-document or per-field CRDTs? How to merge thread structure? Conflict UI for non-mergeable changes? | sovereign-p2p, sovereign-db | Large |
 | 11 | **Guardian recovery UI flow** | Full-screen wizard vs panel? How to discover guardians (QR, libp2p, manual ID)? Progress feedback during 3-of-5 shard collection? Timeout/retry UX? | sovereign-ui, sovereign-p2p, sovereign-crypto | Large |
-| 12 | **Session log encryption** | Encrypt per-entry or whole file? Key derivation (per-session key from master key)? Performance impact on append-only writes? XChaCha20 (consistent with rest) or simpler scheme? | sovereign-ai, sovereign-crypto | Medium |
+| 12 | ~~**Session log encryption**~~ | ~~Encrypt per-entry or whole file?~~ **DONE** — Per-entry XChaCha20-Poly1305 encryption with SHA-256 hash chain for tamper detection. Feature: `encrypted-log` (on by default). | sovereign-ai, sovereign-crypto | ~~Medium~~ |
 | 13 | **Wake word + streaming VAD** | Always-on audio capture: battery/CPU impact? Wake word engine (rustpotter vs custom)? How to handle false positives? Privacy indicator in UI? | sovereign-ai (voice/), sovereign-ui | Large |
 
 ### Priority 3 — New Features (well-scoped, no major design needed)
@@ -91,7 +91,7 @@ These are the features where we should discuss architecture before coding. Ranke
 
 3. **Progressive canvas density (#8)** — Core to the spatial UX promise. The spec describes cards transitioning to heatmap blobs at zoom-out. Decision: rendering approach (shader LOD vs CPU), clustering algorithm, transition breakpoints.
 
-4. **Session log encryption (#12)** — The session log stores full chat history in plaintext. The crypto primitives exist (XChaCha20-Poly1305). Decision: encrypt per-entry (random access) vs whole-file (simpler, harder to append).
+4. ~~**Session log encryption (#12)**~~ — **DONE**. Per-entry XChaCha20-Poly1305 with SHA-256 hash chain.
 
 5. **Skill sandbox (#9)** — Prerequisite for community skills. No urgency until third-party skills exist, but architecture should be decided early to avoid retrofitting.
 
@@ -100,7 +100,7 @@ These are the features where we should discuss architecture before coding. Ranke
 ## Completed
 
 <details>
-<summary>Click to expand (26 completed items)</summary>
+<summary>Click to expand (29 completed items)</summary>
 
 - [x] Fix cli_integration test on Windows (TOML backslash escaping) — commit 617ffc5
 - [x] Fix ggml flash-attention crash — commit 85fdf05
@@ -128,5 +128,8 @@ These are the features where we should discuss architecture before coding. Ranke
 - [x] Trust tracking: per-workflow approval history with persistent JSON storage
 - [x] Milestones: create/list/delete milestones on threads
 - [x] Docs update: CONTRIBUTING.md, archive superseded specs, update implementation plan — commit ab6b6ab
+- [x] Skill sandbox Phase 1: typed Capability enum, SkillContext, SkillDbAccess trait, execute_skill() gating — commit 3e5d903
+- [x] Skill sandbox Phase 2: WASM plugin runtime with wasmtime Component Model, WIT contracts, word-count-wasm example — commit 1606097
+- [x] Session log encryption: per-entry XChaCha20-Poly1305 with SHA-256 hash chain for tamper detection (`encrypted-log` feature, on by default)
 
 </details>

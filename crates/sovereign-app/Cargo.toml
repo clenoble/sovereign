@@ -29,12 +29,17 @@ rpassword = { version = "7.3", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 rand = { version = "0.10", optional = true }
 
+# Session log encryption key derivation
+hkdf = { version = "0.12", optional = true }
+sha2 = { workspace = true, optional = true }
+
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"
 
 [features]
-default = []
+default = ["encrypted-log"]
 cuda = ["sovereign-ai/cuda"]
+encrypted-log = ["sovereign-ai/encrypted-log", "hkdf", "sha2"]
 voice-stt = ["sovereign-ai/voice-stt"]
 encryption = ["sovereign-crypto", "sovereign-db/encryption", "rpassword", "uuid", "rand"]
 p2p = ["encryption", "sovereign-p2p", "sovereign-ai/p2p"]

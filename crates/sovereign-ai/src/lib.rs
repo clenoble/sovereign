@@ -1,5 +1,7 @@
 pub mod action_gate;
 pub mod autocommit;
+#[cfg(feature = "encrypted-log")]
+pub mod encrypted_log;
 pub mod events;
 pub mod injection;
 pub mod intent;
