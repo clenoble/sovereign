@@ -311,6 +311,13 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                     }
                 }
 
+                // Enable session log encryption if crypto is initialized
+                #[cfg(all(feature = "encryption", feature = "encrypted-log"))]
+                if let Some((ref device_key, _, _)) = _crypto_state {
+                    let session_key = setup::derive_session_log_key(device_key);
+                    o.set_session_log_key(session_key);
+                }
+
                 tracing::info!("AI orchestrator initialized");
                 Some(Arc::new(o))
             }

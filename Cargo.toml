@@ -73,6 +73,10 @@ rfd = "0.17"
 # WASM plugin runtime
 wasmtime = { version = "42", features = ["component-model"] }
 
+# Crypto primitives (also used directly by sovereign-ai encrypted-log)
+sha2 = "0.10"
+base64 = "0.22"
+
 # RNG
 rand = "0.10"
 
