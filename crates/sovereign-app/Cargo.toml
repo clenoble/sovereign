@@ -11,15 +11,19 @@ path = "src/main.rs"
 [dependencies]
 sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
-sovereign-ui = { workspace = true }
+sovereign-ui = { workspace = true, optional = true }
 sovereign-skills = { workspace = true }
 sovereign-ai = { workspace = true, default-features = false }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+
+# Tauri (optional — web UI)
+tauri = { workspace = true, optional = true }
 
 # Optional crypto / P2P deps
 sovereign-crypto = { workspace = true, optional = true }
@@ -33,11 +37,16 @@ rand = { version = "0.10", optional = true }
 hkdf = { version = "0.12", optional = true }
 sha2 = { workspace = true, optional = true }
 
+[build-dependencies]
+tauri-build = { workspace = true, optional = true }
+
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"
 
 [features]
-default = ["encrypted-log"]
+default = ["encrypted-log", "iced-ui"]
+iced-ui = ["sovereign-ui"]
+tauri-ui = ["tauri", "tauri-build"]
 cuda = ["sovereign-ai/cuda"]
 encrypted-log = ["sovereign-ai/encrypted-log", "hkdf", "sha2"]
 voice-stt = ["sovereign-ai/voice-stt"]

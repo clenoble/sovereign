@@ -4,6 +4,13 @@ mod duress;
 mod seed;
 mod setup;
 
+#[cfg(feature = "tauri-ui")]
+mod tauri_commands;
+#[cfg(feature = "tauri-ui")]
+mod tauri_events;
+#[cfg(feature = "tauri-ui")]
+mod tauri_state;
+
 use std::sync::mpsc;
 use std::sync::Arc;
 
@@ -13,6 +20,7 @@ use sovereign_core::config::AppConfig;
 use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent};
 use sovereign_core::security::ActionDecision;
 use sovereign_core::lifecycle;
+#[cfg(feature = "iced-ui")]
 use sovereign_db::GraphDB;
 
 #[cfg(feature = "comms")]
@@ -33,7 +41,16 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
 
     match cli.command.unwrap_or(Commands::Run) {
-        Commands::Run => run_gui(&config, &rt)?,
+        Commands::Run => {
+            #[cfg(feature = "tauri-ui")]
+            {
+                run_tauri(&config, &rt)?;
+            }
+            #[cfg(not(feature = "tauri-ui"))]
+            {
+                run_gui(&config, &rt)?;
+            }
+        }
 
         Commands::CreateDoc { title, thread_id, is_owned } => {
             rt.block_on(commands::create_doc(&config, title, thread_id, is_owned))?;
@@ -126,7 +143,122 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Launch the Tauri web UI: initialize backend subsystems, then start Tauri.
+#[cfg(feature = "tauri-ui")]
+fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
+    // Run async backend setup inside the existing runtime
+    let (db, orchestrator, skill_registry, skill_db, decision_tx, feedback_tx, orch_tx, orch_rx) =
+        rt.block_on(async {
+            let db = create_db(config).await?;
+            seed::seed_if_empty(&db).await?;
+
+            // Seed user profile and session log history
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_else(|_| "/tmp".into());
+            let profile_dir = std::path::PathBuf::from(home)
+                .join(".sovereign")
+                .join("orchestrator");
+            if let Err(e) = seed::seed_profile_and_history(&profile_dir) {
+                tracing::warn!("Profile/history seed failed: {e}");
+            }
+
+            let db_arc = Arc::new(db);
+
+            // Register skills
+            let mut registry = sovereign_skills::SkillRegistry::new();
+            let skill_db: Arc<dyn sovereign_skills::SkillDbAccess> =
+                sovereign_skills::wrap_db(db_arc.clone());
+            registry.register(Box::new(sovereign_skills::skills::text_editor::TextEditorSkill));
+            registry.register(Box::new(sovereign_skills::skills::image::ImageSkill));
+            registry.register(Box::new(sovereign_skills::skills::pdf_export::PdfExportSkill));
+            registry.register(Box::new(sovereign_skills::skills::word_count::WordCountSkill));
+            registry.register(Box::new(sovereign_skills::skills::find_replace::FindReplaceSkill));
+            registry.register(Box::new(sovereign_skills::skills::search::SearchSkill));
+            registry.register(Box::new(sovereign_skills::skills::file_import::FileImportSkill));
+            registry.register(Box::new(sovereign_skills::skills::duplicate_document::DuplicateDocumentSkill));
+            registry.register(Box::new(sovereign_skills::skills::markdown_editor::MarkdownEditorSkill));
+            registry.register(Box::new(sovereign_skills::skills::video::VideoSkill));
+            tracing::info!("Registered {} core skills", registry.all_skills().len());
+
+            // Create orchestrator channels
+            let (orch_tx, orch_rx) = mpsc::channel::<OrchestratorEvent>();
+            let (decision_tx, decision_rx) = tokio::sync::mpsc::channel::<ActionDecision>(32);
+            let (feedback_tx, feedback_rx) = tokio::sync::mpsc::channel::<FeedbackEvent>(32);
+
+            // Initialize orchestrator
+            let db_dyn: Arc<dyn sovereign_db::GraphDB> = db_arc.clone();
+            let orchestrator = match sovereign_ai::Orchestrator::new(
+                config.ai.clone(),
+                db_dyn,
+                orch_tx.clone(),
+            )
+            .await
+            {
+                Ok(mut o) => {
+                    o.set_decision_rx(decision_rx);
+                    o.set_feedback_rx(feedback_rx);
+                    tracing::info!("AI orchestrator initialized (Tauri mode)");
+                    Some(Arc::new(o))
+                }
+                Err(e) => {
+                    tracing::warn!("AI orchestrator unavailable: {e}");
+                    None
+                }
+            };
+
+            Ok::<_, anyhow::Error>((
+                db_arc, orchestrator, Arc::new(registry), skill_db,
+                decision_tx, feedback_tx, orch_tx, orch_rx,
+            ))
+        })?;
+
+    // Wrap orch_rx so it can be moved into the setup closure
+    let orch_rx = std::sync::Mutex::new(Some(orch_rx));
+
+    // Build Tauri app
+    tauri::Builder::default()
+        .manage(tauri_state::AppState {
+            db,
+            orchestrator,
+            config: config.clone(),
+            skill_registry,
+            skill_db,
+            decision_tx,
+            feedback_tx,
+            orch_tx,
+            theme: std::sync::Mutex::new("dark".to_string()),
+        })
+        .invoke_handler(tauri::generate_handler![
+            tauri_commands::greet,
+            tauri_commands::get_status,
+            tauri_commands::chat_message,
+            tauri_commands::search_documents,
+            tauri_commands::search_query,
+            tauri_commands::approve_action,
+            tauri_commands::reject_action,
+            tauri_commands::accept_suggestion,
+            tauri_commands::dismiss_suggestion,
+            tauri_commands::list_documents,
+            tauri_commands::list_threads,
+            tauri_commands::toggle_theme,
+            tauri_commands::get_theme,
+        ])
+        .setup(move |app| {
+            // Start the event forwarder — drains orch_rx and emits Tauri events
+            if let Some(rx) = orch_rx.lock().unwrap().take() {
+                tauri_events::spawn_event_forwarder(app.handle().clone(), rx);
+            }
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error running Sovereign GE (Tauri)");
+
+    Ok(())
+}
+
 /// Launch the GUI: initialize all subsystems and start the Iced application.
+#[cfg(feature = "iced-ui")]
 fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     // Scan skills directory for manifests
     let mut registry = sovereign_skills::SkillRegistry::new();

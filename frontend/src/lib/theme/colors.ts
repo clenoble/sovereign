@@ -1,0 +1,60 @@
+/** CSS custom property definitions for dark and light themes. */
+
+export const themes = {
+	dark: {
+		'--bg-primary': '#1a1a20',
+		'--bg-secondary': '#22222a',
+		'--bg-tertiary': '#2a2a35',
+		'--bg-panel': '#252530',
+		'--bg-input': '#1e1e26',
+		'--bg-hover': '#30303d',
+		'--text-primary': '#e0e0e0',
+		'--text-secondary': '#999',
+		'--text-muted': '#666',
+		'--accent': '#F59E0B',
+		'--accent-hover': '#D97706',
+		'--accent-dim': '#92610a',
+		'--success': '#10B981',
+		'--error': '#EF4444',
+		'--warning': '#F59E0B',
+		'--info': '#3B82F6',
+		'--border': '#333340',
+		'--bubble-idle': '#3B82F6',
+		'--bubble-processing': '#6366F1',
+		'--bubble-executing': '#10B981',
+		'--bubble-proposing': '#F59E0B',
+		'--bubble-suggesting': '#8B5CF6',
+		'--chat-user': '#3B82F6',
+		'--chat-assistant': '#F59E0B',
+		'--chat-system': '#666'
+	},
+	light: {
+		'--bg-primary': '#f5f5f0',
+		'--bg-secondary': '#ebebdf',
+		'--bg-tertiary': '#deded2',
+		'--bg-panel': '#ffffff',
+		'--bg-input': '#f0f0ea',
+		'--bg-hover': '#e0e0d5',
+		'--text-primary': '#1a1a20',
+		'--text-secondary': '#555',
+		'--text-muted': '#999',
+		'--accent': '#D97706',
+		'--accent-hover': '#B45309',
+		'--accent-dim': '#92610a',
+		'--success': '#059669',
+		'--error': '#DC2626',
+		'--warning': '#D97706',
+		'--info': '#2563EB',
+		'--border': '#d0d0c0',
+		'--bubble-idle': '#2563EB',
+		'--bubble-processing': '#4F46E5',
+		'--bubble-executing': '#059669',
+		'--bubble-proposing': '#D97706',
+		'--bubble-suggesting': '#7C3AED',
+		'--chat-user': '#2563EB',
+		'--chat-assistant': '#D97706',
+		'--chat-system': '#999'
+	}
+} as const;
+
+export type ThemeName = keyof typeof themes;
