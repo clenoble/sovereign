@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicholasio/tauri/dev/crates/tauri-utils/schema/capability.json",
+  "identifier": "default",
+  "description": "Default capabilities for Sovereign GE",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

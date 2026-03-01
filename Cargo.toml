@@ -80,6 +80,10 @@ base64 = "0.22"
 # RNG
 rand = "0.10"
 
+# Tauri (optional — UI migration)
+tauri = { version = "2.10", features = [] }
+tauri-build = { version = "2.5", features = [] }
+
 # Voice pipeline
 whisper-rs = "0.15"
 cpal = "0.17"
