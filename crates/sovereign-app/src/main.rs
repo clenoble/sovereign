@@ -311,6 +311,15 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::save_comms_config,
         ])
         .setup(move |app| {
+            // Auto-open DevTools in debug builds
+            #[cfg(debug_assertions)]
+            {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
+            }
+
             // Start the event forwarder — drains orch_rx and emits Tauri events
             if let Some(rx) = orch_rx.lock().unwrap().take() {
                 tauri_events::spawn_event_forwarder(app.handle().clone(), rx);

@@ -81,7 +81,7 @@ base64 = "0.22"
 rand = "0.10"
 
 # Tauri (optional — UI migration)
-tauri = { version = "2.10", features = [] }
+tauri = { version = "2.10", features = ["devtools"] }
 tauri-build = { version = "2.5", features = [] }
 
 # Voice pipeline

@@ -889,7 +889,9 @@ pub async fn delete_model(
 /// Bulk-load all data needed for the spatial canvas.
 #[tauri::command]
 pub async fn canvas_load(state: State<'_, AppState>) -> Result<CanvasData, String> {
+    tracing::info!("canvas_load: called from frontend");
     let docs = state.db.list_documents(None).await.map_err(|e| e.to_string())?;
+    tracing::info!("canvas_load: got {} documents from DB", docs.len());
     let threads = state.db.list_threads().await.map_err(|e| e.to_string())?;
     let rels = state.db.list_all_relationships().await.map_err(|e| e.to_string())?;
     let contacts = state.db.list_contacts().await.map_err(|e| e.to_string())?;
@@ -917,7 +919,7 @@ pub async fn canvas_load(state: State<'_, AppState>) -> Result<CanvasData, Strin
         }
     }
 
-    Ok(CanvasData {
+    let result = Ok(CanvasData {
         documents: docs
             .into_iter()
             .map(|d| {
@@ -993,7 +995,15 @@ pub async fn canvas_load(state: State<'_, AppState>) -> Result<CanvasData, Strin
                 }
             })
             .collect(),
-    })
+    });
+    tracing::info!("canvas_load: returning {} docs, {} threads, {} rels, {} contacts, {} milestones",
+        result.as_ref().map(|r| r.documents.len()).unwrap_or(0),
+        result.as_ref().map(|r| r.threads.len()).unwrap_or(0),
+        result.as_ref().map(|r| r.relationships.len()).unwrap_or(0),
+        result.as_ref().map(|r| r.contacts.len()).unwrap_or(0),
+        result.as_ref().map(|r| r.milestones.len()).unwrap_or(0),
+    );
+    result
 }
 
 /// Update a document's spatial canvas position.

@@ -3,7 +3,7 @@
 	import { chat } from '$lib/stores/chat';
 	import { currentTheme, applyTheme } from '$lib/stores/theme';
 	import { toggleTheme as toggleThemeCmd } from '$lib/api/commands';
-	import { canvas } from '$lib/stores/canvas';
+	import { canvas, navigateToDoc as canvasNavigateToDoc } from '$lib/stores/canvas.svelte';
 	import { documents } from '$lib/stores/documents';
 	import { contacts, totalUnread } from '$lib/stores/contacts';
 
@@ -42,7 +42,7 @@
 	}
 
 	function navigateToDoc(id: string) {
-		canvas.navigateToDoc(id);
+		canvasNavigateToDoc(id);
 	}
 
 	function openContact(id: string) {
@@ -51,9 +51,9 @@
 
 	// Recent docs: up to 5 most recently modified
 	let recentDocs = $derived(
-		$canvas.documents
+		canvas.documents
 			.slice()
-			.sort((a, b) => new Date(b.modified_at).getTime() - new Date(a.modified_at).getTime())
+			.sort((a: { modified_at: string }, b: { modified_at: string }) => new Date(b.modified_at).getTime() - new Date(a.modified_at).getTime())
 			.slice(0, 5)
 	);
 
@@ -82,9 +82,9 @@
 			<button
 				class="pinned-contact"
 				onclick={() => openContact(contact.id)}
-				title={contact.display_name}
+				title={contact.name}
 			>
-				<span class="contact-initial">{contact.display_name.charAt(0).toUpperCase()}</span>
+				<span class="contact-initial">{contact.name.charAt(0).toUpperCase()}</span>
 				{#if contact.unread_count > 0}
 					<span class="contact-badge">{contact.unread_count}</span>
 				{/if}

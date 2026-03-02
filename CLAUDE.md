@@ -118,6 +118,9 @@ cargo.exe build -p sovereign-app --target-dir "C:/cargo-target" -j 2
   Remove-Item '<target-dir>\debug\.fingerprint\sovereign-*' -Recurse -Force -ErrorAction SilentlyContinue
   ```
 
+#### Running the Tauri app from bash
+When launching `sovereign.exe` in the background (e.g. `./sovereign.exe &`), the shell reports exit code 0 almost immediately. **The app is still running** — the Tauri window runs in a separate GUI thread. The exit code 0 from the shell only indicates that the initial process setup completed. Use `tasklist | grep sovereign` or Task Manager to confirm the app is still running. Kill with `taskkill //F //IM sovereign.exe`.
+
 ## Testing
 
 ### WSL2 / Linux

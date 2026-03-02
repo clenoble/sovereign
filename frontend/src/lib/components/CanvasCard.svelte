@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { CanvasDocDto } from '$lib/api/commands';
-	import { canvas } from '$lib/stores/canvas';
+	import { canvas, selectCard, setDragging, moveCard, hoverCard } from '$lib/stores/canvas.svelte';
 	import { documents } from '$lib/stores/documents';
 	import { contextMenu } from '$lib/stores/app';
 
@@ -26,7 +26,7 @@
 		dragStart = { x: e.clientX, y: e.clientY };
 		dragOriginal = { x: doc.spatial_x, y: doc.spatial_y };
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-		canvas.selectCard(doc.id);
+		selectCard(doc.id);
 		e.stopPropagation();
 	}
 
@@ -36,17 +36,16 @@
 		const dy = e.clientY - dragStart.y;
 		if (!dragActivated && Math.abs(dx) + Math.abs(dy) < DEAD_ZONE) return;
 		dragActivated = true;
-		canvas.setDragging(doc.id);
+		setDragging(doc.id);
 		// Convert screen delta to world delta (divide by zoom)
-		const state = $canvas;
-		const worldDx = dx / state.camera.zoom;
-		const worldDy = dy / state.camera.zoom;
-		canvas.moveCard(doc.id, dragOriginal.x + worldDx, dragOriginal.y + worldDy);
+		const worldDx = dx / canvas.camera.zoom;
+		const worldDy = dy / canvas.camera.zoom;
+		moveCard(doc.id, dragOriginal.x + worldDx, dragOriginal.y + worldDy);
 	}
 
 	function handlePointerUp(e: PointerEvent) {
 		dragging = false;
-		canvas.setDragging(null);
+		setDragging(null);
 		(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
 	}
 
@@ -89,8 +88,8 @@
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}
 		oncontextmenu={handleContextMenu}
-		onpointerenter={() => canvas.hoverCard(doc.id)}
-		onpointerleave={() => canvas.hoverCard(null)}
+		onpointerenter={() => hoverCard(doc.id)}
+		onpointerleave={() => hoverCard(null)}
 	></div>
 {:else if zoom < 0.6}
 	<!-- LOD: title only -->
@@ -106,8 +105,8 @@
 		onpointerup={handlePointerUp}
 		ondblclick={handleDblClick}
 		oncontextmenu={handleContextMenu}
-		onpointerenter={() => canvas.hoverCard(doc.id)}
-		onpointerleave={() => canvas.hoverCard(null)}
+		onpointerenter={() => hoverCard(doc.id)}
+		onpointerleave={() => hoverCard(null)}
 	>
 		<div class="card-title">{doc.title}</div>
 	</div>
@@ -125,8 +124,8 @@
 		onpointerup={handlePointerUp}
 		ondblclick={handleDblClick}
 		oncontextmenu={handleContextMenu}
-		onpointerenter={() => canvas.hoverCard(doc.id)}
-		onpointerleave={() => canvas.hoverCard(null)}
+		onpointerenter={() => hoverCard(doc.id)}
+		onpointerleave={() => hoverCard(null)}
 	>
 		<div class="card-title">{doc.title}</div>
 		<div class="card-meta">{timeAgo(doc.modified_at)}</div>
