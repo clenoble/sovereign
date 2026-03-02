@@ -3,13 +3,18 @@
 	import { pendingAction } from '$lib/stores/app';
 	import { chatMessage, approveAction, rejectAction } from '$lib/api/commands';
 	import { get } from 'svelte/store';
+	import { marked } from 'marked';
 
 	let inputValue = $state('');
 	let messagesEl: HTMLDivElement | undefined = $state();
+	let copiedIdx = $state<number | null>(null);
 
 	const messages = chat.recent;
 	const generating = chat.generating;
 	const visible = chat.visible;
+
+	// Configure marked for safe rendering
+	marked.setOptions({ breaks: true, gfm: true });
 
 	function scrollToBottom() {
 		if (messagesEl) {
@@ -69,6 +74,48 @@
 		if (role === 'assistant') return 'AI';
 		return '\u2699'; // gear icon for system
 	}
+
+	function timeAgo(ts: number): string {
+		const diff = Date.now() - ts;
+		const mins = Math.floor(diff / 60000);
+		if (mins < 1) return 'now';
+		if (mins < 60) return `${mins}m`;
+		const hrs = Math.floor(mins / 60);
+		if (hrs < 24) return `${hrs}h`;
+		return `${Math.floor(hrs / 24)}d`;
+	}
+
+	function renderMarkdown(text: string): string {
+		return marked.parse(text) as string;
+	}
+
+	function provenanceClass(text: string): string {
+		if (text.includes('(owned)')) return 'prov-owned';
+		if (text.includes('(external)')) return 'prov-external';
+		return '';
+	}
+
+	async function copyMessage(text: string, idx: number) {
+		try {
+			await navigator.clipboard.writeText(text);
+			copiedIdx = idx;
+			setTimeout(() => { copiedIdx = null; }, 1500);
+		} catch { /* clipboard not available */ }
+	}
+
+	async function handleQuickApprove() {
+		chat.pushSystem('Approved.');
+		await approveAction();
+	}
+
+	async function handleQuickReject() {
+		chat.pushSystem('Rejected.');
+		await rejectAction('User rejected via button');
+	}
+
+	function isInjectionWarning(text: string): boolean {
+		return text.includes('Injection detected');
+	}
 </script>
 
 {#if $visible}
@@ -79,12 +126,33 @@
 		</div>
 
 		<div class="messages" bind:this={messagesEl}>
-			{#each $messages as msg}
-				<div class="message {msg.role}">
-					<span class="prefix">{rolePrefix(msg.role)}</span>
-					<span class="text">{msg.text}</span>
+			{#each $messages as msg, i}
+				<div class="message {msg.role} {provenanceClass(msg.text)}" class:injection-warning={msg.role === 'system' && isInjectionWarning(msg.text)}>
+					<div class="msg-header">
+						<span class="prefix">{rolePrefix(msg.role)}</span>
+						{#if msg.timestamp}
+							<span class="timestamp">{timeAgo(msg.timestamp)}</span>
+						{/if}
+						{#if msg.role === 'assistant'}
+							<button class="copy-btn" onclick={() => copyMessage(msg.text, i)} title="Copy">
+								{copiedIdx === i ? '\u2713' : '\u2398'}
+							</button>
+						{/if}
+					</div>
+					{#if msg.role === 'assistant'}
+						<div class="text msg-markdown">{@html renderMarkdown(msg.text)}</div>
+					{:else}
+						<span class="text">{msg.text}</span>
+					{/if}
 				</div>
 			{/each}
+
+			{#if $pendingAction}
+				<div class="quick-reply">
+					<button class="qr-approve" onclick={handleQuickApprove}>Approve</button>
+					<button class="qr-reject" onclick={handleQuickReject}>Reject</button>
+				</div>
+			{/if}
 
 			{#if $generating}
 				<div class="message system">
@@ -182,6 +250,72 @@
 		font-style: italic;
 	}
 
+	.msg-header {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-bottom: 2px;
+	}
+
+	.timestamp {
+		font-size: 0.7rem;
+		color: var(--text-muted);
+	}
+
+	.copy-btn {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 0.7rem;
+		padding: 0 2px;
+		opacity: 0;
+		transition: opacity 0.15s;
+	}
+	.message:hover .copy-btn {
+		opacity: 1;
+	}
+	.copy-btn:hover {
+		color: var(--text-primary);
+	}
+
+	.msg-markdown :global(p) {
+		margin: 4px 0;
+	}
+	.msg-markdown :global(code) {
+		background: rgba(255, 255, 255, 0.08);
+		padding: 1px 4px;
+		border-radius: 3px;
+		font-size: 0.8rem;
+	}
+	.msg-markdown :global(pre) {
+		background: rgba(0, 0, 0, 0.3);
+		padding: 8px 10px;
+		border-radius: 6px;
+		overflow-x: auto;
+		margin: 6px 0;
+	}
+	.msg-markdown :global(pre code) {
+		background: none;
+		padding: 0;
+	}
+	.msg-markdown :global(ul), .msg-markdown :global(ol) {
+		padding-left: 18px;
+		margin: 4px 0;
+	}
+	.msg-markdown :global(a) {
+		color: var(--accent);
+	}
+
+	.prov-owned {
+		border-left: 2px solid #4ea7e9;
+		padding-left: 8px;
+	}
+	.prov-external {
+		border-left: 2px solid #f97316;
+		padding-left: 8px;
+	}
+
 	.thinking {
 		animation: pulse 1.5s ease-in-out infinite;
 	}
@@ -229,5 +363,48 @@
 	}
 	.send-btn:hover {
 		background: var(--accent-hover);
+	}
+
+	.quick-reply {
+		display: flex;
+		gap: 8px;
+		padding: 6px 0;
+	}
+	.qr-approve {
+		background: #22c55e;
+		color: #000;
+		border: none;
+		border-radius: 6px;
+		padding: 6px 16px;
+		font-size: 0.8rem;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.qr-approve:hover {
+		background: #16a34a;
+	}
+	.qr-reject {
+		background: transparent;
+		color: var(--text-secondary);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 6px 16px;
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.qr-reject:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.injection-warning {
+		background: rgba(239, 68, 68, 0.1);
+		border-left: 3px solid #ef4444;
+		padding-left: 8px;
+		border-radius: 4px;
+	}
+	.injection-warning .text {
+		color: #fca5a5 !important;
+		font-style: normal !important;
 	}
 </style>

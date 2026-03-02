@@ -75,6 +75,56 @@ pub struct GenericPayload {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadRenamedPayload {
+    pub thread_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadDeletedPayload {
+    pub thread_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentMovedPayload {
+    pub doc_id: String,
+    pub new_thread_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NewMessagesPayload {
+    pub channel: String,
+    pub count: u32,
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ContactCreatedPayload {
+    pub contact_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InjectionDetectedPayload {
+    pub source: String,
+    pub indicators: Vec<String>,
+    pub severity: u8,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadMergedPayload {
+    pub target_id: String,
+    pub source_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadSplitPayload {
+    pub new_thread_id: String,
+    pub name: String,
+    pub doc_ids: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Event forwarder
 // ---------------------------------------------------------------------------
@@ -188,16 +238,69 @@ pub fn spawn_event_forwarder(
                     );
                 }
 
-                OrchestratorEvent::InjectionDetected { source, pattern } => {
+                OrchestratorEvent::InjectionDetected { source, indicators, severity, .. } => {
                     let _ = app_handle.emit(
                         "injection-detected",
-                        GenericPayload {
-                            message: format!("Injection detected in {source}: {pattern}"),
+                        InjectionDetectedPayload {
+                            source,
+                            indicators,
+                            severity,
                         },
                     );
                 }
 
-                // All other events: log but don't emit (Phase 2+ will handle)
+                // Phase 3: Thread operations
+                OrchestratorEvent::ThreadRenamed { thread_id, name } => {
+                    let _ = app_handle.emit(
+                        "thread-renamed",
+                        ThreadRenamedPayload { thread_id, name },
+                    );
+                }
+
+                OrchestratorEvent::ThreadDeleted { thread_id } => {
+                    let _ = app_handle.emit(
+                        "thread-deleted",
+                        ThreadDeletedPayload { thread_id },
+                    );
+                }
+
+                OrchestratorEvent::DocumentMoved { doc_id, new_thread_id } => {
+                    let _ = app_handle.emit(
+                        "document-moved",
+                        DocumentMovedPayload { doc_id, new_thread_id },
+                    );
+                }
+
+                OrchestratorEvent::ThreadMerged { target_id, source_id } => {
+                    let _ = app_handle.emit(
+                        "thread-merged",
+                        ThreadMergedPayload { target_id, source_id },
+                    );
+                }
+
+                OrchestratorEvent::ThreadSplit { new_thread_id, name, doc_ids } => {
+                    let _ = app_handle.emit(
+                        "thread-split",
+                        ThreadSplitPayload { new_thread_id, name, doc_ids },
+                    );
+                }
+
+                // Phase 3: Communications
+                OrchestratorEvent::NewMessagesReceived { channel, count, conversation_id } => {
+                    let _ = app_handle.emit(
+                        "new-messages",
+                        NewMessagesPayload { channel, count, conversation_id },
+                    );
+                }
+
+                OrchestratorEvent::ContactCreated { contact_id, name } => {
+                    let _ = app_handle.emit(
+                        "contact-created",
+                        ContactCreatedPayload { contact_id, name },
+                    );
+                }
+
+                // All other events: log but don't emit (Phase 4+ will handle)
                 other => {
                     tracing::debug!("Unhandled orchestrator event: {:?}", other);
                 }

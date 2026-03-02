@@ -2,6 +2,8 @@
 	import { searchVisible } from '$lib/stores/app';
 	import { searchDocuments, searchQuery } from '$lib/api/commands';
 	import type { SearchHit } from '$lib/api/commands';
+	import { documents } from '$lib/stores/documents';
+	import { canvas } from '$lib/stores/canvas';
 
 	let query = $state('');
 	let results = $state<SearchHit[]>([]);
@@ -57,14 +59,12 @@
 	}
 
 	function selectResult(id: string) {
-		// TODO Phase 3: navigate canvas to this document
-		console.log('Navigate to document:', id);
+		canvas.navigateToDoc(id);
 		searchVisible.set(false);
 	}
 
 	function openResult(id: string) {
-		// TODO Phase 2: open document panel
-		console.log('Open document:', id);
+		documents.openById(id);
 		searchVisible.set(false);
 	}
 </script>

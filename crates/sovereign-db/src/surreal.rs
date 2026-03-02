@@ -149,6 +149,17 @@ impl GraphDB for SurrealGraphDB {
         updated.ok_or_else(|| DbError::Query("Failed to update document".into()))
     }
 
+    async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
+        let (_table, _key) = parse_thing(id)?;
+        self.db
+            .query("UPDATE $id SET spatial_x = $x, spatial_y = $y, modified_at = time::now()")
+            .bind(("id", id.to_string()))
+            .bind(("x", x))
+            .bind(("y", y))
+            .await?;
+        Ok(())
+    }
+
     async fn delete_document(&self, id: &str) -> DbResult<()> {
         let (table, key) = parse_thing(id)?;
         if table != "document" {

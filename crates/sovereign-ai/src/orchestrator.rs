@@ -121,6 +121,31 @@ impl Orchestrator {
         self.feedback_rx = Some(tokio::sync::Mutex::new(rx));
     }
 
+    /// Get all trust entries for dashboard display.
+    pub fn trust_entries(&self) -> Vec<crate::trust::TrustEntryView> {
+        self.trust.lock().map(|t| t.all_entries()).unwrap_or_default()
+    }
+
+    /// Reset trust for a specific action.
+    pub fn reset_trust_action(&self, action: &str) {
+        if let Ok(mut trust) = self.trust.lock() {
+            trust.reset_action(action);
+            if let Err(e) = trust.save(&self.profile_dir) {
+                tracing::warn!("Failed to save trust after reset: {e}");
+            }
+        }
+    }
+
+    /// Reset all trust entries.
+    pub fn reset_trust_all(&self) {
+        if let Ok(mut trust) = self.trust.lock() {
+            trust.reset_all();
+            if let Err(e) = trust.save(&self.profile_dir) {
+                tracing::warn!("Failed to save trust after reset: {e}");
+            }
+        }
+    }
+
     /// Enable session log encryption with the given key.
     ///
     /// Re-opens the session log in encrypted mode. Each subsequent entry will be
@@ -445,7 +470,7 @@ impl Orchestrator {
                 if let Some(call) = calls.first() {
                     tracing::info!("Tool call: {} (iteration {})", call.name, iterations);
 
-                    let tool_output = if crate::tools::is_write_tool(&call.name) {
+                    let mut tool_output = if crate::tools::is_write_tool(&call.name) {
                         // Write tool — gate through action gravity system
                         let level = security::action_level(&call.name);
                         let trusted = {
@@ -476,6 +501,15 @@ impl Orchestrator {
                                     &call.arguments,
                                 ),
                             };
+                            // Conversational confirmation: send a natural-language question first
+                            let confirm_text = format_confirmation_message(
+                                &call.name,
+                                &call.arguments,
+                            );
+                            let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
+                                text: confirm_text,
+                            });
+
                             let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
                                 BubbleVisualState::Proposing,
                             ));
@@ -522,6 +556,30 @@ impl Orchestrator {
                         let result = crate::tools::execute_tool(call, self.db.as_ref()).await;
                         format!("[{}] {}", result.tool_name, result.output)
                     };
+
+                    // Scan tool output for injection attempts
+                    let injection_matches = injection::scan_for_injection(&tool_output);
+                    if !injection_matches.is_empty() {
+                        let max_severity = injection_matches.iter().map(|m| m.severity).max().unwrap_or(0);
+                        let indicator_descriptions: Vec<String> = injection_matches.iter()
+                            .map(|m| m.pattern_name.clone())
+                            .collect();
+
+                        let _ = self.event_tx.send(OrchestratorEvent::InjectionDetected {
+                            source: call.name.clone(),
+                            pattern: indicator_descriptions.first().cloned().unwrap_or_default(),
+                            indicators: indicator_descriptions.clone(),
+                            severity: max_severity,
+                        });
+
+                        // For high severity (>= 7), filter the content before feeding back to LLM
+                        if max_severity >= 7 {
+                            tool_output = format!(
+                                "[CONTENT FILTERED — injection indicators detected: {}]",
+                                indicator_descriptions.join(", ")
+                            );
+                        }
+                    }
 
                     // Append assistant turn (tool call) and tool result to history
                     turns.push(crate::llm::context::ChatTurn {
@@ -1215,9 +1273,14 @@ impl Orchestrator {
                         "injection_detected",
                         &format!("{}: {}", doc_id, top.pattern_name),
                     );
+                    let indicator_descriptions: Vec<String> = matches.iter()
+                        .map(|m| m.pattern_name.clone())
+                        .collect();
                     let _ = self.event_tx.send(OrchestratorEvent::InjectionDetected {
                         source: doc_id.to_string(),
                         pattern: top.pattern_name.clone(),
+                        indicators: indicator_descriptions,
+                        severity: top.severity,
                     });
                     return true;
                 }
@@ -1365,6 +1428,31 @@ fn format_tool_proposal(name: &str, args: &serde_json::Value) -> String {
             args["thread"].as_str().unwrap_or("?"),
         ),
         _ => format!("{}: {}", name, args),
+    }
+}
+
+/// Build a natural-language confirmation question for a proposed action.
+fn format_confirmation_message(name: &str, args: &serde_json::Value) -> String {
+    match name {
+        "create_document" => format!(
+            "I'll create a new document called '{}'. Sound good?",
+            args["title"].as_str().unwrap_or("Untitled"),
+        ),
+        "create_thread" => format!(
+            "I'll create a new thread called '{}'. Want me to go ahead?",
+            args["name"].as_str().unwrap_or("New Thread"),
+        ),
+        "rename_thread" => format!(
+            "I'll rename the thread from '{}' to '{}'. Shall I?",
+            args["old_name"].as_str().unwrap_or("?"),
+            args["new_name"].as_str().unwrap_or("?"),
+        ),
+        "move_document" => format!(
+            "I'll move '{}' to thread '{}'. OK?",
+            args["title"].as_str().unwrap_or("?"),
+            args["thread"].as_str().unwrap_or("?"),
+        ),
+        _ => format!("I'd like to perform '{}'. Ready?", name),
     }
 }
 

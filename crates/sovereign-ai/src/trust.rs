@@ -106,6 +106,38 @@ impl TrustTracker {
         let tracker: Self = serde_json::from_str(&data)?;
         Ok(tracker)
     }
+
+    /// Return all trust entries for dashboard display.
+    pub fn all_entries(&self) -> Vec<TrustEntryView> {
+        self.entries
+            .iter()
+            .map(|(action, entry)| TrustEntryView {
+                action: action.clone(),
+                approval_count: entry.consecutive_approvals,
+                auto_approve: entry.consecutive_approvals >= self.auto_approve_threshold,
+                last_rejected: entry.last_rejection.clone(),
+            })
+            .collect()
+    }
+
+    /// Reset trust for a specific action (removes its entry).
+    pub fn reset_action(&mut self, action: &str) {
+        self.entries.remove(action);
+    }
+
+    /// Reset all trust entries.
+    pub fn reset_all(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// View of a single trust entry for the dashboard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustEntryView {
+    pub action: String,
+    pub approval_count: u32,
+    pub auto_approve: bool,
+    pub last_rejected: Option<String>,
 }
 
 impl Default for TrustTracker {

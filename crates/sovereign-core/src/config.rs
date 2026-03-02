@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub database: DatabaseConfig,
@@ -19,7 +19,7 @@ pub struct AppConfig {
     pub comms: CommsAppConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DatabaseConfig {
     pub mode: String,
@@ -35,7 +35,7 @@ impl Default for DatabaseConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
     pub theme: String,
@@ -53,7 +53,7 @@ impl Default for UiConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiConfig {
     pub model_dir: String,
@@ -78,7 +78,7 @@ impl Default for AiConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VoiceConfig {
     pub enabled: bool,
@@ -103,7 +103,7 @@ impl Default for VoiceConfig {
 }
 
 /// Encryption-at-rest configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CryptoConfig {
     /// Whether encryption is enabled.
@@ -137,7 +137,7 @@ impl Default for CryptoConfig {
 }
 
 /// P2P networking configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct P2pConfig {
     /// Whether P2P networking is enabled.
@@ -162,7 +162,7 @@ impl Default for P2pConfig {
 }
 
 /// Communications configuration (email, messaging, etc.)
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CommsAppConfig {
     pub enabled: bool,

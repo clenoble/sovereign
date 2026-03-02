@@ -35,3 +35,30 @@ export const searchVisible = writable(false);
 
 /** Whether the orchestrator is available. */
 export const orchestratorAvailable = writable(false);
+
+/** Whether the model management panel is visible. */
+export const modelPanelVisible = writable(false);
+
+/** Whether the inbox panel is visible. */
+export const inboxVisible = writable(false);
+
+/** Contact panel state (null = closed). */
+export const contactPanelState = writable<{ contactId: string } | null>(null);
+
+// -- Phase 4 --
+
+/** Authentication state machine. */
+export type AuthState = 'checking' | 'onboarding' | 'login' | 'ready';
+export const authState = writable<AuthState>('checking');
+
+/** Whether the settings panel is visible. */
+export const settingsVisible = writable(false);
+
+/** Context menu state (null = closed). */
+export interface ContextMenuState {
+	x: number;
+	y: number;
+	docId: string;
+	threadId: string;
+}
+export const contextMenu = writable<ContextMenuState | null>(null);

@@ -88,6 +88,14 @@ impl GraphDB for MockGraphDB {
         Ok(doc.clone())
     }
 
+    async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
+        let mut docs = self.documents.write().unwrap();
+        let doc = docs.get_mut(id).ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        doc.spatial_x = x;
+        doc.spatial_y = y;
+        Ok(())
+    }
+
     async fn delete_document(&self, id: &str) -> DbResult<()> {
         self.documents.write().unwrap().remove(id);
         Ok(())

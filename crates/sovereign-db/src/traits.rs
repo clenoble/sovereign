@@ -31,6 +31,9 @@ pub trait GraphDB: Send + Sync {
     ) -> DbResult<Document>;
     async fn delete_document(&self, id: &str) -> DbResult<()>;
 
+    /// Update a document's spatial canvas position.
+    async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()>;
+
     /// Search documents by title (case-insensitive substring match).
     async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>>;
 
