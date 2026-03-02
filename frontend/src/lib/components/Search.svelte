@@ -3,7 +3,7 @@
 	import { searchDocuments, searchQuery } from '$lib/api/commands';
 	import type { SearchHit } from '$lib/api/commands';
 	import { documents } from '$lib/stores/documents';
-	import { canvas } from '$lib/stores/canvas';
+	import { navigateToDoc } from '$lib/stores/canvas.svelte';
 
 	let query = $state('');
 	let results = $state<SearchHit[]>([]);
@@ -59,7 +59,7 @@
 	}
 
 	function selectResult(id: string) {
-		canvas.navigateToDoc(id);
+		navigateToDoc(id);
 		searchVisible.set(false);
 	}
 

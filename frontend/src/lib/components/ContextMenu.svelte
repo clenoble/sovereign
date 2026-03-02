@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { contextMenu } from '$lib/stores/app';
-	import { canvas } from '$lib/stores/canvas';
+	import { canvas, refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
 	import { documents } from '$lib/stores/documents';
 	import { deleteDocument, moveDocumentToThread } from '$lib/api/commands';
 
@@ -17,7 +17,7 @@
 		if ($contextMenu) {
 			try {
 				await deleteDocument($contextMenu.docId);
-				await canvas.refresh();
+				await canvasRefresh();
 			} catch (e) {
 				console.error('Delete failed:', e);
 			}
@@ -29,7 +29,7 @@
 		if ($contextMenu) {
 			try {
 				await moveDocumentToThread($contextMenu.docId, threadId);
-				await canvas.refresh();
+				await canvasRefresh();
 			} catch (e) {
 				console.error('Move failed:', e);
 			}
@@ -70,7 +70,7 @@
 			Move to Thread
 			{#if showThreadSub}
 				<div class="sub-menu">
-					{#each $canvas.threads as thread}
+					{#each canvas.threads as thread}
 						{#if thread.id !== $contextMenu.threadId}
 							<button class="ctx-item" onclick={() => handleMoveToThread(thread.id)}>
 								{thread.name}

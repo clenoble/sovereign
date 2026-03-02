@@ -1,7 +1,15 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { canvas, type CanvasState } from '$lib/stores/canvas';
-	import { createThread as apiCreateThread, moveDocumentToThread, importFile } from '$lib/api/commands';
+	import {
+		canvas,
+		load as canvasLoad,
+		refresh as canvasRefresh,
+		panBy,
+		zoomAt,
+		home,
+		type CanvasState
+	} from '$lib/stores/canvas.svelte';
+	import { createThread as apiCreateThread, importFile } from '$lib/api/commands';
 	import CanvasCard from './CanvasCard.svelte';
 	import Minimap from './Minimap.svelte';
 
@@ -22,7 +30,7 @@
 	let newThreadName = $state('');
 
 	onMount(() => {
-		canvas.load();
+		canvasLoad();
 		ctx = canvasEl.getContext('2d');
 		resizeCanvas();
 		const resizeObs = new ResizeObserver(resizeCanvas);
@@ -34,12 +42,12 @@
 		if (!canvasEl || !containerEl) return;
 		canvasEl.width = containerEl.clientWidth;
 		canvasEl.height = containerEl.clientHeight;
-		drawBackground($canvas);
+		drawBackground(canvas);
 	}
 
 	// Redraw background whenever canvas state changes
 	$effect(() => {
-		drawBackground($canvas);
+		drawBackground(canvas);
 	});
 
 	function drawBackground(state: CanvasState) {
@@ -65,17 +73,14 @@
 
 		for (let i = 0; i < threads.length; i++) {
 			const y = i * laneHeight;
-			// Alternating lane backgrounds
 			ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.04)';
 			ctx.fillRect(-100, y, maxX + 200, laneHeight);
 
-			// Lane label
 			ctx.fillStyle = 'rgba(255,255,255,0.3)';
 			ctx.font = '13px -apple-system, sans-serif';
 			ctx.textBaseline = 'middle';
 			ctx.fillText(threads[i].name, 10, y + laneHeight / 2);
 
-			// Lane separator line
 			ctx.strokeStyle = 'rgba(255,255,255,0.08)';
 			ctx.lineWidth = 1;
 			ctx.beginPath();
@@ -95,7 +100,6 @@
 			const toX = toDoc.spatial_x + 100;
 			const toY = toDoc.spatial_y + 40;
 
-			// Color by relationship type
 			let color = 'rgba(100,180,255,0.4)';
 			if (rel.relation_type === 'DerivedFrom') color = 'rgba(255,200,100,0.4)';
 			else if (rel.relation_type === 'Contradicts') color = 'rgba(255,100,100,0.4)';
@@ -104,7 +108,6 @@
 			ctx.strokeStyle = color;
 			ctx.lineWidth = 1 + rel.strength * 2;
 			ctx.beginPath();
-			// Bezier curve
 			const midX = (fromX + toX) / 2;
 			const midY = (fromY + toY) / 2 - 30;
 			ctx.moveTo(fromX, fromY);
@@ -118,7 +121,6 @@
 			if (!thread) continue;
 			const laneIdx = threadOrder.get(ms.thread_id) ?? 0;
 			const y = laneIdx * laneHeight;
-			// Find x position based on timestamp (simple linear from min to max dates)
 			const msTime = new Date(ms.timestamp).getTime();
 			const x = 200 + ((msTime % 100000000) / 100000000) * maxX;
 
@@ -141,11 +143,10 @@
 	// Pan handlers
 	function handleCanvasPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
-		// Only pan if clicking on empty canvas
 		if ((e.target as HTMLElement).closest('.canvas-card')) return;
 		panning = true;
 		panStart = { x: e.clientX, y: e.clientY };
-		panCameraStart = { x: $canvas.camera.panX, y: $canvas.camera.panY };
+		panCameraStart = { x: canvas.camera.panX, y: canvas.camera.panY };
 		containerEl.setPointerCapture(e.pointerId);
 	}
 
@@ -153,9 +154,9 @@
 		if (!panning) return;
 		const dx = e.clientX - panStart.x;
 		const dy = e.clientY - panStart.y;
-		canvas.panBy(
-			panCameraStart.x + dx - $canvas.camera.panX,
-			panCameraStart.y + dy - $canvas.camera.panY
+		panBy(
+			panCameraStart.x + dx - canvas.camera.panX,
+			panCameraStart.y + dy - canvas.camera.panY
 		);
 	}
 
@@ -168,24 +169,24 @@
 
 	function handleWheel(e: WheelEvent) {
 		e.preventDefault();
-		canvas.zoomAt(e.clientX, e.clientY, e.deltaY);
+		zoomAt(e.clientX, e.clientY, e.deltaY);
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'h' || e.key === 'H') {
-			canvas.home();
+			home();
 		} else if (e.key === '+' || e.key === '=') {
-			canvas.zoomAt(window.innerWidth / 2, window.innerHeight / 2, -100);
+			zoomAt(window.innerWidth / 2, window.innerHeight / 2, -100);
 		} else if (e.key === '-') {
-			canvas.zoomAt(window.innerWidth / 2, window.innerHeight / 2, 100);
+			zoomAt(window.innerWidth / 2, window.innerHeight / 2, 100);
 		} else if (e.key === 'ArrowLeft') {
-			canvas.panBy(50, 0);
+			panBy(50, 0);
 		} else if (e.key === 'ArrowRight') {
-			canvas.panBy(-50, 0);
+			panBy(-50, 0);
 		} else if (e.key === 'ArrowUp') {
-			canvas.panBy(0, 50);
+			panBy(0, 50);
 		} else if (e.key === 'ArrowDown') {
-			canvas.panBy(0, -50);
+			panBy(0, -50);
 		}
 	}
 
@@ -196,7 +197,7 @@
 			await apiCreateThread(name, '');
 			newThreadName = '';
 			showNewThread = false;
-			canvas.refresh();
+			canvasRefresh();
 		} catch (e) {
 			console.error('Failed to create thread:', e);
 		}
@@ -210,15 +211,13 @@
 
 		for (const file of e.dataTransfer.files) {
 			try {
-				// Tauri provides the path via webkitRelativePath or a custom property
-				// For Tauri v2, we use the file path from the drag event
 				const filePath = (file as any).path || file.name;
 				await importFile(filePath);
 			} catch (err) {
 				console.error('Failed to import file:', err);
 			}
 		}
-		canvas.refresh();
+		canvasRefresh();
 	}
 </script>
 
@@ -242,14 +241,14 @@
 	<!-- Card layer with CSS transform for pan/zoom -->
 	<div
 		class="card-layer"
-		style="transform: translate({$canvas.camera.panX}px, {$canvas.camera.panY}px) scale({$canvas.camera.zoom});"
+		style="transform: translate({canvas.camera.panX}px, {canvas.camera.panY}px) scale({canvas.camera.zoom});"
 	>
-		{#each $canvas.documents as doc (doc.id)}
+		{#each canvas.documents as doc (doc.id)}
 			<CanvasCard
 				{doc}
-				isHovered={$canvas.hoveredCardId === doc.id}
-				isSelected={$canvas.selectedCardId === doc.id}
-				zoom={$canvas.camera.zoom}
+				isHovered={canvas.hoveredCardId === doc.id}
+				isSelected={canvas.selectedCardId === doc.id}
+				zoom={canvas.camera.zoom}
 			/>
 		{/each}
 	</div>
@@ -280,10 +279,12 @@
 	<!-- Minimap overlay -->
 	<Minimap />
 
-	<!-- Loading / empty state -->
-	{#if !$canvas.loaded}
+	<!-- Loading / empty / error state -->
+	{#if canvas.loadError}
+		<div class="canvas-status" style="color: #ff6666;">Error: {canvas.loadError}</div>
+	{:else if !canvas.loaded}
 		<div class="canvas-status">Loading canvas...</div>
-	{:else if $canvas.documents.length === 0}
+	{:else if canvas.documents.length === 0}
 		<div class="canvas-status">No documents yet. Create one via chat or search.</div>
 	{/if}
 

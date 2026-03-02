@@ -9,7 +9,7 @@ import {
 	type BubbleState
 } from '$lib/stores/app';
 import { documents } from '$lib/stores/documents';
-import { canvas } from '$lib/stores/canvas';
+import { refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
 import { contacts } from '$lib/stores/contacts';
 
 // Payload types matching the Rust-side structs
@@ -163,31 +163,31 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	// Phase 3: Thread + canvas events
 	unlisteners.push(
 		await listen<ThreadRenamedPayload>('thread-renamed', () => {
-			canvas.refresh();
+			canvasRefresh();
 		})
 	);
 
 	unlisteners.push(
 		await listen<ThreadDeletedPayload>('thread-deleted', () => {
-			canvas.refresh();
+			canvasRefresh();
 		})
 	);
 
 	unlisteners.push(
 		await listen<DocumentMovedPayload>('document-moved', () => {
-			canvas.refresh();
+			canvasRefresh();
 		})
 	);
 
 	unlisteners.push(
 		await listen<ThreadMergedPayload>('thread-merged', () => {
-			canvas.refresh();
+			canvasRefresh();
 		})
 	);
 
 	unlisteners.push(
 		await listen<ThreadSplitPayload>('thread-split', () => {
-			canvas.refresh();
+			canvasRefresh();
 		})
 	);
 

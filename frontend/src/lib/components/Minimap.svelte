@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { canvas } from '$lib/stores/canvas';
+	import { canvas, panBy, type CanvasState } from '$lib/stores/canvas.svelte';
 
 	const MAP_W = 200;
 	const MAP_H = 120;
@@ -14,10 +14,10 @@
 	});
 
 	$effect(() => {
-		drawMinimap($canvas);
+		drawMinimap(canvas);
 	});
 
-	function drawMinimap(state: typeof $canvas) {
+	function drawMinimap(state: CanvasState) {
 		if (!ctx || !visible) return;
 		ctx.clearRect(0, 0, MAP_W, MAP_H);
 		const { documents, camera } = state;
@@ -61,7 +61,7 @@
 		const mx = e.clientX - rect.left;
 		const my = e.clientY - rect.top;
 
-		const { documents, camera } = $canvas;
+		const { documents, camera } = canvas;
 		if (documents.length === 0) return;
 
 		let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -82,7 +82,7 @@
 		const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
 		const vh = typeof window !== 'undefined' ? window.innerHeight - 44 : 700;
 
-		canvas.panBy(
+		panBy(
 			-worldX * camera.zoom + vw / 2 - camera.panX,
 			-worldY * camera.zoom + vh / 2 - camera.panY
 		);
