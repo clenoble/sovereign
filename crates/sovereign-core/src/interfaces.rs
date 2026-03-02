@@ -34,7 +34,12 @@ pub enum OrchestratorEvent {
     ActionProposed { proposal: ProposedAction },
     ActionExecuted { action: String, success: bool },
     ActionRejected { action: String, reason: String },
-    InjectionDetected { source: String, pattern: String },
+    InjectionDetected {
+        source: String,
+        pattern: String,
+        indicators: Vec<String>,
+        severity: u8,
+    },
     BubbleState(BubbleVisualState),
     ThreadCreated { thread_id: String, name: String },
     ThreadRenamed { thread_id: String, name: String },

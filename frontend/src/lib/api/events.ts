@@ -8,6 +8,9 @@ import {
 	activeSuggestion,
 	type BubbleState
 } from '$lib/stores/app';
+import { documents } from '$lib/stores/documents';
+import { canvas } from '$lib/stores/canvas';
+import { contacts } from '$lib/stores/contacts';
 
 // Payload types matching the Rust-side structs
 interface ChatResponsePayload {
@@ -40,6 +43,47 @@ interface SkillResultPayload {
 	action: string;
 	kind: string;
 	data: string;
+}
+interface DocumentCreatedPayload {
+	doc_id: string;
+	title: string;
+}
+interface DocumentOpenedPayload {
+	doc_id: string;
+}
+interface ThreadRenamedPayload {
+	thread_id: string;
+	name: string;
+}
+interface ThreadDeletedPayload {
+	thread_id: string;
+}
+interface DocumentMovedPayload {
+	doc_id: string;
+	new_thread_id: string;
+}
+interface NewMessagesPayload {
+	channel: string;
+	count: number;
+	conversation_id: string;
+}
+interface ContactCreatedPayload {
+	contact_id: string;
+	name: string;
+}
+interface ThreadMergedPayload {
+	target_id: string;
+	source_id: string;
+}
+interface ThreadSplitPayload {
+	new_thread_id: string;
+	name: string;
+	doc_ids: string[];
+}
+interface InjectionDetectedPayload {
+	source: string;
+	indicators: string[];
+	severity: number;
 }
 
 /** Subscribe to all backend events. Returns an unlisten function. */
@@ -101,6 +145,74 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	unlisteners.push(
 		await listen<SkillResultPayload>('skill-result', (e) => {
 			chat.pushSystem(`Skill "${e.payload.skill}": ${e.payload.data}`);
+		})
+	);
+
+	unlisteners.push(
+		await listen<DocumentCreatedPayload>('document-created', (e) => {
+			documents.openById(e.payload.doc_id);
+		})
+	);
+
+	unlisteners.push(
+		await listen<DocumentOpenedPayload>('document-opened', (e) => {
+			documents.openById(e.payload.doc_id);
+		})
+	);
+
+	// Phase 3: Thread + canvas events
+	unlisteners.push(
+		await listen<ThreadRenamedPayload>('thread-renamed', () => {
+			canvas.refresh();
+		})
+	);
+
+	unlisteners.push(
+		await listen<ThreadDeletedPayload>('thread-deleted', () => {
+			canvas.refresh();
+		})
+	);
+
+	unlisteners.push(
+		await listen<DocumentMovedPayload>('document-moved', () => {
+			canvas.refresh();
+		})
+	);
+
+	unlisteners.push(
+		await listen<ThreadMergedPayload>('thread-merged', () => {
+			canvas.refresh();
+		})
+	);
+
+	unlisteners.push(
+		await listen<ThreadSplitPayload>('thread-split', () => {
+			canvas.refresh();
+		})
+	);
+
+	// Phase 3: Comms events
+	unlisteners.push(
+		await listen<NewMessagesPayload>('new-messages', () => {
+			contacts.refresh();
+		})
+	);
+
+	unlisteners.push(
+		await listen<ContactCreatedPayload>('contact-created', () => {
+			contacts.refresh();
+		})
+	);
+
+	// Phase 5: Injection detection
+	unlisteners.push(
+		await listen<InjectionDetectedPayload>('injection-detected', (e) => {
+			const p = e.payload;
+			const severityLabel = p.severity >= 7 ? 'HIGH' : p.severity >= 4 ? 'MEDIUM' : 'LOW';
+			const filtered = p.severity >= 7 ? ' Content was filtered for safety.' : '';
+			chat.pushSystem(
+				`\u26a0\ufe0f Injection detected [${severityLabel}] in "${p.source}": ${p.indicators.join(', ')}.${filtered}`
+			);
 		})
 	);
 

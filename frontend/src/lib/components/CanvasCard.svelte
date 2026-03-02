@@ -1,0 +1,217 @@
+<script lang="ts">
+	import type { CanvasDocDto } from '$lib/api/commands';
+	import { canvas } from '$lib/stores/canvas';
+	import { documents } from '$lib/stores/documents';
+	import { contextMenu } from '$lib/stores/app';
+
+	interface Props {
+		doc: CanvasDocDto;
+		isHovered: boolean;
+		isSelected: boolean;
+		zoom: number;
+	}
+
+	let { doc, isHovered, isSelected, zoom = 1 }: Props = $props();
+
+	let dragging = false;
+	let dragStart = { x: 0, y: 0 };
+	let dragOriginal = { x: 0, y: 0 };
+	const DEAD_ZONE = 3;
+	let dragActivated = false;
+
+	function handlePointerDown(e: PointerEvent) {
+		if (e.button !== 0) return;
+		dragging = true;
+		dragActivated = false;
+		dragStart = { x: e.clientX, y: e.clientY };
+		dragOriginal = { x: doc.spatial_x, y: doc.spatial_y };
+		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		canvas.selectCard(doc.id);
+		e.stopPropagation();
+	}
+
+	function handlePointerMove(e: PointerEvent) {
+		if (!dragging) return;
+		const dx = e.clientX - dragStart.x;
+		const dy = e.clientY - dragStart.y;
+		if (!dragActivated && Math.abs(dx) + Math.abs(dy) < DEAD_ZONE) return;
+		dragActivated = true;
+		canvas.setDragging(doc.id);
+		// Convert screen delta to world delta (divide by zoom)
+		const state = $canvas;
+		const worldDx = dx / state.camera.zoom;
+		const worldDy = dy / state.camera.zoom;
+		canvas.moveCard(doc.id, dragOriginal.x + worldDx, dragOriginal.y + worldDy);
+	}
+
+	function handlePointerUp(e: PointerEvent) {
+		dragging = false;
+		canvas.setDragging(null);
+		(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+	}
+
+	function handleDblClick() {
+		documents.openById(doc.id);
+	}
+
+	function handleContextMenu(e: MouseEvent) {
+		e.preventDefault();
+		e.stopPropagation();
+		contextMenu.set({
+			x: e.clientX,
+			y: e.clientY,
+			docId: doc.id,
+			threadId: doc.thread_id
+		});
+	}
+
+	function timeAgo(iso: string): string {
+		const diff = Date.now() - new Date(iso).getTime();
+		const mins = Math.floor(diff / 60000);
+		if (mins < 1) return 'just now';
+		if (mins < 60) return `${mins}m ago`;
+		const hrs = Math.floor(mins / 60);
+		if (hrs < 24) return `${hrs}h ago`;
+		const days = Math.floor(hrs / 24);
+		return `${days}d ago`;
+	}
+</script>
+
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+{#if zoom < 0.3}
+	<!-- LOD: dot only -->
+	<div
+		class="canvas-dot"
+		class:owned={doc.is_owned}
+		class:external={!doc.is_owned}
+		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px;"
+		onpointerdown={handlePointerDown}
+		onpointermove={handlePointerMove}
+		onpointerup={handlePointerUp}
+		oncontextmenu={handleContextMenu}
+		onpointerenter={() => canvas.hoverCard(doc.id)}
+		onpointerleave={() => canvas.hoverCard(null)}
+	></div>
+{:else if zoom < 0.6}
+	<!-- LOD: title only -->
+	<div
+		class="canvas-card simplified"
+		class:owned={doc.is_owned}
+		class:external={!doc.is_owned}
+		class:hovered={isHovered}
+		class:selected={isSelected}
+		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px;"
+		onpointerdown={handlePointerDown}
+		onpointermove={handlePointerMove}
+		onpointerup={handlePointerUp}
+		ondblclick={handleDblClick}
+		oncontextmenu={handleContextMenu}
+		onpointerenter={() => canvas.hoverCard(doc.id)}
+		onpointerleave={() => canvas.hoverCard(null)}
+	>
+		<div class="card-title">{doc.title}</div>
+	</div>
+{:else}
+	<!-- LOD: full card -->
+	<div
+		class="canvas-card"
+		class:owned={doc.is_owned}
+		class:external={!doc.is_owned}
+		class:hovered={isHovered}
+		class:selected={isSelected}
+		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px;"
+		onpointerdown={handlePointerDown}
+		onpointermove={handlePointerMove}
+		onpointerup={handlePointerUp}
+		ondblclick={handleDblClick}
+		oncontextmenu={handleContextMenu}
+		onpointerenter={() => canvas.hoverCard(doc.id)}
+		onpointerleave={() => canvas.hoverCard(null)}
+	>
+		<div class="card-title">{doc.title}</div>
+		<div class="card-meta">{timeAgo(doc.modified_at)}</div>
+	</div>
+{/if}
+
+<style>
+	.canvas-card {
+		position: absolute;
+		width: 200px;
+		height: 80px;
+		border-radius: 8px;
+		padding: 10px 12px;
+		cursor: grab;
+		user-select: none;
+		display: flex;
+		flex-direction: column;
+		justify-content: space-between;
+		background: var(--bg-panel);
+		border: 2px solid var(--border);
+		transition: box-shadow 0.15s;
+		overflow: hidden;
+	}
+
+	.canvas-card:active {
+		cursor: grabbing;
+	}
+
+	.owned {
+		border-color: #5a9fd4;
+		background: #1b2a3a;
+	}
+
+	.external {
+		border-color: #e07c6a;
+		background: #3a2020;
+		transform: skewX(-5deg);
+		border-radius: 4px;
+	}
+	.external .card-title,
+	.external .card-meta {
+		transform: skewX(5deg);
+	}
+
+	.hovered {
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+		filter: brightness(1.1);
+	}
+
+	.selected {
+		border-width: 3px;
+		box-shadow: 0 0 0 2px var(--accent);
+	}
+
+	.card-title {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--text-primary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.card-meta {
+		font-size: 0.7rem;
+		color: var(--text-muted);
+	}
+
+	.canvas-dot {
+		position: absolute;
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		cursor: grab;
+	}
+	.canvas-dot.owned {
+		background: #5a9fd4;
+	}
+	.canvas-dot.external {
+		background: #e07c6a;
+	}
+
+	.simplified {
+		height: auto;
+		min-height: 40px;
+		padding: 8px 10px;
+	}
+</style>

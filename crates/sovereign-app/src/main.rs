@@ -20,7 +20,6 @@ use sovereign_core::config::AppConfig;
 use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent};
 use sovereign_core::security::ActionDecision;
 use sovereign_core::lifecycle;
-#[cfg(feature = "iced-ui")]
 use sovereign_db::GraphDB;
 
 #[cfg(feature = "comms")]
@@ -146,8 +145,16 @@ fn main() -> Result<()> {
 /// Launch the Tauri web UI: initialize backend subsystems, then start Tauri.
 #[cfg(feature = "tauri-ui")]
 fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
+    // Compute profile directory (~/.sovereign)
+    let profile_dir = {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "/tmp".into());
+        std::path::PathBuf::from(home).join(".sovereign")
+    };
+
     // Run async backend setup inside the existing runtime
-    let (db, orchestrator, skill_registry, skill_db, decision_tx, feedback_tx, orch_tx, orch_rx) =
+    let (db, orchestrator, skill_registry, skill_db, decision_tx, feedback_tx, orch_tx, orch_rx, autocommit, model_assignments) =
         rt.block_on(async {
             let db = create_db(config).await?;
             seed::seed_if_empty(&db).await?;
@@ -207,14 +214,29 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 }
             };
 
+            // Auto-commit engine
+            let autocommit = Arc::new(tokio::sync::Mutex::new(
+                sovereign_ai::AutoCommitEngine::new(db_arc.clone()),
+            ));
+
+            // Model assignments from config
+            let model_assignments = tauri_state::ModelAssignments {
+                router: config.ai.router_model.clone(),
+                reasoning: config.ai.reasoning_model.clone(),
+            };
+
             Ok::<_, anyhow::Error>((
                 db_arc, orchestrator, Arc::new(registry), skill_db,
                 decision_tx, feedback_tx, orch_tx, orch_rx,
+                autocommit, model_assignments,
             ))
         })?;
 
     // Wrap orch_rx so it can be moved into the setup closure
     let orch_rx = std::sync::Mutex::new(Some(orch_rx));
+
+    // Clone DB for purge background task
+    let purge_db = db.clone();
 
     // Build Tauri app
     tauri::Builder::default()
@@ -228,6 +250,9 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             feedback_tx,
             orch_tx,
             theme: std::sync::Mutex::new("dark".to_string()),
+            autocommit: autocommit.clone(),
+            model_assignments: std::sync::Mutex::new(model_assignments),
+            profile_dir,
         })
         .invoke_handler(tauri::generate_handler![
             tauri_commands::greet,
@@ -243,12 +268,77 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::list_threads,
             tauri_commands::toggle_theme,
             tauri_commands::get_theme,
+            // Phase 2: Document CRUD + version history + skills + models
+            tauri_commands::get_document,
+            tauri_commands::save_document,
+            tauri_commands::create_document,
+            tauri_commands::close_document,
+            tauri_commands::list_commits,
+            tauri_commands::restore_commit,
+            tauri_commands::list_skills_for_doc,
+            tauri_commands::execute_skill,
+            tauri_commands::scan_models,
+            tauri_commands::assign_model_role,
+            tauri_commands::delete_model,
+            // Phase 3: Canvas + threads + contacts + messaging
+            tauri_commands::canvas_load,
+            tauri_commands::update_document_position,
+            tauri_commands::create_thread,
+            tauri_commands::update_thread,
+            tauri_commands::delete_thread,
+            tauri_commands::move_document_to_thread,
+            tauri_commands::list_contacts,
+            tauri_commands::get_contact_detail,
+            tauri_commands::list_conversations,
+            tauri_commands::list_messages,
+            tauri_commands::mark_message_read,
+            tauri_commands::create_relationship,
+            // Phase 4: Auth, onboarding, settings, document deletion
+            tauri_commands::check_auth_state,
+            tauri_commands::validate_password,
+            tauri_commands::validate_password_policy,
+            tauri_commands::complete_onboarding,
+            tauri_commands::get_profile,
+            tauri_commands::save_profile,
+            tauri_commands::get_config,
+            tauri_commands::delete_document,
+            // Phase 5: Trust, import, comms
+            tauri_commands::get_trust_entries,
+            tauri_commands::reset_trust_action,
+            tauri_commands::reset_trust_all,
+            tauri_commands::import_file,
+            tauri_commands::get_comms_config,
+            tauri_commands::save_comms_config,
         ])
         .setup(move |app| {
             // Start the event forwarder — drains orch_rx and emits Tauri events
             if let Some(rx) = orch_rx.lock().unwrap().take() {
                 tauri_events::spawn_event_forwarder(app.handle().clone(), rx);
             }
+
+            // Periodic auto-commit check (every 30s)
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
+                    autocommit.lock().await.check_and_commit().await;
+                }
+            });
+
+            // Hourly purge of soft-deleted items older than 30 days
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+                loop {
+                    interval.tick().await;
+                    let max_age = std::time::Duration::from_secs(30 * 24 * 3600);
+                    match (*purge_db).purge_deleted(max_age).await {
+                        Ok(n) if n > 0 => tracing::info!("Purged {n} soft-deleted items"),
+                        Err(e) => tracing::warn!("Purge failed: {e}"),
+                        _ => {}
+                    }
+                }
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())

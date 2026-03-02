@@ -6,6 +6,12 @@ use sovereign_core::security::ActionDecision;
 use sovereign_core::interfaces::FeedbackEvent;
 use sovereign_db::surreal::SurrealGraphDB;
 
+/// Runtime model assignment (router + reasoning filenames).
+pub struct ModelAssignments {
+    pub router: String,
+    pub reasoning: String,
+}
+
 /// Shared application state managed by Tauri.
 ///
 /// All Tauri commands receive an immutable reference to this via
@@ -23,4 +29,10 @@ pub struct AppState {
     pub orch_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
     /// Current UI theme ("dark" or "light").
     pub theme: Mutex<String>,
+    /// Auto-commit engine for document edits.
+    pub autocommit: Arc<tokio::sync::Mutex<sovereign_ai::AutoCommitEngine>>,
+    /// Current model assignments (router + reasoning filenames).
+    pub model_assignments: Mutex<ModelAssignments>,
+    /// User profile directory path (~/.sovereign).
+    pub profile_dir: std::path::PathBuf,
 }

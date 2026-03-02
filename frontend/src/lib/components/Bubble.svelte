@@ -61,9 +61,8 @@
 <style>
 	.bubble {
 		position: fixed;
-		bottom: 70px;
-		left: 50%;
-		transform: translateX(-50%);
+		top: 16px;
+		right: 16px;
 		background: none;
 		border: none;
 		cursor: pointer;
@@ -73,7 +72,7 @@
 	}
 
 	.bubble:hover {
-		transform: translateX(-50%) scale(1.1);
+		transform: scale(1.1);
 	}
 
 	.bubble.animating svg {

@@ -1,15 +1,21 @@
 <script lang="ts">
-	import { searchVisible } from '$lib/stores/app';
+	import { searchVisible, modelPanelVisible, inboxVisible, settingsVisible, contactPanelState } from '$lib/stores/app';
 	import { chat } from '$lib/stores/chat';
 	import { currentTheme, applyTheme } from '$lib/stores/theme';
 	import { toggleTheme as toggleThemeCmd } from '$lib/api/commands';
+	import { canvas } from '$lib/stores/canvas';
+	import { documents } from '$lib/stores/documents';
+	import { contacts, totalUnread } from '$lib/stores/contacts';
+
+	function handleModels() {
+		modelPanelVisible.update((v) => !v);
+	}
 
 	async function handleThemeToggle() {
 		try {
 			const next = await toggleThemeCmd();
 			applyTheme(next as 'dark' | 'light');
 		} catch {
-			// Fallback: toggle locally
 			const next = $currentTheme === 'dark' ? 'light' : 'dark';
 			applyTheme(next);
 		}
@@ -19,25 +25,104 @@
 		searchVisible.update((v) => !v);
 	}
 
+	function handleSettings() {
+		settingsVisible.update((v) => !v);
+	}
+
 	function handleChat() {
 		chat.toggle();
 	}
+
+	function handleInbox() {
+		inboxVisible.update((v) => !v);
+	}
+
+	function openDoc(id: string) {
+		documents.openById(id);
+	}
+
+	function navigateToDoc(id: string) {
+		canvas.navigateToDoc(id);
+	}
+
+	function openContact(id: string) {
+		contactPanelState.set({ contactId: id });
+	}
+
+	// Recent docs: up to 5 most recently modified
+	let recentDocs = $derived(
+		$canvas.documents
+			.slice()
+			.sort((a, b) => new Date(b.modified_at).getTime() - new Date(a.modified_at).getTime())
+			.slice(0, 5)
+	);
+
+	// Recent contacts: up to 3 with most unread
+	let recentContacts = $derived($contacts.contacts.slice(0, 3));
 </script>
 
 <nav class="taskbar">
 	<div class="left">
-		<span class="brand">Sovereign GE</span>
+		{#each recentDocs as doc (doc.id)}
+			<button
+				class="pinned-item"
+				class:owned={doc.is_owned}
+				class:external={!doc.is_owned}
+				onclick={() => navigateToDoc(doc.id)}
+				ondblclick={() => openDoc(doc.id)}
+				title="{doc.title} (click: navigate, dbl-click: open)"
+			>
+				<span class="pin-label">{doc.title}</span>
+			</button>
+		{/each}
 	</div>
 
 	<div class="center">
-		<!-- Pinned items will go here in Phase 2+ -->
+		{#each recentContacts as contact (contact.id)}
+			<button
+				class="pinned-contact"
+				onclick={() => openContact(contact.id)}
+				title={contact.display_name}
+			>
+				<span class="contact-initial">{contact.display_name.charAt(0).toUpperCase()}</span>
+				{#if contact.unread_count > 0}
+					<span class="contact-badge">{contact.unread_count}</span>
+				{/if}
+			</button>
+		{/each}
 	</div>
 
 	<div class="right">
+		<button class="tb-btn" onclick={handleInbox} title="Inbox (I)">
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.5" />
+				<path d="M2 6 L8 10 L14 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+			{#if $totalUnread > 0}
+				<span class="unread-dot"></span>
+			{/if}
+		</button>
+
 		<button class="tb-btn" onclick={handleSearch} title="Search (Ctrl+F)">
 			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 				<circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5" />
 				<line x1="11" y1="11" x2="14" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+			</svg>
+		</button>
+
+		<button class="tb-btn" onclick={handleModels} title="Models">
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<rect x="2" y="3" width="12" height="3" rx="1" stroke="currentColor" stroke-width="1.5" />
+				<rect x="2" y="8" width="12" height="3" rx="1" stroke="currentColor" stroke-width="1.5" />
+				<circle cx="5" cy="4.5" r="0.8" fill="currentColor" />
+				<circle cx="5" cy="9.5" r="0.8" fill="currentColor" />
+			</svg>
+		</button>
+
+		<button class="tb-btn" onclick={handleSettings} title="Settings">
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5" />
+				<path d="M8 1 V3 M8 13 V15 M1 8 H3 M13 8 H15 M2.9 2.9 L4.3 4.3 M11.7 11.7 L13.1 13.1 M13.1 2.9 L11.7 4.3 M4.3 11.7 L2.9 13.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
 			</svg>
 		</button>
 
@@ -84,24 +169,92 @@
 		z-index: 80;
 	}
 
-	.brand {
-		font-size: 0.8rem;
-		font-weight: 600;
-		color: var(--accent);
-		letter-spacing: 0.05em;
-	}
-
 	.left,
 	.center,
 	.right {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+	}
+
+	.left {
+		flex: 1;
+		overflow: hidden;
+		gap: 2px;
 	}
 
 	.center {
-		flex: 1;
+		gap: 6px;
+		padding: 0 12px;
+	}
+
+	.right {
+		gap: 4px;
+	}
+
+	/* Pinned document items */
+	.pinned-item {
+		display: flex;
+		align-items: center;
+		padding: 4px 10px;
+		border-radius: 4px;
+		border: 1px solid transparent;
+		background: none;
+		color: var(--text-secondary);
+		font-size: 0.75rem;
+		cursor: pointer;
+		max-width: 120px;
+		overflow: hidden;
+		white-space: nowrap;
+	}
+	.pinned-item:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+	.pinned-item.owned {
+		border-left: 2px solid #5a9fd4;
+	}
+	.pinned-item.external {
+		border-left: 2px solid #e07c6a;
+	}
+	.pin-label {
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	/* Pinned contact items */
+	.pinned-contact {
+		position: relative;
+		width: 28px;
+		height: 28px;
+		border-radius: 50%;
+		border: 1px solid var(--border);
+		background: var(--bg-hover);
+		color: var(--text-secondary);
+		font-size: 0.7rem;
+		font-weight: 600;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
 		justify-content: center;
+	}
+	.pinned-contact:hover {
+		border-color: var(--accent);
+		color: var(--text-primary);
+	}
+	.contact-badge {
+		position: absolute;
+		top: -4px;
+		right: -4px;
+		min-width: 14px;
+		height: 14px;
+		border-radius: 7px;
+		background: var(--error, #ef4444);
+		color: #fff;
+		font-size: 0.6rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0 3px;
 	}
 
 	.tb-btn {
@@ -114,10 +267,21 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
+		position: relative;
 	}
 
 	.tb-btn:hover {
 		background: var(--bg-hover);
 		color: var(--text-primary);
+	}
+
+	.unread-dot {
+		position: absolute;
+		top: 4px;
+		right: 4px;
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--error, #ef4444);
 	}
 </style>
