@@ -30,9 +30,9 @@ export interface CanvasState {
 
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 5.0;
-const CARD_W = 200;
-const CARD_H = 80;
-const LANE_PADDING = 40;
+export const CARD_W = 200;
+export const CARD_H = 80;
+export const LANE_HEIGHT = 120;
 
 /** Reactive canvas state — $state() creates a deep Proxy for fine-grained tracking. */
 export const canvas: CanvasState = $state({
@@ -198,14 +198,14 @@ function autoLayout(docs: CanvasDocDto[], threads: ThreadDto[]): CanvasDocDto[] 
 				result.push({
 					...d,
 					spatial_x: 200 + col * (CARD_W + 20),
-					spatial_y: laneY + LANE_PADDING
+					spatial_y: laneY + (LANE_HEIGHT - CARD_H) / 2
 				});
 			} else {
 				result.push(d);
 			}
 			col++;
 		}
-		laneY += CARD_H + LANE_PADDING * 2;
+		laneY += LANE_HEIGHT;
 	}
 
 	return result;

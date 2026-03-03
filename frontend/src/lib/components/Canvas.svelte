@@ -7,6 +7,7 @@
 		panBy,
 		zoomAt,
 		home,
+		LANE_HEIGHT,
 		type CanvasState
 	} from '$lib/stores/canvas.svelte';
 	import { createThread as apiCreateThread, importFile } from '$lib/api/commands';
@@ -45,8 +46,11 @@
 		drawBackground(canvas);
 	}
 
-	// Redraw background whenever canvas state changes
+	// Redraw background whenever canvas state changes.
+	// Explicitly read all doc positions to ensure Svelte tracks them as
+	// dependencies, so relationship links update during card drags.
 	$effect(() => {
+		void canvas.documents.map(d => d.spatial_x + d.spatial_y);
 		drawBackground(canvas);
 	});
 
@@ -61,7 +65,7 @@
 		ctx.scale(camera.zoom, camera.zoom);
 
 		// Draw thread lane backgrounds
-		const laneHeight = 120;
+		const laneHeight = LANE_HEIGHT;
 		const threadOrder = new Map<string, number>();
 		threads.forEach((t, i) => threadOrder.set(t.id, i));
 
