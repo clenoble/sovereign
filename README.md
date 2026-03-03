@@ -11,7 +11,7 @@ This is a prototype. Built in Rust. 10 crates. ~16K lines. Co-developed with [Cl
 ## What it explores
 
 - **On-device AI** — A 3B router classifies intent; a 7B model handles complex queries. Multi-turn chat with tool calling, trust tracking, and prompt injection detection. No API keys, no subscriptions.
-- **Spatial canvas** — Documents live on an infinite 2D canvas. Time runs left to right, projects top to bottom. Thread lanes, relationship arrows, minimap.
+- **Spatial canvas** — Documents live on an infinite 2D canvas. Time runs left to right, thread lanes top to bottom. Adaptive level-of-detail: full cards at close zoom, density heatmap at extreme zoom-out. Minimap, sticky lane labels, cascade stacking for same-date cards.
 - **Action gravity** — Friction scales with irreversibility. Reading is instant. Deleting requires confirmation and a 30-day undo window. Security enforced by code architecture, not prompts.
 - **Encryption & social recovery** — XChaCha20-Poly1305 with per-document keys. Zero plaintext on disk. Shamir secret sharing splits your recovery key across trusted guardians — 3 of 5 can reconstruct it.
 - **Peer-to-peer sync** — Device pairing over libp2p. Encrypted manifests ensure even the network can't see your data.
@@ -29,18 +29,20 @@ Rust workspace with 10 crates:
 | `sovereign-db` | SurrealDB graph storage (in-memory and RocksDB persistent) |
 | `sovereign-crypto` | XChaCha20-Poly1305, key hierarchy, Shamir secret sharing, guardian recovery |
 | `sovereign-ai` | LLM orchestrator, intent classification, chat agent loop, tool calling, trust, voice |
-| `sovereign-ui` | Iced 0.14 GUI — taskbar, panels, chat, search, theming |
-| `sovereign-canvas` | Infinite canvas — thread lanes, document cards, relationship arrows, minimap |
+| `sovereign-ui` | Iced 0.14 GUI — taskbar, panels, chat, search, theming (legacy) |
+| `sovereign-canvas` | Infinite canvas — thread lanes, document cards, relationship arrows, minimap (legacy) |
 | `sovereign-skills` | Skill registry — markdown editor, search, image, PDF export, file import |
 | `sovereign-p2p` | libp2p networking, device pairing, encrypted sync |
 | `sovereign-comms` | Unified communications — email (IMAP/SMTP), Signal, WhatsApp |
 | `sovereign-app` | Binary entry point — CLI dispatch and GUI bootstrap |
 
+Plus a **Tauri 2.0 + Svelte 5 frontend** (`frontend/`) — the active UI, built with SvelteKit 2, Vite, and Tauri IPC. Includes timeline canvas, AI chat panel, onboarding wizard, settings, and trust dashboard.
+
 ## Getting started
 
 ### Prerequisites
 
-**All platforms:** Rust (edition 2021), Python 3 + `huggingface-hub` (for model downloads)
+**All platforms:** Rust (edition 2021), [Node.js](https://nodejs.org/) 20+ (for frontend), Python 3 + `huggingface-hub` (for model downloads)
 
 **Windows additionally:** Visual Studio Build Tools 2022 (C++ workload), [CMake](https://cmake.org/), [LLVM](https://llvm.org/) (for `libclang.dll`)
 
@@ -62,7 +64,21 @@ huggingface-cli download Qwen/Qwen2.5-7B-Instruct-GGUF \
 
 Filenames must match `config/default.toml`.
 
-### 2. Build & run
+### 2. Build & run (Tauri UI — recommended)
+
+```bash
+# Install frontend dependencies
+cd frontend && npm install && cd ..
+
+# Build frontend + Rust backend together
+cd frontend && npm run build && cd ..
+cargo build -p sovereign-app --no-default-features --features tauri-ui,encrypted-log -j 4
+
+# Or use Tauri CLI for dev mode (hot-reload)
+cd frontend && npm run tauri dev
+```
+
+### 2b. Build & run (legacy Iced UI)
 
 ```bash
 # Linux / WSL2
@@ -85,6 +101,8 @@ Settings live in `config/default.toml`. Override at runtime with `sovereign --co
 
 | Flag | What it enables |
 |---|---|
+| `tauri-ui` | Tauri 2.0 + Svelte 5 web UI (active frontend) |
+| `iced-ui` | Iced 0.14 native GUI (legacy, default) |
 | `cuda` | GPU-accelerated LLM inference |
 | `voice-stt` | Wake word detection + Whisper STT |
 | `encryption` | Document encryption, guardian recovery |
@@ -106,7 +124,7 @@ cargo test -p sovereign-ai --no-default-features -j 4
 
 This is an experimental prototype. Try it, break it, contribute. See [open issues](https://github.com/clenoble/sovereign/issues) for good starting points.
 
-Ideas we haven't built yet: federation, plugin marketplace, mobile companion, collaborative editing, rich document format (WYSIWYG), progressive canvas density (cards → heatmap at zoom-out).
+Ideas we haven't built yet: federation, plugin marketplace, mobile companion, collaborative editing, rich document format (WYSIWYG).
 
 ## License
 
