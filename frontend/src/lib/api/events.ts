@@ -1,16 +1,11 @@
 /** Listen for Tauri events emitted by the Rust backend. */
 
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { chat } from '$lib/stores/chat';
-import {
-	bubbleState,
-	pendingAction,
-	activeSuggestion,
-	type BubbleState
-} from '$lib/stores/app';
-import { documents } from '$lib/stores/documents';
+import { pushAssistant, pushSystem } from '$lib/stores/chat.svelte';
+import { app, type BubbleState } from '$lib/stores/app.svelte';
+import { openById } from '$lib/stores/documents.svelte';
 import { refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
-import { contacts } from '$lib/stores/contacts';
+import { refreshContacts } from '$lib/stores/contacts.svelte';
 
 // Payload types matching the Rust-side structs
 interface ChatResponsePayload {
@@ -92,27 +87,27 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 
 	unlisteners.push(
 		await listen<ChatResponsePayload>('chat-response', (e) => {
-			chat.pushAssistant(e.payload.text);
+			pushAssistant(e.payload.text);
 		})
 	);
 
 	unlisteners.push(
 		await listen<BubbleStatePayload>('bubble-state', (e) => {
-			bubbleState.set(e.payload.state as BubbleState);
+			app.bubbleState = e.payload.state as BubbleState;
 		})
 	);
 
 	unlisteners.push(
 		await listen<ActionProposedPayload>('action-proposed', (e) => {
 			const p = e.payload;
-			pendingAction.set({
+			app.pendingAction = {
 				action: p.action,
 				level: p.level,
 				description: p.description,
 				docId: p.doc_id ?? undefined,
 				threadId: p.thread_id ?? undefined
-			});
-			chat.pushSystem(`Proposed: ${p.description}. Approve or reject?`);
+			};
+			pushSystem(`Proposed: ${p.description}. Approve or reject?`);
 		})
 	);
 
@@ -121,42 +116,42 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 			const msg = e.payload.success
 				? `Done: ${e.payload.action}`
 				: `Failed: ${e.payload.action}`;
-			chat.pushSystem(msg);
-			pendingAction.set(null);
+			pushSystem(msg);
+			app.pendingAction = null;
 		})
 	);
 
 	unlisteners.push(
 		await listen<ActionRejectedPayload>('action-rejected', (e) => {
-			chat.pushSystem(`Rejected: ${e.payload.action} — ${e.payload.reason}`);
-			pendingAction.set(null);
+			pushSystem(`Rejected: ${e.payload.action} — ${e.payload.reason}`);
+			app.pendingAction = null;
 		})
 	);
 
 	unlisteners.push(
 		await listen<SuggestionPayload>('suggestion', (e) => {
-			activeSuggestion.set({
+			app.activeSuggestion = {
 				text: e.payload.text,
 				action: e.payload.action
-			});
+			};
 		})
 	);
 
 	unlisteners.push(
 		await listen<SkillResultPayload>('skill-result', (e) => {
-			chat.pushSystem(`Skill "${e.payload.skill}": ${e.payload.data}`);
+			pushSystem(`Skill "${e.payload.skill}": ${e.payload.data}`);
 		})
 	);
 
 	unlisteners.push(
 		await listen<DocumentCreatedPayload>('document-created', (e) => {
-			documents.openById(e.payload.doc_id);
+			openById(e.payload.doc_id);
 		})
 	);
 
 	unlisteners.push(
 		await listen<DocumentOpenedPayload>('document-opened', (e) => {
-			documents.openById(e.payload.doc_id);
+			openById(e.payload.doc_id);
 		})
 	);
 
@@ -194,13 +189,13 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	// Phase 3: Comms events
 	unlisteners.push(
 		await listen<NewMessagesPayload>('new-messages', () => {
-			contacts.refresh();
+			refreshContacts();
 		})
 	);
 
 	unlisteners.push(
 		await listen<ContactCreatedPayload>('contact-created', () => {
-			contacts.refresh();
+			refreshContacts();
 		})
 	);
 
@@ -210,7 +205,7 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 			const p = e.payload;
 			const severityLabel = p.severity >= 7 ? 'HIGH' : p.severity >= 4 ? 'MEDIUM' : 'LOW';
 			const filtered = p.severity >= 7 ? ' Content was filtered for safety.' : '';
-			chat.pushSystem(
+			pushSystem(
 				`\u26a0\ufe0f Injection detected [${severityLabel}] in "${p.source}": ${p.indicators.join(', ')}.${filtered}`
 			);
 		})

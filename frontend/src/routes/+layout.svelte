@@ -1,16 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { applyTheme } from '$lib/stores/theme';
-	import {
-		searchVisible,
-		authState,
-		settingsVisible,
-		modelPanelVisible,
-		inboxVisible,
-		contactPanelState,
-		contextMenu
-	} from '$lib/stores/app';
-	import { chat } from '$lib/stores/chat';
+	import { applyTheme } from '$lib/stores/theme.svelte';
+	import { app } from '$lib/stores/app.svelte';
+	import { toggleChat } from '$lib/stores/chat.svelte';
 	import { subscribeToEvents } from '$lib/api/events';
 	import { getTheme, checkAuthState } from '$lib/api/commands';
 
@@ -34,21 +26,21 @@
 		try {
 			const auth = await checkAuthState();
 			if (auth.needs_onboarding) {
-				authState.set('onboarding');
+				app.authState = 'onboarding';
 			} else if (auth.needs_login) {
-				authState.set('login');
+				app.authState = 'login';
 			} else {
-				authState.set('ready');
+				app.authState = 'ready';
 			}
 		} catch {
 			// Backend not ready yet — assume ready (no auth)
-			authState.set('ready');
+			app.authState = 'ready';
 		}
 
 		// Apply initial theme from backend
 		try {
-			const theme = await getTheme();
-			applyTheme(theme as 'dark' | 'light');
+			const t = await getTheme();
+			applyTheme(t as 'dark' | 'light');
 		} catch {
 			applyTheme('dark');
 		}
@@ -64,26 +56,26 @@
 
 			// Escape: close topmost overlay
 			if (e.key === 'Escape') {
-				if ($contextMenu) { contextMenu.set(null); return; }
-				if ($searchVisible) { searchVisible.set(false); return; }
-				if ($settingsVisible) { settingsVisible.set(false); return; }
-				if ($modelPanelVisible) { modelPanelVisible.set(false); return; }
-				if ($inboxVisible) { inboxVisible.set(false); return; }
-				if ($contactPanelState) { contactPanelState.set(null); return; }
+				if (app.contextMenu) { app.contextMenu = null; return; }
+				if (app.searchVisible) { app.searchVisible = false; return; }
+				if (app.settingsVisible) { app.settingsVisible = false; return; }
+				if (app.modelPanelVisible) { app.modelPanelVisible = false; return; }
+				if (app.inboxVisible) { app.inboxVisible = false; return; }
+				if (app.contactPanelState) { app.contactPanelState = null; return; }
 				return;
 			}
 
 			// Ctrl+F: toggle search
 			if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
 				e.preventDefault();
-				searchVisible.update((v) => !v);
+				app.searchVisible = !app.searchVisible;
 				return;
 			}
 
 			// Ctrl+N: new document (open chat)
 			if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
 				e.preventDefault();
-				chat.toggle();
+				toggleChat();
 				return;
 			}
 
@@ -92,7 +84,7 @@
 
 			// I: toggle inbox
 			if (e.key === 'i' || e.key === 'I') {
-				inboxVisible.update((v) => !v);
+				app.inboxVisible = !app.inboxVisible;
 			}
 		};
 		window.addEventListener('keydown', handleKeydown);
@@ -108,14 +100,14 @@
 	<title>Sovereign GE</title>
 </svelte:head>
 
-{#if $authState === 'checking'}
+{#if app.authState === 'checking'}
 	<div class="loading">
 		<span class="spinner"></span>
 		<span>Loading...</span>
 	</div>
-{:else if $authState === 'onboarding'}
+{:else if app.authState === 'onboarding'}
 	<OnboardingWizard />
-{:else if $authState === 'login'}
+{:else if app.authState === 'login'}
 	<LoginScreen />
 {:else}
 	<div class="app">

@@ -1,8 +1,8 @@
 <script lang="ts">
 	import type { CanvasDocDto } from '$lib/api/commands';
 	import { canvas, selectCard, setDragging, moveCard, hoverCard } from '$lib/stores/canvas.svelte';
-	import { documents } from '$lib/stores/documents';
-	import { contextMenu } from '$lib/stores/app';
+	import { openById } from '$lib/stores/documents.svelte';
+	import { app } from '$lib/stores/app.svelte';
 
 	interface Props {
 		doc: CanvasDocDto;
@@ -50,18 +50,18 @@
 	}
 
 	function handleDblClick() {
-		documents.openById(doc.id);
+		openById(doc.id);
 	}
 
 	function handleContextMenu(e: MouseEvent) {
 		e.preventDefault();
 		e.stopPropagation();
-		contextMenu.set({
+		app.contextMenu = {
 			x: e.clientX,
 			y: e.clientY,
 			docId: doc.id,
 			threadId: doc.thread_id
-		});
+		};
 	}
 
 	function timeAgo(iso: string): string {

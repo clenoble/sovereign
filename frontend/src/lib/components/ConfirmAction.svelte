@@ -1,38 +1,38 @@
 <script lang="ts">
-	import { pendingAction } from '$lib/stores/app';
+	import { app } from '$lib/stores/app.svelte';
 	import { approveAction, rejectAction } from '$lib/api/commands';
-	import { chat } from '$lib/stores/chat';
+	import { pushSystem } from '$lib/stores/chat.svelte';
 
 	async function handleApprove() {
-		chat.pushSystem('Approved.');
-		pendingAction.set(null);
+		pushSystem('Approved.');
+		app.pendingAction = null;
 		try {
 			await approveAction();
 		} catch (e) {
-			chat.pushSystem(`Approve error: ${e}`);
+			pushSystem(`Approve error: ${e}`);
 		}
 	}
 
 	async function handleReject() {
-		chat.pushSystem('Rejected.');
-		pendingAction.set(null);
+		pushSystem('Rejected.');
+		app.pendingAction = null;
 		try {
 			await rejectAction('User rejected via UI');
 		} catch (e) {
-			chat.pushSystem(`Reject error: ${e}`);
+			pushSystem(`Reject error: ${e}`);
 		}
 	}
 </script>
 
-{#if $pendingAction}
+{#if app.pendingAction}
 	<div class="confirm-overlay">
 		<div class="confirm-backdrop"></div>
 		<div class="confirm-dialog">
 			<div class="confirm-header">
-				<span class="level-badge">{$pendingAction.level}</span>
+				<span class="level-badge">{app.pendingAction.level}</span>
 				<span class="confirm-title">Action Confirmation</span>
 			</div>
-			<p class="confirm-desc">{$pendingAction.description}</p>
+			<p class="confirm-desc">{app.pendingAction.description}</p>
 			<div class="confirm-actions">
 				<button class="btn approve" onclick={handleApprove}>Approve</button>
 				<button class="btn reject" onclick={handleReject}>Reject</button>

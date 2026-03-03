@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { bubbleState } from '$lib/stores/app';
-	import { chat } from '$lib/stores/chat';
+	import { app } from '$lib/stores/app.svelte';
+	import { toggleChat } from '$lib/stores/chat.svelte';
 
 	// Map bubble state to border color
 	function borderColor(state: string): string {
@@ -26,19 +26,19 @@
 
 <button
 	class="bubble"
-	class:animating={isAnimating($bubbleState)}
-	style="--border-color: {borderColor($bubbleState)}"
-	onclick={() => chat.toggle()}
+	class:animating={isAnimating(app.bubbleState)}
+	style="--border-color: {borderColor(app.bubbleState)}"
+	onclick={() => toggleChat()}
 	title="Chat with AI"
 >
 	<svg width="48" height="48" viewBox="0 0 32 32" fill="none">
-		<circle cx="16" cy="16" r="14" fill="url(#bubbleGrad)" stroke={borderColor($bubbleState)} stroke-width="1.5" />
+		<circle cx="16" cy="16" r="14" fill="url(#bubbleGrad)" stroke={borderColor(app.bubbleState)} stroke-width="1.5" />
 		<g transform="translate(16, 16)">
 			<path d="M -5 2 L -6 4 L 6 4 L 5 2 Z" fill="url(#crownGrad)" />
 			<path d="M -5 2 L -4 -4 L -3 2 M -1 2 L 0 -5 L 1 2 M 3 2 L 4 -4 L 5 2" fill="url(#crownGrad)" />
 		</g>
-		{#if isAnimating($bubbleState)}
-			<circle cx="16" cy="16" r="14" fill="none" stroke={borderColor($bubbleState)} stroke-width="2" opacity="0.3">
+		{#if isAnimating(app.bubbleState)}
+			<circle cx="16" cy="16" r="14" fill="none" stroke={borderColor(app.bubbleState)} stroke-width="2" opacity="0.3">
 				<animate attributeName="r" values="14;18;14" dur="2s" repeatCount="indefinite" />
 				<animate attributeName="opacity" values="0.3;0;0.3" dur="2s" repeatCount="indefinite" />
 			</circle>

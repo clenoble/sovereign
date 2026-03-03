@@ -1,7 +1,9 @@
-import { writable } from 'svelte/store';
+/** Rune-based reactive state for theming. */
+
 import { themes, type ThemeName } from '$lib/theme/colors';
 
-export const currentTheme = writable<ThemeName>('dark');
+/** Reactive theme state. */
+export const theme = $state({ current: 'dark' as ThemeName });
 
 /** Apply the theme's CSS variables to :root. */
 export function applyTheme(name: ThemeName) {
@@ -10,5 +12,5 @@ export function applyTheme(name: ThemeName) {
 	for (const [prop, value] of Object.entries(vars)) {
 		root.style.setProperty(prop, value);
 	}
-	currentTheme.set(name);
+	theme.current = name;
 }

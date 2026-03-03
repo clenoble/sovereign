@@ -1,17 +1,14 @@
 <script lang="ts">
-	import { chat } from '$lib/stores/chat';
-	import { pendingAction } from '$lib/stores/app';
+	import { chat, pushUser, pushSystem, clearGenerating, toggleChat, recentMessages } from '$lib/stores/chat.svelte';
+	import { app } from '$lib/stores/app.svelte';
 	import { chatMessage, approveAction, rejectAction } from '$lib/api/commands';
-	import { get } from 'svelte/store';
 	import { marked } from 'marked';
 
 	let inputValue = $state('');
 	let messagesEl: HTMLDivElement | undefined = $state();
 	let copiedIdx = $state<number | null>(null);
 
-	const messages = chat.recent;
-	const generating = chat.generating;
-	const visible = chat.visible;
+	let messages = $derived(recentMessages());
 
 	// Configure marked for safe rendering
 	marked.setOptions({ breaks: true, gfm: true });
@@ -24,7 +21,7 @@
 
 	// Scroll when new messages arrive
 	$effect(() => {
-		$messages;
+		messages;
 		// Use setTimeout to wait for DOM update
 		setTimeout(scrollToBottom, 0);
 	});
@@ -35,17 +32,16 @@
 		inputValue = '';
 
 		// Check if there's a pending action — handle confirmation via chat
-		const pending = get(pendingAction);
-		if (pending) {
+		if (app.pendingAction) {
 			const lower = text.toLowerCase();
 			if (['yes', 'y', 'go ahead', 'sure', 'ok', 'okay', 'approve'].includes(lower)) {
-				chat.pushUser(text);
-				chat.pushSystem('Approved.');
+				pushUser(text);
+				pushSystem('Approved.');
 				await approveAction();
 				return;
 			} else if (['no', 'n', 'cancel', 'reject', 'stop'].includes(lower)) {
-				chat.pushUser(text);
-				chat.pushSystem('Rejected.');
+				pushUser(text);
+				pushSystem('Rejected.');
 				await rejectAction('User rejected via chat');
 				return;
 			}
@@ -53,12 +49,12 @@
 			await rejectAction('User provided new input');
 		}
 
-		chat.pushUser(text);
+		pushUser(text);
 		try {
 			await chatMessage(text);
 		} catch (e) {
-			chat.pushSystem(`Error: ${e}`);
-			chat.clearGenerating();
+			pushSystem(`Error: ${e}`);
+			clearGenerating();
 		}
 	}
 
@@ -104,12 +100,12 @@
 	}
 
 	async function handleQuickApprove() {
-		chat.pushSystem('Approved.');
+		pushSystem('Approved.');
 		await approveAction();
 	}
 
 	async function handleQuickReject() {
-		chat.pushSystem('Rejected.');
+		pushSystem('Rejected.');
 		await rejectAction('User rejected via button');
 	}
 
@@ -118,15 +114,15 @@
 	}
 </script>
 
-{#if $visible}
+{#if chat.visible}
 	<div class="chat-panel">
 		<div class="chat-header">
 			<span class="chat-title">Chat</span>
-			<button class="close-btn" onclick={() => chat.toggle()}>X</button>
+			<button class="close-btn" onclick={() => toggleChat()}>X</button>
 		</div>
 
 		<div class="messages" bind:this={messagesEl}>
-			{#each $messages as msg, i}
+			{#each messages as msg, i}
 				<div class="message {msg.role} {provenanceClass(msg.text)}" class:injection-warning={msg.role === 'system' && isInjectionWarning(msg.text)}>
 					<div class="msg-header">
 						<span class="prefix">{rolePrefix(msg.role)}</span>
@@ -147,14 +143,14 @@
 				</div>
 			{/each}
 
-			{#if $pendingAction}
+			{#if app.pendingAction}
 				<div class="quick-reply">
 					<button class="qr-approve" onclick={handleQuickApprove}>Approve</button>
 					<button class="qr-reject" onclick={handleQuickReject}>Reject</button>
 				</div>
 			{/if}
 
-			{#if $generating}
+			{#if chat.generating}
 				<div class="message system">
 					<span class="prefix">&hellip;</span>
 					<span class="text thinking">Thinking...</span>

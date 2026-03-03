@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { authState } from '$lib/stores/app';
+	import { app } from '$lib/stores/app.svelte';
 	import { validatePassword, checkAuthState } from '$lib/api/commands';
 	import type { KeystrokeSampleDto } from '$lib/api/commands';
 
@@ -72,7 +72,7 @@
 
 		try {
 			const persona = await validatePassword(password, keystrokes);
-			authState.set('ready');
+			app.authState = 'ready';
 		} catch (e) {
 			attempts++;
 			error = 'Invalid password';

@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { searchVisible } from '$lib/stores/app';
+	import { app } from '$lib/stores/app.svelte';
 	import { searchDocuments, searchQuery } from '$lib/api/commands';
 	import type { SearchHit } from '$lib/api/commands';
-	import { documents } from '$lib/stores/documents';
+	import { openById } from '$lib/stores/documents.svelte';
 	import { navigateToDoc } from '$lib/stores/canvas.svelte';
 
 	let query = $state('');
@@ -11,7 +11,7 @@
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	$effect(() => {
-		if (!$searchVisible) {
+		if (!app.searchVisible) {
 			query = '';
 			results = [];
 		}
@@ -46,7 +46,7 @@
 		} catch (e) {
 			console.error('Search query error:', e);
 		}
-		searchVisible.set(false);
+		app.searchVisible = false;
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -54,26 +54,26 @@
 			e.preventDefault();
 			handleSubmit();
 		} else if (e.key === 'Escape') {
-			searchVisible.set(false);
+			app.searchVisible = false;
 		}
 	}
 
 	function selectResult(id: string) {
 		navigateToDoc(id);
-		searchVisible.set(false);
+		app.searchVisible = false;
 	}
 
 	function openResult(id: string) {
-		documents.openById(id);
-		searchVisible.set(false);
+		openById(id);
+		app.searchVisible = false;
 	}
 </script>
 
-{#if $searchVisible}
+{#if app.searchVisible}
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="search-overlay" onkeydown={handleKeydown}>
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="search-backdrop" onclick={() => searchVisible.set(false)}></div>
+		<div class="search-backdrop" onclick={() => app.searchVisible = false}></div>
 		<div class="search-modal">
 			<input
 				type="text"

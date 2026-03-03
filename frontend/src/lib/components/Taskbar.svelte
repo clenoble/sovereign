@@ -1,14 +1,14 @@
 <script lang="ts">
-	import { searchVisible, modelPanelVisible, inboxVisible, settingsVisible, contactPanelState } from '$lib/stores/app';
-	import { chat } from '$lib/stores/chat';
-	import { currentTheme, applyTheme } from '$lib/stores/theme';
+	import { app } from '$lib/stores/app.svelte';
+	import { toggleChat } from '$lib/stores/chat.svelte';
+	import { theme, applyTheme } from '$lib/stores/theme.svelte';
 	import { toggleTheme as toggleThemeCmd } from '$lib/api/commands';
 	import { canvas, navigateToDoc as canvasNavigateToDoc } from '$lib/stores/canvas.svelte';
-	import { documents } from '$lib/stores/documents';
-	import { contacts, totalUnread } from '$lib/stores/contacts';
+	import { openById } from '$lib/stores/documents.svelte';
+	import { contactsState } from '$lib/stores/contacts.svelte';
 
 	function handleModels() {
-		modelPanelVisible.update((v) => !v);
+		app.modelPanelVisible = !app.modelPanelVisible;
 	}
 
 	async function handleThemeToggle() {
@@ -16,29 +16,29 @@
 			const next = await toggleThemeCmd();
 			applyTheme(next as 'dark' | 'light');
 		} catch {
-			const next = $currentTheme === 'dark' ? 'light' : 'dark';
+			const next = theme.current === 'dark' ? 'light' : 'dark';
 			applyTheme(next);
 		}
 	}
 
 	function handleSearch() {
-		searchVisible.update((v) => !v);
+		app.searchVisible = !app.searchVisible;
 	}
 
 	function handleSettings() {
-		settingsVisible.update((v) => !v);
+		app.settingsVisible = !app.settingsVisible;
 	}
 
 	function handleChat() {
-		chat.toggle();
+		toggleChat();
 	}
 
 	function handleInbox() {
-		inboxVisible.update((v) => !v);
+		app.inboxVisible = !app.inboxVisible;
 	}
 
 	function openDoc(id: string) {
-		documents.openById(id);
+		openById(id);
 	}
 
 	function navigateToDoc(id: string) {
@@ -46,7 +46,7 @@
 	}
 
 	function openContact(id: string) {
-		contactPanelState.set({ contactId: id });
+		app.contactPanelState = { contactId: id };
 	}
 
 	// Recent docs: up to 5 most recently modified
@@ -58,7 +58,9 @@
 	);
 
 	// Recent contacts: up to 3 with most unread
-	let recentContacts = $derived($contacts.contacts.slice(0, 3));
+	let recentContacts = $derived(contactsState.contacts.slice(0, 3));
+
+	let totalUnread = $derived(contactsState.contacts.reduce((sum, c) => sum + c.unread_count, 0));
 </script>
 
 <nav class="taskbar">
@@ -98,7 +100,7 @@
 				<rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.5" />
 				<path d="M2 6 L8 10 L14 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
 			</svg>
-			{#if $totalUnread > 0}
+			{#if totalUnread > 0}
 				<span class="unread-dot"></span>
 			{/if}
 		</button>
@@ -134,7 +136,7 @@
 		</button>
 
 		<button class="tb-btn" onclick={handleThemeToggle} title="Toggle theme">
-			{#if $currentTheme === 'dark'}
+			{#if theme.current === 'dark'}
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 					<circle cx="8" cy="8" r="4" stroke="currentColor" stroke-width="1.5" />
 					<g stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
