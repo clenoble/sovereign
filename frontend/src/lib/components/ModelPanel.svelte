@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { modelPanelVisible } from '$lib/stores/app';
+	import { app } from '$lib/stores/app.svelte';
 	import { scanModels, assignModelRole, deleteModel } from '$lib/api/commands';
 	import type { ModelEntry } from '$lib/api/commands';
 	import { onMount } from 'svelte';
@@ -48,11 +48,11 @@
 	}
 </script>
 
-{#if $modelPanelVisible}
+{#if app.modelPanelVisible}
 	<div class="model-panel">
 		<div class="panel-header">
 			<span class="panel-title">Models</span>
-			<button class="close-btn" onclick={() => modelPanelVisible.set(false)}>&#x2715;</button>
+			<button class="close-btn" onclick={() => app.modelPanelVisible = false}>&#x2715;</button>
 		</div>
 
 		{#if error}

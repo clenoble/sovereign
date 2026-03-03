@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { getStatus } from '$lib/api/commands';
-	import { orchestratorAvailable } from '$lib/stores/app';
-	import { documents } from '$lib/stores/documents';
+	import { app } from '$lib/stores/app.svelte';
+	import { panels } from '$lib/stores/documents.svelte';
 	import DocumentPanel from '$lib/components/DocumentPanel.svelte';
 	import Canvas from '$lib/components/Canvas.svelte';
 
@@ -11,7 +11,7 @@
 	onMount(async () => {
 		try {
 			const status = await getStatus();
-			orchestratorAvailable.set(status.orchestrator_available);
+			app.orchestratorAvailable = status.orchestrator_available;
 		} catch (e) {
 			error = String(e);
 		}
@@ -24,7 +24,7 @@
 		<Canvas />
 
 		<!-- Document panels (float above canvas) -->
-		{#each $documents as panel (panel.doc.id)}
+		{#each panels as panel (panel.doc.id)}
 			<DocumentPanel {panel} />
 		{/each}
 	</div>

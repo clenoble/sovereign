@@ -1,62 +1,62 @@
 <script lang="ts">
-	import { contextMenu } from '$lib/stores/app';
+	import { app } from '$lib/stores/app.svelte';
 	import { canvas, refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
-	import { documents } from '$lib/stores/documents';
+	import { openById } from '$lib/stores/documents.svelte';
 	import { deleteDocument, moveDocumentToThread } from '$lib/api/commands';
 
 	let showThreadSub = $state(false);
 
 	function handleOpen() {
-		if ($contextMenu) {
-			documents.openById($contextMenu.docId);
-			contextMenu.set(null);
+		if (app.contextMenu) {
+			openById(app.contextMenu.docId);
+			app.contextMenu = null;
 		}
 	}
 
 	async function handleDelete() {
-		if ($contextMenu) {
+		if (app.contextMenu) {
 			try {
-				await deleteDocument($contextMenu.docId);
+				await deleteDocument(app.contextMenu.docId);
 				await canvasRefresh();
 			} catch (e) {
 				console.error('Delete failed:', e);
 			}
-			contextMenu.set(null);
+			app.contextMenu = null;
 		}
 	}
 
 	async function handleMoveToThread(threadId: string) {
-		if ($contextMenu) {
+		if (app.contextMenu) {
 			try {
-				await moveDocumentToThread($contextMenu.docId, threadId);
+				await moveDocumentToThread(app.contextMenu.docId, threadId);
 				await canvasRefresh();
 			} catch (e) {
 				console.error('Move failed:', e);
 			}
-			contextMenu.set(null);
+			app.contextMenu = null;
 		}
 	}
 
 	function handleClickOutside() {
-		contextMenu.set(null);
+		app.contextMenu = null;
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') {
-			contextMenu.set(null);
+			app.contextMenu = null;
 		}
 	}
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
 
-{#if $contextMenu}
+{#if app.contextMenu}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="ctx-backdrop" onclick={handleClickOutside}></div>
 	<div
 		class="ctx-menu"
-		style="left: {$contextMenu.x}px; top: {$contextMenu.y}px;"
+		style="left: {app.contextMenu.x}px; top: {app.contextMenu.y}px;"
 		role="menu"
 	>
 		<button class="ctx-item" onclick={handleOpen} role="menuitem">Open</button>
@@ -71,7 +71,7 @@
 			{#if showThreadSub}
 				<div class="sub-menu">
 					{#each canvas.threads as thread}
-						{#if thread.id !== $contextMenu.threadId}
+						{#if thread.id !== app.contextMenu.threadId}
 							<button class="ctx-item" onclick={() => handleMoveToThread(thread.id)}>
 								{thread.name}
 							</button>

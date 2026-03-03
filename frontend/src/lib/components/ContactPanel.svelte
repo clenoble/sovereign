@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { contactPanelState } from '$lib/stores/app';
+	import { app } from '$lib/stores/app.svelte';
 	import {
 		getContactDetail,
 		listMessages,
@@ -21,7 +21,7 @@
 	let dragOriginal = { x: 0, y: 0 };
 
 	$effect(() => {
-		const state = $contactPanelState;
+		const state = app.contactPanelState;
 		if (state) {
 			loadContact(state.contactId);
 		} else {
@@ -67,7 +67,7 @@
 	}
 
 	function close() {
-		contactPanelState.set(null);
+		app.contactPanelState = null;
 	}
 
 	// Drag handlers
@@ -102,7 +102,7 @@
 	}
 </script>
 
-{#if $contactPanelState && contact}
+{#if app.contactPanelState && contact}
 	<div class="contact-panel" style="left: {position.x}px; top: {position.y}px;">
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div

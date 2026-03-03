@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { settingsVisible } from '$lib/stores/app';
+	import { app } from '$lib/stores/app.svelte';
 	import { getProfile, saveProfile, getConfig, getTrustEntries, resetTrustAction, resetTrustAll, getCommsConfig, saveCommsConfig } from '$lib/api/commands';
 	import type { UserProfileDto, AppConfigDto, SaveProfileDto, TrustEntryDto, CommsConfigDto, SaveCommsConfigDto } from '$lib/api/commands';
 	import BubblePreview from './BubblePreview.svelte';
@@ -52,7 +52,7 @@
 	let signalPhone = $state('');
 
 	$effect(() => {
-		if ($settingsVisible) {
+		if (app.settingsVisible) {
 			loadData();
 		}
 	});
@@ -191,7 +191,7 @@
 	}
 
 	function close() {
-		settingsVisible.set(false);
+		app.settingsVisible = false;
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -202,7 +202,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-{#if $settingsVisible}
+{#if app.settingsVisible}
 	<div class="settings-backdrop" onclick={close} onkeydown={handleKeydown}></div>
 	<div class="settings-panel" onkeydown={handleKeydown}>
 		<!-- Header -->

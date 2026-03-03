@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { marked } from 'marked';
-	import { documents, type OpenPanel } from '$lib/stores/documents';
+	import { type OpenPanel, save, updateBody, updateTitle, close, bringToFront, updatePosition, setMode, loadCommits, selectCommit, restoreVersion, toggleSkillsOverflow } from '$lib/stores/documents.svelte';
 	import { listSkillsForDoc, executeSkill } from '$lib/api/commands';
-	import { chat } from '$lib/stores/chat';
+	import { pushSystem } from '$lib/stores/chat.svelte';
 	import type { SkillInfo, SkillResultDto } from '$lib/api/commands';
 
 	let { panel }: { panel: OpenPanel } = $props();
@@ -47,30 +47,30 @@
 	function scheduleSave() {
 		if (saveTimer) clearTimeout(saveTimer);
 		saveTimer = setTimeout(() => {
-			documents.save(panel.doc.id);
+			save(panel.doc.id);
 		}, 2000);
 	}
 
 	function handleBodyInput(e: Event) {
 		const val = (e.target as HTMLTextAreaElement).value;
-		documents.updateBody(panel.doc.id, val);
+		updateBody(panel.doc.id, val);
 		scheduleSave();
 	}
 
 	function handleTitleInput(e: Event) {
 		const val = (e.target as HTMLInputElement).value;
-		documents.updateTitle(panel.doc.id, val);
+		updateTitle(panel.doc.id, val);
 		scheduleSave();
 	}
 
 	function handleSave() {
 		if (saveTimer) clearTimeout(saveTimer);
-		documents.save(panel.doc.id);
+		save(panel.doc.id);
 	}
 
 	function handleClose() {
 		if (saveTimer) clearTimeout(saveTimer);
-		documents.close(panel.doc.id);
+		close(panel.doc.id);
 	}
 
 	// Keyboard shortcuts
@@ -91,14 +91,14 @@
 		dragStart = { x: e.clientX, y: e.clientY };
 		panelStart = { x: panel.position.x, y: panel.position.y };
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-		documents.bringToFront(panel.doc.id);
+		bringToFront(panel.doc.id);
 	}
 
 	function handlePointerMove(e: PointerEvent) {
 		if (!dragging) return;
 		const dx = e.clientX - dragStart.x;
 		const dy = e.clientY - dragStart.y;
-		documents.updatePosition(panel.doc.id, panelStart.x + dx, panelStart.y + dy);
+		updatePosition(panel.doc.id, panelStart.x + dx, panelStart.y + dy);
 	}
 
 	function handlePointerUp() {
@@ -114,7 +114,7 @@
 		const selected = text.slice(start, end);
 		const replacement = prefix + (selected || 'text') + suffix;
 		const newBody = text.slice(0, start) + replacement + text.slice(end);
-		documents.updateBody(panel.doc.id, newBody);
+		updateBody(panel.doc.id, newBody);
 		scheduleSave();
 		// Restore cursor after Svelte re-renders
 		requestAnimationFrame(() => {
@@ -128,15 +128,15 @@
 
 	// Mode toggles
 	function togglePreview() {
-		documents.setMode(panel.doc.id, panel.mode === 'preview' ? 'edit' : 'preview');
+		setMode(panel.doc.id, panel.mode === 'preview' ? 'edit' : 'preview');
 	}
 
 	function toggleHistory() {
 		if (panel.mode === 'history') {
-			documents.setMode(panel.doc.id, 'edit');
+			setMode(panel.doc.id, 'edit');
 		} else {
-			documents.setMode(panel.doc.id, 'history');
-			documents.loadCommits(panel.doc.id);
+			setMode(panel.doc.id, 'history');
+			loadCommits(panel.doc.id);
 		}
 	}
 
@@ -150,7 +150,7 @@
 				'{}'
 			);
 			if (result.kind === 'content_update' && result.body !== undefined) {
-				documents.updateBody(panel.doc.id, result.body);
+				updateBody(panel.doc.id, result.body);
 			} else if (result.kind === 'file' && result.file_data_base64) {
 				// Trigger download
 				const bytes = Uint8Array.from(atob(result.file_data_base64), (c) => c.charCodeAt(0));
@@ -162,10 +162,10 @@
 				a.click();
 				URL.revokeObjectURL(url);
 			} else if (result.kind === 'structured_data' && result.structured_json) {
-				chat.pushSystem(`Skill result (${result.structured_kind}): ${result.structured_json}`);
+				pushSystem(`Skill result (${result.structured_kind}): ${result.structured_json}`);
 			}
 		} catch (e) {
-			chat.pushSystem(`Skill error: ${e}`);
+			pushSystem(`Skill error: ${e}`);
 		}
 	}
 
@@ -271,7 +271,7 @@
 							<button
 								class="commit-row"
 								class:selected={panel.selectedCommit === i}
-								onclick={() => documents.selectCommit(panel.doc.id, i)}
+								onclick={() => selectCommit(panel.doc.id, i)}
 							>
 								<span class="commit-msg">{commit.message}</span>
 								<span class="commit-time">{new Date(commit.timestamp).toLocaleString()}</span>
@@ -284,7 +284,7 @@
 							<p>{panel.commits[panel.selectedCommit].snapshot_preview}</p>
 							<button
 								class="restore-btn"
-								onclick={() => documents.restoreVersion(panel.doc.id, panel.commits[panel.selectedCommit!].id)}
+								onclick={() => restoreVersion(panel.doc.id, panel.commits[panel.selectedCommit!].id)}
 							>
 								Restore this version
 							</button>
@@ -304,7 +304,7 @@
 					</button>
 				{/each}
 				{#if overflowActions.length > 0}
-					<button class="skill-btn overflow-toggle" onclick={() => documents.toggleSkillsOverflow(panel.doc.id)}>
+					<button class="skill-btn overflow-toggle" onclick={() => toggleSkillsOverflow(panel.doc.id)}>
 						...
 					</button>
 					{#if panel.skillsOverflowOpen}

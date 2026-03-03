@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { authState } from '$lib/stores/app';
+	import { app } from '$lib/stores/app.svelte';
 	import {
 		checkAuthState,
 		validatePasswordPolicy,
@@ -9,7 +9,7 @@
 	} from '$lib/api/commands';
 	import type { KeystrokeSampleDto, OnboardingData } from '$lib/api/commands';
 	import BubblePreview from './BubblePreview.svelte';
-	import { applyTheme, currentTheme } from '$lib/stores/theme';
+	import { applyTheme, theme } from '$lib/stores/theme.svelte';
 
 	// ---------------------------------------------------------------------------
 	// Designation generator
@@ -214,20 +214,19 @@
 
 		try {
 			await completeOnboarding(data);
-			authState.set('ready');
+			app.authState = 'ready';
 		} catch (e) {
 			console.error('Onboarding failed:', e);
 		}
 	}
 
-	async function handleThemeToggle(theme: 'dark' | 'light') {
-		const current = $currentTheme;
-		if (current !== theme) {
+	async function handleThemeToggle(name: 'dark' | 'light') {
+		if (theme.current !== name) {
 			try {
 				await toggleTheme();
-				applyTheme(theme);
+				applyTheme(name);
 			} catch {
-				applyTheme(theme);
+				applyTheme(name);
 			}
 		}
 	}
@@ -351,7 +350,7 @@
 					<div class="theme-options">
 						<button
 							class="theme-btn"
-							class:selected={$currentTheme === 'dark'}
+							class:selected={theme.current === 'dark'}
 							onclick={() => handleThemeToggle('dark')}
 						>
 							<div class="theme-preview dark-preview">
@@ -365,7 +364,7 @@
 						</button>
 						<button
 							class="theme-btn"
-							class:selected={$currentTheme === 'light'}
+							class:selected={theme.current === 'light'}
 							onclick={() => handleThemeToggle('light')}
 						>
 							<div class="theme-preview light-preview">

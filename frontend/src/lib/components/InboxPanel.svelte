@@ -1,26 +1,26 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { inboxVisible, contactPanelState } from '$lib/stores/app';
-	import { contacts } from '$lib/stores/contacts';
+	import { app } from '$lib/stores/app.svelte';
+	import { contactsState, loadContacts } from '$lib/stores/contacts.svelte';
 
 	onMount(() => {
-		contacts.load();
+		loadContacts();
 	});
 
 	function openContact(contactId: string) {
-		contactPanelState.set({ contactId });
+		app.contactPanelState = { contactId };
 	}
 </script>
 
-{#if $inboxVisible}
+{#if app.inboxVisible}
 	<div class="inbox-panel">
 		<div class="inbox-header">
 			<h3>Inbox</h3>
-			<button class="close-btn" onclick={() => inboxVisible.set(false)}>&times;</button>
+			<button class="close-btn" onclick={() => app.inboxVisible = false}>&times;</button>
 		</div>
 
 		<div class="contact-list">
-			{#each $contacts.contacts as contact (contact.id)}
+			{#each contactsState.contacts as contact (contact.id)}
 				<button class="contact-row" onclick={() => openContact(contact.id)}>
 					<div class="contact-avatar">
 						{contact.name.charAt(0).toUpperCase()}
@@ -37,7 +37,7 @@
 				</button>
 			{/each}
 
-			{#if $contacts.contacts.length === 0}
+			{#if contactsState.contacts.length === 0}
 				<div class="empty">No contacts yet</div>
 			{/if}
 		</div>
