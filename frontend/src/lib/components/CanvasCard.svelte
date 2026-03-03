@@ -37,10 +37,9 @@
 		if (!dragActivated && Math.abs(dx) + Math.abs(dy) < DEAD_ZONE) return;
 		dragActivated = true;
 		setDragging(doc.id);
-		// Convert screen delta to world delta (divide by zoom)
-		const worldDx = dx / canvas.camera.zoom;
+		// Only vertical drag — X stays locked to timeline position
 		const worldDy = dy / canvas.camera.zoom;
-		moveCard(doc.id, dragOriginal.x + worldDx, dragOriginal.y + worldDy);
+		moveCard(doc.id, doc.spatial_x, dragOriginal.y + worldDy);
 	}
 
 	function handlePointerUp(e: PointerEvent) {
@@ -81,13 +80,15 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-{#if zoom < 0.3}
+{#if zoom < 0.15}
+	<!-- Heatmap mode: rendered on background canvas, nothing here -->
+{:else if zoom < 0.3}
 	<!-- LOD: dot only -->
 	<div
 		class="canvas-dot"
 		class:owned={doc.is_owned}
 		class:external={!doc.is_owned}
-		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px;"
+		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px; z-index: {isSelected ? 100 : isHovered ? 50 : 1};"
 		onpointerdown={handlePointerDown}
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}
@@ -103,7 +104,7 @@
 		class:external={!doc.is_owned}
 		class:hovered={isHovered}
 		class:selected={isSelected}
-		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px;"
+		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px; z-index: {isSelected ? 100 : isHovered ? 50 : 1};"
 		onpointerdown={handlePointerDown}
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}
@@ -122,7 +123,7 @@
 		class:external={!doc.is_owned}
 		class:hovered={isHovered}
 		class:selected={isSelected}
-		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px;"
+		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px; z-index: {isSelected ? 100 : isHovered ? 50 : 1};"
 		onpointerdown={handlePointerDown}
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}

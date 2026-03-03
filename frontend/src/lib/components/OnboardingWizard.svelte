@@ -214,6 +214,7 @@
 
 		try {
 			await completeOnboarding(data);
+			app.bubbleStyle = bubbleStyle;
 			app.authState = 'ready';
 		} catch (e) {
 			console.error('Onboarding failed:', e);

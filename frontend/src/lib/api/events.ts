@@ -146,6 +146,7 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	unlisteners.push(
 		await listen<DocumentCreatedPayload>('document-created', (e) => {
 			openById(e.payload.doc_id);
+			canvasRefresh();
 		})
 	);
 
