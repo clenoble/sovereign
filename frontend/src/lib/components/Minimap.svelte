@@ -17,11 +17,20 @@
 		drawMinimap(canvas);
 	});
 
+	/** Read a CSS custom property value. */
+	function getCSS(prop: string): string {
+		return getComputedStyle(document.documentElement).getPropertyValue(prop).trim();
+	}
+
 	function drawMinimap(state: CanvasState) {
 		if (!ctx || !visible) return;
 		ctx.clearRect(0, 0, MAP_W, MAP_H);
 		const { documents, camera } = state;
 		if (documents.length === 0) return;
+
+		const provOwned = getCSS('--prov-owned') || '#5a9fd4';
+		const provExternal = getCSS('--prov-external') || '#e07c6a';
+		const textSecondary = getCSS('--text-secondary') || '#b3b3b3';
 
 		// Compute world bounds
 		let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -39,7 +48,7 @@
 		for (const d of documents) {
 			const x = (d.spatial_x - minX + 50) * scale;
 			const y = (d.spatial_y - minY + 50) * scale;
-			ctx.fillStyle = d.is_owned ? '#4ea7e9' : '#f97316';
+			ctx.fillStyle = d.is_owned ? provOwned : provExternal;
 			ctx.fillRect(x, y, Math.max(3, 200 * scale), Math.max(2, 80 * scale));
 		}
 
@@ -51,9 +60,11 @@
 		const vpW = (vw / camera.zoom) * scale;
 		const vpH = (vh / camera.zoom) * scale;
 
-		ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+		ctx.strokeStyle = textSecondary;
+		ctx.globalAlpha = 0.7;
 		ctx.lineWidth = 1;
 		ctx.strokeRect(vpLeft, vpTop, vpW, vpH);
+		ctx.globalAlpha = 1.0;
 	}
 
 	function handleMinimapClick(e: MouseEvent) {

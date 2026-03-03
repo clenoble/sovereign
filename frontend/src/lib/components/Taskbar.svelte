@@ -223,10 +223,10 @@
 		color: var(--text-primary);
 	}
 	.pinned-item.owned {
-		border-left: 2px solid #5a9fd4;
+		border-left: 2px solid var(--prov-owned);
 	}
 	.pinned-item.external {
-		border-left: 2px solid #e07c6a;
+		border-left: 2px solid var(--prov-external);
 	}
 	.pin-label {
 		overflow: hidden;

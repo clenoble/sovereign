@@ -296,17 +296,17 @@
 	}
 	.msg-markdown :global(.escaped-html) {
 		display: block;
-		color: #888;
+		color: var(--text-muted);
 		font-size: 0.75em;
 		font-family: monospace;
 	}
 
 	.prov-owned {
-		border-left: 2px solid #4ea7e9;
+		border-left: 2px solid var(--prov-owned);
 		padding-left: 8px;
 	}
 	.prov-external {
-		border-left: 2px solid #f97316;
+		border-left: 2px solid var(--prov-external);
 		padding-left: 8px;
 	}
 
@@ -365,7 +365,7 @@
 		padding: 6px 0;
 	}
 	.qr-approve {
-		background: #22c55e;
+		background: var(--success);
 		color: #000;
 		border: none;
 		border-radius: 6px;
@@ -375,7 +375,7 @@
 		cursor: pointer;
 	}
 	.qr-approve:hover {
-		background: #16a34a;
+		filter: brightness(0.85);
 	}
 	.qr-reject {
 		background: transparent;
@@ -392,13 +392,13 @@
 	}
 
 	.injection-warning {
-		background: rgba(239, 68, 68, 0.1);
-		border-left: 3px solid #ef4444;
+		background: color-mix(in srgb, var(--error) 10%, transparent);
+		border-left: 3px solid var(--error);
 		padding-left: 8px;
 		border-radius: 4px;
 	}
 	.injection-warning .text {
-		color: #fca5a5 !important;
+		color: var(--error) !important;
 		font-style: normal !important;
 	}
 </style>

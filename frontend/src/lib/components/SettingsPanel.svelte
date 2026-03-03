@@ -813,8 +813,8 @@
 		border-radius: 4px;
 	}
 	.badge-enabled {
-		background: rgba(34, 197, 94, 0.15);
-		color: #22c55e;
+		background: color-mix(in srgb, var(--success) 15%, transparent);
+		color: var(--success);
 	}
 	.badge-disabled {
 		background: rgba(239, 68, 68, 0.15);
@@ -832,9 +832,9 @@
 		cursor: pointer;
 	}
 	.toggle-btn.active {
-		background: rgba(34, 197, 94, 0.15);
-		border-color: #22c55e;
-		color: #22c55e;
+		background: color-mix(in srgb, var(--success) 15%, transparent);
+		border-color: var(--success);
+		color: var(--success);
 	}
 
 	/* Note text */
@@ -952,7 +952,7 @@
 
 	.save-status {
 		font-size: 0.78rem;
-		color: #22c55e;
+		color: var(--success);
 		text-align: center;
 		margin: 8px 0 0 0;
 	}
