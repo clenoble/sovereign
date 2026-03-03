@@ -54,8 +54,7 @@ impl Orchestrator {
         classifier.load_router().await?;
 
         // Initialize session log + profile directory
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let profile_dir = PathBuf::from(home)
+        let profile_dir = sovereign_core::home_dir()
             .join(".sovereign")
             .join("orchestrator");
         let session_log = match SessionLog::open(&profile_dir) {

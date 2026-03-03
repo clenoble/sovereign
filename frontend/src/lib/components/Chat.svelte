@@ -2,16 +2,13 @@
 	import { chat, pushUser, pushSystem, clearGenerating, toggleChat, recentMessages } from '$lib/stores/chat.svelte';
 	import { app } from '$lib/stores/app.svelte';
 	import { chatMessage, approveAction, rejectAction } from '$lib/api/commands';
-	import { marked } from 'marked';
+	import { renderMarkdown } from '$lib/utils/markdown';
 
 	let inputValue = $state('');
 	let messagesEl: HTMLDivElement | undefined = $state();
 	let copiedIdx = $state<number | null>(null);
 
 	let messages = $derived(recentMessages());
-
-	// Configure marked for safe rendering
-	marked.setOptions({ breaks: true, gfm: true });
 
 	function scrollToBottom() {
 		if (messagesEl) {
@@ -79,10 +76,6 @@
 		const hrs = Math.floor(mins / 60);
 		if (hrs < 24) return `${hrs}h`;
 		return `${Math.floor(hrs / 24)}d`;
-	}
-
-	function renderMarkdown(text: string): string {
-		return marked.parse(text) as string;
 	}
 
 	function provenanceClass(text: string): string {

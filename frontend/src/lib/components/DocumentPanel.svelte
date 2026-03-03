@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { marked } from 'marked';
+	import { renderMarkdown } from '$lib/utils/markdown';
 	import { type OpenPanel, save, updateBody, updateTitle, close, bringToFront, updatePosition, setMode, loadCommits, selectCommit, restoreVersion, toggleSkillsOverflow } from '$lib/stores/documents.svelte';
 	import { listSkillsForDoc, executeSkill } from '$lib/api/commands';
 	import { pushSystem } from '$lib/stores/chat.svelte';
@@ -170,7 +170,7 @@
 	}
 
 	// Derived markdown HTML
-	let previewHtml = $derived(marked.parse(panel.doc.body || '') as string);
+	let previewHtml = $derived(renderMarkdown(panel.doc.body || ''));
 
 	// Flatten top 3 skill actions for quick-access buttons
 	let quickActions = $derived.by(() => {

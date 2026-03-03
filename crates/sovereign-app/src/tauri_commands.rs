@@ -1667,8 +1667,7 @@ pub async fn get_comms_config(_state: State<'_, AppState>) -> Result<CommsConfig
     #[cfg(feature = "comms")]
     {
         // Load comms config from disk
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        let config_path = std::path::Path::new(&home).join(".sovereign/comms.toml");
+        let config_path = sovereign_core::home_dir().join(".sovereign/comms.toml");
         if config_path.exists() {
             let data = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
             let cfg: sovereign_comms::config::CommsConfig =
@@ -1745,8 +1744,7 @@ pub async fn save_comms_config(
     _state: State<'_, AppState>,
     data: SaveCommsConfigDto,
 ) -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let config_dir = std::path::Path::new(&home).join(".sovereign");
+    let config_dir = sovereign_core::home_dir().join(".sovereign");
     std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
 
     let mut lines = Vec::new();
