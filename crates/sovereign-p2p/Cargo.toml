@@ -25,13 +25,13 @@ libp2p = { version = "0.56", features = [
 
 tokio = { workspace = true }
 hkdf = "0.12"
-sha2 = "0.10"
+sha2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
-base64 = "0.22"
+base64 = { workspace = true }
 
 [dev-dependencies]
 sovereign-db = { workspace = true, features = ["test-utils"] }

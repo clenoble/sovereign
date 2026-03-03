@@ -15,5 +15,4 @@ anyhow = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
-chrono = { workspace = true }
 surrealdb = { workspace = true }
