@@ -9,7 +9,8 @@ marked.use({
 		// Markdown formatting (bold, code, lists, etc.) still works normally
 		// since those go through their own renderer methods.
 		html({ text }: { text: string }) {
-			return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+			const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+			return `<span class="escaped-html">// ${escaped.trim()}</span>`;
 		}
 	}
 });

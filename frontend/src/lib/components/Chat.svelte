@@ -295,6 +295,12 @@
 	.msg-markdown :global(a) {
 		color: var(--accent);
 	}
+	.msg-markdown :global(.escaped-html) {
+		display: block;
+		color: #888;
+		font-size: 0.75em;
+		font-family: monospace;
+	}
 
 	.prov-owned {
 		border-left: 2px solid #4ea7e9;

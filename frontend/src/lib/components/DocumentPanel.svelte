@@ -480,6 +480,12 @@
 	.body-preview :global(a) {
 		color: var(--accent);
 	}
+	.body-preview :global(.escaped-html) {
+		display: block;
+		color: #888;
+		font-size: 0.75em;
+		font-family: monospace;
+	}
 
 	/* History */
 	.history-list {
