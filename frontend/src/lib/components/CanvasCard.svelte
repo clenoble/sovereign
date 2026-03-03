@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { CanvasDocDto } from '$lib/api/commands';
-	import { canvas, selectCard, setDragging, moveCard, hoverCard } from '$lib/stores/canvas.svelte';
+	import { canvas, selectCard, setDragging, moveCard, snapToLane, hoverCard } from '$lib/stores/canvas.svelte';
 	import { openById } from '$lib/stores/documents.svelte';
 	import { app } from '$lib/stores/app.svelte';
 
@@ -44,7 +44,11 @@
 	}
 
 	function handlePointerUp(e: PointerEvent) {
+		if (dragActivated) {
+			snapToLane(doc.id);
+		}
 		dragging = false;
+		dragActivated = false;
 		setDragging(null);
 		(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
 	}

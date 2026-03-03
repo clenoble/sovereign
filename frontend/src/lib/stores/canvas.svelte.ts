@@ -3,6 +3,7 @@
 import {
 	canvasLoad,
 	updateDocumentPosition,
+	moveDocumentToThread,
 	type CanvasDocDto,
 	type ThreadDto,
 	type RelationshipDto,
@@ -158,6 +159,40 @@ export function hoverCard(id: string | null) {
 /** Set dragging state. */
 export function setDragging(id: string | null) {
 	canvas.draggingCardId = id;
+}
+
+/** Snap a card to the closest lane center after a drag ends. Updates thread if changed. */
+export function snapToLane(id: string) {
+	const doc = canvas.documents.find((d) => d.id === id);
+	if (!doc || canvas.threads.length === 0) return;
+
+	const cardCenterY = doc.spatial_y + CARD_H / 2;
+	let closestIdx = 0;
+	let closestDist = Infinity;
+	for (let i = 0; i < canvas.threads.length; i++) {
+		const laneCenterY = i * LANE_HEIGHT + LANE_HEIGHT / 2;
+		const dist = Math.abs(cardCenterY - laneCenterY);
+		if (dist < closestDist) {
+			closestDist = dist;
+			closestIdx = i;
+		}
+	}
+
+	const snappedY = closestIdx * LANE_HEIGHT + (LANE_HEIGHT - CARD_H) / 2;
+	doc.spatial_y = snappedY;
+
+	const newThread = canvas.threads[closestIdx];
+	if (newThread && doc.thread_id !== newThread.id) {
+		doc.thread_id = newThread.id;
+		moveDocumentToThread(doc.id, newThread.id).catch((e) =>
+			console.error('Failed to move document to thread:', e)
+		);
+	}
+
+	if (positionTimer) clearTimeout(positionTimer);
+	updateDocumentPosition(id, doc.spatial_x, snappedY).catch((e) =>
+		console.error('Failed to save position:', e)
+	);
 }
 
 /** Navigate to and select a document by ID. */
