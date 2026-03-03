@@ -114,7 +114,7 @@
 
 	.approve {
 		background: var(--success);
-		color: #fff;
+		color: #000;
 	}
 	.approve:hover {
 		filter: brightness(1.15);

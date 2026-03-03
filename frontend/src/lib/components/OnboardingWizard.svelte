@@ -57,9 +57,9 @@
 	function strengthColor(score: number): string {
 		if (score <= 1) return 'var(--error, #EF4444)';
 		if (score <= 2) return 'var(--warning, #F59E0B)';
-		if (score <= 3) return '#eab308';
+		if (score <= 3) return 'var(--accent-dim, #92610a)';
 		if (score <= 4) return 'var(--success, #10B981)';
-		return '#22c55e';
+		return 'var(--success, #10B981)';
 	}
 
 	// ---------------------------------------------------------------------------

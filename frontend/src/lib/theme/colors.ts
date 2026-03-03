@@ -9,8 +9,8 @@ export const themes = {
 		'--bg-input': '#1e1e26',
 		'--bg-hover': '#30303d',
 		'--text-primary': '#e0e0e0',
-		'--text-secondary': '#999',
-		'--text-muted': '#666',
+		'--text-secondary': '#b3b3b3',
+		'--text-muted': '#9a9a9a',
 		'--accent': '#F59E0B',
 		'--accent-hover': '#D97706',
 		'--accent-dim': '#92610a',
@@ -26,7 +26,11 @@ export const themes = {
 		'--bubble-suggesting': '#8B5CF6',
 		'--chat-user': '#3B82F6',
 		'--chat-assistant': '#F59E0B',
-		'--chat-system': '#666'
+		'--chat-system': '#9a9a9a',
+		'--prov-owned': '#5a9fd4',
+		'--prov-owned-bg': '#1b2a3a',
+		'--prov-external': '#e07c6a',
+		'--prov-external-bg': '#3a2020'
 	},
 	light: {
 		'--bg-primary': '#f5f5f0',
@@ -37,7 +41,7 @@ export const themes = {
 		'--bg-hover': '#e0e0d5',
 		'--text-primary': '#1a1a20',
 		'--text-secondary': '#555',
-		'--text-muted': '#999',
+		'--text-muted': '#6e6e6e',
 		'--accent': '#D97706',
 		'--accent-hover': '#B45309',
 		'--accent-dim': '#92610a',
@@ -53,7 +57,11 @@ export const themes = {
 		'--bubble-suggesting': '#7C3AED',
 		'--chat-user': '#2563EB',
 		'--chat-assistant': '#D97706',
-		'--chat-system': '#999'
+		'--chat-system': '#6e6e6e',
+		'--prov-owned': '#3a7fc4',
+		'--prov-owned-bg': '#e8f0f8',
+		'--prov-external': '#c05545',
+		'--prov-external-bg': '#fce8e8'
 	}
 } as const;
 

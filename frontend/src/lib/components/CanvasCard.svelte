@@ -159,13 +159,13 @@
 	}
 
 	.owned {
-		border-color: #5a9fd4;
-		background: #1b2a3a;
+		border-color: var(--prov-owned);
+		background: var(--prov-owned-bg);
 	}
 
 	.external {
-		border-color: #e07c6a;
-		background: #3a2020;
+		border-color: var(--prov-external);
+		background: var(--prov-external-bg);
 		transform: skewX(-5deg);
 		border-radius: 4px;
 	}
@@ -206,10 +206,10 @@
 		cursor: grab;
 	}
 	.canvas-dot.owned {
-		background: #5a9fd4;
+		background: var(--prov-owned);
 	}
 	.canvas-dot.external {
-		background: #e07c6a;
+		background: var(--prov-external);
 	}
 
 	.simplified {

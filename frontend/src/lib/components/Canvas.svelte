@@ -57,6 +57,12 @@
 		drawBackground(canvas);
 	});
 
+	/** Read a CSS custom property from the canvas container. */
+	function getCSS(prop: string): string {
+		if (!containerEl) return '';
+		return getComputedStyle(containerEl).getPropertyValue(prop).trim();
+	}
+
 	function drawBackground(state: CanvasState) {
 		if (!ctx || !canvasEl) return;
 		const { camera, threads, documents, relationships, milestones, messages } = state;
@@ -66,6 +72,12 @@
 		ctx.save();
 		ctx.translate(camera.panX, camera.panY);
 		ctx.scale(camera.zoom, camera.zoom);
+
+		// Theme-aware colors from CSS custom properties
+		const textMuted = getCSS('--text-muted') || '#9a9a9a';
+		const textPrimary = getCSS('--text-primary') || '#e0e0e0';
+		const warningColor = getCSS('--warning') || '#F59E0B';
+		const borderColor = getCSS('--border') || '#333340';
 
 		// Draw thread lane backgrounds
 		const laneHeight = LANE_HEIGHT;
@@ -83,20 +95,22 @@
 
 		for (let i = 0; i < threads.length; i++) {
 			const y = i * laneHeight;
-			ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.04)';
+			ctx.fillStyle = i % 2 === 0 ? 'rgba(128,128,128,0.03)' : 'rgba(128,128,128,0.06)';
 			ctx.fillRect(-100, y, maxX + 200, laneHeight);
 
-			ctx.fillStyle = 'rgba(255,255,255,0.3)';
+			ctx.fillStyle = textMuted;
 			ctx.font = '13px -apple-system, sans-serif';
 			ctx.textBaseline = 'middle';
 			ctx.fillText(threads[i].name, 10, y + laneHeight / 2);
 
-			ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+			ctx.strokeStyle = borderColor;
+			ctx.globalAlpha = 0.3;
 			ctx.lineWidth = 1;
 			ctx.beginPath();
 			ctx.moveTo(-100, y + laneHeight);
 			ctx.lineTo(maxX + 200, y + laneHeight);
 			ctx.stroke();
+			ctx.globalAlpha = 1.0;
 		}
 
 		// Draw relationship edges
@@ -110,10 +124,10 @@
 			const toX = toDoc.spatial_x + 100;
 			const toY = toDoc.spatial_y + 40;
 
-			let color = 'rgba(100,180,255,0.4)';
-			if (rel.relation_type === 'DerivedFrom') color = 'rgba(255,200,100,0.4)';
-			else if (rel.relation_type === 'Contradicts') color = 'rgba(255,100,100,0.4)';
-			else if (rel.relation_type === 'Supports') color = 'rgba(100,255,100,0.4)';
+			let color = 'rgba(100,180,255,0.65)';
+			if (rel.relation_type === 'DerivedFrom') color = 'rgba(255,200,100,0.65)';
+			else if (rel.relation_type === 'Contradicts') color = 'rgba(255,100,100,0.65)';
+			else if (rel.relation_type === 'Supports') color = 'rgba(100,255,100,0.65)';
 
 			ctx.strokeStyle = color;
 			ctx.lineWidth = 1 + rel.strength * 2;
@@ -134,15 +148,17 @@
 			const msTime = new Date(ms.timestamp).getTime();
 			const x = 200 + ((msTime % 100000000) / 100000000) * maxX;
 
-			ctx.fillStyle = 'rgba(255,215,0,0.6)';
+			ctx.fillStyle = warningColor;
+			ctx.globalAlpha = 0.7;
 			ctx.beginPath();
 			ctx.moveTo(x, y + 5);
 			ctx.lineTo(x + 6, y + 15);
 			ctx.lineTo(x - 6, y + 15);
 			ctx.closePath();
 			ctx.fill();
+			ctx.globalAlpha = 1.0;
 
-			ctx.fillStyle = 'rgba(255,215,0,0.5)';
+			ctx.fillStyle = warningColor;
 			ctx.font = '10px -apple-system, sans-serif';
 			ctx.fillText(ms.title, x + 8, y + 14);
 		}
@@ -151,11 +167,11 @@
 		const r = MSG_RADIUS;
 		for (const msg of messages) {
 			const fillColor = msg.is_outbound ? '#263a1e' : '#2e2433';
-			const borderColor = msg.is_outbound ? '#72bf80' : '#a473cc';
+			const msgBorderColor = msg.is_outbound ? '#72bf80' : '#a473cc';
 
 			if (camera.zoom < 0.3) {
 				// Tiny dot
-				ctx.fillStyle = borderColor;
+				ctx.fillStyle = msgBorderColor;
 				ctx.beginPath();
 				ctx.arc(msg.x, msg.y, 4, 0, Math.PI * 2);
 				ctx.fill();
@@ -165,12 +181,12 @@
 				ctx.beginPath();
 				ctx.arc(msg.x, msg.y, r, 0, Math.PI * 2);
 				ctx.fill();
-				ctx.strokeStyle = borderColor;
+				ctx.strokeStyle = msgBorderColor;
 				ctx.lineWidth = 2;
 				ctx.stroke();
 
 				// Subject text (truncated)
-				ctx.fillStyle = '#ccc';
+				ctx.fillStyle = textPrimary;
 				ctx.font = '9px -apple-system, sans-serif';
 				ctx.textAlign = 'center';
 				ctx.textBaseline = 'middle';
@@ -180,7 +196,7 @@
 				if (camera.zoom >= 0.6) {
 					// "in" / "out" badge below circle
 					const badge = msg.is_outbound ? 'out' : 'in';
-					ctx.fillStyle = borderColor;
+					ctx.fillStyle = msgBorderColor;
 					ctx.font = 'bold 8px -apple-system, sans-serif';
 					ctx.fillText(badge, msg.x, msg.y + r + 10);
 				}
@@ -361,7 +377,7 @@
 
 	<!-- Loading / empty / error state -->
 	{#if canvas.loadError}
-		<div class="canvas-status" style="color: #ff6666;">Error: {canvas.loadError}</div>
+		<div class="canvas-status" style="color: var(--error);">Error: {canvas.loadError}</div>
 	{:else if !canvas.loaded}
 		<div class="canvas-status">Loading canvas...</div>
 	{:else if canvas.documents.length === 0}
@@ -460,7 +476,7 @@
 
 	.new-thread-popup button {
 		background: var(--accent);
-		color: #fff;
+		color: #000;
 		border: none;
 		border-radius: 4px;
 		padding: 4px 12px;
@@ -481,8 +497,8 @@
 	.drop-overlay {
 		position: absolute;
 		inset: 0;
-		background: rgba(90, 159, 212, 0.15);
-		border: 3px dashed #5a9fd4;
+		background: color-mix(in srgb, var(--info) 15%, transparent);
+		border: 3px dashed var(--info);
 		border-radius: 8px;
 		display: flex;
 		align-items: center;
@@ -494,7 +510,7 @@
 	.drop-message {
 		font-size: 1.2rem;
 		font-weight: 600;
-		color: #5a9fd4;
+		color: var(--info);
 		background: var(--bg-panel);
 		padding: 12px 24px;
 		border-radius: 8px;

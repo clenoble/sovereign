@@ -482,7 +482,7 @@
 	}
 	.body-preview :global(.escaped-html) {
 		display: block;
-		color: #888;
+		color: var(--text-muted);
 		font-size: 0.75em;
 		font-family: monospace;
 	}

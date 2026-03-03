@@ -218,7 +218,7 @@
 		height: 32px;
 		border-radius: 50%;
 		background: var(--accent);
-		color: #fff;
+		color: #000;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -322,7 +322,7 @@
 
 	.msg.outbound {
 		align-self: flex-end;
-		background: rgba(78, 167, 233, 0.15);
+		background: color-mix(in srgb, var(--prov-owned) 15%, transparent);
 	}
 
 	.msg-header {
