@@ -6,6 +6,7 @@
 	import { canvas, navigateToDoc as canvasNavigateToDoc } from '$lib/stores/canvas.svelte';
 	import { openById } from '$lib/stores/documents.svelte';
 	import { contactsState } from '$lib/stores/contacts.svelte';
+	import SkillsPanel from './SkillsPanel.svelte';
 
 	function handleModels() {
 		app.modelPanelVisible = !app.modelPanelVisible;
@@ -35,6 +36,10 @@
 
 	function handleInbox() {
 		app.inboxVisible = !app.inboxVisible;
+	}
+
+	function handleSkills() {
+		app.skillsPanelVisible = !app.skillsPanelVisible;
 	}
 
 	function openDoc(id: string) {
@@ -95,6 +100,11 @@
 	</div>
 
 	<div class="right">
+		<div class="skills-anchor">
+			<button class="tb-btn tb-text" class:active={app.skillsPanelVisible} onclick={handleSkills} title="Skills">Skills</button>
+			<SkillsPanel />
+		</div>
+
 		<button class="tb-btn" onclick={handleInbox} title="Inbox (I)">
 			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 				<rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.5" />
@@ -275,6 +285,19 @@
 	.tb-btn:hover {
 		background: var(--bg-hover);
 		color: var(--text-primary);
+	}
+
+	.skills-anchor {
+		position: relative;
+	}
+
+	.tb-text {
+		font-size: 0.75rem;
+		font-weight: 500;
+	}
+
+	.tb-btn.active {
+		color: var(--accent);
 	}
 
 	.unread-dot {

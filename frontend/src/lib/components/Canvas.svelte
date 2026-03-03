@@ -8,9 +8,11 @@
 		zoomAt,
 		home,
 		LANE_HEIGHT,
+		MSG_RADIUS,
 		type CanvasState
 	} from '$lib/stores/canvas.svelte';
 	import { createThread as apiCreateThread, importFile } from '$lib/api/commands';
+	import { app } from '$lib/stores/app.svelte';
 	import CanvasCard from './CanvasCard.svelte';
 	import Minimap from './Minimap.svelte';
 
@@ -51,12 +53,13 @@
 	// dependencies, so relationship links update during card drags.
 	$effect(() => {
 		void canvas.documents.map(d => d.spatial_x + d.spatial_y);
+		void canvas.messages.length;
 		drawBackground(canvas);
 	});
 
 	function drawBackground(state: CanvasState) {
 		if (!ctx || !canvasEl) return;
-		const { camera, threads, documents, relationships, milestones } = state;
+		const { camera, threads, documents, relationships, milestones, messages } = state;
 		const w = canvasEl.width;
 		const h = canvasEl.height;
 		ctx.clearRect(0, 0, w, h);
@@ -69,10 +72,13 @@
 		const threadOrder = new Map<string, number>();
 		threads.forEach((t, i) => threadOrder.set(t.id, i));
 
-		// Find x-extent of documents
+		// Find x-extent of documents and messages
 		let maxX = 1000;
 		for (const d of documents) {
 			maxX = Math.max(maxX, d.spatial_x + 220);
+		}
+		for (const m of messages) {
+			maxX = Math.max(maxX, m.x + MSG_RADIUS + 20);
 		}
 
 		for (let i = 0; i < threads.length; i++) {
@@ -141,6 +147,48 @@
 			ctx.fillText(ms.title, x + 8, y + 14);
 		}
 
+		// Draw message circles
+		const r = MSG_RADIUS;
+		for (const msg of messages) {
+			const fillColor = msg.is_outbound ? '#263a1e' : '#2e2433';
+			const borderColor = msg.is_outbound ? '#72bf80' : '#a473cc';
+
+			if (camera.zoom < 0.3) {
+				// Tiny dot
+				ctx.fillStyle = borderColor;
+				ctx.beginPath();
+				ctx.arc(msg.x, msg.y, 4, 0, Math.PI * 2);
+				ctx.fill();
+			} else {
+				// Filled circle with border
+				ctx.fillStyle = fillColor;
+				ctx.beginPath();
+				ctx.arc(msg.x, msg.y, r, 0, Math.PI * 2);
+				ctx.fill();
+				ctx.strokeStyle = borderColor;
+				ctx.lineWidth = 2;
+				ctx.stroke();
+
+				// Subject text (truncated)
+				ctx.fillStyle = '#ccc';
+				ctx.font = '9px -apple-system, sans-serif';
+				ctx.textAlign = 'center';
+				ctx.textBaseline = 'middle';
+				const label = msg.subject.length > 12 ? msg.subject.slice(0, 11) + '\u2026' : msg.subject;
+				ctx.fillText(label, msg.x, msg.y);
+
+				if (camera.zoom >= 0.6) {
+					// "in" / "out" badge below circle
+					const badge = msg.is_outbound ? 'out' : 'in';
+					ctx.fillStyle = borderColor;
+					ctx.font = 'bold 8px -apple-system, sans-serif';
+					ctx.fillText(badge, msg.x, msg.y + r + 10);
+				}
+
+				ctx.textAlign = 'start';
+			}
+		}
+
 		ctx.restore();
 	}
 
@@ -166,8 +214,36 @@
 
 	function handleCanvasPointerUp(e: PointerEvent) {
 		if (panning) {
+			const dx = Math.abs(e.clientX - panStart.x);
+			const dy = Math.abs(e.clientY - panStart.y);
 			panning = false;
 			containerEl.releasePointerCapture(e.pointerId);
+
+			// If the pointer barely moved, treat as a click — check message circle hit
+			if (dx < 4 && dy < 4) {
+				checkMessageClick(e.clientX, e.clientY);
+			}
+		}
+	}
+
+	/** Convert screen coords to world coords and check if a message circle was clicked. */
+	function checkMessageClick(screenX: number, screenY: number) {
+		const { panX, panY, zoom } = canvas.camera;
+		const worldX = (screenX - panX) / zoom;
+		const worldY = (screenY - panY) / zoom;
+		const r = MSG_RADIUS;
+
+		for (const msg of canvas.messages) {
+			const dx = worldX - msg.x;
+			const dy = worldY - msg.y;
+			if (dx * dx + dy * dy <= r * r) {
+				// Open contact panel with this conversation
+				app.contactPanelState = {
+					contactId: msg.contact_id,
+					conversationId: msg.conversation_id
+				};
+				return;
+			}
 		}
 	}
 

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { app } from '$lib/stores/app.svelte';
-	import { listAllSkills } from '$lib/api/commands';
-	import type { SkillInfo } from '$lib/api/commands';
+	import { canvas } from '$lib/stores/canvas.svelte';
+	import { listAllSkills, executeSkill } from '$lib/api/commands';
+	import type { SkillInfo, SkillActionInfo } from '$lib/api/commands';
 
 	let skills = $state<SkillInfo[]>([]);
 	let loading = $state(false);
@@ -24,49 +25,46 @@
 		loading = false;
 	}
 
-	function close() {
+	async function runAction(skillName: string, action: SkillActionInfo) {
+		const docId = canvas.selectedCardId;
+		if (!docId) return;
+		try {
+			await executeSkill(skillName, action.action_id, docId, '');
+		} catch (e) {
+			console.error('Skill failed:', e);
+		}
 		app.skillsPanelVisible = false;
 	}
 
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape') {
-			close();
-		}
+	function close() {
+		app.skillsPanelVisible = false;
 	}
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 {#if app.skillsPanelVisible}
-	<div class="skills-backdrop" onclick={close} onkeydown={handleKeydown}></div>
-	<div class="skills-panel" onkeydown={handleKeydown}>
-		<div class="panel-header">
-			<span class="panel-title">Skills</span>
-			<button class="close-btn" onclick={close}>&#x2715;</button>
-		</div>
-
-		<div class="panel-body">
-			{#if loading}
-				<div class="loading">Loading skills...</div>
-			{:else if error}
-				<p class="error">{error}</p>
-			{:else if skills.length === 0}
-				<div class="empty">No skills registered</div>
-			{:else}
-				{#each skills as skill}
-					<div class="skill-group">
-						<div class="skill-name">{skill.skill_name}</div>
-						<div class="skill-actions">
-							{#each skill.actions as action}
-								<div class="action-row">
-									<span class="action-label">{action.label}</span>
-									<span class="action-id">{action.action_id}</span>
-								</div>
-							{/each}
-						</div>
-					</div>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="skills-backdrop" onclick={close}></div>
+	<div class="skills-dropdown">
+		{#if loading}
+			<div class="status">Loading...</div>
+		{:else if error}
+			<div class="status error">{error}</div>
+		{:else if skills.length === 0}
+			<div class="status">No skills</div>
+		{:else}
+			{#each skills as skill}
+				{#each skill.actions as action}
+					<button
+						class="action-btn"
+						onclick={() => runAction(skill.skill_name, action)}
+						title="{skill.skill_name}: {action.action_id}"
+						disabled={!canvas.selectedCardId}
+					>
+						{action.label}
+					</button>
 				{/each}
-			{/if}
-		</div>
+			{/each}
+		{/if}
 	</div>
 {/if}
 
@@ -74,107 +72,56 @@
 	.skills-backdrop {
 		position: fixed;
 		inset: 0;
-		z-index: 69;
-		background: rgba(0, 0, 0, 0.3);
+		z-index: 79;
 	}
 
-	.skills-panel {
-		position: fixed;
-		top: 0;
-		right: 0;
-		width: 360px;
-		height: 100vh;
+	.skills-dropdown {
+		position: absolute;
+		bottom: 100%;
+		left: 0;
+		margin-bottom: 6px;
+		min-width: 160px;
+		max-height: 75vh;
+		overflow-y: auto;
 		background: var(--bg-panel);
-		border-left: 1px solid var(--border);
-		box-shadow: -4px 0 24px rgba(0, 0, 0, 0.4);
-		z-index: 70;
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.35);
+		z-index: 81;
+		padding: 4px 0;
 	}
 
-	.panel-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 14px 18px;
-		border-bottom: 1px solid var(--border);
-		flex-shrink: 0;
+	.status {
+		padding: 12px;
+		color: var(--text-muted);
+		font-size: 0.8rem;
+		text-align: center;
 	}
 
-	.panel-title {
-		font-size: 1rem;
-		font-weight: 600;
-		color: var(--text-primary);
+	.status.error {
+		color: var(--error, #ef4444);
 	}
 
-	.close-btn {
+	.action-btn {
+		display: block;
+		width: 100%;
+		text-align: left;
+		padding: 7px 14px;
 		background: none;
 		border: none;
-		color: var(--text-muted);
+		color: var(--text-secondary);
+		font-size: 0.8rem;
 		cursor: pointer;
-		font-size: 0.9rem;
-		padding: 2px 6px;
-	}
-	.close-btn:hover {
-		color: var(--error);
+		white-space: nowrap;
 	}
 
-	.panel-body {
-		flex: 1;
-		overflow-y: auto;
-		padding: 12px 18px;
-	}
-
-	.loading, .empty {
-		color: var(--text-muted);
-		font-size: 0.85rem;
-		text-align: center;
-		padding: 32px 0;
-	}
-
-	.error {
-		color: var(--error);
-		font-size: 0.8rem;
-		margin: 0;
-	}
-
-	.skill-group {
-		margin-bottom: 16px;
-	}
-
-	.skill-name {
-		font-size: 0.85rem;
-		font-weight: 600;
-		color: var(--text-primary);
-		margin-bottom: 6px;
-		text-transform: capitalize;
-	}
-
-	.skill-actions {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.action-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 6px 10px;
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		font-size: 0.8rem;
-	}
-
-	.action-label {
+	.action-btn:hover:not(:disabled) {
+		background: var(--bg-hover);
 		color: var(--text-primary);
 	}
 
-	.action-id {
-		color: var(--text-muted);
-		font-size: 0.7rem;
-		font-family: monospace;
+	.action-btn:disabled {
+		opacity: 0.4;
+		cursor: default;
 	}
 </style>

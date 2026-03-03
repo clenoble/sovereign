@@ -5,7 +5,7 @@ use sovereign_core::content::ContentFields;
 use sovereign_core::interfaces::FeedbackEvent;
 use sovereign_core::security::ActionDecision;
 use sovereign_db::GraphDB;
-use sovereign_db::schema::{Document, ReadStatus, RelationType, Thread};
+use sovereign_db::schema::{Document, MessageDirection, ReadStatus, RelationType, Thread};
 use sovereign_skills::traits::{SkillContext, SkillDocument};
 use tauri::State;
 
@@ -118,12 +118,24 @@ pub struct ModelEntryDto {
 // -- Phase 3 DTOs --
 
 #[derive(Serialize)]
+pub struct CanvasMessageDto {
+    pub id: String,
+    pub conversation_id: String,
+    pub thread_id: String,
+    pub contact_id: String,
+    pub subject: String,
+    pub is_outbound: bool,
+    pub sent_at: String,
+}
+
+#[derive(Serialize)]
 pub struct CanvasData {
     pub documents: Vec<CanvasDocDto>,
     pub threads: Vec<ThreadDto>,
     pub relationships: Vec<RelationshipDto>,
     pub contacts: Vec<ContactSummaryDto>,
     pub milestones: Vec<MilestoneDto>,
+    pub messages: Vec<CanvasMessageDto>,
 }
 
 #[derive(Serialize)]
@@ -806,6 +818,26 @@ pub async fn execute_skill(
     }
 }
 
+/// List all registered skills and their actions.
+#[tauri::command]
+pub async fn list_all_skills(state: State<'_, AppState>) -> Result<Vec<SkillInfo>, String> {
+    let skills = state.skill_registry.all_skills();
+    Ok(skills
+        .iter()
+        .map(|s| SkillInfo {
+            skill_name: s.name().to_string(),
+            actions: s
+                .actions()
+                .into_iter()
+                .map(|(id, label)| SkillActionInfo {
+                    action_id: id,
+                    label,
+                })
+                .collect(),
+        })
+        .collect())
+}
+
 // ---------------------------------------------------------------------------
 // Model management
 // ---------------------------------------------------------------------------
@@ -919,6 +951,48 @@ pub async fn canvas_load(state: State<'_, AppState>) -> Result<CanvasData, Strin
         }
     }
 
+    // Build set of owned contact IDs so we can pick the distant contact
+    let owned_contact_ids: HashSet<String> = contacts
+        .iter()
+        .filter(|c| c.is_owned)
+        .filter_map(|c| c.id.as_ref().map(sovereign_db::schema::thing_to_raw))
+        .collect();
+
+    // Collect messages from conversations that are linked to threads
+    let mut all_messages = Vec::new();
+    for conv in &conversations {
+        let conv_id = conv.id.as_ref().map(sovereign_db::schema::thing_to_raw).unwrap_or_default();
+        let thread_id = match &conv.linked_thread_id {
+            Some(tid) => tid.clone(),
+            None => continue, // skip conversations not linked to a thread
+        };
+        // Pick the first non-owned (distant) participant as the contact
+        let contact_id = conv.participant_contact_ids
+            .iter()
+            .find(|pid| !owned_contact_ids.contains(*pid))
+            .or_else(|| conv.participant_contact_ids.first())
+            .cloned()
+            .unwrap_or_default();
+        if let Ok(msgs) = state.db.list_messages(&conv_id, None, 50).await {
+            for m in msgs {
+                let mid = m.id.as_ref().map(sovereign_db::schema::thing_to_raw).unwrap_or_default();
+                let subject = m.subject.unwrap_or_else(|| {
+                    let body = m.body.chars().take(30).collect::<String>();
+                    if m.body.len() > 30 { format!("{}...", body) } else { body }
+                });
+                all_messages.push(CanvasMessageDto {
+                    id: mid,
+                    conversation_id: conv_id.clone(),
+                    thread_id: thread_id.clone(),
+                    contact_id: contact_id.clone(),
+                    subject,
+                    is_outbound: matches!(m.direction, MessageDirection::Outbound),
+                    sent_at: m.sent_at.to_rfc3339(),
+                });
+            }
+        }
+    }
+
     let result = Ok(CanvasData {
         documents: docs
             .into_iter()
@@ -995,13 +1069,15 @@ pub async fn canvas_load(state: State<'_, AppState>) -> Result<CanvasData, Strin
                 }
             })
             .collect(),
+        messages: all_messages,
     });
-    tracing::info!("canvas_load: returning {} docs, {} threads, {} rels, {} contacts, {} milestones",
+    tracing::info!("canvas_load: returning {} docs, {} threads, {} rels, {} contacts, {} milestones, {} messages",
         result.as_ref().map(|r| r.documents.len()).unwrap_or(0),
         result.as_ref().map(|r| r.threads.len()).unwrap_or(0),
         result.as_ref().map(|r| r.relationships.len()).unwrap_or(0),
         result.as_ref().map(|r| r.contacts.len()).unwrap_or(0),
         result.as_ref().map(|r| r.milestones.len()).unwrap_or(0),
+        result.as_ref().map(|r| r.messages.len()).unwrap_or(0),
     );
     result
 }

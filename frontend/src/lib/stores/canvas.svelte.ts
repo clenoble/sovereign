@@ -7,7 +7,8 @@ import {
 	type CanvasDocDto,
 	type ThreadDto,
 	type RelationshipDto,
-	type MilestoneDto
+	type MilestoneDto,
+	type CanvasMessageDto
 } from '$lib/api/commands';
 
 export interface Camera {
@@ -16,11 +17,17 @@ export interface Camera {
 	zoom: number;
 }
 
+export interface PositionedMessage extends CanvasMessageDto {
+	x: number;
+	y: number;
+}
+
 export interface CanvasState {
 	documents: CanvasDocDto[];
 	threads: ThreadDto[];
 	relationships: RelationshipDto[];
 	milestones: MilestoneDto[];
+	messages: PositionedMessage[];
 	camera: Camera;
 	hoveredCardId: string | null;
 	selectedCardId: string | null;
@@ -34,6 +41,7 @@ const ZOOM_MAX = 5.0;
 export const CARD_W = 200;
 export const CARD_H = 80;
 export const LANE_HEIGHT = 120;
+export const MSG_RADIUS = 30;
 
 /** Reactive canvas state — $state() creates a deep Proxy for fine-grained tracking. */
 export const canvas: CanvasState = $state({
@@ -41,6 +49,7 @@ export const canvas: CanvasState = $state({
 	threads: [],
 	relationships: [],
 	milestones: [],
+	messages: [],
 	camera: { panX: 0, panY: 0, zoom: 1 },
 	hoveredCardId: null,
 	selectedCardId: null,
@@ -61,6 +70,7 @@ export async function load() {
 		canvas.threads = data.threads;
 		canvas.relationships = data.relationships;
 		canvas.milestones = data.milestones;
+		canvas.messages = layoutMessages(data.messages ?? [], data.threads, docs);
 		canvas.loaded = true;
 		canvas.loadError = null;
 		home();
@@ -81,6 +91,7 @@ export async function refresh() {
 		canvas.threads = data.threads;
 		canvas.relationships = data.relationships;
 		canvas.milestones = data.milestones;
+		canvas.messages = layoutMessages(data.messages ?? [], data.threads, docs);
 	} catch (e) {
 		console.error('Failed to refresh canvas:', e);
 	}
@@ -243,5 +254,46 @@ function autoLayout(docs: CanvasDocDto[], threads: ThreadDto[]): CanvasDocDto[] 
 		laneY += LANE_HEIGHT;
 	}
 
+	return result;
+}
+
+/** Position messages in lanes after the rightmost document in each thread. */
+function layoutMessages(
+	msgs: CanvasMessageDto[],
+	threads: ThreadDto[],
+	docs: CanvasDocDto[]
+): PositionedMessage[] {
+	const threadOrder = new Map<string, number>();
+	threads.forEach((t, i) => threadOrder.set(t.id, i));
+
+	// Find the rightmost document edge per thread
+	const maxXByThread = new Map<string, number>();
+	for (const d of docs) {
+		const cur = maxXByThread.get(d.thread_id) ?? 0;
+		maxXByThread.set(d.thread_id, Math.max(cur, d.spatial_x + CARD_W));
+	}
+
+	// Group messages by thread, sorted by sent_at
+	const byThread = new Map<string, CanvasMessageDto[]>();
+	for (const m of msgs) {
+		const list = byThread.get(m.thread_id) || [];
+		list.push(m);
+		byThread.set(m.thread_id, list);
+	}
+
+	const result: PositionedMessage[] = [];
+	for (const [tid, threadMsgs] of byThread) {
+		threadMsgs.sort((a, b) => a.sent_at.localeCompare(b.sent_at));
+		const laneIdx = threadOrder.get(tid) ?? 0;
+		const startX = (maxXByThread.get(tid) ?? 200) + 40;
+		const laneCenterY = laneIdx * LANE_HEIGHT + LANE_HEIGHT / 2;
+		for (let i = 0; i < threadMsgs.length; i++) {
+			result.push({
+				...threadMsgs[i],
+				x: startX + i * (MSG_RADIUS * 2 + 20),
+				y: laneCenterY
+			});
+		}
+	}
 	return result;
 }

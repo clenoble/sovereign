@@ -23,19 +23,25 @@
 	$effect(() => {
 		const state = app.contactPanelState;
 		if (state) {
-			loadContact(state.contactId);
+			loadContact(state.contactId, state.conversationId);
 		} else {
 			contact = null;
 			messages = [];
 		}
 	});
 
-	async function loadContact(id: string) {
+	async function loadContact(id: string, conversationId?: string) {
 		try {
 			contact = await getContactDetail(id);
-			selectedConvIdx = 0;
+			// If a specific conversation was requested, select it
+			let idx = 0;
+			if (conversationId && contact.conversations.length > 0) {
+				const found = contact.conversations.findIndex(c => c.id === conversationId);
+				if (found >= 0) idx = found;
+			}
+			selectedConvIdx = idx;
 			if (contact.conversations.length > 0) {
-				await loadConversationMessages(contact.conversations[0].id);
+				await loadConversationMessages(contact.conversations[idx].id);
 			}
 		} catch (e) {
 			console.error('Failed to load contact:', e);
@@ -115,7 +121,7 @@
 				<div class="contact-avatar">{contact.name.charAt(0).toUpperCase()}</div>
 				<span class="contact-name">{contact.name}</span>
 			</div>
-			<button class="close-btn" onclick={close}>&times;</button>
+			<button class="close-btn" onclick={close} onpointerdown={(e) => e.stopPropagation()}>&times;</button>
 		</div>
 
 		<!-- Addresses -->

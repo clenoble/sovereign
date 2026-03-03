@@ -39,9 +39,10 @@ export const app = $state({
 	orchestratorAvailable: false,
 	modelPanelVisible: false,
 	inboxVisible: false,
-	contactPanelState: null as { contactId: string } | null,
+	contactPanelState: null as { contactId: string; conversationId?: string } | null,
 	authState: 'checking' as AuthState,
 	settingsVisible: false,
 	contextMenu: null as ContextMenuState | null,
-	skillsPanelVisible: false
+	skillsPanelVisible: false,
+	bubbleStyle: 'icon' as string
 });
