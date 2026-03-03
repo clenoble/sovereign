@@ -444,18 +444,20 @@ impl GraphDB for SurrealGraphDB {
     ) -> DbResult<RelatedTo> {
         let now = Utc::now();
         let relation_type_str = relation_type.to_string();
-
-        let query = format!(
-            "RELATE {from_id}->related_to->{to_id} SET \
-             relation_type = $rtype, \
-             strength = $strength, \
-             created_at = $created_at \
-             RETURN AFTER"
-        );
+        let from = from_id.to_string();
+        let to = to_id.to_string();
 
         let mut result = self
             .db
-            .query(&query)
+            .query(
+                "RELATE $from->related_to->$to SET \
+                 relation_type = $rtype, \
+                 strength = $strength, \
+                 created_at = $created_at \
+                 RETURN AFTER",
+            )
+            .bind(("from", from))
+            .bind(("to", to))
             .bind(("rtype", relation_type_str))
             .bind(("strength", strength))
             .bind(("created_at", now))
@@ -468,10 +470,12 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn list_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
-        let query = format!(
-            "SELECT * FROM related_to WHERE in = {doc_id} OR out = {doc_id}"
-        );
-        let mut result = self.db.query(&query).await?;
+        let id = doc_id.to_string();
+        let mut result = self
+            .db
+            .query("SELECT * FROM related_to WHERE in = $id OR out = $id")
+            .bind(("id", id))
+            .await?;
         let rels: Vec<RelatedTo> = result.take(0)?;
         Ok(rels)
     }
@@ -484,10 +488,14 @@ impl GraphDB for SurrealGraphDB {
 
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>> {
         let arrow_path = "->related_to->document".repeat(depth as usize);
-        let query = format!(
-            "SELECT {arrow_path} FROM {doc_id} LIMIT {limit}"
-        );
-        let mut result = self.db.query(&query).await?;
+        let query = format!("SELECT {arrow_path} FROM $id LIMIT $lim");
+        let id = doc_id.to_string();
+        let mut result = self
+            .db
+            .query(&query)
+            .bind(("id", id))
+            .bind(("lim", limit))
+            .await?;
         let docs: Vec<Document> = result.take(0)?;
         Ok(docs)
     }

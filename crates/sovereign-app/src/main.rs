@@ -146,12 +146,7 @@ fn main() -> Result<()> {
 #[cfg(feature = "tauri-ui")]
 fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     // Compute profile directory (~/.sovereign)
-    let profile_dir = {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| "/tmp".into());
-        std::path::PathBuf::from(home).join(".sovereign")
-    };
+    let profile_dir = sovereign_core::home_dir().join(".sovereign");
 
     // Run async backend setup inside the existing runtime
     let (db, orchestrator, skill_registry, skill_db, decision_tx, feedback_tx, orch_tx, orch_rx, autocommit, model_assignments) =
@@ -160,10 +155,7 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             seed::seed_if_empty(&db).await?;
 
             // Seed user profile and session log history
-            let home = std::env::var("HOME")
-                .or_else(|_| std::env::var("USERPROFILE"))
-                .unwrap_or_else(|_| "/tmp".into());
-            let profile_dir = std::path::PathBuf::from(home)
+            let profile_dir = sovereign_core::home_dir()
                 .join(".sovereign")
                 .join("orchestrator");
             if let Err(e) = seed::seed_profile_and_history(&profile_dir) {
@@ -399,10 +391,7 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         seed::seed_if_empty(&db).await?;
 
         // Seed user profile and session log history for testing
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| "/tmp".into());
-        let profile_dir = std::path::PathBuf::from(home)
+        let profile_dir = sovereign_core::home_dir()
             .join(".sovereign")
             .join("orchestrator");
         if let Err(e) = seed::seed_profile_and_history(&profile_dir) {
@@ -648,9 +637,10 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                         phone_number: signal_phone,
                         store_path: std::env::var("SOVEREIGN_SIGNAL_STORE")
                             .unwrap_or_else(|_| {
-                                let home = std::env::var("HOME")
-                                    .unwrap_or_else(|_| "/tmp".into());
-                                format!("{home}/.sovereign/signal")
+                                sovereign_core::home_dir()
+                                    .join(".sovereign/signal")
+                                    .to_string_lossy()
+                                    .into_owned()
                             }),
                         device_name: std::env::var("SOVEREIGN_SIGNAL_NAME").ok(),
                     };
