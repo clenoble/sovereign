@@ -184,6 +184,7 @@
 				bubble_style: bubbleStyle
 			};
 			await saveProfile(data);
+			app.bubbleStyle = bubbleStyle;
 		} catch (e) {
 			error = String(e);
 		}

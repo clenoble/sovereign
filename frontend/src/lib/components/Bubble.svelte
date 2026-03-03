@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { app } from '$lib/stores/app.svelte';
 	import { toggleChat } from '$lib/stores/chat.svelte';
+	import BubblePreview from './BubblePreview.svelte';
 
 	// Map bubble state to border color
 	function borderColor(state: string): string {
@@ -31,38 +32,23 @@
 	onclick={() => toggleChat()}
 	title="Chat with AI"
 >
-	<svg width="48" height="48" viewBox="0 0 32 32" fill="none">
-		<circle cx="16" cy="16" r="14" fill="url(#bubbleGrad)" stroke={borderColor(app.bubbleState)} stroke-width="1.5" />
-		<g transform="translate(16, 16)">
-			<path d="M -5 2 L -6 4 L 6 4 L 5 2 Z" fill="url(#crownGrad)" />
-			<path d="M -5 2 L -4 -4 L -3 2 M -1 2 L 0 -5 L 1 2 M 3 2 L 4 -4 L 5 2" fill="url(#crownGrad)" />
-		</g>
-		{#if isAnimating(app.bubbleState)}
-			<circle cx="16" cy="16" r="14" fill="none" stroke={borderColor(app.bubbleState)} stroke-width="2" opacity="0.3">
-				<animate attributeName="r" values="14;18;14" dur="2s" repeatCount="indefinite" />
+	<BubblePreview style={app.bubbleStyle} size={48} />
+	{#if isAnimating(app.bubbleState)}
+		<svg class="state-ring" width="48" height="48" viewBox="0 0 120 120">
+			<circle cx="60" cy="60" r="56" fill="none" stroke={borderColor(app.bubbleState)} stroke-width="4" opacity="0.3">
+				<animate attributeName="r" values="56;64;56" dur="2s" repeatCount="indefinite" />
 				<animate attributeName="opacity" values="0.3;0;0.3" dur="2s" repeatCount="indefinite" />
 			</circle>
-		{/if}
-		<defs>
-			<radialGradient id="bubbleGrad">
-				<stop offset="0%" stop-color="#FCD34D" />
-				<stop offset="50%" stop-color="#F59E0B" />
-				<stop offset="100%" stop-color="#D97706" />
-			</radialGradient>
-			<linearGradient id="crownGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-				<stop offset="0%" stop-color="#CD7F32" />
-				<stop offset="50%" stop-color="#A0522D" />
-				<stop offset="100%" stop-color="#8B4513" />
-			</linearGradient>
-		</defs>
-	</svg>
+		</svg>
+	{/if}
 </button>
 
 <style>
 	.bubble {
 		position: fixed;
 		top: 16px;
-		right: 16px;
+		left: 16px;
+		right: auto;
 		background: none;
 		border: none;
 		cursor: pointer;
@@ -75,7 +61,14 @@
 		transform: scale(1.1);
 	}
 
-	.bubble.animating svg {
+	.bubble.animating {
 		filter: drop-shadow(0 0 8px var(--border-color));
+	}
+
+	.state-ring {
+		position: absolute;
+		top: 0;
+		left: 0;
+		pointer-events: none;
 	}
 </style>

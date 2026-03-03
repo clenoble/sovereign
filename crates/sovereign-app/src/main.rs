@@ -269,6 +269,7 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::restore_commit,
             tauri_commands::list_skills_for_doc,
             tauri_commands::execute_skill,
+            tauri_commands::list_all_skills,
             tauri_commands::scan_models,
             tauri_commands::assign_model_role,
             tauri_commands::delete_model,

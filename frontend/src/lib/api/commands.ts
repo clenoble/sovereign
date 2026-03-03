@@ -139,6 +139,7 @@ export const listSkillsForDoc = (docTitle: string) =>
 	invoke<SkillInfo[]>('list_skills_for_doc', { docTitle });
 export const executeSkill = (skillName: string, action: string, docId: string, params: string) =>
 	invoke<SkillResultDto>('execute_skill', { skillName, action, docId, params });
+export const listAllSkills = () => invoke<SkillInfo[]>('list_all_skills');
 
 // Model management
 export const scanModels = () => invoke<ModelEntry[]>('scan_models');
@@ -228,12 +229,23 @@ export interface MilestoneDto {
 	description: string;
 }
 
+export interface CanvasMessageDto {
+	id: string;
+	conversation_id: string;
+	thread_id: string;
+	contact_id: string;
+	subject: string;
+	is_outbound: boolean;
+	sent_at: string;
+}
+
 export interface CanvasData {
 	documents: CanvasDocDto[];
 	threads: ThreadDto[];
 	relationships: RelationshipDto[];
 	contacts: ContactSummaryDto[];
 	milestones: MilestoneDto[];
+	messages: CanvasMessageDto[];
 }
 
 // Canvas

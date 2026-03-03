@@ -3,6 +3,12 @@
 	import { app } from '$lib/stores/app.svelte';
 	import { contactsState, loadContacts } from '$lib/stores/contacts.svelte';
 
+	// Drag state
+	let position = $state({ x: 120, y: 200 });
+	let dragging = false;
+	let dragStart = { x: 0, y: 0 };
+	let dragOriginal = { x: 0, y: 0 };
+
 	onMount(() => {
 		loadContacts();
 	});
@@ -10,12 +16,40 @@
 	function openContact(contactId: string) {
 		app.contactPanelState = { contactId };
 	}
+
+	// Drag handlers
+	function handleHeaderPointerDown(e: PointerEvent) {
+		if (e.button !== 0) return;
+		dragging = true;
+		dragStart = { x: e.clientX, y: e.clientY };
+		dragOriginal = { x: position.x, y: position.y };
+		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+	}
+
+	function handleHeaderPointerMove(e: PointerEvent) {
+		if (!dragging) return;
+		position = {
+			x: dragOriginal.x + (e.clientX - dragStart.x),
+			y: dragOriginal.y + (e.clientY - dragStart.y)
+		};
+	}
+
+	function handleHeaderPointerUp(e: PointerEvent) {
+		dragging = false;
+		(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+	}
 </script>
 
 {#if app.inboxVisible}
-	<div class="inbox-panel">
-		<div class="inbox-header">
-			<h3>Inbox</h3>
+	<div class="inbox-panel" style="left: {position.x}px; top: {position.y}px;">
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="inbox-header"
+			onpointerdown={handleHeaderPointerDown}
+			onpointermove={handleHeaderPointerMove}
+			onpointerup={handleHeaderPointerUp}
+		>
+			<h3>Contacts ({contactsState.contacts.length})</h3>
 			<button class="close-btn" onclick={() => app.inboxVisible = false}>&times;</button>
 		</div>
 
@@ -47,28 +81,34 @@
 <style>
 	.inbox-panel {
 		position: fixed;
-		top: 0;
-		left: 0;
-		width: 340px;
-		height: calc(100vh - 44px);
+		width: 300px;
+		max-height: 500px;
 		background: var(--bg-panel);
-		border-right: 1px solid var(--border);
-		z-index: 60;
+		border: 1px solid var(--border);
+		border-radius: 12px;
+		z-index: 90;
 		display: flex;
 		flex-direction: column;
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 	}
 
 	.inbox-header {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 12px 16px;
+		padding: 10px 14px;
 		border-bottom: 1px solid var(--border);
+		cursor: grab;
+		user-select: none;
+	}
+
+	.inbox-header:active {
+		cursor: grabbing;
 	}
 
 	.inbox-header h3 {
 		margin: 0;
-		font-size: 1rem;
+		font-size: 0.9rem;
 		font-weight: 600;
 		color: var(--text-primary);
 	}
@@ -96,7 +136,7 @@
 		align-items: center;
 		gap: 12px;
 		width: 100%;
-		padding: 10px 16px;
+		padding: 10px 14px;
 		background: none;
 		border: none;
 		border-bottom: 1px solid var(--border);
@@ -110,8 +150,8 @@
 	}
 
 	.contact-avatar {
-		width: 36px;
-		height: 36px;
+		width: 32px;
+		height: 32px;
 		border-radius: 50%;
 		background: var(--accent);
 		color: #fff;
@@ -119,7 +159,7 @@
 		align-items: center;
 		justify-content: center;
 		font-weight: 600;
-		font-size: 0.9rem;
+		font-size: 0.85rem;
 		flex-shrink: 0;
 	}
 
@@ -129,7 +169,7 @@
 	}
 
 	.contact-name {
-		font-size: 0.9rem;
+		font-size: 0.85rem;
 		font-weight: 500;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -137,7 +177,7 @@
 	}
 
 	.contact-channels {
-		font-size: 0.75rem;
+		font-size: 0.7rem;
 		color: var(--text-muted);
 		margin-top: 2px;
 	}

@@ -4,7 +4,7 @@
 	import { app } from '$lib/stores/app.svelte';
 	import { toggleChat } from '$lib/stores/chat.svelte';
 	import { subscribeToEvents } from '$lib/api/events';
-	import { getTheme, checkAuthState } from '$lib/api/commands';
+	import { getTheme, checkAuthState, getProfile } from '$lib/api/commands';
 
 	import Taskbar from '$lib/components/Taskbar.svelte';
 	import Bubble from '$lib/components/Bubble.svelte';
@@ -45,6 +45,12 @@
 			applyTheme('dark');
 		}
 
+		// Load user profile for bubble style
+		try {
+			const profile = await getProfile();
+			if (profile.bubble_style) app.bubbleStyle = profile.bubble_style;
+		} catch { /* profile not available yet */ }
+
 		// Subscribe to backend events
 		const unlisten = await subscribeToEvents();
 
@@ -62,6 +68,7 @@
 				if (app.modelPanelVisible) { app.modelPanelVisible = false; return; }
 				if (app.inboxVisible) { app.inboxVisible = false; return; }
 				if (app.contactPanelState) { app.contactPanelState = null; return; }
+				if (app.skillsPanelVisible) { app.skillsPanelVisible = false; return; }
 				return;
 			}
 

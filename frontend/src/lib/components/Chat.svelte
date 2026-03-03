@@ -166,9 +166,8 @@
 <style>
 	.chat-panel {
 		position: fixed;
-		bottom: 60px;
-		left: 50%;
-		transform: translateX(-50%);
+		top: 72px;
+		left: 16px;
 		width: 420px;
 		max-height: 480px;
 		background: var(--bg-panel);
