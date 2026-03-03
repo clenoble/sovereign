@@ -52,6 +52,22 @@
 			ctx.fillRect(x, y, Math.max(3, 200 * scale), Math.max(2, 80 * scale));
 		}
 
+		// Draw "Now" line on minimap
+		if (canvas.timelineScale) {
+			const nowX = (canvas.timelineScale.nowX - minX + 50) * scale;
+			ctx.save();
+			ctx.setLineDash([2, 2]);
+			ctx.strokeStyle = getCSS('--accent') || '#F59E0B';
+			ctx.lineWidth = 1;
+			ctx.globalAlpha = 0.6;
+			ctx.beginPath();
+			ctx.moveTo(nowX, 0);
+			ctx.lineTo(nowX, MAP_H);
+			ctx.stroke();
+			ctx.setLineDash([]);
+			ctx.restore();
+		}
+
 		// Draw viewport rectangle
 		const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
 		const vh = typeof window !== 'undefined' ? window.innerHeight - 44 : 700;

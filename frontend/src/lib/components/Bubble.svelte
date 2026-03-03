@@ -32,9 +32,9 @@
 	onclick={() => toggleChat()}
 	title="Chat with AI"
 >
-	<BubblePreview style={app.bubbleStyle} size={48} />
+	<BubblePreview style={app.bubbleStyle} size={96} />
 	{#if isAnimating(app.bubbleState)}
-		<svg class="state-ring" width="48" height="48" viewBox="0 0 120 120">
+		<svg class="state-ring" width="96" height="96" viewBox="0 0 120 120">
 			<circle cx="60" cy="60" r="56" fill="none" stroke={borderColor(app.bubbleState)} stroke-width="4" opacity="0.3">
 				<animate attributeName="r" values="56;64;56" dur="2s" repeatCount="indefinite" />
 				<animate attributeName="opacity" values="0.3;0;0.3" dur="2s" repeatCount="indefinite" />

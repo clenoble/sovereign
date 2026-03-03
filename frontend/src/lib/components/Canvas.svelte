@@ -49,11 +49,11 @@
 	}
 
 	// Redraw background whenever canvas state changes.
-	// Explicitly read all doc positions to ensure Svelte tracks them as
-	// dependencies, so relationship links update during card drags.
+	// Explicitly read positions + timeline nowX to ensure Svelte tracks them.
 	$effect(() => {
 		void canvas.documents.map(d => d.spatial_x + d.spatial_y);
 		void canvas.messages.length;
+		void canvas.timelineScale?.nowX;
 		drawBackground(canvas);
 	});
 
@@ -65,7 +65,7 @@
 
 	function drawBackground(state: CanvasState) {
 		if (!ctx || !canvasEl) return;
-		const { camera, threads, documents, relationships, milestones, messages } = state;
+		const { camera, threads, documents, relationships, milestones, messages, timelineScale } = state;
 		const w = canvasEl.width;
 		const h = canvasEl.height;
 		ctx.clearRect(0, 0, w, h);
@@ -78,6 +78,7 @@
 		const textPrimary = getCSS('--text-primary') || '#e0e0e0';
 		const warningColor = getCSS('--warning') || '#F59E0B';
 		const borderColor = getCSS('--border') || '#333340';
+		const accentColor = getCSS('--accent') || '#F59E0B';
 
 		// Draw thread lane backgrounds
 		const laneHeight = LANE_HEIGHT;
@@ -92,16 +93,103 @@
 		for (const m of messages) {
 			maxX = Math.max(maxX, m.x + MSG_RADIUS + 20);
 		}
+		if (timelineScale) {
+			maxX = Math.max(maxX, timelineScale.originX + (timelineScale.maxDate - timelineScale.minDate) * timelineScale.pxPerMs + 100);
+		}
 
+		const totalHeight = threads.length * laneHeight;
+
+		// -- Timeline date markers along X-axis --
+		if (timelineScale) {
+			const { minDate, maxDate, pxPerMs, originX } = timelineScale;
+			const MS_PER_DAY = 86_400_000;
+			const pxPerDay = pxPerMs * MS_PER_DAY;
+			const effectivePxPerDay = pxPerDay * camera.zoom;
+			const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+			// Choose tick interval based on effective pixel density
+			let intervalMs: number;
+			let formatTick: (d: Date) => string;
+			let alignToMonth = false;
+			let alignToYear = false;
+
+			if (effectivePxPerDay > 80) {
+				// Daily: "3 Mar"
+				intervalMs = MS_PER_DAY;
+				formatTick = (d) => `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+			} else if (effectivePxPerDay > 20) {
+				// Weekly: "3/3"
+				intervalMs = MS_PER_DAY * 7;
+				formatTick = (d) => `${d.getDate()}/${d.getMonth() + 1}`;
+			} else if (effectivePxPerDay > 5) {
+				// Monthly: "Mar 2026"
+				intervalMs = MS_PER_DAY * 30;
+				alignToMonth = true;
+				formatTick = (d) => `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+			} else if (effectivePxPerDay > 0.5) {
+				// Yearly: "2026"
+				intervalMs = MS_PER_DAY * 365;
+				alignToYear = true;
+				formatTick = (d) => `${d.getFullYear()}`;
+			} else {
+				// 5-year: "2025"
+				intervalMs = MS_PER_DAY * 365 * 5;
+				alignToYear = true;
+				formatTick = (d) => `${d.getFullYear()}`;
+			}
+
+			ctx.fillStyle = textMuted;
+			ctx.font = '10px -apple-system, sans-serif';
+			ctx.textAlign = 'center';
+
+			// Start from aligned boundary
+			const startD = new Date(minDate);
+			if (alignToYear) {
+				startD.setMonth(0, 1);
+				startD.setHours(0, 0, 0, 0);
+			} else if (alignToMonth) {
+				startD.setDate(1);
+				startD.setHours(0, 0, 0, 0);
+			} else {
+				startD.setHours(0, 0, 0, 0);
+			}
+			let tick = startD.getTime();
+
+			while (tick <= maxDate) {
+				const x = originX + (tick - minDate) * pxPerMs;
+				ctx.fillText(formatTick(new Date(tick)), x, -20);
+
+				// Subtle vertical grid line
+				ctx.strokeStyle = borderColor;
+				ctx.globalAlpha = 0.15;
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				ctx.moveTo(x, -10);
+				ctx.lineTo(x, totalHeight);
+				ctx.stroke();
+				ctx.globalAlpha = 1.0;
+
+				// Advance tick: for month/year alignment, use calendar math
+				if (alignToYear) {
+					const dt = new Date(tick);
+					dt.setFullYear(dt.getFullYear() + (intervalMs > MS_PER_DAY * 365 * 2 ? 5 : 1));
+					tick = dt.getTime();
+				} else if (alignToMonth) {
+					const dt = new Date(tick);
+					dt.setMonth(dt.getMonth() + 1);
+					tick = dt.getTime();
+				} else {
+					tick += intervalMs;
+				}
+			}
+			ctx.textAlign = 'start';
+		}
+
+		// -- Thread lanes --
 		for (let i = 0; i < threads.length; i++) {
 			const y = i * laneHeight;
 			ctx.fillStyle = i % 2 === 0 ? 'rgba(128,128,128,0.03)' : 'rgba(128,128,128,0.06)';
 			ctx.fillRect(-100, y, maxX + 200, laneHeight);
-
-			ctx.fillStyle = textMuted;
-			ctx.font = '13px -apple-system, sans-serif';
-			ctx.textBaseline = 'middle';
-			ctx.fillText(threads[i].name, 10, y + laneHeight / 2);
 
 			ctx.strokeStyle = borderColor;
 			ctx.globalAlpha = 0.3;
@@ -113,7 +201,83 @@
 			ctx.globalAlpha = 1.0;
 		}
 
-		// Draw relationship edges
+		// -- "Now" dotted vertical line --
+		if (timelineScale && threads.length > 0) {
+			const nowX = timelineScale.nowX;
+			ctx.save();
+			ctx.setLineDash([6, 4]);
+			ctx.strokeStyle = accentColor;
+			ctx.lineWidth = 2;
+			ctx.globalAlpha = 0.7;
+			ctx.beginPath();
+			ctx.moveTo(nowX, -30);
+			ctx.lineTo(nowX, totalHeight + 10);
+			ctx.stroke();
+			ctx.setLineDash([]);
+
+			// "Now" label
+			ctx.fillStyle = accentColor;
+			ctx.font = 'bold 11px -apple-system, sans-serif';
+			ctx.textAlign = 'center';
+			ctx.fillText('Now', nowX, -35);
+			ctx.textAlign = 'start';
+			ctx.restore();
+		}
+
+		// -- Heatmap density bands (extreme zoom-out) --
+		if (camera.zoom < 0.15 && timelineScale && documents.length > 0) {
+			const { minDate, pxPerMs, originX } = timelineScale;
+			const MS_PER_DAY = 86_400_000;
+			// Bucket size: 30 days at very low zoom, 7 days at moderate zoom-out
+			const bucketMs = camera.zoom < 0.05 ? MS_PER_DAY * 30 : MS_PER_DAY * 7;
+			const bucketPx = bucketMs * pxPerMs;
+			const provOwned = getCSS('--prov-owned') || '#5a9fd4';
+			const provExternal = getCSS('--prov-external') || '#e07c6a';
+
+			// Build density: Map<"laneIdx:bucketIdx", { owned: number, external: number }>
+			const density = new Map<string, { owned: number; external: number }>();
+			let maxCount = 1;
+			const threadOrder2 = new Map<string, number>();
+			threads.forEach((t, i) => threadOrder2.set(t.id, i));
+
+			for (const d of documents) {
+				const t = new Date(d.modified_at).getTime();
+				const bi = Math.floor((t - minDate) / bucketMs);
+				const li = threadOrder2.get(d.thread_id) ?? 0;
+				const key = `${li}:${bi}`;
+				const entry = density.get(key) || { owned: 0, external: 0 };
+				if (d.is_owned) entry.owned++; else entry.external++;
+				density.set(key, entry);
+				maxCount = Math.max(maxCount, entry.owned + entry.external);
+			}
+
+			for (const [key, counts] of density) {
+				const [li, bi] = key.split(':').map(Number);
+				const x = originX + bi * bucketPx;
+				const y = li * laneHeight + 4;
+				const h = laneHeight - 8;
+				const total = counts.owned + counts.external;
+				const alpha = 0.1 + 0.7 * (total / maxCount);
+
+				// Owned portion
+				if (counts.owned > 0) {
+					ctx.fillStyle = provOwned;
+					ctx.globalAlpha = alpha;
+					const ownedW = bucketPx * (counts.owned / total);
+					ctx.fillRect(x, y, ownedW, h);
+				}
+				// External portion
+				if (counts.external > 0) {
+					ctx.fillStyle = provExternal;
+					ctx.globalAlpha = alpha;
+					const ownedW = bucketPx * (counts.owned / total);
+					ctx.fillRect(x + ownedW, y, bucketPx - ownedW, h);
+				}
+			}
+			ctx.globalAlpha = 1.0;
+		}
+
+		// -- Relationship edges --
 		for (const rel of relationships) {
 			const fromDoc = documents.find((d) => d.id === rel.from_doc_id);
 			const toDoc = documents.find((d) => d.id === rel.to_doc_id);
@@ -139,14 +303,21 @@
 			ctx.stroke();
 		}
 
-		// Draw milestone markers
+		// -- Milestone markers (positioned on timeline) --
 		for (const ms of milestones) {
 			const thread = threads.find((t) => t.id === ms.thread_id);
 			if (!thread) continue;
 			const laneIdx = threadOrder.get(ms.thread_id) ?? 0;
 			const y = laneIdx * laneHeight;
-			const msTime = new Date(ms.timestamp).getTime();
-			const x = 200 + ((msTime % 100000000) / 100000000) * maxX;
+
+			let x: number;
+			if (timelineScale) {
+				const msTime = new Date(ms.timestamp).getTime();
+				x = timelineScale.originX + (msTime - timelineScale.minDate) * timelineScale.pxPerMs;
+			} else {
+				const msTime = new Date(ms.timestamp).getTime();
+				x = 200 + ((msTime % 100000000) / 100000000) * maxX;
+			}
 
 			ctx.fillStyle = warningColor;
 			ctx.globalAlpha = 0.7;
@@ -163,7 +334,7 @@
 			ctx.fillText(ms.title, x + 8, y + 14);
 		}
 
-		// Draw message circles
+		// -- Message circles --
 		const r = MSG_RADIUS;
 		for (const msg of messages) {
 			const fillColor = msg.is_outbound ? '#263a1e' : '#2e2433';
@@ -206,6 +377,31 @@
 		}
 
 		ctx.restore();
+
+		// -- Sticky thread labels (screen-space, fixed at left edge) --
+		for (let i = 0; i < threads.length; i++) {
+			const worldY = i * laneHeight + laneHeight / 2;
+			const screenY = camera.panY + worldY * camera.zoom;
+			if (screenY < -20 || screenY > h + 20) continue;
+
+			const label = threads[i].name;
+			ctx.font = '13px -apple-system, sans-serif';
+			ctx.textBaseline = 'middle';
+			const metrics = ctx.measureText(label);
+			const padX = 6;
+			const padY = 4;
+
+			// Background pill for readability
+			ctx.fillStyle = getCSS('--bg-panel') || '#1a1a24';
+			ctx.globalAlpha = 0.85;
+			ctx.beginPath();
+			ctx.roundRect(16 - padX, screenY - 8 - padY, metrics.width + padX * 2, 16 + padY * 2, 4);
+			ctx.fill();
+			ctx.globalAlpha = 1.0;
+
+			ctx.fillStyle = textPrimary;
+			ctx.fillText(label, 16, screenY);
+		}
 	}
 
 	// Pan handlers

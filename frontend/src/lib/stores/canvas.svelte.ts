@@ -1,4 +1,4 @@
-/** Rune-based reactive state for the spatial canvas. */
+/** Rune-based reactive state for the timeline canvas. */
 
 import {
 	canvasLoad,
@@ -22,6 +22,14 @@ export interface PositionedMessage extends CanvasMessageDto {
 	y: number;
 }
 
+export interface TimelineScale {
+	minDate: number; // ms — earliest modified_at minus padding
+	maxDate: number; // ms — max(now, latest modified_at) plus padding
+	pxPerMs: number; // pixels per millisecond
+	originX: number; // pixel offset of minDate (= LABEL_MARGIN)
+	nowX: number; // pixel X of "Now" line
+}
+
 export interface CanvasState {
 	documents: CanvasDocDto[];
 	threads: ThreadDto[];
@@ -34,14 +42,22 @@ export interface CanvasState {
 	draggingCardId: string | null;
 	loaded: boolean;
 	loadError: string | null;
+	timelineScale: TimelineScale | null;
 }
 
-const ZOOM_MIN = 0.1;
+const ZOOM_MIN = 0.02;
 const ZOOM_MAX = 5.0;
 export const CARD_W = 200;
 export const CARD_H = 80;
 export const LANE_HEIGHT = 120;
 export const MSG_RADIUS = 30;
+
+/** Left margin reserved for thread labels. */
+const LABEL_MARGIN = 200;
+/** Pixels per day at zoom = 1. */
+const PX_PER_DAY = 120;
+/** One day in milliseconds. */
+const MS_PER_DAY = 86_400_000;
 
 /** Reactive canvas state — $state() creates a deep Proxy for fine-grained tracking. */
 export const canvas: CanvasState = $state({
@@ -55,25 +71,27 @@ export const canvas: CanvasState = $state({
 	selectedCardId: null,
 	draggingCardId: null,
 	loaded: false,
-	loadError: null
+	loadError: null,
+	timelineScale: null
 });
 
-/** Position save debounce timer */
-let positionTimer: ReturnType<typeof setTimeout> | null = null;
+/** Interval handle for periodic "Now" line updates. */
+let nowTimer: ReturnType<typeof setInterval> | null = null;
 
 /** Load canvas data from backend. */
 export async function load() {
 	try {
 		const data = await canvasLoad();
-		const docs = autoLayout(data.documents, data.threads);
+		const docs = timelineLayout(data.documents, data.threads);
 		canvas.documents = docs;
 		canvas.threads = data.threads;
 		canvas.relationships = data.relationships;
 		canvas.milestones = data.milestones;
-		canvas.messages = layoutMessages(data.messages ?? [], data.threads, docs);
+		canvas.messages = layoutMessages(data.messages ?? [], data.threads);
 		canvas.loaded = true;
 		canvas.loadError = null;
 		home();
+		startNowTimer();
 	} catch (e) {
 		console.error('Failed to load canvas:', e);
 		canvas.loadError = String(e);
@@ -86,12 +104,12 @@ export async function refresh() {
 	if (!canvas.loaded) return;
 	try {
 		const data = await canvasLoad();
-		const docs = autoLayout(data.documents, data.threads);
+		const docs = timelineLayout(data.documents, data.threads);
 		canvas.documents = docs;
 		canvas.threads = data.threads;
 		canvas.relationships = data.relationships;
 		canvas.milestones = data.milestones;
-		canvas.messages = layoutMessages(data.messages ?? [], data.threads, docs);
+		canvas.messages = layoutMessages(data.messages ?? [], data.threads);
 	} catch (e) {
 		console.error('Failed to refresh canvas:', e);
 	}
@@ -114,47 +132,35 @@ export function zoomAt(screenX: number, screenY: number, delta: number) {
 	canvas.camera.zoom = newZoom;
 }
 
-/** Jump camera to show all documents centered. */
+/** Jump camera to center on "Now" with a readable zoom level. */
 export function home() {
-	if (canvas.documents.length === 0) {
-		canvas.camera.panX = 0;
+	const scale = canvas.timelineScale;
+	const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+	const vh = typeof window !== 'undefined' ? window.innerHeight - 44 : 700;
+
+	if (!scale || canvas.documents.length === 0) {
+		canvas.camera.panX = vw / 2;
 		canvas.camera.panY = 0;
 		canvas.camera.zoom = 1;
 		return;
 	}
-	let minX = Infinity,
-		minY = Infinity,
-		maxX = -Infinity,
-		maxY = -Infinity;
-	for (const d of canvas.documents) {
-		minX = Math.min(minX, d.spatial_x);
-		minY = Math.min(minY, d.spatial_y);
-		maxX = Math.max(maxX, d.spatial_x + CARD_W);
-		maxY = Math.max(maxY, d.spatial_y + CARD_H);
-	}
-	const cx = (minX + maxX) / 2;
-	const cy = (minY + maxY) / 2;
-	const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
-	const vh = typeof window !== 'undefined' ? window.innerHeight - 44 : 700;
-	const zoom = Math.min(1, vw / (maxX - minX + 200), vh / (maxY - minY + 200));
-	canvas.camera.panX = vw / 2 - cx * zoom;
-	canvas.camera.panY = vh / 2 - cy * zoom;
+
+	const totalHeight = canvas.threads.length * LANE_HEIGHT;
+	// Zoom: fit all lanes vertically, clamp to 0.6 minimum so titles are readable
+	const zoom = Math.min(1, Math.max(0.6, vh / (totalHeight + 100)));
+	// Center horizontally on "Now" line
+	canvas.camera.panX = vw / 2 - scale.nowX * zoom;
+	// Center vertically on all lanes
+	canvas.camera.panY = (vh - totalHeight * zoom) / 2;
 	canvas.camera.zoom = zoom;
 }
 
-/** Move a card to new world coordinates. */
-export function moveCard(id: string, x: number, y: number) {
+/** Move a card vertically (X stays locked to timeline). */
+export function moveCard(id: string, _x: number, y: number) {
 	const doc = canvas.documents.find((d) => d.id === id);
 	if (doc) {
-		doc.spatial_x = x;
 		doc.spatial_y = y;
 	}
-	if (positionTimer) clearTimeout(positionTimer);
-	positionTimer = setTimeout(() => {
-		updateDocumentPosition(id, x, y).catch((e) =>
-			console.error('Failed to save position:', e)
-		);
-	}, 500);
 }
 
 /** Select a card. */
@@ -200,7 +206,6 @@ export function snapToLane(id: string) {
 		);
 	}
 
-	if (positionTimer) clearTimeout(positionTimer);
 	updateDocumentPosition(id, doc.spatial_x, snappedY).catch((e) =>
 		console.error('Failed to save position:', e)
 	);
@@ -217,83 +222,122 @@ export function navigateToDoc(id: string) {
 	canvas.selectedCardId = id;
 }
 
-/** Auto-layout documents that have no saved position (spatial_x == 0 && spatial_y == 0). */
-function autoLayout(docs: CanvasDocDto[], threads: ThreadDto[]): CanvasDocDto[] {
+// ---------------------------------------------------------------------------
+// Timeline layout
+// ---------------------------------------------------------------------------
+
+/** Compute the timeline scale from a set of document dates. */
+function computeScale(docs: CanvasDocDto[]): TimelineScale {
+	const now = Date.now();
+
+	if (docs.length === 0) {
+		// Empty canvas — center on "now" with a 7-day window
+		const minDate = now - 3 * MS_PER_DAY;
+		const maxDate = now + 3 * MS_PER_DAY;
+		const pxPerMs = PX_PER_DAY / MS_PER_DAY;
+		return {
+			minDate,
+			maxDate,
+			pxPerMs,
+			originX: LABEL_MARGIN,
+			nowX: LABEL_MARGIN + (now - minDate) * pxPerMs
+		};
+	}
+
+	let earliest = now;
+	let latest = now;
+	for (const d of docs) {
+		const t = new Date(d.modified_at).getTime();
+		if (t < earliest) earliest = t;
+		if (t > latest) latest = t;
+	}
+
+	// Add 1-day padding on each side
+	const minDate = earliest - MS_PER_DAY;
+	const maxDate = Math.max(latest, now) + MS_PER_DAY;
+	const pxPerMs = PX_PER_DAY / MS_PER_DAY;
+
+	return {
+		minDate,
+		maxDate,
+		pxPerMs,
+		originX: LABEL_MARGIN,
+		nowX: LABEL_MARGIN + (now - minDate) * pxPerMs
+	};
+}
+
+/** Cascade offset for stacked cards. */
+const STACK_OFFSET_X = 20;
+const STACK_OFFSET_Y = 10;
+
+/** Position documents on the timeline with cascade stacking for same-date cards. */
+function timelineLayout(docs: CanvasDocDto[], threads: ThreadDto[]): CanvasDocDto[] {
+	const scale = computeScale(docs);
+	canvas.timelineScale = scale;
+
 	const threadOrder = new Map<string, number>();
 	threads.forEach((t, i) => threadOrder.set(t.id, i));
 
-	const byThread = new Map<string, CanvasDocDto[]>();
+	// Group by lane, sort by date within each lane
+	const byLane = new Map<number, { doc: CanvasDocDto; baseX: number }[]>();
 	for (const d of docs) {
-		const list = byThread.get(d.thread_id) || [];
-		list.push(d);
-		byThread.set(d.thread_id, list);
+		const laneIdx = threadOrder.get(d.thread_id) ?? 0;
+		const t = new Date(d.modified_at).getTime();
+		const baseX = scale.originX + (t - scale.minDate) * scale.pxPerMs;
+		const list = byLane.get(laneIdx) || [];
+		list.push({ doc: d, baseX });
+		byLane.set(laneIdx, list);
 	}
 
 	const result: CanvasDocDto[] = [];
-	let laneY = 0;
+	for (const [laneIdx, entries] of byLane) {
+		entries.sort((a, b) => a.baseX - b.baseX);
+		const baseY = laneIdx * LANE_HEIGHT + (LANE_HEIGHT - CARD_H) / 2;
+		const placed: { x: number }[] = [];
 
-	const sortedThreadIds = [...byThread.keys()].sort(
-		(a, b) => (threadOrder.get(a) ?? 999) - (threadOrder.get(b) ?? 999)
-	);
-
-	for (const tid of sortedThreadIds) {
-		const threadDocs = byThread.get(tid) || [];
-		let col = 0;
-		for (const d of threadDocs) {
-			if (d.spatial_x === 0 && d.spatial_y === 0) {
-				result.push({
-					...d,
-					spatial_x: 200 + col * (CARD_W + 20),
-					spatial_y: laneY + (LANE_HEIGHT - CARD_H) / 2
-				});
-			} else {
-				result.push(d);
+		for (const { doc, baseX } of entries) {
+			// Count overlapping earlier cards
+			let stackIdx = 0;
+			for (const p of placed) {
+				if (Math.abs(baseX - p.x) < CARD_W) stackIdx++;
 			}
-			col++;
+			const x = baseX + stackIdx * STACK_OFFSET_X;
+			const y = baseY + stackIdx * STACK_OFFSET_Y;
+			placed.push({ x: baseX });
+			result.push({ ...doc, spatial_x: x, spatial_y: y });
 		}
-		laneY += LANE_HEIGHT;
 	}
 
 	return result;
 }
 
-/** Position messages in lanes after the rightmost document in each thread. */
+/** Position messages on the timeline by sent_at. */
 function layoutMessages(
 	msgs: CanvasMessageDto[],
-	threads: ThreadDto[],
-	docs: CanvasDocDto[]
+	threads: ThreadDto[]
 ): PositionedMessage[] {
+	const scale = canvas.timelineScale;
+	if (!scale || msgs.length === 0) return [];
+
 	const threadOrder = new Map<string, number>();
 	threads.forEach((t, i) => threadOrder.set(t.id, i));
 
-	// Find the rightmost document edge per thread
-	const maxXByThread = new Map<string, number>();
-	for (const d of docs) {
-		const cur = maxXByThread.get(d.thread_id) ?? 0;
-		maxXByThread.set(d.thread_id, Math.max(cur, d.spatial_x + CARD_W));
-	}
+	return msgs.map((m) => {
+		const t = new Date(m.sent_at).getTime();
+		const x = scale.originX + (t - scale.minDate) * scale.pxPerMs;
+		const laneIdx = threadOrder.get(m.thread_id) ?? 0;
+		const y = laneIdx * LANE_HEIGHT + LANE_HEIGHT / 2;
+		return { ...m, x, y };
+	});
+}
 
-	// Group messages by thread, sorted by sent_at
-	const byThread = new Map<string, CanvasMessageDto[]>();
-	for (const m of msgs) {
-		const list = byThread.get(m.thread_id) || [];
-		list.push(m);
-		byThread.set(m.thread_id, list);
-	}
-
-	const result: PositionedMessage[] = [];
-	for (const [tid, threadMsgs] of byThread) {
-		threadMsgs.sort((a, b) => a.sent_at.localeCompare(b.sent_at));
-		const laneIdx = threadOrder.get(tid) ?? 0;
-		const startX = (maxXByThread.get(tid) ?? 200) + 40;
-		const laneCenterY = laneIdx * LANE_HEIGHT + LANE_HEIGHT / 2;
-		for (let i = 0; i < threadMsgs.length; i++) {
-			result.push({
-				...threadMsgs[i],
-				x: startX + i * (MSG_RADIUS * 2 + 20),
-				y: laneCenterY
-			});
+/** Start periodic "Now" line refresh (every 10 minutes). */
+function startNowTimer() {
+	if (nowTimer) clearInterval(nowTimer);
+	nowTimer = setInterval(() => {
+		if (canvas.timelineScale) {
+			const { minDate, pxPerMs, originX } = canvas.timelineScale;
+			canvas.timelineScale.nowX = originX + (Date.now() - minDate) * pxPerMs;
 		}
-	}
-	return result;
+	}, 600_000);
 }

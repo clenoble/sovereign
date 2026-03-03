@@ -14,7 +14,7 @@ use sovereign_db::GraphDB;
 /// Populate the database with sample data when it's empty.
 /// Provides a visual baseline for testing the canvas.
 pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
-    use chrono::{TimeZone, Utc};
+    use chrono::{Duration, Utc};
 
     let threads = db.list_threads().await?;
     let contacts = db.list_contacts().await?;
@@ -61,21 +61,23 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
     }
 
     if needs_base {
+    // Relative timestamps: offsets from "now" so seed data is always in the past
+    let now = Utc::now();
     let timestamps = [
-        Utc.with_ymd_and_hms(2026, 1, 5, 10, 0, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 1, 18, 14, 30, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 2, 2, 9, 15, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 2, 14, 11, 0, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 2, 28, 16, 45, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 3, 5, 8, 0, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 3, 15, 13, 20, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 3, 25, 10, 30, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 4, 1, 9, 0, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 4, 8, 15, 0, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 4, 15, 11, 30, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 4, 20, 14, 0, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 4, 25, 10, 0, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 4, 28, 16, 0, 0).unwrap(),
+        now - Duration::days(90) + Duration::hours(10),
+        now - Duration::days(77) + Duration::hours(14) + Duration::minutes(30),
+        now - Duration::days(62) + Duration::hours(9) + Duration::minutes(15),
+        now - Duration::days(50) + Duration::hours(11),
+        now - Duration::days(36) + Duration::hours(16) + Duration::minutes(45),
+        now - Duration::days(29) + Duration::hours(8),
+        now - Duration::days(19) + Duration::hours(13) + Duration::minutes(20),
+        now - Duration::days(9) + Duration::hours(10) + Duration::minutes(30),
+        now - Duration::days(7) + Duration::hours(9),
+        now - Duration::days(6) + Duration::hours(15),
+        now - Duration::days(5) + Duration::hours(11) + Duration::minutes(30),
+        now - Duration::days(4) + Duration::hours(14),
+        now - Duration::days(2) + Duration::hours(10),
+        now - Duration::days(1) + Duration::hours(16),
     ];
     let owned_docs: Vec<(&str, &str, usize)> = vec![
         ("Research Notes", "# Research Notes\n\nExploring Rust + GTK4 for desktop OS development.\n\n## Key Findings\n- GTK4 bindings are solid\n- Skia provides GPU rendering", 0),
@@ -283,7 +285,7 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
         (3, 3, vec![0], "See you there", MessageDirection::Inbound, true, 8),
     ];
 
-    let msg_base = Utc.with_ymd_and_hms(2026, 4, 20, 9, 0, 0).unwrap();
+    let msg_base = Utc::now() - Duration::days(2) + Duration::hours(9);
     for (conv_idx, from_idx, to_idxs, body, direction, is_read, minutes) in &msg_defs {
         let to_ids: Vec<String> = to_idxs.iter().map(|&i| contact_ids[i].clone()).collect();
         let channel = conv_defs[*conv_idx].1.clone();
@@ -295,7 +297,7 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
             to_ids,
             body.to_string(),
         );
-        msg.sent_at = msg_base + chrono::Duration::minutes(*minutes);
+        msg.sent_at = msg_base + Duration::minutes(*minutes);
         msg.created_at = msg.sent_at;
         if *is_read {
             msg.read_status = ReadStatus::Read;
@@ -370,36 +372,42 @@ pub fn seed_profile_and_history(profile_dir: &Path) -> Result<()> {
     if !log_path.exists() {
         let mut file = std::fs::File::create(&log_path)?;
 
-        // 3 days of realistic interaction history (Feb 18-20, 2026)
+        // 3 days of realistic interaction history (relative to now)
         // Consistent with the DB seed data (documents, contacts, conversations)
-        let entries = [
-            // Day 1: Feb 18 — initial exploration
-            r#"{"ts":"2026-02-18T09:15:00Z","type":"user_input","mode":"text","content":"search meeting notes","intent":"search"}"#,
-            r#"{"ts":"2026-02-18T09:15:01Z","type":"orchestrator_action","action":"search","details":"found 1 match: Meeting Notes Q1"}"#,
-            r#"{"ts":"2026-02-18T09:20:00Z","type":"user_input","mode":"text","content":"open project plan","intent":"open"}"#,
-            r#"{"ts":"2026-02-18T09:20:01Z","type":"orchestrator_action","action":"open","details":"opened Project Plan"}"#,
-            r#"{"ts":"2026-02-18T14:30:00Z","type":"user_input","mode":"chat","content":"what threads do I have?","intent":"chat"}"#,
-            r#"{"ts":"2026-02-18T14:30:03Z","type":"chat_response","content":"You have 4 threads: Research, Development, Design, and Admin. Development has the most documents with 7, followed by Research with 3."}"#,
-            r#"{"ts":"2026-02-18T14:31:00Z","type":"user_input","mode":"chat","content":"how many documents are in Development?","intent":"chat"}"#,
-            r#"{"ts":"2026-02-18T14:31:02Z","type":"chat_response","content":"The Development thread has 7 documents: Project Plan, Architecture Diagram, API Specification, and Test Results (all owned), plus 3 external references — a Stack Overflow Q&A on GTK4 bindings, GitHub Issue #42, and an API Response Log."}"#,
-            // Day 2: Feb 19 — deeper work
-            r#"{"ts":"2026-02-19T10:00:00Z","type":"user_input","mode":"text","content":"find architecture","intent":"search"}"#,
-            r#"{"ts":"2026-02-19T10:00:01Z","type":"orchestrator_action","action":"search","details":"found 1 match: Architecture Diagram"}"#,
-            r#"{"ts":"2026-02-19T11:15:00Z","type":"user_input","mode":"chat","content":"summarize the design document","intent":"chat"}"#,
-            r#"{"ts":"2026-02-19T11:15:04Z","type":"chat_response","content":"From your Design Document (owned): it defines the visual system for Sovereign GE — dark background (#0e0e10), accent blue (#5a9fd4), with system font at 13-16px. It references the Architecture Diagram for component structure."}"#,
-            r#"{"ts":"2026-02-19T14:00:00Z","type":"user_input","mode":"chat","content":"who are my contacts?","intent":"chat"}"#,
-            r#"{"ts":"2026-02-19T14:00:03Z","type":"chat_response","content":"You have 4 contacts: Alice Chen (email, Signal), Bob Martinez (email, WhatsApp), Carol Nguyen (email, SMS), and David Park (Signal)."}"#,
-            r#"{"ts":"2026-02-19T15:00:00Z","type":"user_input","mode":"text","content":"create thread Prototyping","intent":"create_thread"}"#,
-            r#"{"ts":"2026-02-19T15:00:01Z","type":"orchestrator_action","action":"create_thread","details":"created thread Prototyping"}"#,
-            // Day 3: Feb 20 — conversations and follow-ups
-            r#"{"ts":"2026-02-20T09:00:00Z","type":"user_input","mode":"chat","content":"what did Alice say about the architecture?","intent":"chat"}"#,
-            r#"{"ts":"2026-02-20T09:00:05Z","type":"chat_response","content":"In your email conversation 'Architecture discussion' with Alice Chen: she reviewed the architecture doc and asked about keeping the DB abstraction as a trait. You agreed to keep it for future flexibility. She said she'd update the API spec by Friday. Her latest message (unread) asks about adding a batch insert method for seeding."}"#,
-            r#"{"ts":"2026-02-20T10:30:00Z","type":"user_input","mode":"text","content":"open budget overview","intent":"open"}"#,
-            r#"{"ts":"2026-02-20T10:30:01Z","type":"orchestrator_action","action":"open","details":"opened Budget Overview"}"#,
-            r#"{"ts":"2026-02-20T14:00:00Z","type":"user_input","mode":"chat","content":"what are my unread messages?","intent":"chat"}"#,
-            r#"{"ts":"2026-02-20T14:00:04Z","type":"chat_response","content":"You have 3 unread messages across 3 conversations:\n1. Alice Chen in 'Architecture discussion' (email) — asks about adding a batch insert method\n2. David Park in 'Design feedback' (Signal) — offers to mock up light theme colors this week\n3. Bob Martinez in 'Budget approval' (WhatsApp) — waiting for the revised budget doc"}"#,
-            r#"{"ts":"2026-02-20T16:00:00Z","type":"user_input","mode":"text","content":"search test results","intent":"search"}"#,
-            r#"{"ts":"2026-02-20T16:00:01Z","type":"orchestrator_action","action":"search","details":"found 1 match: Test Results"}"#,
+        use chrono::{Duration, Utc};
+        let now = Utc::now();
+        let d1 = (now - Duration::days(5)).format("%Y-%m-%d");
+        let d2 = (now - Duration::days(4)).format("%Y-%m-%d");
+        let d3 = (now - Duration::days(3)).format("%Y-%m-%d");
+
+        let entries: Vec<String> = vec![
+            // Day 1: initial exploration
+            format!(r#"{{"ts":"{d1}T09:15:00Z","type":"user_input","mode":"text","content":"search meeting notes","intent":"search"}}"#),
+            format!(r#"{{"ts":"{d1}T09:15:01Z","type":"orchestrator_action","action":"search","details":"found 1 match: Meeting Notes Q1"}}"#),
+            format!(r#"{{"ts":"{d1}T09:20:00Z","type":"user_input","mode":"text","content":"open project plan","intent":"open"}}"#),
+            format!(r#"{{"ts":"{d1}T09:20:01Z","type":"orchestrator_action","action":"open","details":"opened Project Plan"}}"#),
+            format!(r#"{{"ts":"{d1}T14:30:00Z","type":"user_input","mode":"chat","content":"what threads do I have?","intent":"chat"}}"#),
+            format!(r#"{{"ts":"{d1}T14:30:03Z","type":"chat_response","content":"You have 4 threads: Research, Development, Design, and Admin. Development has the most documents with 7, followed by Research with 3."}}"#),
+            format!(r#"{{"ts":"{d1}T14:31:00Z","type":"user_input","mode":"chat","content":"how many documents are in Development?","intent":"chat"}}"#),
+            format!(r#"{{"ts":"{d1}T14:31:02Z","type":"chat_response","content":"The Development thread has 7 documents: Project Plan, Architecture Diagram, API Specification, and Test Results (all owned), plus 3 external references — a Stack Overflow Q&A on GTK4 bindings, GitHub Issue #42, and an API Response Log."}}"#),
+            // Day 2: deeper work
+            format!(r#"{{"ts":"{d2}T10:00:00Z","type":"user_input","mode":"text","content":"find architecture","intent":"search"}}"#),
+            format!(r#"{{"ts":"{d2}T10:00:01Z","type":"orchestrator_action","action":"search","details":"found 1 match: Architecture Diagram"}}"#),
+            format!(r#"{{"ts":"{d2}T11:15:00Z","type":"user_input","mode":"chat","content":"summarize the design document","intent":"chat"}}"#),
+            format!(r#"{{"ts":"{d2}T11:15:04Z","type":"chat_response","content":"From your Design Document (owned): it defines the visual system for Sovereign GE — dark background (#0e0e10), accent blue (#5a9fd4), with system font at 13-16px. It references the Architecture Diagram for component structure."}}"#),
+            format!(r#"{{"ts":"{d2}T14:00:00Z","type":"user_input","mode":"chat","content":"who are my contacts?","intent":"chat"}}"#),
+            format!(r#"{{"ts":"{d2}T14:00:03Z","type":"chat_response","content":"You have 4 contacts: Alice Chen (email, Signal), Bob Martinez (email, WhatsApp), Carol Nguyen (email, SMS), and David Park (Signal)."}}"#),
+            format!(r#"{{"ts":"{d2}T15:00:00Z","type":"user_input","mode":"text","content":"create thread Prototyping","intent":"create_thread"}}"#),
+            format!(r#"{{"ts":"{d2}T15:00:01Z","type":"orchestrator_action","action":"create_thread","details":"created thread Prototyping"}}"#),
+            // Day 3: conversations and follow-ups
+            format!(r#"{{"ts":"{d3}T09:00:00Z","type":"user_input","mode":"chat","content":"what did Alice say about the architecture?","intent":"chat"}}"#),
+            format!(r#"{{"ts":"{d3}T09:00:05Z","type":"chat_response","content":"In your email conversation 'Architecture discussion' with Alice Chen: she reviewed the architecture doc and asked about keeping the DB abstraction as a trait. You agreed to keep it for future flexibility. She said she'd update the API spec by Friday. Her latest message (unread) asks about adding a batch insert method for seeding."}}"#),
+            format!(r#"{{"ts":"{d3}T10:30:00Z","type":"user_input","mode":"text","content":"open budget overview","intent":"open"}}"#),
+            format!(r#"{{"ts":"{d3}T10:30:01Z","type":"orchestrator_action","action":"open","details":"opened Budget Overview"}}"#),
+            format!(r#"{{"ts":"{d3}T14:00:00Z","type":"user_input","mode":"chat","content":"what are my unread messages?","intent":"chat"}}"#),
+            format!(r#"{{"ts":"{d3}T14:00:04Z","type":"chat_response","content":"You have 3 unread messages across 3 conversations:\n1. Alice Chen in 'Architecture discussion' (email) — asks about adding a batch insert method\n2. David Park in 'Design feedback' (Signal) — offers to mock up light theme colors this week\n3. Bob Martinez in 'Budget approval' (WhatsApp) — waiting for the revised budget doc"}}"#),
+            format!(r#"{{"ts":"{d3}T16:00:00Z","type":"user_input","mode":"text","content":"search test results","intent":"search"}}"#),
+            format!(r#"{{"ts":"{d3}T16:00:01Z","type":"orchestrator_action","action":"search","details":"found 1 match: Test Results"}}"#),
         ];
 
         for entry in &entries {

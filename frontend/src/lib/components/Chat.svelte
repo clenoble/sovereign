@@ -166,7 +166,7 @@
 <style>
 	.chat-panel {
 		position: fixed;
-		top: 72px;
+		top: 120px;
 		left: 16px;
 		width: 420px;
 		max-height: 480px;

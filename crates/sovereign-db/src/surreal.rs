@@ -152,7 +152,7 @@ impl GraphDB for SurrealGraphDB {
     async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
         let (_table, _key) = parse_thing(id)?;
         self.db
-            .query("UPDATE $id SET spatial_x = $x, spatial_y = $y, modified_at = time::now()")
+            .query("UPDATE $id SET spatial_x = $x, spatial_y = $y")
             .bind(("id", id.to_string()))
             .bind(("x", x))
             .bind(("y", y))
@@ -188,7 +188,7 @@ impl GraphDB for SurrealGraphDB {
     async fn list_threads(&self) -> DbResult<Vec<Thread>> {
         let mut result = self
             .db
-            .query("SELECT * FROM thread WHERE deleted_at IS NONE")
+            .query("SELECT * FROM thread WHERE deleted_at IS NONE ORDER BY created_at ASC")
             .await?;
         let threads: Vec<Thread> = result.take(0)?;
         Ok(threads)
