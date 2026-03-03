@@ -31,7 +31,7 @@ sovereign-crypto = { workspace = true, optional = true }
 sovereign-p2p = { workspace = true, optional = true }
 sovereign-comms = { workspace = true, optional = true }
 rpassword = { version = "7.3", optional = true }
-uuid = { version = "1", features = ["v4"], optional = true }
+uuid = { workspace = true, optional = true }
 rand = { version = "0.10", optional = true }
 
 # Session log encryption key derivation
