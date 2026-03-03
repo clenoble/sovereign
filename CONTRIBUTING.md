@@ -7,6 +7,7 @@ Welcome! This guide will help you understand the codebase and start contributing
 ### Prerequisites
 
 - **Rust** (stable, edition 2021) — `rustup default stable`
+- **Node.js** 20+ and **npm** (for the Tauri/Svelte frontend)
 - **CMake** and **LLVM** (for llama-cpp-2 bindgen)
 - **Windows additionally:** Visual Studio 2022 Build Tools with C++ workload
 
@@ -22,11 +23,17 @@ pip install huggingface-hub
 huggingface-cli download Qwen/Qwen2.5-3B-Instruct-GGUF \
   qwen2.5-3b-instruct-q4_k_m.gguf --local-dir models/
 
-# Build (skip CUDA if you don't have an NVIDIA GPU)
-cargo build -p sovereign-app -j 4
+# Install frontend dependencies
+cd frontend && npm install && cd ..
+
+# Build frontend
+cd frontend && npm run build && cd ..
+
+# Build with Tauri UI (recommended)
+cargo build -p sovereign-app --no-default-features --features tauri-ui,encrypted-log -j 4
 
 # Run
-cargo run -p sovereign-app -- run
+./target/debug/sovereign run
 
 # Run tests
 cargo test -j 4                                          # all crates except sovereign-ai
@@ -39,53 +46,96 @@ On Windows from Git Bash, see [CLAUDE.md](CLAUDE.md) for the full MSVC environme
 
 ## Architecture Overview
 
-Sovereign GE is a 10-crate Rust workspace. Here's how the crates relate:
+Sovereign GE is a 10-crate Rust workspace plus a Svelte frontend. Here's how the pieces relate:
 
 ```
-                    ┌──────────────┐
-                    │ sovereign-app│  Binary: CLI + GUI bootstrap
-                    └──────┬───────┘
-                           │ depends on all crates below
-           ┌───────────────┼───────────────┐
-           │               │               │
-    ┌──────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐
-    │sovereign-ui │ │sovereign-ai │ │sovereign-   │
-    │  Iced GUI   │ │ Orchestrator│ │  canvas     │
-    │  panels,    │ │ LLM, intent │ │  spatial    │
-    │  chat, theme│ │ tools, trust│ │  rendering  │
-    └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-           │               │               │
-           └───────────────┼───────────────┘
-                           │
-           ┌───────────────┼───────────────┐
-           │               │               │
-    ┌──────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐
-    │sovereign-db │ │sovereign-   │ │sovereign-   │
-    │  SurrealDB  │ │  crypto     │ │  skills     │
-    │  graph store│ │  XChaCha20  │ │  registry   │
-    └──────┬──────┘ └──────┬──────┘ └─────────────┘
-           │               │
-           └───────┬───────┘
-                   │
-            ┌──────▼──────┐
-            │sovereign-   │  Shared types, config,
-            │  core       │  interfaces, events
-            └─────────────┘
-
-    Also: sovereign-p2p (libp2p sync), sovereign-comms (email/signal)
+    ┌─────────────────┐
+    │  frontend/      │  Svelte 5 + SvelteKit 2 + Tauri 2.0
+    │  (web UI)       │  Canvas, chat, onboarding, settings
+    └────────┬────────┘
+             │ Tauri IPC (invoke / events)
+    ┌────────▼────────┐
+    │ sovereign-app   │  Binary: CLI + Tauri host + GUI bootstrap
+    └────────┬────────┘
+             │ depends on all crates below
+   ┌─────────┼─────────────┐
+   │         │             │
+   │  ┌──────▼──────┐ ┌───▼──────────┐
+   │  │sovereign-ai │ │sovereign-ui  │  (legacy Iced GUI)
+   │  │ Orchestrator│ │sovereign-    │  (legacy Iced canvas)
+   │  │ LLM, intent │ │  canvas      │
+   │  │ tools, trust│ └──────────────┘
+   │  └──────┬──────┘
+   │         │
+   ├─────────┼─────────────┐
+   │         │             │
+   ┌▼────────▼──┐ ┌───────▼─────┐
+   │sovereign-db│ │sovereign-   │
+   │  SurrealDB │ │  crypto     │  Also: sovereign-skills,
+   │  graph     │ │  XChaCha20  │  sovereign-p2p, sovereign-comms
+   └──────┬─────┘ └──────┬──────┘
+          └───────┬──────┘
+           ┌──────▼──────┐
+           │sovereign-   │  Shared types, config,
+           │  core       │  interfaces, events
+           └─────────────┘
 ```
 
 ### Key Data Flow
 
-1. **User types in search bar or chat panel**
-2. Both go through the same path: `handle_query()` → `IntentClassifier.classify()` → action gate → `execute_action()`
-3. The classifier uses a local 3B GGUF model (Qwen2.5) to determine intent (search, open, create_thread, chat, etc.)
-4. For "chat" intent, the agent loop runs: build prompt → generate → parse tool calls → execute tools → feed results back → repeat (up to 5 rounds)
-5. Results emit `OrchestratorEvent`s that the UI receives and renders
+1. **User types in search bar or chat panel** (Svelte frontend)
+2. Frontend calls Tauri `invoke()` → Rust command handler
+3. Both go through the same path: `handle_query()` → `IntentClassifier.classify()` → action gate → `execute_action()`
+4. The classifier uses a local 3B GGUF model (Qwen2.5) to determine intent (search, open, create_thread, chat, etc.)
+5. For "chat" intent, the agent loop runs: build prompt → generate → parse tool calls → execute tools → feed results back → repeat (up to 5 rounds)
+6. Results emit `OrchestratorEvent`s via Tauri `emit()` → frontend event listener updates stores → reactive UI updates
+
+### Tauri Frontend Architecture
+
+The active UI is a Svelte 5 + SvelteKit 2 app bundled via Tauri 2.0:
+
+- **Stores** (`lib/stores/*.svelte.ts`): Svelte 5 rune modules using `$state()`, `$derived()`, `$effect()`. Must use `.svelte.ts` extension — Svelte 4 `writable` stores don't propagate reactivity when updated from async Tauri IPC.
+- **Commands** (`lib/api/commands.ts`): Typed wrappers around `@tauri-apps/api/core.invoke()` for all backend operations (chat, documents, threads, contacts, settings, auth).
+- **Events** (`lib/api/events.ts`): Listens for `OrchestratorEvent` from the Rust backend and dispatches to stores.
+- **Canvas** (`Canvas.svelte` + `CanvasCard.svelte`): HTML5 Canvas for background (grid, lanes, date ticks, heatmap) with DOM-overlaid cards. Camera with pan/zoom, 4 LOD tiers (full → title → dot → heatmap).
+- **Timeline layout**: X-axis = document `modified_at`, Y-axis = thread lanes. "Now" line, adaptive date tick spacing (day → week → month → year), density heatmap at extreme zoom-out.
 
 ### Directory Layout
 
 ```
+frontend/                        # Tauri + Svelte 5 web UI
+├── package.json                 # Svelte 5.51, SvelteKit 2.50, Tauri 2.10, Vite 7.3
+├── src/
+│   ├── routes/
+│   │   ├── +layout.svelte       # Root layout: auth check, profile load, event listener
+│   │   └── +page.svelte         # Main page: canvas, bubble, chat, taskbar, panels
+│   └── lib/
+│       ├── api/
+│       │   ├── commands.ts      # Tauri invoke() wrappers for all backend commands
+│       │   └── events.ts        # Tauri event listeners (orchestrator events → store updates)
+│       ├── stores/              # Svelte 5 rune stores ($state, $derived, $effect)
+│       │   ├── app.svelte.ts    # Auth state, bubble state, pending actions
+│       │   ├── canvas.svelte.ts # Camera, documents, threads, timeline layout, heatmap
+│       │   ├── chat.svelte.ts   # Chat messages, visibility, generating state
+│       │   ├── documents.svelte.ts
+│       │   ├── contacts.svelte.ts
+│       │   └── theme.svelte.ts
+│       ├── components/
+│       │   ├── Canvas.svelte    # 2D canvas: thread lanes, date ticks, heatmap, "Now" line
+│       │   ├── CanvasCard.svelte# LOD document cards (full → title → dot → heatmap)
+│       │   ├── Bubble.svelte    # AI bubble (animated border by state)
+│       │   ├── BubblePreview.svelte # SVG bubble face variants
+│       │   ├── Chat.svelte      # Chat panel with markdown, approval buttons
+│       │   ├── Minimap.svelte   # Canvas minimap with viewport indicator
+│       │   ├── Taskbar.svelte   # Bottom taskbar
+│       │   ├── Search.svelte    # Search overlay
+│       │   ├── OnboardingWizard.svelte
+│       │   ├── LoginScreen.svelte
+│       │   ├── SettingsPanel.svelte
+│       │   └── ...              # DocumentPanel, ContactPanel, ModelPanel, etc.
+│       ├── theme/colors.ts      # CSS variable definitions
+│       └── utils/markdown.ts    # Markdown rendering (marked + DOMPurify)
+
 crates/
 ├── sovereign-core/src/
 │   ├── config.rs        # AppConfig (TOML)
@@ -151,6 +201,8 @@ Most heavy dependencies are opt-in:
 
 | Flag | Default | What it gates |
 |------|---------|---------------|
+| `iced-ui` | ON | Legacy Iced 0.14 native GUI |
+| `tauri-ui` | off | Tauri 2.0 + Svelte 5 web UI (active frontend) |
 | `cuda` | ON (sovereign-ai only) | GPU-accelerated LLM inference |
 | `voice-stt` | off | Whisper speech-to-text |
 | `wake-word` | off | Wake word detection (requires voice-stt) |
@@ -160,9 +212,10 @@ Most heavy dependencies are opt-in:
 | `comms-signal` | off | Signal messenger |
 | `comms-whatsapp` | off | WhatsApp (stub) |
 
-To build without CUDA (most common for contributors):
+To build with the Tauri UI (most common for contributors):
 ```bash
-cargo build -p sovereign-app
+cd frontend && npm install && npm run build && cd ..
+cargo build -p sovereign-app --no-default-features --features tauri-ui,encrypted-log
 cargo test -p sovereign-ai --no-default-features
 ```
 

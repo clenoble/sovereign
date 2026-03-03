@@ -19,8 +19,8 @@ This is critical — APIs change between versions and stale knowledge causes cas
 | `sovereign-db` | SurrealDB graph database — documents, threads, relationships, contacts, conversations |
 | `sovereign-crypto` | Encryption (XChaCha20-Poly1305), key management, content signing |
 | `sovereign-ai` | LLM orchestrator, intent classification, chat agent loop, tools, trust, voice pipeline |
-| `sovereign-ui` | Iced 0.14 GUI — panels, chat, search bar, theming |
-| `sovereign-canvas` | Spatial canvas — document cards, thread zones, drag-and-drop |
+| `sovereign-ui` | Iced 0.14 GUI — panels, chat, search bar, theming (legacy) |
+| `sovereign-canvas` | Spatial canvas — document cards, thread zones, drag-and-drop (legacy) |
 | `sovereign-skills` | Skill registry and built-in skills (markdown editor, PDF export, video) |
 | `sovereign-p2p` | libp2p peer-to-peer sync (experimental) |
 | `sovereign-comms` | Communications — email (IMAP/SMTP), Signal (via presage) |
@@ -55,6 +55,52 @@ These 8 principles are implemented across the codebase — respect them when mod
 7. **Injection Surfacing** — Detected attacks shown to user. Implemented in `injection.rs`.
 8. **Error & Uncertainty** — Rank matches, explain failures, suggest alternatives. Encoded in chat system prompt.
 
+### Tauri Frontend (`frontend/`)
+
+The active UI is a **Svelte 5 + SvelteKit 2 + Tauri 2.0** web app (replaces the legacy Iced GUI). Stack: Svelte 5.51, SvelteKit 2.50, Tauri 2.10, Vite 7.3.
+
+**Key patterns:**
+- **Stores use `.svelte.ts` rune modules** — export `$state({})` objects + named functions. Components import and read properties directly (no `$` prefix). Svelte 4 `writable` stores fail with async Tauri IPC.
+- **Tauri IPC**: `@tauri-apps/api/core.invoke()` for commands, `@tauri-apps/api/event.listen()` for events. CSP must include `connect-src ipc: http://ipc.localhost`.
+- **Timeline canvas**: X = time (`modified_at`), Y = thread lanes. 4 LOD tiers: full card (zoom >= 0.6), title (>= 0.3), dot (>= 0.15), density heatmap (< 0.15). HTML5 Canvas background + DOM-overlaid cards.
+- **Markdown rendering**: `marked` + `DOMPurify` (sanitizes HTML tags in AI responses).
+
+**Directory layout:**
+```
+frontend/src/
+├── routes/
+│   ├── +layout.svelte         # Auth gate, profile load, Tauri event listener
+│   └── +page.svelte           # Main: canvas, bubble, chat, taskbar, panels
+└── lib/
+    ├── api/commands.ts         # invoke() wrappers for all Tauri commands
+    ├── api/events.ts           # OrchestratorEvent listener → store updates
+    ├── stores/
+    │   ├── app.svelte.ts       # Auth, bubble state, pending actions
+    │   ├── canvas.svelte.ts    # Camera, docs, threads, timeline layout, heatmap
+    │   ├── chat.svelte.ts      # Messages, visibility, generating state
+    │   ├── documents.svelte.ts
+    │   ├── contacts.svelte.ts
+    │   └── theme.svelte.ts
+    ├── components/
+    │   ├── Canvas.svelte       # Background: lanes, ticks, heatmap, "Now" line
+    │   ├── CanvasCard.svelte   # LOD cards with cascade stacking + z-index
+    │   ├── Bubble.svelte       # AI bubble with animated state ring
+    │   ├── Chat.svelte         # Chat panel: markdown, approve/reject, provenance
+    │   ├── Minimap.svelte      # Viewport indicator + "Now" line
+    │   ├── OnboardingWizard.svelte
+    │   ├── SettingsPanel.svelte
+    │   └── ...                 # Search, Taskbar, LoginScreen, panels
+    ├── theme/colors.ts         # CSS variable definitions
+    └── utils/markdown.ts       # marked + DOMPurify pipeline
+```
+
+**Build the frontend:**
+```bash
+cd frontend && npm install && npm run build    # produces frontend/build/
+```
+
+**Feature flag:** `--features tauri-ui` on `sovereign-app` (mutually exclusive with `iced-ui`).
+
 ## Build & Development
 
 ### Toolchain Prerequisites (Windows)
@@ -64,6 +110,7 @@ Install via `winget` if missing:
 - **LLVM** (for `libclang.dll` needed by bindgen): `winget install LLVM.LLVM`
 - **CMake**: `winget install Kitware.CMake`
 - **Rust** (stable MSVC): `winget install Rustlang.Rustup`
+- **Node.js** 20+ (for frontend): `winget install OpenJS.NodeJS.LTS`
 
 ### WSL2 / Linux
 - Source lives on NAS mount (`/mnt/nas/Current/Projets/03 - user-centered OS/`)
