@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use surrealdb::engine::local::{Db, Mem, RocksDb};
+use surrealdb::sql::Thing;
 use surrealdb::Surreal;
 
 use crate::error::{DbError, DbResult};
@@ -444,8 +445,17 @@ impl GraphDB for SurrealGraphDB {
     ) -> DbResult<RelatedTo> {
         let now = Utc::now();
         let relation_type_str = relation_type.to_string();
-        let from = from_id.to_string();
-        let to = to_id.to_string();
+
+        // Parse "table:id" strings into Thing records for RELATE
+        let parse_thing = |s: &str| -> Thing {
+            if let Some((tb, id)) = s.split_once(':') {
+                Thing::from((tb.to_string(), id.to_string()))
+            } else {
+                Thing::from(("document".to_string(), s.to_string()))
+            }
+        };
+        let from = parse_thing(from_id);
+        let to = parse_thing(to_id);
 
         let mut result = self
             .db
