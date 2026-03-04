@@ -296,6 +296,7 @@ cargo test -p sovereign-app --test cli_integration -j 4
 | [doc/plans/sovereign_os_implementation_plan.md](doc/plans/sovereign_os_implementation_plan.md) | Phase roadmap (all phases complete) |
 | [doc/plans/todolist.md](doc/plans/todolist.md) | Open issues and feature roadmap |
 | [doc/legal/sovereign_os_ethics.md](doc/legal/sovereign_os_ethics.md) | Ethical analysis and binding design constraints |
+| [doc/writing-skills.md](doc/writing-skills.md) | Guide for writing third-party WASM skill plugins |
 
 ---
 
