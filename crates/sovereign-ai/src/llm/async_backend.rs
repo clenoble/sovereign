@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use sovereign_core::interfaces::ModelBackend;
 
-use super::backend::LlamaCppBackend;
+use super::backend::{LlamaCppBackend, SamplingConfig};
 
 /// Async wrapper around `LlamaCppBackend` using `spawn_blocking`.
 ///
@@ -13,6 +13,7 @@ use super::backend::LlamaCppBackend;
 pub struct AsyncLlmBackend {
     inner: Arc<Mutex<Option<LlamaCppBackend>>>,
     n_ctx: u32,
+    sampling: Arc<Mutex<SamplingConfig>>,
 }
 
 impl AsyncLlmBackend {
@@ -20,7 +21,13 @@ impl AsyncLlmBackend {
         Self {
             inner: Arc::new(Mutex::new(None)),
             n_ctx,
+            sampling: Arc::new(Mutex::new(SamplingConfig::default())),
         }
+    }
+
+    /// Update the sampling config (e.g. after a model hot-swap).
+    pub fn set_sampling(&self, config: SamplingConfig) {
+        *self.sampling.lock().unwrap() = config;
     }
 
     /// Hot-swap the loaded model. Works through `&self` via `Arc<Mutex<>>`.
@@ -59,14 +66,16 @@ impl ModelBackend for AsyncLlmBackend {
 
     async fn generate(&self, prompt: &str, max_tokens: u32) -> Result<String> {
         let inner = self.inner.clone();
+        let sampling = self.sampling.clone();
         let prompt = prompt.to_string();
 
         tokio::task::spawn_blocking(move || {
             let mut guard = inner.lock().unwrap();
+            let sampling = sampling.lock().unwrap().clone();
             let backend = guard
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("Model not loaded"))?;
-            backend.generate(&prompt, max_tokens)
+            backend.generate(&prompt, max_tokens, &sampling)
         })
         .await?
     }

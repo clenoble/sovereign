@@ -5,3 +5,4 @@ pub mod format;
 pub mod prompt;
 
 pub use async_backend::AsyncLlmBackend;
+pub use backend::SamplingConfig;

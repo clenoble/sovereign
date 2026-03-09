@@ -10,6 +10,30 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::sampling::LlamaSampler;
 
+/// Per-model sampling parameters. Different model families perform best with
+/// different settings (e.g. Qwen 3.5 wants higher temperature and top_k).
+#[derive(Debug, Clone)]
+pub struct SamplingConfig {
+    pub temperature: f32,
+    pub top_p: f32,
+    /// 0 = disabled (no top-k filtering).
+    pub top_k: i32,
+    pub presence_penalty: f32,
+    pub seed: u32,
+}
+
+impl Default for SamplingConfig {
+    fn default() -> Self {
+        Self {
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 0,
+            presence_penalty: 0.0,
+            seed: 42,
+        }
+    }
+}
+
 /// Global llama.cpp backend — initialized once, never freed until process exit.
 /// llama_backend_init() is a global operation; calling it twice or freeing it
 /// while models are live causes crashes.
@@ -71,7 +95,7 @@ impl LlamaCppBackend {
 
     /// Generate text from a prompt. Reuses the cached context (clears KV cache between calls).
     /// Not suitable for direct async use — wrap with spawn_blocking.
-    pub fn generate(&mut self, prompt: &str, max_tokens: u32) -> Result<String> {
+    pub fn generate(&mut self, prompt: &str, max_tokens: u32, sampling: &SamplingConfig) -> Result<String> {
         let ctx = self
             .ctx
             .as_mut()
@@ -96,11 +120,21 @@ impl LlamaCppBackend {
         ctx.decode(&mut batch)
             .map_err(|e| anyhow::anyhow!("Initial decode failed: {:?}", e))?;
 
-        let mut sampler = LlamaSampler::chain_simple([
-            LlamaSampler::temp(0.7),
-            LlamaSampler::top_p(0.9, 1),
-            LlamaSampler::dist(42),
-        ]);
+        let mut samplers: Vec<LlamaSampler> = vec![LlamaSampler::temp(sampling.temperature)];
+        if sampling.top_k > 0 {
+            samplers.push(LlamaSampler::top_k(sampling.top_k));
+        }
+        samplers.push(LlamaSampler::top_p(sampling.top_p, 1));
+        if sampling.presence_penalty > 0.0 {
+            samplers.push(LlamaSampler::penalties(
+                256,   // penalty_last_n
+                1.0,   // penalty_repeat (disabled)
+                0.0,   // penalty_freq (disabled)
+                sampling.presence_penalty,
+            ));
+        }
+        samplers.push(LlamaSampler::dist(sampling.seed));
+        let mut sampler = LlamaSampler::chain_simple(samplers);
 
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut output = String::new();

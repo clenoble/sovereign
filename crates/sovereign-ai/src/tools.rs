@@ -477,6 +477,25 @@ async fn execute_move_document(call: &ToolCall, db: &dyn GraphDB) -> WriteToolRe
     }
 }
 
+/// Strip `<think>...</think>` blocks from model output.
+///
+/// Safety net for models (like Qwen 3.5) that may emit thinking blocks
+/// despite being instructed not to. Applied unconditionally — cheap no-op
+/// for models that don't emit `<think>` blocks.
+pub fn strip_think_blocks(output: &str) -> String {
+    let mut result = output.to_string();
+    while let Some(start) = result.find("<think>") {
+        if let Some(end) = result[start..].find("</think>") {
+            result.replace_range(start..start + end + "</think>".len(), "");
+        } else {
+            // Unclosed <think> block — remove from <think> to end
+            result.truncate(start);
+            break;
+        }
+    }
+    result.trim().to_string()
+}
+
 /// Execute a read-only tool call against the database. Returns a result with truncated output.
 pub async fn execute_tool(call: &ToolCall, db: &dyn GraphDB) -> ToolResult {
     let output = match call.name.as_str() {
@@ -956,5 +975,46 @@ mod tests {
         let result = execute_write_tool(&call, &db).await;
         assert!(result.success);
         assert!(result.output.contains("Moved"));
+    }
+
+    // --- strip_think_blocks tests ---
+
+    #[test]
+    fn strip_think_blocks_removes_thinking() {
+        let output = "<think>Let me reason about this...</think>Here is the answer.";
+        assert_eq!(strip_think_blocks(output), "Here is the answer.");
+    }
+
+    #[test]
+    fn strip_think_blocks_no_think() {
+        let output = "Just a normal response with no thinking.";
+        assert_eq!(strip_think_blocks(output), output);
+    }
+
+    #[test]
+    fn strip_think_blocks_unclosed() {
+        let output = "Preamble<think>partial thinking that never closes";
+        assert_eq!(strip_think_blocks(output), "Preamble");
+    }
+
+    #[test]
+    fn strip_think_blocks_multiple() {
+        let output = "<think>first</think>A<think>second</think>B";
+        assert_eq!(strip_think_blocks(output), "AB");
+    }
+
+    #[test]
+    fn strip_think_blocks_preserves_tool_call() {
+        let output = "<think>reasoning</think>\n<tool_call>\n{\"name\":\"search_documents\",\"arguments\":{\"query\":\"test\"}}\n</tool_call>";
+        let stripped = strip_think_blocks(output);
+        assert!(stripped.contains("<tool_call>"));
+        assert!(stripped.contains("search_documents"));
+        assert!(!stripped.contains("<think>"));
+    }
+
+    #[test]
+    fn strip_think_blocks_empty_think() {
+        let output = "<think></think>Answer";
+        assert_eq!(strip_think_blocks(output), "Answer");
     }
 }
