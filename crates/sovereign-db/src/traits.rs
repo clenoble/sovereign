@@ -37,6 +37,16 @@ pub trait GraphDB: Send + Sync {
     /// Search documents by title (case-insensitive substring match).
     async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>>;
 
+    /// Update a document's reliability assessment fields.
+    async fn update_document_reliability(
+        &self,
+        id: &str,
+        source_url: Option<&str>,
+        classification: Option<&str>,
+        score: Option<f32>,
+        assessment_json: Option<&str>,
+    ) -> DbResult<Document>;
+
     // -- Threads ---
 
     async fn create_thread(&self, thread: Thread) -> DbResult<Thread>;

@@ -79,6 +79,10 @@ pub enum OrchestratorEvent {
     ContactCreated { contact_id: String, name: String },
     // Chat response from LLM
     ChatResponse { text: String },
+    // Web browsing events
+    BrowserNavigated { url: String, title: String },
+    BrowserContentExtracted { url: String, title: String, text: String },
+    ReliabilityAssessed { doc_id: String, classification: String, score: f32 },
 }
 
 /// Lightweight milestone summary for milestone events.

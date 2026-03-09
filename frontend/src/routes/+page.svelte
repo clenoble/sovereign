@@ -1,9 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { getStatus } from '$lib/api/commands';
+	import { getStatus, closeBrowserCmd, setBrowserVisible } from '$lib/api/commands';
 	import { app } from '$lib/stores/app.svelte';
+	import { chat } from '$lib/stores/chat.svelte';
 	import { panels } from '$lib/stores/documents.svelte';
+	import { browser, openBrowser, closeBrowser } from '$lib/stores/browser.svelte';
 	import DocumentPanel from '$lib/components/DocumentPanel.svelte';
+	import BrowserPanel from '$lib/components/BrowserPanel.svelte';
 	import Canvas from '$lib/components/Canvas.svelte';
 
 	let error = $state('');
@@ -15,18 +18,51 @@
 		} catch (e) {
 			error = String(e);
 		}
+
+		// Ctrl+B shortcut to toggle browser
+		function handleKeydown(e: KeyboardEvent) {
+			if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+				e.preventDefault();
+				toggleBrowser();
+			}
+		}
+		window.addEventListener('keydown', handleKeydown);
+		return () => window.removeEventListener('keydown', handleKeydown);
+	});
+
+	async function toggleBrowser() {
+		if (browser.isOpen) {
+			closeBrowser();
+			try { await closeBrowserCmd(); } catch { /* ignore */ }
+		} else {
+			openBrowser('https://www.google.com');
+		}
+	}
+
+	// Hide browser webview when overlays are open
+	$effect(() => {
+		const overlayOpen = app.settingsVisible || chat.visible || app.inboxVisible;
+		if (browser.isOpen) {
+			setBrowserVisible(!overlayOpen).catch(() => {});
+		}
 	});
 </script>
 
 <main>
-	<div class="canvas-area">
-		<!-- Spatial canvas -->
-		<Canvas />
+	<div class="main-content">
+		<div class="canvas-area">
+			<!-- Spatial canvas -->
+			<Canvas />
 
-		<!-- Document panels (float above canvas) -->
-		{#each panels as panel (panel.doc.id)}
-			<DocumentPanel {panel} />
-		{/each}
+			<!-- Document panels (float above canvas) -->
+			{#each panels as panel (panel.doc.id)}
+				<DocumentPanel {panel} />
+			{/each}
+		</div>
+
+		{#if browser.isOpen}
+			<BrowserPanel />
+		{/if}
 	</div>
 
 	{#if error}
@@ -40,6 +76,11 @@
 		display: flex;
 		flex-direction: column;
 		padding-bottom: 44px; /* taskbar height */
+	}
+
+	.main-content {
+		flex: 1;
+		display: flex;
 	}
 
 	.canvas-area {

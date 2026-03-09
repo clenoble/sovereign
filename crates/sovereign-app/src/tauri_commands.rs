@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sovereign_core::content::ContentFields;
 use sovereign_core::interfaces::FeedbackEvent;
@@ -148,6 +149,9 @@ pub struct CanvasDocDto {
     pub spatial_y: f32,
     pub created_at: String,
     pub modified_at: String,
+    pub reliability_classification: Option<String>,
+    pub reliability_score: Option<f32>,
+    pub source_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1007,6 +1011,9 @@ pub async fn canvas_load(state: State<'_, AppState>) -> Result<CanvasData, Strin
                     spatial_y: d.spatial_y,
                     created_at: d.created_at.to_rfc3339(),
                     modified_at: d.modified_at.to_rfc3339(),
+                    reliability_classification: d.reliability_classification,
+                    reliability_score: d.reliability_score,
+                    source_url: d.source_url,
                 }
             })
             .collect(),
@@ -1717,6 +1724,9 @@ pub async fn import_file(
         spatial_y: created.spatial_y,
         created_at: created.created_at.to_rfc3339(),
         modified_at: created.modified_at.to_rfc3339(),
+        reliability_classification: None,
+        reliability_score: None,
+        source_url: None,
     })
 }
 
@@ -1862,4 +1872,275 @@ pub async fn save_comms_config(
     let config_path = config_dir.join("comms.toml");
     std::fs::write(&config_path, lines.join("\n")).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Embedded Browser
+// ---------------------------------------------------------------------------
+
+/// Open the embedded browser webview (or navigate if already open).
+#[tauri::command]
+pub async fn open_browser(
+    app: tauri::AppHandle,
+    url: String,
+    bounds: crate::browser::LogicalRect,
+) -> Result<(), String> {
+    // Must spawn on a separate thread to avoid deadlock on Windows
+    let handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::browser::create_browser_webview(&handle, &url, bounds)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Close the embedded browser webview.
+#[tauri::command]
+pub async fn close_browser(app: tauri::AppHandle) -> Result<(), String> {
+    crate::browser::destroy_browser(&app)
+}
+
+/// Navigate the browser to a new URL.
+#[tauri::command]
+pub async fn navigate_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    crate::browser::navigate_browser(&app, &url)
+}
+
+/// Go back in browser history.
+#[tauri::command]
+pub async fn browser_back(app: tauri::AppHandle) -> Result<(), String> {
+    crate::browser::browser_back(&app)
+}
+
+/// Go forward in browser history.
+#[tauri::command]
+pub async fn browser_forward(app: tauri::AppHandle) -> Result<(), String> {
+    crate::browser::browser_forward(&app)
+}
+
+/// Reload the browser page.
+#[tauri::command]
+pub async fn browser_refresh(app: tauri::AppHandle) -> Result<(), String> {
+    crate::browser::browser_refresh(&app)
+}
+
+/// Update browser webview position and size.
+#[tauri::command]
+pub async fn set_browser_bounds(
+    app: tauri::AppHandle,
+    bounds: crate::browser::LogicalRect,
+) -> Result<(), String> {
+    crate::browser::set_browser_bounds(&app, bounds)
+}
+
+/// Show or hide the browser webview.
+#[tauri::command]
+pub async fn set_browser_visible(
+    app: tauri::AppHandle,
+    visible: bool,
+) -> Result<(), String> {
+    crate::browser::set_browser_visible(&app, visible)
+}
+
+// ---------------------------------------------------------------------------
+// Web Browsing — Fetch & Reliability
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct FetchedPageDto {
+    pub url: String,
+    pub title: String,
+    pub body_markdown: String,
+    pub raw_text: String,
+}
+
+#[derive(Serialize)]
+pub struct ReliabilityResultDto {
+    pub classification: String,
+    pub final_score: f32,
+    pub raw_assessment: Vec<RubricScoreDto>,
+}
+
+#[derive(Serialize)]
+pub struct RubricScoreDto {
+    pub indicator: String,
+    pub analysis: String,
+    pub score: f32,
+}
+
+/// Fetch a web page and extract readable content (server-side).
+#[tauri::command]
+pub async fn fetch_web_page(url: String) -> Result<FetchedPageDto, String> {
+    #[cfg(feature = "web-browse")]
+    {
+        let page = crate::web::fetch_and_extract(&url)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(FetchedPageDto {
+            url: page.url,
+            title: page.title,
+            body_markdown: page.content_html,
+            raw_text: page.text,
+        });
+    }
+    #[cfg(not(feature = "web-browse"))]
+    {
+        let _ = url;
+        Err("Web browsing feature not enabled".into())
+    }
+}
+
+/// Run reliability assessment on text content using local LLM.
+#[tauri::command]
+pub async fn assess_reliability(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<ReliabilityResultDto, String> {
+    let orch = state.orchestrator.as_ref()
+        .ok_or_else(|| "AI orchestrator not available".to_string())?;
+    let result = orch
+        .assess_reliability(&text)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(ReliabilityResultDto {
+        classification: result.classification,
+        final_score: result.final_score,
+        raw_assessment: result
+            .raw_assessment
+            .into_iter()
+            .map(|s| RubricScoreDto {
+                indicator: s.indicator,
+                analysis: s.analysis,
+                score: s.score,
+            })
+            .collect(),
+    })
+}
+
+/// Save a fetched web page as an external document with reliability metadata.
+#[tauri::command]
+pub async fn save_web_page(
+    state: State<'_, AppState>,
+    url: String,
+    title: String,
+    content: String,
+    thread_id: Option<String>,
+    classification: Option<String>,
+    score: Option<f32>,
+    assessment_json: Option<String>,
+) -> Result<CanvasDocDto, String> {
+    let tid = match thread_id {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            // Create or find a "Web" thread for browsed content
+            match state.db.find_thread_by_name("Web").await {
+                Ok(Some(t)) => t.id_string().unwrap_or_default(),
+                _ => {
+                    let thread =
+                        sovereign_db::schema::Thread::new("Web".into(), "Browsed web content".into());
+                    let created = state
+                        .db
+                        .create_thread(thread)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    created.id_string().unwrap_or_default()
+                }
+            }
+        }
+    };
+
+    let content_json = serde_json::json!({
+        "body": content,
+        "images": [],
+        "videos": []
+    })
+    .to_string();
+
+    let mut doc = Document::new(title, tid.clone(), false);
+    doc.content = content_json;
+    doc.source_url = Some(url);
+    doc.reliability_classification = classification.clone();
+    doc.reliability_score = score;
+    doc.reliability_assessment = assessment_json;
+    if classification.is_some() || score.is_some() {
+        doc.assessed_at = Some(Utc::now());
+    }
+
+    let created = state
+        .db
+        .create_document(doc)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let id = created.id_string().unwrap_or_default();
+
+    Ok(CanvasDocDto {
+        id,
+        title: created.title,
+        thread_id: tid,
+        is_owned: false,
+        spatial_x: created.spatial_x,
+        spatial_y: created.spatial_y,
+        created_at: created.created_at.to_rfc3339(),
+        modified_at: created.modified_at.to_rfc3339(),
+        reliability_classification: created.reliability_classification,
+        reliability_score: created.reliability_score,
+        source_url: created.source_url,
+    })
+}
+
+/// Re-run reliability assessment on an existing document.
+#[tauri::command]
+pub async fn reassess_reliability(
+    state: State<'_, AppState>,
+    doc_id: String,
+) -> Result<ReliabilityResultDto, String> {
+    let doc = state.db.get_document(&doc_id).await.map_err(|e| e.to_string())?;
+
+    // Parse content JSON to extract body text
+    let body = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&doc.content) {
+        v["body"].as_str().unwrap_or("").to_string()
+    } else {
+        doc.content.clone()
+    };
+
+    if body.is_empty() {
+        return Err("Document has no text content to assess".into());
+    }
+
+    let orch = state.orchestrator.as_ref()
+        .ok_or_else(|| "AI orchestrator not available".to_string())?;
+    let result = orch
+        .assess_reliability(&body)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let assessment_json = sovereign_ai::reliability::assessment_to_json(&result);
+
+    // Update document with new reliability data
+    state
+        .db
+        .update_document_reliability(
+            &doc_id,
+            None,
+            Some(&result.classification),
+            Some(result.final_score),
+            Some(&assessment_json),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(ReliabilityResultDto {
+        classification: result.classification,
+        final_score: result.final_score,
+        raw_assessment: result
+            .raw_assessment
+            .into_iter()
+            .map(|s| RubricScoreDto {
+                indicator: s.indicator,
+                analysis: s.analysis,
+                score: s.score,
+            })
+            .collect(),
+    })
 }

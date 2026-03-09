@@ -114,6 +114,14 @@
 		onpointerleave={() => hoverCard(null)}
 	>
 		<div class="card-title">{doc.title}</div>
+		{#if doc.reliability_score != null}
+			<span
+				class="reliability-badge"
+				class:high={doc.reliability_score >= 3.5}
+				class:medium={doc.reliability_score >= 2.0 && doc.reliability_score < 3.5}
+				class:low={doc.reliability_score < 2.0}
+			>{doc.reliability_score.toFixed(1)}</span>
+		{/if}
 	</div>
 {:else}
 	<!-- LOD: full card -->
@@ -134,6 +142,14 @@
 	>
 		<div class="card-title">{doc.title}</div>
 		<div class="card-meta">{timeAgo(doc.modified_at)}</div>
+		{#if doc.reliability_score != null}
+			<span
+				class="reliability-badge"
+				class:high={doc.reliability_score >= 3.5}
+				class:medium={doc.reliability_score >= 2.0 && doc.reliability_score < 3.5}
+				class:low={doc.reliability_score < 2.0}
+			>{doc.reliability_score.toFixed(1)}</span>
+		{/if}
 	</div>
 {/if}
 
@@ -217,5 +233,32 @@
 		height: auto;
 		min-height: 40px;
 		padding: 8px 10px;
+	}
+
+	.reliability-badge {
+		position: absolute;
+		top: 4px;
+		right: 4px;
+		font-size: 0.6rem;
+		font-weight: 700;
+		padding: 1px 5px;
+		border-radius: 8px;
+		line-height: 1.4;
+	}
+	.reliability-badge.high {
+		color: var(--reliability-high);
+		background: var(--reliability-high-bg);
+	}
+	.reliability-badge.medium {
+		color: var(--reliability-medium);
+		background: var(--reliability-medium-bg);
+	}
+	.reliability-badge.low {
+		color: var(--reliability-low);
+		background: var(--reliability-low-bg);
+	}
+	/* Un-skew badge for external cards */
+	.external .reliability-badge {
+		transform: skewX(5deg);
 	}
 </style>

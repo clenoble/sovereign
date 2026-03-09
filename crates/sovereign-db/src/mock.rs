@@ -88,6 +88,26 @@ impl GraphDB for MockGraphDB {
         Ok(doc.clone())
     }
 
+    async fn update_document_reliability(
+        &self,
+        id: &str,
+        source_url: Option<&str>,
+        classification: Option<&str>,
+        score: Option<f32>,
+        assessment_json: Option<&str>,
+    ) -> DbResult<Document> {
+        let mut docs = self.documents.write().unwrap();
+        let doc = docs.get_mut(id).ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        if let Some(u) = source_url { doc.source_url = Some(u.to_string()); }
+        if let Some(c) = classification { doc.reliability_classification = Some(c.to_string()); }
+        if let Some(s) = score { doc.reliability_score = Some(s); }
+        if let Some(a) = assessment_json { doc.reliability_assessment = Some(a.to_string()); }
+        if classification.is_some() || score.is_some() {
+            doc.assessed_at = Some(Utc::now());
+        }
+        Ok(doc.clone())
+    }
+
     async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
         let mut docs = self.documents.write().unwrap();
         let doc = docs.get_mut(id).ok_or_else(|| DbError::NotFound(id.to_string()))?;

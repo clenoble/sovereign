@@ -11,6 +11,11 @@ mod tauri_events;
 #[cfg(feature = "tauri-ui")]
 mod tauri_state;
 
+#[cfg(feature = "web-browse")]
+mod web;
+#[cfg(feature = "tauri-ui")]
+mod browser;
+
 use std::sync::mpsc;
 use std::sync::Arc;
 
@@ -302,6 +307,20 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::import_file,
             tauri_commands::get_comms_config,
             tauri_commands::save_comms_config,
+            // Embedded browser
+            tauri_commands::open_browser,
+            tauri_commands::close_browser,
+            tauri_commands::navigate_browser,
+            tauri_commands::browser_back,
+            tauri_commands::browser_forward,
+            tauri_commands::browser_refresh,
+            tauri_commands::set_browser_bounds,
+            tauri_commands::set_browser_visible,
+            // Web browsing — fetch & reliability
+            tauri_commands::fetch_web_page,
+            tauri_commands::save_web_page,
+            tauri_commands::assess_reliability,
+            tauri_commands::reassess_reliability,
         ])
         .setup(move |app| {
             // Auto-open DevTools in debug builds
