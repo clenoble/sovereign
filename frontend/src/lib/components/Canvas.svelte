@@ -7,6 +7,8 @@
 		panBy,
 		zoomAt,
 		home,
+		getVisibleDocuments,
+		requestMessagesForViewport,
 		LANE_HEIGHT,
 		MSG_RADIUS,
 		type CanvasState
@@ -24,6 +26,20 @@
 	let panning = false;
 	let panStart = { x: 0, y: 0 };
 	let panCameraStart = { x: 0, y: 0 };
+
+	// Viewport-culled documents (only mount DOM cards for visible docs)
+	let visibleDocs = $derived(getVisibleDocuments());
+
+	// Load messages for the visible time range when camera moves
+	$effect(() => {
+		// Track camera state to re-run on pan/zoom
+		void canvas.camera.panX;
+		void canvas.camera.panY;
+		void canvas.camera.zoom;
+		if (canvas.loaded && canvas.timelineScale) {
+			requestMessagesForViewport();
+		}
+	});
 
 	// File drag-and-drop
 	let dragOver = $state(false);
@@ -535,7 +551,7 @@
 		class="card-layer"
 		style="transform: translate({canvas.camera.panX}px, {canvas.camera.panY}px) scale({canvas.camera.zoom});"
 	>
-		{#each canvas.documents as doc (doc.id)}
+		{#each visibleDocs as doc (doc.id)}
 			<CanvasCard
 				{doc}
 				isHovered={canvas.hoveredCardId === doc.id}

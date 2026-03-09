@@ -154,6 +154,11 @@
 {/if}
 
 <style>
+	@keyframes card-enter {
+		from { opacity: 0; }
+		to { opacity: 1; }
+	}
+
 	.canvas-card {
 		position: absolute;
 		width: 200px;
@@ -169,6 +174,7 @@
 		border: 2px solid var(--border);
 		transition: box-shadow 0.15s;
 		overflow: hidden;
+		animation: card-enter 150ms ease-out;
 	}
 
 	.canvas-card:active {
@@ -221,6 +227,7 @@
 		height: 6px;
 		border-radius: 50%;
 		cursor: grab;
+		animation: card-enter 100ms ease-out;
 	}
 	.canvas-dot.owned {
 		background: var(--prov-owned);
