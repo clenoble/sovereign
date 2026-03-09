@@ -61,6 +61,18 @@
     <priority>0.8</priority>
   </url>
   <url>
+    <loc>https://clenoble.github.io/sovereign-os/#/browser-reliability</loc>
+    <lastmod>2026-03-09</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://clenoble.github.io/sovereign-os/#/memory-consolidation</loc>
+    <lastmod>2026-03-09</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
     <loc>https://clenoble.github.io/sovereign-os/#/legal-notice</loc>
     <lastmod>2026-02-22</lastmod>
     <changefreq>yearly</changefreq>

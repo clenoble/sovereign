@@ -197,6 +197,13 @@ section { padding: 100px 24px; }
 .guardian-step p { font-size: 0.78rem; color: var(--c-text-dim); }
 .guardian-arrow { color: var(--c-border); font-size: 1.2rem; flex-shrink: 0; }
 
+.screenshot-frame { border: 1px solid var(--c-border); border-radius: var(--radius-lg); overflow: hidden; margin: 24px 0; background: var(--c-bg-card); box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+.screenshot-frame img { width: 100%; height: auto; display: block; }
+.screenshot-frame .screenshot-caption { padding: 10px 16px; font-size: 0.78rem; color: var(--c-text-dim); border-top: 1px solid var(--c-border-subtle); text-align: center; }
+.screenshot-placeholder { display: flex; align-items: center; justify-content: center; min-height: 280px; background: linear-gradient(135deg, var(--c-bg-alt), var(--c-bg-card)); color: var(--c-text-dim); font-size: 0.85rem; font-style: italic; }
+.screenshot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 24px 0; }
+@media (max-width: 768px) { .screenshot-grid { grid-template-columns: 1fr; } }
+
 .roadmap-card { background: var(--c-bg-card); border: 1px dashed var(--c-border); border-radius: var(--radius-lg); padding: 28px; position: relative; }
 .roadmap-card::before { content: "Vision"; position: absolute; top: 12px; right: 16px; font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--c-text-dim); background: var(--c-bg-alt); border: 1px solid var(--c-border-subtle); border-radius: 4px; padding: 2px 8px; }
 .roadmap-card h3 { font-size: 0.95rem; font-weight: 700; color: var(--c-text-bright); margin-bottom: 8px; }
@@ -415,6 +422,8 @@ p { margin-bottom: 1rem; color: var(--c-text); }
             <a href="#/spatial-canvas" role="menuitem">Spatial Canvas</a>
             <a href="#/content-skills" role="menuitem">Content & Skills</a>
             <a href="#/communications" role="menuitem">Communications</a>
+            <a href="#/browser-reliability" role="menuitem">Browser & Reliability</a>
+            <a href="#/memory-consolidation" role="menuitem">Memory Consolidation</a>
           </div>
         </div>
       </div>
@@ -580,9 +589,10 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       </div>
       <div class="feature-card">
         <div class="feature-icon ai" aria-hidden="true">◈</div>
-        <h3>On-Device AI Orchestrator</h3>
-        <p>Qwen2.5 models run entirely on your hardware via llama.cpp. Intent classification,
-          multi-turn chat, tool calling, voice input — designed so no data leaves your machine.</p>
+        <h3>Model-Agnostic AI Orchestrator</h3>
+        <p>Hot-swap between Qwen 2.5, Qwen 3.5, Mistral, and Llama3 models at runtime.
+          Intent classification, multi-turn chat with 10 tools, per-model sampling,
+          and thinking-mode suppression — all on your hardware via llama.cpp.</p>
         <a href="#/ai-orchestrator" class="learn-more">How the AI works</a>
       </div>
       <div class="feature-card">
@@ -596,7 +606,8 @@ p { margin-bottom: 1rem; color: var(--c-text); }
         <div class="feature-icon canvas" aria-hidden="true">▣</div>
         <h3>Infinite Spatial Canvas</h3>
         <p>Navigate your entire digital life on a 2D timeline. Threads as lanes,
-          documents as cards. GPU-accelerated rendering handles 100K+ documents via LOD.</p>
+          documents as cards. 4 LOD tiers from full cards to density heatmaps.
+          Built with Svelte 5 + Tauri 2.0.</p>
         <a href="#/spatial-canvas" class="learn-more">Canvas &amp; versioning</a>
       </div>
       <div class="feature-card">
@@ -607,10 +618,24 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       </div>
       <div class="feature-card">
         <div class="feature-icon skills" aria-hidden="true">⬢</div>
-        <h3>Modular Skill System</h3>
-        <p>Replace monolithic apps with composable skills — markdown editor, PDF export,
-          image viewer, and more. Community skills are sandboxed and cryptographically audited.</p>
+        <h3>WASM Skill Plugins</h3>
+        <p>Replace monolithic apps with composable skills. Built-in: markdown editor, PDF export,
+          search, image viewer. Third-party skills run in a WASM sandbox with capability-based permissions.</p>
         <a href="#/content-skills" class="learn-more">Skills &amp; sandboxing</a>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background: rgba(245, 158, 11, 0.1); color: var(--c-gold);" aria-hidden="true">◉</div>
+        <h3>Embedded Browser</h3>
+        <p>Browse the web from within Sovereign. An LLM-powered reliability assessment scores
+          content on factual integrity, logical coherence, and rhetorical style. Save pages with provenance metadata.</p>
+        <a href="#/browser-reliability" class="learn-more">Browser &amp; reliability</a>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background: rgba(168, 130, 255, 0.1); color: #a882ff;" aria-hidden="true">⬡</div>
+        <h3>Memory Consolidation</h3>
+        <p>Background AI discovers semantic links between documents while you're idle.
+          Suggests relationships with strength scores and rationale — accept or dismiss.</p>
+        <a href="#/memory-consolidation" class="learn-more">How consolidation works</a>
       </div>
     </div>
   </div>
@@ -628,7 +653,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       <div class="arch-diagram">
         <div class="layer layer-control">
           <div class="layer-label">Control Plane</div>
-          User instructions → Router (3B) → Intent → Skills<br>
+          User instructions → Router (3B–4B) → Intent → Skills<br>
           <span style="color: var(--c-text-dim);">Can invoke skills, modify docs, navigate</span>
         </div>
         <div style="text-align: center; padding: 4px 0; color: var(--c-border);">│ metadata only, no raw content │</div>
@@ -650,11 +675,15 @@ p { margin-bottom: 1rem; color: var(--c-text); }
           not by hoping the LLM follows instructions.</p>
         <div class="arch-detail">
           <div class="arch-detail-label" style="color: var(--c-accent);">Router Model</div>
-          <p>Qwen2.5-3B — always loaded, ~2 GB VRAM. Classifies intent in milliseconds.</p>
+          <p>Qwen 2.5-3B or Qwen 3.5-4B — always loaded, ~2 GB VRAM. Classifies intent in milliseconds. Hot-swappable at runtime.</p>
         </div>
         <div class="arch-detail">
           <div class="arch-detail-label" style="color: #a882ff;">Reasoning Model</div>
-          <p>Qwen2.5-7B — loaded on demand when confidence &lt; 0.7. Auto-unloads after 5 min idle.</p>
+          <p>Qwen 2.5-7B — loaded on demand when confidence &lt; 0.7. Auto-unloads after 5 min idle.</p>
+        </div>
+        <div class="arch-detail">
+          <div class="arch-detail-label" style="color: var(--c-gold);">Model-Agnostic</div>
+          <p>Supports Qwen, Mistral, Llama3 and any GGUF model. Per-model sampling configs and prompt format auto-detection.</p>
         </div>
         <div class="arch-detail">
           <div class="arch-detail-label" style="color: var(--c-owned);">Voice Pipeline</div>
@@ -807,26 +836,39 @@ p { margin-bottom: 1rem; color: var(--c-text); }
     <p class="section-label">Where we'd like to go next</p>
     <h2 class="section-title" id="roadmap-title">Ideas we haven't built yet</h2>
     <p class="section-desc">
-      These are directions we're exploring, not commitments. None of this code exists today.
+      These are directions we're exploring, not commitments.
       We're sharing them because they shape the project's long-term vision.
     </p>
     <div class="features-grid">
       <div class="roadmap-card">
-        <h3>Identity Firewall</h3>
-        <p>A kernel-level proxy that isolates tracking across domains — cookie isolation,
-          URL parameter stripping, fingerprint resistance. The goal is tracking prevention,
-          not anonymity. No Tor, no VPN, no synthetic identities.</p>
+        <h3>Rich Document Format</h3>
+        <p>WYSIWYG editing beyond plain markdown. Evaluating ProseMirror or Milkdown
+          for an embedded rich text editor that stores content as structured AST.</p>
       </div>
       <div class="roadmap-card">
-        <h3>Contextual Identities</h3>
-        <p>Separate browsing contexts per domain (work, personal, banking) so that trackers
-          can't correlate activity across contexts. Inspired by Firefox Containers,
-          but integrated at the environment level.</p>
+        <h3>Semantic Search via Embeddings</h3>
+        <p>A local GGUF embedding model with vector indexing in SurrealDB.
+          Search by meaning, not just keywords. Cluster related documents automatically.</p>
+      </div>
+      <div class="roadmap-card">
+        <h3>Federation & Multi-User</h3>
+        <p>Cross-user document sharing with access control.
+          CRDT-based conflict resolution (yrs/automerge-rs) for concurrent edits on synced documents.</p>
+      </div>
+      <div class="roadmap-card">
+        <h3>Plugin Marketplace</h3>
+        <p>Community skill registry with PGP-signed WASM bundles.
+          Discover, install, and review third-party skills from a curated catalog.</p>
+      </div>
+      <div class="roadmap-card">
+        <h3>Mobile Companion</h3>
+        <p>A lightweight read-only or limited mobile client that syncs with your desktop
+          via the existing P2P infrastructure. View documents, chat with AI on the go.</p>
       </div>
       <div class="roadmap-card">
         <h3>PII Dashboard</h3>
         <p>A single view showing what personal data exists across your documents, messages,
-          and contacts — and where it's been shared. Think of it as a personal data map
+          and contacts — and where it's been shared. A personal data map
           that helps you understand your own exposure.</p>
       </div>
     </div>
@@ -839,7 +881,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
     <h2 class="section-title" id="cta-title">An experimental prototype — come explore with us</h2>
     <p class="section-desc">
       Sovereign GE is an experimental prototype. Try it, break it, contribute.
-      Built in Rust. 10 crates. 16K+ lines. 367 tests.
+      Built in Rust. 10 crates. 18K+ lines. Svelte 5 + Tauri 2.0 frontend.
       Co-developed with <a href="https://claude.ai" target="_blank" rel="noopener" style="color: var(--c-accent);">Claude Opus 4.6</a> by Anthropic.
     </p>
     <div class="cta-actions">
@@ -860,50 +902,75 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 <main id="main" role="main">
 <div class="content-inner">
 <div class="page-header">
-  <h1>Local AI Orchestrator</h1>
+  <h1>Model-Agnostic AI Orchestrator</h1>
   <p class="subtitle">
-    How Sovereign runs AI on your machine with a fast intent classifier, reasoning model,
-    and multi-turn chat agent. Designed to work without cloud services, API keys, or subscriptions.
+    How Sovereign runs AI on your machine with hot-swappable models, a fast intent classifier,
+    multi-turn chat with 10 tools, and background memory consolidation.
+    Designed to work without cloud services, API keys, or subscriptions.
   </p>
 </div>
 <section class="tier-section tier-1">
   <div class="tier-header">
     <span class="tier-badge">1</span>
     <div>
-      <div class="tier-label">Your AI, on your machine</div>
+      <div class="tier-label">Your AI, on your machine — any model you choose</div>
     </div>
   </div>
   <div class="tier-1-content">
     <p>
-      Sovereign runs AI on your machine. A fast 3B router classifies your intent in milliseconds;
-      a larger 7B model loads on demand for complex queries. Designed to work without cloud services, API keys, or subscriptions.
-      Your prompts are processed locally by design.
+      Sovereign runs AI entirely on your hardware. Hot-swap between Qwen 2.5, Qwen 3.5, Mistral, Llama3, or any
+      GGUF model at runtime — no restart needed. A fast router classifies intent in milliseconds; a larger model
+      loads on demand for complex queries. Ten tools let the AI search, create, and organize your workspace.
+      Per-model sampling configs and prompt format auto-detection mean each model runs at its best.
     </p>
   </div>
 </section>
+
+<div class="screenshot-frame">
+  <img src="screenshots/chat-panel.png" alt="Sovereign AI chat panel showing multi-turn conversation with tool calls" onerror="this.parentElement.innerHTML='<div class=screenshot-placeholder>Screenshot: AI chat panel with tool calls and provenance markers</div>'">
+  <div class="screenshot-caption">The AI chat panel showing a multi-turn conversation with tool calls, provenance markers, and approval buttons</div>
+</div>
+
 <section class="tier-section tier-2">
   <div class="tier-header">
     <span class="tier-badge">2</span>
     <div>
-      <div class="tier-label">Two models, six tools, one local brain designed to stay local</div>
+      <div class="tier-label">Hot-swappable models, ten tools, background intelligence</div>
     </div>
   </div>
   <div class="tier-2-content">
     <details open>
-      <summary>Two-Model Architecture</summary>
+      <summary>Model-Agnostic Architecture</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>Always-On Router + On-Demand Reasoning</h3>
+          <h3>Hot-Swap Any GGUF Model at Runtime</h3>
           <p>
-            The system uses two Qwen2.5 models running via llama.cpp (quantized, on your hardware):
+            The orchestrator is model-agnostic — swap between model families without restarting:
           </p>
           <ul class="concept-list">
-            <li><strong>Router (3B):</strong> Always loaded (~2 GB VRAM). Classifies user input into ~20 action types in milliseconds. Examples: "search", "open document", "create thread", "delete", "export".</li>
+            <li><strong>Router (3B–4B):</strong> Always loaded (~2 GB VRAM). Classifies user input into ~20 action types in milliseconds. Supports Qwen 2.5-3B and Qwen 3.5-4B.</li>
             <li><strong>Reasoning (7B):</strong> Loaded on demand when router confidence is below 0.7. Handles ambiguous or complex queries. Auto-unloads after 5 minutes idle to free VRAM.</li>
+            <li><strong>Fuzzy model resolution:</strong> Type "mistral" and it finds "Ministral-3B-Instruct-GGUF". Alias expansion handles common shorthand.</li>
+            <li><strong>Format auto-detection:</strong> Prompt format (ChatML, ChatMLQwen3, Mistral, Llama3) is detected from the GGUF filename — no manual config needed.</li>
           </ul>
-          <p style="margin-top: 12px;">
-            This hybrid approach balances speed (fast intent classification) with capability (reasoning power when needed).
+        </div>
+      </div>
+    </details>
+    <details open>
+      <summary>Qwen 3.5: Thinking-Mode Suppression</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Per-Model Sampling &amp; <code>/no_think</code> Directive</h3>
+          <p>
+            Qwen 3.5 models have a "thinking mode" that wastes tokens on internal reasoning (<code>&lt;think&gt;...&lt;/think&gt;</code> blocks).
+            Sovereign automatically suppresses this:
           </p>
+          <ul class="concept-list">
+            <li><strong><code>/no_think</code> injection:</strong> Added to system prompts for Qwen 3.5 models, preventing thinking-mode activation.</li>
+            <li><strong><code>strip_think_blocks()</code>:</strong> Defensive post-processing removes any leaked thinking tags from model output.</li>
+            <li><strong>Per-model sampling:</strong> Each model family gets optimized parameters. Qwen 3.5 uses aggressive sampling (temp=1.0, top_p=0.95, presence_penalty=1.5) for lexical diversity.</li>
+            <li><strong>Default sampling:</strong> Conservative settings (temp=0.7, top_p=0.9) for models without specific tuning.</li>
+          </ul>
         </div>
       </div>
     </details>
@@ -913,12 +980,12 @@ p { margin-bottom: 1rem; color: var(--c-text); }
         <div class="concept-block">
           <h3>Up to 5 Rounds of Generate → Tool Call → Execute → Feedback</h3>
           <p>
-            Once intent is classified, the system enters a chat loop:
+            Once intent is classified as "chat", the system enters a multi-turn agent loop:
           </p>
           <ul class="concept-list">
             <li><strong>Load history:</strong> Up to 50 prior exchanges (capped at 6,300 characters total).</li>
             <li><strong>Gather context:</strong> Documents, threads, contacts relevant to the intent.</li>
-            <li><strong>Build prompt:</strong> ChatML format (<code>&lt;|im_start|&gt;role...&lt;|im_end|&gt;</code>). System prompt includes UX principles (Action Gravity, plan visibility, conversational confirmation).</li>
+            <li><strong>Build prompt:</strong> Format auto-selected per model. System prompt includes UX principles (Action Gravity, plan visibility, conversational confirmation).</li>
             <li><strong>Generate:</strong> Model outputs text + optional tool calls formatted as <code>&lt;tool_call&gt;{...}&lt;/tool_call&gt;</code>.</li>
             <li><strong>Parse &amp; execute:</strong> Extract tool calls, verify action gravity level, execute (if approved), append result to history.</li>
             <li><strong>Loop or return:</strong> If model generated more tool calls or needs clarification, loop (max 5 iterations). Otherwise, return response.</li>
@@ -927,13 +994,10 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       </div>
     </details>
     <details open>
-      <summary>Six Read-Only Tools (Observe Level)</summary>
+      <summary>Ten Tools: 6 Read-Only + 4 Write</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>AI Can Browse, Not Modify</h3>
-          <p>
-            The AI has access to exactly 6 tools, all at Observe level (Level 0 in Action Gravity):
-          </p>
+          <h3>Observe Level (Level 0) — No Confirmation Needed</h3>
           <ul class="concept-list">
             <li><code>search_documents</code> — Full-text search across your documents.</li>
             <li><code>list_threads</code> — Get all thread names and metadata.</li>
@@ -942,9 +1006,16 @@ p { margin-bottom: 1rem; color: var(--c-text); }
             <li><code>search_messages</code> — Search in email/Signal/WhatsApp conversations.</li>
             <li><code>list_contacts</code> — Get contact list (no private data).</li>
           </ul>
+          <h3 style="margin-top: 24px;">Modify Level (Level 3) — Requires User Confirmation</h3>
+          <ul class="concept-list">
+            <li><code>create_document</code> — Create a new document in a thread.</li>
+            <li><code>create_thread</code> — Create a new thread (project lane).</li>
+            <li><code>rename_thread</code> — Rename an existing thread.</li>
+            <li><code>move_document</code> — Move a document to a different thread.</li>
+          </ul>
           <p style="margin-top: 12px;">
-            These tools are designed to be read-only — they cannot modify, delete, or export data. The AI can propose actions (e.g., "Should I export this to PDF?"),
-            but execution requires explicit user confirmation and goes through the Action Gravity gate.
+            Write tools go through the Action Gravity gate — the AI proposes the action with specifics,
+            and the user sees approve/reject buttons in the chat panel before anything changes.
           </p>
         </div>
       </div>
@@ -961,7 +1032,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
             <li><strong>Text-to-Speech:</strong> Piper TTS with multiple voice options. Runs locally, natural-sounding responses.</li>
           </ul>
           <p style="margin-top: 12px;">
-            All audio processing happens on-device. Audio is designed to stay on your machine.
+            All audio processing happens on-device. Audio is designed to stay on your machine. Feature-gated behind <code>voice-stt</code>.
           </p>
         </div>
       </div>
@@ -972,31 +1043,38 @@ p { margin-bottom: 1rem; color: var(--c-text); }
   <div class="tier-header">
     <span class="tier-badge">3</span>
     <div>
-      <div class="tier-label">Deep dive into Local AI Orchestrator</div>
+      <div class="tier-label">Deep dive into the AI Orchestrator</div>
     </div>
   </div>
   <div class="tier-3-content">
     <div class="deep-section">
-      <h3>IntentClassifier (sovereign-ai/src/intent/classifier.rs)</h3>
+      <h3>PromptFormatter Trait (sovereign-ai/src/llm/format.rs)</h3>
       <p>
-        The intent classification layer is the front door to the AI system. It runs continuously and routes all user input.
+        Each model family implements a PromptFormatter that controls prompt structure and sampling. Format is auto-detected from the GGUF filename.
       </p>
-      <div class="code-block"><code>pub struct IntentClassifier {
-    router: Model,  // Qwen2.5-3B, always loaded
-    reasoning: Option&lt;Model&gt;,  // Qwen2.5-7B, loaded on demand
+      <div class="code-block"><code>pub trait PromptFormatter: Send + Sync {
+    fn format_prompt(&amp;self, messages: &amp;[Message]) -&gt; String;
+    fn stop_tokens(&amp;self) -&gt; Vec&lt;&amp;str&gt;;
+    fn default_sampling_config(&amp;self) -&gt; SamplingConfig;
 }
 
-impl IntentClassifier {
-    pub fn classify(&amp;self, input: &amp;str) -&gt; Intent {
-        let logits = self.router.forward(input);
-        let confidence = softmax(logits).max();
-
-        if confidence &gt;= 0.7 {
-            Intent::from_logits(logits)  // Fast path
-        } else {
-            self.escalate_to_reasoning(input)  // Load 7B model
-        }
-    }
+// Four implementations:
+// ChatMLFormatter     — Qwen 2.5, generic models
+// Qwen3Formatter      — Qwen 3.5 (injects /no_think, aggressive sampling)
+// MistralFormatter    — Mistral/Ministral models
+// Llama3Formatter     — Meta Llama 3 models</code></div>
+    </div>
+    <div class="deep-section">
+      <h3>SamplingConfig (sovereign-ai/src/llm/backend.rs)</h3>
+      <p>
+        Per-model sampling parameters allow each model family to use optimized settings:
+      </p>
+      <div class="code-block"><code>pub struct SamplingConfig {
+    pub temperature: f32,   // Qwen 3.5: 1.0, default: 0.7
+    pub top_p: f32,         // Qwen 3.5: 0.95, default: 0.9
+    pub top_k: i32,         // Qwen 3.5: 20, default: 0 (disabled)
+    pub presence_penalty: f32, // Qwen 3.5: 1.5, default: 0.0
+    pub seed: Option&lt;u32&gt;,  // Qwen 3.5: Some(42) for reproducibility
 }</code></div>
     </div>
   </div>
@@ -2444,10 +2522,15 @@ state = Complete
     <p>
       Imagine your workspace as a living map. Documents on an infinite canvas. Time runs left→right. Projects run top→bottom.
       Owned content is rectangles; external is parallelograms. Every document remembers its complete edit history—automatically,
-      invisibly. No save button. No lost work.
+      invisibly. No save button. No lost work. Built with Svelte 5 + Tauri 2.0.
     </p>
   </div>
 </section>
+
+<div class="screenshot-frame">
+  <img src="screenshots/canvas-overview.png" alt="Sovereign spatial canvas showing document cards on a timeline with thread lanes" onerror="this.parentElement.innerHTML='<div class=screenshot-placeholder>Screenshot: Spatial canvas with document cards, thread lanes, and timeline</div>'">
+  <div class="screenshot-caption">The spatial canvas: documents as cards on a timeline, organized in thread lanes. Minimap in the corner.</div>
+</div>
 
 <!-- ========== TIER 2: HOW IT WORKS ========== -->
 <section class="tier-section tier-2">
@@ -2478,17 +2561,19 @@ state = Complete
     </details>
 
     <details open>
-      <summary>Three Zoom Levels</summary>
+      <summary>Four LOD Tiers</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>Dots → Blocks → Full Cards</h3>
+          <h3>Heatmap → Dots → Titles → Full Cards</h3>
           <ul class="concept-list">
-            <li><strong>Dots (zoom &lt; 0.3):</strong> Each document is a single colored dot. Color = intent thread. Useful for seeing structure at 10,000 feet.</li>
-            <li><strong>Simplified (0.3–0.6):</strong> Small blocks with document title (truncated). Relationships shown as thin lines.</li>
-            <li><strong>Full (≥ 0.6):</strong> Complete card: title, preview snippet, last-edited timestamp, relationships as curves, ownership badge.</li>
+            <li><strong>Density Heatmap (zoom &lt; 0.15):</strong> Documents aggregate into a color-coded density heatmap. Shows workspace "hot spots" at extreme zoom-out.</li>
+            <li><strong>Dots (0.15–0.3):</strong> Each document is a single colored dot. Color = intent thread. Useful for seeing structure at 10,000 feet.</li>
+            <li><strong>Titles (0.3–0.6):</strong> Small blocks with document title (truncated). Relationships shown as thin lines.</li>
+            <li><strong>Full Cards (≥ 0.6):</strong> Complete card: title, preview snippet, last-edited timestamp, relationships as curves, ownership badge (owned = rectangle, external = parallelogram).</li>
           </ul>
           <p style="margin-top: 12px;">
-            Zoom transitions are smooth. No jank. Renderer culls off-screen cards automatically.
+            Built with HTML5 Canvas for the background (grid, lanes, date ticks, heatmap) and DOM-overlaid cards for interactivity.
+            Cascade stacking handles same-date cards. Sticky lane labels stay visible during horizontal scroll.
           </p>
         </div>
       </div>
@@ -2525,6 +2610,26 @@ state = Complete
           <p style="margin-top: 12px;">
             Curves flow across lanes, never overlapping (forced layout prevents spaghetti). Hover a card to highlight all its connections.
           </p>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Minimap & Navigation</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Always Know Where You Are</h3>
+          <p>The minimap is a persistent viewport indicator in the bottom-right corner of the canvas. It shows your current view as a bright rectangle over a miniature representation of all your threads and documents.</p>
+          <ul class="concept-list">
+            <li><strong>Viewport indicator:</strong> A highlighted rectangle shows exactly which part of the canvas you're viewing. Drag it to pan instantly.</li>
+            <li><strong>"Now" line:</strong> A vertical marker on both the minimap and main canvas shows the current moment in time — your temporal anchor.</li>
+            <li><strong>Thread density:</strong> The minimap renders thread lanes as colored bars, giving you a bird's-eye view of how your workspace is organized.</li>
+            <li><strong>Zoom-independent:</strong> The minimap always shows the full extent of your canvas, regardless of your current zoom level.</li>
+          </ul>
+          <div class="screenshot-frame">
+            <img src="screenshots/minimap.png" alt="Minimap showing viewport indicator and Now line" onerror="this.parentElement.innerHTML='<div class=screenshot-placeholder>Screenshot: Minimap with viewport rectangle, Now line, and thread density bars</div>'">
+            <div class="screenshot-caption">The minimap provides spatial orientation across the entire timeline canvas.</div>
+          </div>
         </div>
       </div>
     </details>
@@ -3136,15 +3241,17 @@ impl CanvasRenderer {
       <summary>Skills: Composable Tools</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>Sandboxed, Stateless Tools Operating on Your Data</h3>
+          <h3>WASM-Sandboxed, Stateless Tools Operating on Your Data</h3>
           <p>
             Skills are lightweight tools that read from or write to the graph database without storing state themselves. You own the data; skills are interchangeable views/editors.
           </p>
           <ul class="concept-list">
-            <li><strong>Built-In Skills:</strong> Markdown editor, PDF export, word counter, find/replace, duplicate, import.</li>
-            <li><strong>Manifest:</strong> Each skill declares its name, version, capabilities, and supported file types.</li>
-            <li><strong>Sandboxing:</strong> Landlock filesystem isolation + seccomp-bpf syscall filtering ensure a skill cannot escape its scope.</li>
-            <li><strong>No Lock-In:</strong> Export your data, open it in any skill. Skills are read from the same store, so switching is instant—no migration.</li>
+            <li><strong>Built-In Skills (10):</strong> Markdown editor, PDF export, word counter, find/replace, duplicate, import, search, image viewer, and more — compiled Rust, no WASM overhead.</li>
+            <li><strong>Third-Party WASM Plugins:</strong> Community skills run in a WebAssembly sandbox using the WASM Component Model (wasmtime). Write skills in Rust, compile to WASM, distribute as portable <code>.wasm</code> bundles.</li>
+            <li><strong>Capability-Based Permissions:</strong> Each skill declares required capabilities (<code>read_document</code>, <code>write_document</code>, <code>read_all_documents</code>, etc.). Users see what a skill requests before granting access.</li>
+            <li><strong>WIT Interface Contracts:</strong> Skills implement a typed WIT interface — <code>name()</code>, <code>actions()</code>, <code>execute()</code>. Host provides database functions (<code>search-documents</code>, <code>get-document</code>, <code>create-document</code>).</li>
+            <li><strong>Resource Limits:</strong> 16 MB memory, ~1 billion CPU instructions, 10 instances max. Skills that exceed limits are terminated safely.</li>
+            <li><strong>No Lock-In:</strong> Export your data, open it in any skill. Skills read from the same store — switching is instant, no migration.</li>
           </ul>
         </div>
       </div>
@@ -4697,6 +4804,214 @@ cat Cargo.lock
     </main>
 </template>
 
+<!-- ==================== BROWSER & RELIABILITY ==================== -->
+<template id="page-browser-reliability">
+  <main class="subpage-main">
+    <h1>Embedded Browser &amp; Reliability Assessment</h1>
+    <p class="subpage-intro">
+      Sovereign includes an embedded browser that lets you fetch and read web content without leaving your workspace.
+      Every page you browse is automatically assessed for reliability by your local AI — no cloud services, no tracking.
+    </p>
+
+    <section>
+      <h2>How It Works</h2>
+      <div class="concept-block">
+        <h3>Content Extraction Pipeline</h3>
+        <p>When you navigate to a URL, Sovereign extracts the meaningful content through a two-stage pipeline:</p>
+        <ul class="concept-list">
+          <li><strong>JavaScript injector:</strong> A script injected into the Tauri webview extracts the main article content, stripping navigation, ads, and boilerplate. This runs entirely in the browser sandbox.</li>
+          <li><strong>Readability fallback:</strong> If JS extraction fails (e.g., heavy SPAs or paywalled sites), a Rust-side readability algorithm parses the raw HTML to extract the article body.</li>
+          <li><strong>Structured output:</strong> The result is a clean <code>ExtractedContent</code> struct with title, author, text body, and source URL — ready for AI analysis or document import.</li>
+        </ul>
+        <div class="screenshot-frame">
+          <img src="screenshots/browser-panel.png" alt="Embedded browser showing a web article with extracted content" onerror="this.parentElement.innerHTML='<div class=screenshot-placeholder>Screenshot: Browser panel with URL bar, rendered page, and extracted content sidebar</div>'">
+          <div class="screenshot-caption">The embedded browser renders pages in a Tauri webview while extracting clean content for AI analysis.</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Two-Step Reliability Assessment</h2>
+      <div class="concept-block">
+        <h3>Step 1: Content Classification</h3>
+        <p>The local 3B router model classifies the extracted content into one of several categories:</p>
+        <ul class="concept-list">
+          <li><strong>Factual reporting:</strong> News articles, research papers, data-driven content</li>
+          <li><strong>Opinion / editorial:</strong> Op-eds, blog posts, reviews with subjective judgments</li>
+          <li><strong>Fiction / creative:</strong> Stories, satire, creative writing</li>
+          <li><strong>Marketing / promotional:</strong> Product pages, press releases, sponsored content</li>
+          <li><strong>Mixed / unclear:</strong> Content that blends multiple categories</li>
+        </ul>
+      </div>
+      <div class="concept-block">
+        <h3>Step 2: Rubric Scoring (0–5)</h3>
+        <p>For factual content, the model evaluates reliability on a structured rubric:</p>
+        <ul class="concept-list">
+          <li><strong>0 — Unreliable:</strong> No sources, contradicts established facts, clear misinformation markers</li>
+          <li><strong>1 — Poor:</strong> Vague claims, anonymous sources, sensationalist framing</li>
+          <li><strong>2 — Weak:</strong> Some sourcing but incomplete, potential bias indicators</li>
+          <li><strong>3 — Moderate:</strong> Identifiable sources, balanced framing, some verifiable claims</li>
+          <li><strong>4 — Good:</strong> Well-sourced, multiple perspectives, clear methodology</li>
+          <li><strong>5 — Excellent:</strong> Primary sources, peer-reviewed data, transparent methodology</li>
+        </ul>
+        <p style="margin-top: 12px;">
+          The score is displayed as a colored badge in the browser panel — red (0–1), amber (2–3), green (4–5) — so you can gauge reliability at a glance.
+        </p>
+        <div class="screenshot-frame">
+          <img src="screenshots/reliability-badge.png" alt="Reliability score badge showing rubric assessment" onerror="this.parentElement.innerHTML='<div class=screenshot-placeholder>Screenshot: Reliability badge with score, classification label, and reasoning summary</div>'">
+          <div class="screenshot-caption">Each browsed page receives a reliability score with classification and reasoning — all computed locally.</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Privacy &amp; Sovereignty</h2>
+      <div class="concept-block">
+        <ul class="concept-list">
+          <li><strong>No cloud analysis:</strong> Content classification and scoring run entirely on your local LLM. No browsing data leaves your machine.</li>
+          <li><strong>No history tracking:</strong> Sovereign does not maintain a browsing history. Extracted content exists only in the current session unless you explicitly save it as a document.</li>
+          <li><strong>Import to workspace:</strong> You can save any extracted content as a Sovereign document, preserving the reliability assessment as metadata. The provenance (source URL, extraction date, reliability score) travels with the document.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>Architecture</h2>
+      <div class="concept-block">
+        <pre class="code-block"><code>User enters URL
+    │
+    ▼
+┌──────────────────┐
+│  Tauri Webview    │  ← Sandboxed browser (WebView2 on Windows)
+│  renders page     │
+└────────┬─────────┘
+         │ JS injector extracts content
+         ▼
+┌──────────────────┐
+│ ExtractedContent  │  ← title, author, body, source_url
+└────────┬─────────┘
+         │
+    ┌────┴────┐
+    ▼         ▼
+ Classify   Score
+ (3B LLM)  (3B LLM)
+    │         │
+    └────┬────┘
+         ▼
+┌──────────────────┐
+│ ReliabilityResult │  ← classification, score (0-5), reasoning
+└──────────────────┘</code></pre>
+      </div>
+    </section>
+  </main>
+</template>
+
+<!-- ==================== MEMORY CONSOLIDATION ==================== -->
+<template id="page-memory-consolidation">
+  <main class="subpage-main">
+    <h1>Memory Consolidation</h1>
+    <p class="subpage-intro">
+      Inspired by how the brain consolidates memories during sleep, Sovereign discovers semantic connections
+      between your documents in the background — surfacing links you might have missed.
+    </p>
+
+    <section>
+      <h2>Sleep Consolidation</h2>
+      <div class="concept-block">
+        <h3>Background Discovery</h3>
+        <p>When your system is idle, Sovereign's consolidation engine quietly analyzes your documents for semantic relationships:</p>
+        <ul class="concept-list">
+          <li><strong>Idle watcher:</strong> A 60-second cooldown triggers after your last interaction. The system polls every 30 seconds to confirm sustained inactivity before starting consolidation.</li>
+          <li><strong>Cross-document analysis:</strong> The 3B router model compares document pairs, looking for thematic connections, shared concepts, contradictions, or narrative continuity.</li>
+          <li><strong>Suggested links:</strong> Discovered relationships are stored as <code>suggested_link</code> edges in the graph database — they don't modify your documents until you approve them.</li>
+          <li><strong>Resource-conscious:</strong> Consolidation runs at low priority and pauses immediately when you resume activity. It never competes with your active work.</li>
+        </ul>
+        <div class="screenshot-frame">
+          <img src="screenshots/suggestion-panel.png" alt="Suggestion panel showing discovered semantic links" onerror="this.parentElement.innerHTML='<div class=screenshot-placeholder>Screenshot: Suggestion panel with discovered links between documents, accept/dismiss buttons</div>'">
+          <div class="screenshot-caption">Discovered links appear in the suggestion panel — accept to add them to your knowledge graph, or dismiss.</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Link Types</h2>
+      <div class="concept-block">
+        <p>The consolidation engine can discover the same relationship types used in manual linking:</p>
+        <ul class="concept-list">
+          <li><strong>References:</strong> "Document A mentions a concept that Document B explains in detail."</li>
+          <li><strong>DerivedFrom:</strong> "This document appears to be a revised version of that one."</li>
+          <li><strong>Continues:</strong> "This document picks up where that one left off."</li>
+          <li><strong>Contradicts:</strong> "These two documents make conflicting claims about the same topic."</li>
+          <li><strong>Supports:</strong> "This document provides evidence for claims made in that one."</li>
+        </ul>
+        <p style="margin-top: 12px;">
+          Each suggestion includes the AI's reasoning — why it thinks the link exists and which passages are relevant.
+          You always have the final say.
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Accept / Dismiss Lifecycle</h2>
+      <div class="concept-block">
+        <ul class="concept-list">
+          <li><strong>Suggested:</strong> The link appears in your suggestion panel with a confidence indicator and reasoning.</li>
+          <li><strong>Accepted:</strong> You approve the link — it becomes a real edge in your knowledge graph, visible on the canvas as a relationship curve.</li>
+          <li><strong>Dismissed:</strong> You reject the link — the system remembers and won't suggest the same pair again.</li>
+          <li><strong>Batch review:</strong> When multiple suggestions accumulate during idle time, you can review them all at once in a dedicated panel.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>Architecture</h2>
+      <div class="concept-block">
+        <pre class="code-block"><code>User goes idle (60s cooldown)
+    │
+    ▼
+┌─────────────────────┐
+│  Idle Watcher        │  ← polls every 30s, confirms inactivity
+└────────┬────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│  Document Pair       │  ← selects unprocessed pairs from DB
+│  Selector            │
+└────────┬────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│  3B Router Model     │  ← classifies relationship type + confidence
+│  (semantic analysis) │
+└────────┬────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│  suggested_link      │  ← stored in SurrealDB graph
+│  edge table          │
+└────────┬────────────┘
+         │
+    ┌────┴────┐
+    ▼         ▼
+ Accept    Dismiss
+ (→ real   (→ marked
+  edge)     dismissed)</code></pre>
+      </div>
+    </section>
+
+    <section>
+      <h2>Privacy Guarantee</h2>
+      <div class="concept-block">
+        <p>
+          Consolidation runs entirely on your local machine using your local LLM. No document content is ever sent
+          to external servers. The suggestions are stored in your local SurrealDB database and are included in
+          your encrypted backups.
+        </p>
+      </div>
+    </section>
+  </main>
+</template>
+
 <!-- END TEMPLATES -->
 
 <script>
@@ -4716,6 +5031,8 @@ const ROUTES = {
   '/privacy-policy': { template: 'page-privacy-policy', title: 'Privacy Policy — Sovereign GE', description: 'We don\'t collect your data.' },
   '/security-policy': { template: 'page-security-policy', title: 'Security Policy — Sovereign GE', description: 'Reporting vulnerabilities and security architecture.' },
   '/third-party-licenses': { template: 'page-third-party-licenses', title: 'Third-Party Licenses — Sovereign GE', description: 'Licensing information for all dependencies.' },
+  '/browser-reliability': { template: 'page-browser-reliability', title: 'Embedded Browser & Reliability — Sovereign GE', description: 'Browse the web from your workspace with local AI reliability assessment.' },
+  '/memory-consolidation': { template: 'page-memory-consolidation', title: 'Memory Consolidation — Sovereign GE', description: 'Background semantic link discovery inspired by sleep consolidation.' },
 };
 
 function navigate() {
