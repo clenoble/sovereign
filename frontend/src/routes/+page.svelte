@@ -1,12 +1,14 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { getStatus, closeBrowserCmd, setBrowserVisible } from '$lib/api/commands';
+	import { getStatus, closeBrowserCmd, setBrowserVisible, listPendingSuggestions } from '$lib/api/commands';
 	import { app } from '$lib/stores/app.svelte';
+	import { setSuggestions, type LinkSuggestion } from '$lib/stores/suggestions.svelte';
 	import { chat } from '$lib/stores/chat.svelte';
 	import { panels } from '$lib/stores/documents.svelte';
 	import { browser, openBrowser, closeBrowser } from '$lib/stores/browser.svelte';
 	import DocumentPanel from '$lib/components/DocumentPanel.svelte';
 	import BrowserPanel from '$lib/components/BrowserPanel.svelte';
+	import SuggestionPanel from '$lib/components/SuggestionPanel.svelte';
 	import Canvas from '$lib/components/Canvas.svelte';
 
 	let error = $state('');
@@ -15,6 +17,22 @@
 		try {
 			const status = await getStatus();
 			app.orchestratorAvailable = status.orchestrator_available;
+
+			// Load any pending AI-suggested links
+			const dtos = await listPendingSuggestions();
+			setSuggestions(
+				dtos.map((d): LinkSuggestion => ({
+					id: d.id,
+					fromDocId: d.from_doc_id,
+					fromTitle: d.from_title,
+					toDocId: d.to_doc_id,
+					toTitle: d.to_title,
+					relationType: d.relation_type,
+					strength: d.strength,
+					rationale: d.rationale,
+					source: d.source
+				}))
+			);
 		} catch (e) {
 			error = String(e);
 		}
@@ -64,6 +82,9 @@
 			<BrowserPanel />
 		{/if}
 	</div>
+
+	<!-- AI-suggested links panel (floats near bubble) -->
+	<SuggestionPanel />
 
 	{#if error}
 		<p class="error">{error}</p>

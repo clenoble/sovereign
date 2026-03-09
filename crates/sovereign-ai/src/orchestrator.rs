@@ -1312,6 +1312,75 @@ impl Orchestrator {
         Ok(result)
     }
 
+    /// Run one memory consolidation cycle: find related document pairs and
+    /// create AI-suggested links. Only runs when the system is idle.
+    ///
+    /// Uses adaptive gating from the user profile — if the user consistently
+    /// dismisses consolidation suggestions, they are shown less often.
+    pub async fn consolidate_memory(&self) -> Result<()> {
+        // Check adaptive gating
+        {
+            let profile = self.profile.lock().unwrap();
+            if let Some(fb) = profile.suggestion_feedback.get("consolidation") {
+                if fb.shown >= 5 {
+                    let rate = fb.acceptance_rate();
+                    let params = AdaptiveParams::from_acceptance_rate(rate);
+                    if rate < params.suggestion_threshold {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        let classifier = self.classifier.lock().await;
+        let suggestions = crate::consolidation::run_cycle(
+            self.db.as_ref(),
+            &classifier.router,
+            &*classifier.formatter,
+            sovereign_db::schema::SuggestionSource::Consolidation,
+        )
+        .await?;
+        drop(classifier);
+
+        // Emit events for each new suggestion
+        for sugg in &suggestions {
+            let sugg_id = sugg.id_string().unwrap_or_default();
+            let from_id = sugg.out.as_ref().map(|t| sovereign_db::schema::thing_to_raw(t)).unwrap_or_default();
+            let to_id = sugg.in_.as_ref().map(|t| sovereign_db::schema::thing_to_raw(t)).unwrap_or_default();
+
+            // Look up titles
+            let from_title = self.db.get_document(&from_id).await.map(|d| d.title).unwrap_or_default();
+            let to_title = self.db.get_document(&to_id).await.map(|d| d.title).unwrap_or_default();
+
+            let _ = self.event_tx.send(OrchestratorEvent::LinkSuggested {
+                suggestion_id: sugg_id,
+                from_doc_id: from_id,
+                from_title,
+                to_doc_id: to_id,
+                to_title,
+                relation_type: sugg.relation_type.to_string(),
+                strength: sugg.strength,
+                rationale: sugg.rationale.clone(),
+            });
+        }
+
+        // Update suggestion feedback counter
+        if !suggestions.is_empty() {
+            let mut profile = self.profile.lock().unwrap();
+            let fb = profile.suggestion_feedback.entry("consolidation".to_string()).or_default();
+            fb.shown += suggestions.len() as u32;
+            let _ = profile.save(&self.profile_dir);
+        }
+
+        Ok(())
+    }
+
+    /// Returns true if the LLM is not currently generating.
+    /// Used by the idle-watcher to avoid competing with user tasks.
+    pub fn is_model_idle(&self) -> bool {
+        self.classifier.try_lock().is_ok()
+    }
+
     /// Generate a proactive suggestion based on current context.
     /// Called after N seconds of idle time. Never auto-executes.
     /// Uses adaptive thresholds from the user profile to decide whether to show.

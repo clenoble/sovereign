@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { app } from '$lib/stores/app.svelte';
 	import { toggleChat } from '$lib/stores/chat.svelte';
+	import { suggestions, toggleSuggestions } from '$lib/stores/suggestions.svelte';
 	import BubblePreview from './BubblePreview.svelte';
 
 	// Map bubble state to border color
@@ -41,6 +42,13 @@
 			</circle>
 		</svg>
 	{/if}
+	{#if suggestions.pending.length > 0}
+		<!-- svelte-ignore a11y_click_events_have_key_events -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<span class="suggestion-badge" onclick={(e) => { e.stopPropagation(); toggleSuggestions(); }}>
+			{suggestions.pending.length}
+		</span>
+	{/if}
 </button>
 
 <style>
@@ -70,5 +78,24 @@
 		top: 0;
 		left: 0;
 		pointer-events: none;
+	}
+
+	.suggestion-badge {
+		position: absolute;
+		top: -2px;
+		right: -2px;
+		min-width: 20px;
+		height: 20px;
+		border-radius: 10px;
+		background: var(--accent, #6366f1);
+		color: #fff;
+		font-size: 0.7rem;
+		font-weight: 700;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0 5px;
+		cursor: pointer;
+		pointer-events: auto;
 	}
 </style>

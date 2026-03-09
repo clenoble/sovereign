@@ -4,7 +4,8 @@ use chrono::{DateTime, Utc};
 use crate::error::DbResult;
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, Message, Milestone,
-    ReadStatus, RelatedTo, RelationType, Thread,
+    ReadStatus, RelatedTo, RelationType, SuggestedLink, SuggestionSource,
+    SuggestionStatus, Thread,
 };
 
 /// Core database abstraction for the Sovereign GE document graph.
@@ -86,6 +87,36 @@ pub trait GraphDB: Send + Sync {
 
     /// Traverse the graph from a document, returning connected documents up to `depth` hops.
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>>;
+
+    // -- Suggested Links (AI-created, separate from user relationships) ---
+
+    /// Create an AI-suggested link between two documents.
+    async fn create_suggested_link(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        relation_type: RelationType,
+        strength: f32,
+        rationale: &str,
+        source: SuggestionSource,
+    ) -> DbResult<SuggestedLink>;
+
+    /// List all pending (unresolved) suggested links.
+    async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>>;
+
+    /// List all suggested links for a specific document (any status).
+    async fn list_suggestions_for_document(&self, doc_id: &str) -> DbResult<Vec<SuggestedLink>>;
+
+    /// Resolve a suggestion: Accepted promotes to a real `related_to` edge,
+    /// Dismissed marks it as rejected. Both set `resolved_at`.
+    async fn resolve_suggestion(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+    ) -> DbResult<SuggestedLink>;
+
+    /// Check if a suggestion already exists for this document pair (any status, bidirectional).
+    async fn suggestion_exists(&self, from_id: &str, to_id: &str) -> DbResult<bool>;
 
     // -- Adopt ---
 

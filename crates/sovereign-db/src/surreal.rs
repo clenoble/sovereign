@@ -7,7 +7,8 @@ use surrealdb::Surreal;
 use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, DocumentSnapshot,
-    Message, Milestone, ReadStatus, RelatedTo, RelationType, Thread,
+    Message, Milestone, ReadStatus, RelatedTo, RelationType, SuggestedLink,
+    SuggestionSource, SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -65,6 +66,7 @@ impl GraphDB for SurrealGraphDB {
             DEFINE INDEX IF NOT EXISTS idx_message_external ON message FIELDS external_id;\
             DEFINE INDEX IF NOT EXISTS idx_conversation_channel ON conversation FIELDS channel;\
             DEFINE INDEX IF NOT EXISTS idx_conversation_last_msg ON conversation FIELDS last_message_at;\
+            DEFINE INDEX IF NOT EXISTS idx_suggestion_status ON suggested_link FIELDS status;\
         ";
         self.db
             .query(schema)
@@ -544,6 +546,146 @@ impl GraphDB for SurrealGraphDB {
             .await?;
         let docs: Vec<Document> = result.take(0)?;
         Ok(docs)
+    }
+
+    // -- Suggested Links ---
+
+    async fn create_suggested_link(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        relation_type: RelationType,
+        strength: f32,
+        rationale: &str,
+        source: SuggestionSource,
+    ) -> DbResult<SuggestedLink> {
+        let now = Utc::now();
+        let relation_type_str = relation_type.to_string();
+        let source_str = serde_json::to_string(&source).unwrap_or_else(|_| "\"consolidation\"".into());
+
+        let parse_thing = |s: &str| -> Thing {
+            if let Some((tb, id)) = s.split_once(':') {
+                Thing::from((tb.to_string(), id.to_string()))
+            } else {
+                Thing::from(("document".to_string(), s.to_string()))
+            }
+        };
+        let from = parse_thing(from_id);
+        let to = parse_thing(to_id);
+
+        let mut result = self
+            .db
+            .query(
+                "RELATE $from->suggested_link->$to SET \
+                 relation_type = $rtype, \
+                 strength = $strength, \
+                 rationale = $rationale, \
+                 source = $source, \
+                 status = 'pending', \
+                 created_at = $created_at, \
+                 resolved_at = NONE \
+                 RETURN AFTER",
+            )
+            .bind(("from", from))
+            .bind(("to", to))
+            .bind(("rtype", relation_type_str))
+            .bind(("strength", strength))
+            .bind(("rationale", rationale.to_string()))
+            .bind(("source", source_str))
+            .bind(("created_at", now))
+            .await?;
+
+        let links: Vec<SuggestedLink> = result.take(0)?;
+        links
+            .into_iter()
+            .next()
+            .ok_or_else(|| DbError::Query("Failed to create suggested link".into()))
+    }
+
+    async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM suggested_link WHERE status = 'pending' ORDER BY created_at DESC")
+            .await?;
+        let links: Vec<SuggestedLink> = result.take(0)?;
+        Ok(links)
+    }
+
+    async fn list_suggestions_for_document(&self, doc_id: &str) -> DbResult<Vec<SuggestedLink>> {
+        let id = doc_id.to_string();
+        let mut result = self
+            .db
+            .query("SELECT * FROM suggested_link WHERE in = $id OR out = $id ORDER BY created_at DESC")
+            .bind(("id", id))
+            .await?;
+        let links: Vec<SuggestedLink> = result.take(0)?;
+        Ok(links)
+    }
+
+    async fn resolve_suggestion(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+    ) -> DbResult<SuggestedLink> {
+        let now = Utc::now();
+        let status_str = serde_json::to_string(&status).unwrap_or_else(|_| "\"dismissed\"".into());
+
+        // Fetch the suggestion first
+        let link: Option<SuggestedLink> = self.db.select(("suggested_link", id)).await?;
+        let link = link.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+
+        // Update status and resolved_at
+        let mut result = self
+            .db
+            .query(
+                "UPDATE $id SET status = $status, resolved_at = $resolved_at RETURN AFTER",
+            )
+            .bind(("id", Thing::from(("suggested_link".to_string(), id.to_string()))))
+            .bind(("status", status_str))
+            .bind(("resolved_at", now))
+            .await?;
+
+        let updated: Vec<SuggestedLink> = result.take(0)?;
+        let updated = updated
+            .into_iter()
+            .next()
+            .ok_or_else(|| DbError::Query("Failed to update suggestion".into()))?;
+
+        // If accepted, promote to a real relationship
+        if status == SuggestionStatus::Accepted {
+            if let (Some(in_thing), Some(out_thing)) = (&link.in_, &link.out) {
+                let from_str = crate::schema::thing_to_raw(out_thing);
+                let to_str = crate::schema::thing_to_raw(in_thing);
+                self.create_relationship(&from_str, &to_str, link.relation_type, link.strength)
+                    .await?;
+            }
+        }
+
+        Ok(updated)
+    }
+
+    async fn suggestion_exists(&self, from_id: &str, to_id: &str) -> DbResult<bool> {
+        let from = from_id.to_string();
+        let to = to_id.to_string();
+        let mut result = self
+            .db
+            .query(
+                "SELECT count() AS c FROM suggested_link \
+                 WHERE (in = $from AND out = $to) OR (in = $to AND out = $from) \
+                 GROUP ALL",
+            )
+            .bind(("from", from))
+            .bind(("to", to))
+            .await?;
+
+        // SurrealDB returns [{c: N}] for GROUP ALL
+        let counts: Vec<serde_json::Value> = result.take(0)?;
+        let count = counts
+            .first()
+            .and_then(|v| v.get("c"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        Ok(count > 0)
     }
 
     // -- Version control ---

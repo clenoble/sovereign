@@ -116,6 +116,54 @@ impl std::str::FromStr for RelationType {
     }
 }
 
+// --- AI-suggested links ---
+
+/// Source of a suggested link.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SuggestionSource {
+    /// Background memory consolidation
+    Consolidation,
+    /// Suggested during a chat interaction
+    Chat,
+}
+
+/// Lifecycle status of a suggested link.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SuggestionStatus {
+    Pending,
+    Accepted,
+    Dismissed,
+}
+
+/// AI-suggested relationship between two documents.
+///
+/// Stored in a separate `suggested_link` edge table, structurally distinct
+/// from user-created `related_to` edges. Carries provenance (source, rationale)
+/// and lifecycle status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestedLink {
+    pub id: Option<Thing>,
+    #[serde(rename = "in")]
+    pub in_: Option<Thing>,
+    pub out: Option<Thing>,
+    pub relation_type: RelationType,
+    pub strength: f32,
+    /// LLM's explanation of why these documents are related.
+    pub rationale: String,
+    pub source: SuggestionSource,
+    pub status: SuggestionStatus,
+    pub created_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+impl SuggestedLink {
+    pub fn id_string(&self) -> Option<String> {
+        self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+}
+
 /// A snapshot of a single document at commit time
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentSnapshot {

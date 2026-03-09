@@ -235,6 +235,9 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     // Clone DB for purge background task
     let purge_db = db.clone();
 
+    // Clone orchestrator for consolidation idle-watcher
+    let consolidation_orch = orchestrator.clone();
+
     // Build Tauri app
     tauri::Builder::default()
         .manage(tauri_state::AppState {
@@ -261,6 +264,11 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::reject_action,
             tauri_commands::accept_suggestion,
             tauri_commands::dismiss_suggestion,
+            // Memory consolidation — AI-suggested links
+            tauri_commands::list_pending_suggestions,
+            tauri_commands::accept_link_suggestion,
+            tauri_commands::dismiss_link_suggestion,
+            tauri_commands::trigger_consolidation,
             tauri_commands::list_documents,
             tauri_commands::list_threads,
             tauri_commands::toggle_theme,
@@ -359,6 +367,44 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                     }
                 }
             });
+
+            // Memory consolidation idle-watcher — runs only when:
+            // 1. Orchestrator exists and model is idle (mutex free)
+            // 2. User hasn't interacted for 60s (cooldown)
+            // 3. At least 5 minutes between consolidation runs
+            if let Some(orch) = consolidation_orch {
+                tauri::async_runtime::spawn(async move {
+                    use std::time::{Duration, Instant};
+                    let check_interval = Duration::from_secs(30);
+                    let post_run_cooldown = Duration::from_secs(300);
+                    let mut last_run = Instant::now() - post_run_cooldown; // allow first run after idle_cooldown
+
+                    loop {
+                        tokio::time::sleep(check_interval).await;
+
+                        // Skip if model is busy
+                        if !orch.is_model_idle() {
+                            continue;
+                        }
+
+                        // Skip if not enough time since last run
+                        if last_run.elapsed() < post_run_cooldown {
+                            continue;
+                        }
+
+                        // Run consolidation
+                        match orch.consolidate_memory().await {
+                            Ok(()) => {
+                                tracing::debug!("Memory consolidation cycle completed");
+                            }
+                            Err(e) => {
+                                tracing::warn!("Memory consolidation failed: {e}");
+                            }
+                        }
+                        last_run = Instant::now();
+                    }
+                });
+            }
 
             Ok(())
         })

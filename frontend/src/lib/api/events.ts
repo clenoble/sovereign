@@ -7,6 +7,7 @@ import { openById } from '$lib/stores/documents.svelte';
 import { refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
 import { refreshContacts } from '$lib/stores/contacts.svelte';
 import { setBrowserNavigated, setBrowserContentExtracted, setBrowserReliability } from '$lib/stores/browser.svelte';
+import { addSuggestion, removeSuggestion, type LinkSuggestion } from '$lib/stores/suggestions.svelte';
 import type { ReliabilityResultDto } from '$lib/api/commands';
 
 // Payload types matching the Rust-side structs
@@ -95,6 +96,20 @@ interface ReliabilityAssessedPayload {
 	doc_id: string;
 	classification: string;
 	score: number;
+}
+interface LinkSuggestedPayload {
+	suggestion_id: string;
+	from_doc_id: string;
+	from_title: string;
+	to_doc_id: string;
+	to_title: string;
+	relation_type: string;
+	strength: number;
+	rationale: string;
+}
+interface LinkSuggestionResolvedPayload {
+	suggestion_id: string;
+	accepted: boolean;
 }
 
 /** Subscribe to all backend events. Returns an unlisten function. */
@@ -244,6 +259,30 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	unlisteners.push(
 		await listen<ReliabilityAssessedPayload>('reliability-assessed', (e) => {
 			canvasRefresh();
+		})
+	);
+
+	// Memory consolidation events
+	unlisteners.push(
+		await listen<LinkSuggestedPayload>('link-suggested', (e) => {
+			const p = e.payload;
+			addSuggestion({
+				id: p.suggestion_id,
+				fromDocId: p.from_doc_id,
+				fromTitle: p.from_title,
+				toDocId: p.to_doc_id,
+				toTitle: p.to_title,
+				relationType: p.relation_type,
+				strength: p.strength,
+				rationale: p.rationale,
+				source: 'Consolidation'
+			});
+		})
+	);
+
+	unlisteners.push(
+		await listen<LinkSuggestionResolvedPayload>('link-suggestion-resolved', (e) => {
+			removeSuggestion(e.payload.suggestion_id);
 		})
 	);
 

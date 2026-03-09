@@ -83,6 +83,18 @@ pub enum OrchestratorEvent {
     BrowserNavigated { url: String, title: String },
     BrowserContentExtracted { url: String, title: String, text: String },
     ReliabilityAssessed { doc_id: String, classification: String, score: f32 },
+    // Memory consolidation events
+    LinkSuggested {
+        suggestion_id: String,
+        from_doc_id: String,
+        from_title: String,
+        to_doc_id: String,
+        to_title: String,
+        relation_type: String,
+        strength: f32,
+        rationale: String,
+    },
+    LinkSuggestionResolved { suggestion_id: String, accepted: bool },
 }
 
 /// Lightweight milestone summary for milestone events.
