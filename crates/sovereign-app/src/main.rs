@@ -292,6 +292,7 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             // Canvas
             tauri_commands::canvas::canvas_load,
             tauri_commands::canvas::update_document_position,
+            tauri_commands::canvas::canvas_load_messages,
             // Threads
             tauri_commands::threads::create_thread,
             tauri_commands::threads::update_thread,

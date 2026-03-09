@@ -2,6 +2,7 @@
 
 import {
 	canvasLoad,
+	canvasLoadMessages,
 	updateDocumentPosition,
 	moveDocumentToThread,
 	type CanvasDocDto,
@@ -87,10 +88,10 @@ export async function load() {
 		canvas.threads = data.threads;
 		canvas.relationships = data.relationships;
 		canvas.milestones = data.milestones;
-		canvas.messages = layoutMessages(data.messages ?? [], data.threads);
+		canvas.messages = []; // loaded separately via viewport-scoped requestMessagesForViewport()
 		canvas.loaded = true;
 		canvas.loadError = null;
-		home();
+		home(); // triggers $effect → requestMessagesForViewport()
 		startNowTimer();
 	} catch (e) {
 		console.error('Failed to load canvas:', e);
@@ -109,7 +110,8 @@ export async function refresh() {
 		canvas.threads = data.threads;
 		canvas.relationships = data.relationships;
 		canvas.milestones = data.milestones;
-		canvas.messages = layoutMessages(data.messages ?? [], data.threads);
+		// Messages will be refreshed by the viewport $effect
+		requestMessagesForViewport();
 	} catch (e) {
 		console.error('Failed to refresh canvas:', e);
 	}
@@ -220,6 +222,40 @@ export function navigateToDoc(id: string) {
 	canvas.camera.panX = vw / 2 - doc.spatial_x * canvas.camera.zoom;
 	canvas.camera.panY = vh / 2 - doc.spatial_y * canvas.camera.zoom;
 	canvas.selectedCardId = id;
+}
+
+// ---------------------------------------------------------------------------
+// Viewport culling
+// ---------------------------------------------------------------------------
+
+/** World-space padding to avoid card pop-in at viewport edges. */
+const VIEWPORT_PAD = 300;
+
+/** Compute viewport bounds in world-space coordinates. */
+export function computeViewport() {
+	const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+	const vh = typeof window !== 'undefined' ? window.innerHeight - 44 : 800;
+	const { panX, panY, zoom } = canvas.camera;
+	return {
+		left: -panX / zoom - VIEWPORT_PAD,
+		right: (-panX + vw) / zoom + VIEWPORT_PAD,
+		top: -panY / zoom - VIEWPORT_PAD,
+		bottom: (-panY + vh) / zoom + VIEWPORT_PAD
+	};
+}
+
+/** Return only the documents whose bounding box intersects the current viewport.
+ *  At zoom < 0.15 (heatmap mode), returns empty — no DOM cards are rendered. */
+export function getVisibleDocuments(): CanvasDocDto[] {
+	if (canvas.camera.zoom < 0.15) return [];
+	const vp = computeViewport();
+	return canvas.documents.filter(
+		(d) =>
+			d.spatial_x + CARD_W >= vp.left &&
+			d.spatial_x <= vp.right &&
+			d.spatial_y + CARD_H >= vp.top &&
+			d.spatial_y <= vp.bottom
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -348,4 +384,31 @@ export function stopNowTimer() {
 		clearInterval(nowTimer);
 		nowTimer = null;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Viewport-scoped message loading
+// ---------------------------------------------------------------------------
+
+let messageDebounce: ReturnType<typeof setTimeout> | null = null;
+
+/** Request messages for the current viewport time range (debounced 200ms). */
+export function requestMessagesForViewport() {
+	if (messageDebounce) clearTimeout(messageDebounce);
+	messageDebounce = setTimeout(async () => {
+		const vp = computeViewport();
+		const scale = canvas.timelineScale;
+		if (!scale) return;
+		// Convert world X → time
+		const tMinMs = scale.minDate + (vp.left - scale.originX) / scale.pxPerMs;
+		const tMaxMs = scale.minDate + (vp.right - scale.originX) / scale.pxPerMs;
+		const tMin = new Date(tMinMs).toISOString();
+		const tMax = new Date(tMaxMs).toISOString();
+		try {
+			const msgs = await canvasLoadMessages(tMin, tMax);
+			canvas.messages = layoutMessages(msgs, canvas.threads);
+		} catch (e) {
+			console.error('Failed to load viewport messages:', e);
+		}
+	}, 200);
 }

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use surrealdb::engine::local::{Db, Mem, RocksDb};
 use surrealdb::sql::Thing;
 use surrealdb::Surreal;
@@ -87,6 +87,9 @@ impl GraphDB for SurrealGraphDB {
             DEFINE INDEX IF NOT EXISTS idx_conversation_channel ON conversation FIELDS channel;\
             DEFINE INDEX IF NOT EXISTS idx_conversation_last_msg ON conversation FIELDS last_message_at;\
             DEFINE INDEX IF NOT EXISTS idx_suggestion_status ON suggested_link FIELDS status;\
+            DEFINE INDEX IF NOT EXISTS idx_doc_is_owned ON document FIELDS is_owned;\
+            DEFINE INDEX IF NOT EXISTS idx_doc_deleted_at ON document FIELDS deleted_at;\
+            DEFINE INDEX IF NOT EXISTS idx_thread_deleted_at ON thread FIELDS deleted_at;\
         ";
         self.db
             .query(schema)
@@ -428,6 +431,15 @@ impl GraphDB for SurrealGraphDB {
             .db
             .query("SELECT * FROM milestone WHERE thread_id = $tid ORDER BY timestamp DESC")
             .bind(("tid", tid))
+            .await?;
+        let milestones: Vec<Milestone> = result.take(0)?;
+        Ok(milestones)
+    }
+
+    async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM milestone ORDER BY timestamp DESC")
             .await?;
         let milestones: Vec<Milestone> = result.take(0)?;
         Ok(milestones)
@@ -875,6 +887,23 @@ impl GraphDB for SurrealGraphDB {
         let mut result = self
             .db
             .query("SELECT * FROM message WHERE deleted_at IS NONE ORDER BY sent_at DESC")
+            .await?;
+        let msgs: Vec<Message> = result.take(0)?;
+        Ok(msgs)
+    }
+
+    async fn list_messages_in_time_range(
+        &self,
+        after: DateTime<Utc>,
+        before: DateTime<Utc>,
+        limit: u32,
+    ) -> DbResult<Vec<Message>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM message WHERE deleted_at IS NONE AND sent_at >= $after AND sent_at <= $before ORDER BY sent_at DESC LIMIT $limit")
+            .bind(("after", after))
+            .bind(("before", before))
+            .bind(("limit", limit))
             .await?;
         let msgs: Vec<Message> = result.take(0)?;
         Ok(msgs)

@@ -175,6 +175,9 @@ pub trait GraphDB: Send + Sync {
     /// List milestones for a thread, most recent first.
     async fn list_milestones(&self, thread_id: &str) -> DbResult<Vec<Milestone>>;
 
+    /// List all milestones across all threads, most recent first.
+    async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>>;
+
     /// Delete a milestone by ID.
     async fn delete_milestone(&self, id: &str) -> DbResult<()>;
 
@@ -244,6 +247,14 @@ pub trait GraphDB: Send + Sync {
 
     /// List all messages across all conversations, ordered by sent_at descending.
     async fn list_all_messages(&self) -> DbResult<Vec<Message>>;
+
+    /// List messages within a time range, ordered by sent_at descending.
+    async fn list_messages_in_time_range(
+        &self,
+        after: DateTime<Utc>,
+        before: DateTime<Utc>,
+        limit: u32,
+    ) -> DbResult<Vec<Message>>;
 
     /// Search messages by body or subject text.
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>>;

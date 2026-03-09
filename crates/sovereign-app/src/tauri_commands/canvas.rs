@@ -19,59 +19,10 @@ pub async fn canvas_load(state: State<'_, AppState>) -> Result<CanvasData, Strin
     let unread_by_contact = agg.unread_by_contact;
     let channels_by_contact = agg.channels_by_contact;
 
-    // Also load raw conversations for message timeline
-    let conversations = state.db.list_conversations(None).await.str_err()?;
+    // Batch-load all milestones (single query instead of N per-thread queries)
+    let all_milestones = state.db.list_all_milestones().await.str_err()?;
 
-    // Collect milestones across all threads
-    let mut all_milestones = Vec::new();
-    for t in &threads {
-        let tid = t.id.as_ref().map(sovereign_db::schema::thing_to_raw).unwrap_or_default();
-        if let Ok(ms) = state.db.list_milestones(&tid).await {
-            all_milestones.extend(ms);
-        }
-    }
-
-    // Build set of owned contact IDs so we can pick the distant contact
-    let owned_contact_ids: HashSet<String> = contacts
-        .iter()
-        .filter(|c| c.is_owned)
-        .filter_map(|c| c.id.as_ref().map(sovereign_db::schema::thing_to_raw))
-        .collect();
-
-    // Collect messages from conversations that are linked to threads
-    let mut all_messages = Vec::new();
-    for conv in &conversations {
-        let conv_id = conv.id.as_ref().map(sovereign_db::schema::thing_to_raw).unwrap_or_default();
-        let thread_id = match &conv.linked_thread_id {
-            Some(tid) => tid.clone(),
-            None => continue, // skip conversations not linked to a thread
-        };
-        // Pick the first non-owned (distant) participant as the contact
-        let contact_id = conv.participant_contact_ids
-            .iter()
-            .find(|pid| !owned_contact_ids.contains(*pid))
-            .or_else(|| conv.participant_contact_ids.first())
-            .cloned()
-            .unwrap_or_default();
-        if let Ok(msgs) = state.db.list_messages(&conv_id, None, 50).await {
-            for m in msgs {
-                let mid = m.id.as_ref().map(sovereign_db::schema::thing_to_raw).unwrap_or_default();
-                let subject = m.subject.unwrap_or_else(|| {
-                    let body = m.body.chars().take(30).collect::<String>();
-                    if m.body.len() > 30 { format!("{}...", body) } else { body }
-                });
-                all_messages.push(CanvasMessageDto {
-                    id: mid,
-                    conversation_id: conv_id.clone(),
-                    thread_id: thread_id.clone(),
-                    contact_id: contact_id.clone(),
-                    subject,
-                    is_outbound: matches!(m.direction, MessageDirection::Outbound),
-                    sent_at: m.sent_at.to_rfc3339(),
-                });
-            }
-        }
-    }
+    // Messages are loaded separately via canvas_load_messages (viewport-scoped)
 
     let result = Ok(CanvasData {
         documents: docs
@@ -152,7 +103,7 @@ pub async fn canvas_load(state: State<'_, AppState>) -> Result<CanvasData, Strin
                 }
             })
             .collect(),
-        messages: all_messages,
+        messages: vec![],
     });
     tracing::info!("canvas_load: returning {} docs, {} threads, {} rels, {} contacts, {} milestones, {} messages",
         result.as_ref().map(|r| r.documents.len()).unwrap_or(0),
@@ -178,5 +129,75 @@ pub async fn update_document_position(
         .update_document_position(&id, x, y)
         .await
         .str_err()
+}
+
+/// Load messages for a specific time range (viewport-scoped).
+#[tauri::command]
+pub async fn canvas_load_messages(
+    state: State<'_, AppState>,
+    t_min: String,
+    t_max: String,
+    limit: Option<u32>,
+) -> Result<Vec<CanvasMessageDto>, String> {
+    let after = chrono::DateTime::parse_from_rfc3339(&t_min)
+        .map_err(|e| format!("Invalid t_min: {e}"))?
+        .with_timezone(&Utc);
+    let before = chrono::DateTime::parse_from_rfc3339(&t_max)
+        .map_err(|e| format!("Invalid t_max: {e}"))?
+        .with_timezone(&Utc);
+
+    let msgs = state.db
+        .list_messages_in_time_range(after, before, limit.unwrap_or(200))
+        .await
+        .str_err()?;
+
+    // Build conversation lookup for thread_id and contact resolution
+    let conversations = state.db.list_conversations(None).await.str_err()?;
+    let contacts = state.db.list_contacts().await.str_err()?;
+
+    let owned_contact_ids: HashSet<String> = contacts
+        .iter()
+        .filter(|c| c.is_owned)
+        .filter_map(|c| c.id.as_ref().map(sovereign_db::schema::thing_to_raw))
+        .collect();
+
+    // Map conversation_id → (thread_id, contact_id)
+    let conv_map: std::collections::HashMap<String, (String, String)> = conversations
+        .iter()
+        .filter_map(|conv| {
+            let conv_id = conv.id.as_ref().map(sovereign_db::schema::thing_to_raw)?;
+            let thread_id = conv.linked_thread_id.as_ref()?;
+            let contact_id = conv.participant_contact_ids
+                .iter()
+                .find(|pid| !owned_contact_ids.contains(*pid))
+                .or_else(|| conv.participant_contact_ids.first())
+                .cloned()
+                .unwrap_or_default();
+            Some((conv_id, (thread_id.clone(), contact_id)))
+        })
+        .collect();
+
+    let result: Vec<CanvasMessageDto> = msgs
+        .into_iter()
+        .filter_map(|m| {
+            let (thread_id, contact_id) = conv_map.get(&m.conversation_id)?;
+            let mid = m.id.as_ref().map(sovereign_db::schema::thing_to_raw).unwrap_or_default();
+            let subject = m.subject.unwrap_or_else(|| {
+                let body = m.body.chars().take(30).collect::<String>();
+                if m.body.len() > 30 { format!("{}...", body) } else { body }
+            });
+            Some(CanvasMessageDto {
+                id: mid,
+                conversation_id: m.conversation_id,
+                thread_id: thread_id.clone(),
+                contact_id: contact_id.clone(),
+                subject,
+                is_outbound: matches!(m.direction, MessageDirection::Outbound),
+                sent_at: m.sent_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    Ok(result)
 }
 

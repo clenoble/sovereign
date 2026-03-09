@@ -434,6 +434,7 @@ impl GraphDB for MockGraphDB {
         Ok(_milestone)
     }
     async fn list_milestones(&self, _thread_id: &str) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
+    async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
     async fn delete_milestone(&self, _id: &str) -> DbResult<()> { Ok(()) }
 
     async fn create_contact(&self, mut contact: Contact) -> DbResult<Contact> {
@@ -539,6 +540,22 @@ impl GraphDB for MockGraphDB {
         let mut all: Vec<Message> = msgs.values().cloned().collect();
         all.sort_by(|a, b| b.sent_at.cmp(&a.sent_at));
         Ok(all)
+    }
+
+    async fn list_messages_in_time_range(
+        &self,
+        after: DateTime<Utc>,
+        before: DateTime<Utc>,
+        limit: u32,
+    ) -> DbResult<Vec<Message>> {
+        let msgs = self.messages.read().unwrap();
+        let mut result: Vec<Message> = msgs.values()
+            .filter(|m| m.deleted_at.is_none() && m.sent_at >= after && m.sent_at <= before)
+            .cloned()
+            .collect();
+        result.sort_by(|a, b| b.sent_at.cmp(&a.sent_at));
+        result.truncate(limit as usize);
+        Ok(result)
     }
 
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>> {

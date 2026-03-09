@@ -247,6 +247,8 @@ export interface CanvasData {
 export const canvasLoad = () => invoke<CanvasData>('canvas_load');
 export const updateDocumentPosition = (id: string, x: number, y: number) =>
 	invoke<void>('update_document_position', { id, x, y });
+export const canvasLoadMessages = (tMin: string, tMax: string, limit?: number) =>
+	invoke<CanvasMessageDto[]>('canvas_load_messages', { tMin, tMax, limit: limit ?? 200 });
 
 // Thread CRUD
 export const createThread = (name: string, description: string) =>
