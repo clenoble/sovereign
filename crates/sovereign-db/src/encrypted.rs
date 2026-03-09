@@ -170,6 +170,10 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.delete_document(id).await
     }
 
+    async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
+        self.inner.update_document_position(id, x, y).await
+    }
+
     async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>> {
         let docs = self.inner.search_documents_by_title(query).await?;
         self.decrypt_documents(docs).await
@@ -457,6 +461,25 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.delete_message(id).await
     }
 
+    async fn list_all_messages(&self) -> DbResult<Vec<Message>> {
+        let msgs = self.inner.list_all_messages().await?;
+        let mut result = Vec::with_capacity(msgs.len());
+        for mut m in msgs {
+            if let Some(nonce) = &m.encryption_nonce {
+                let id = m.id.as_ref()
+                    .map(|t| crate::schema::thing_to_raw(t))
+                    .unwrap_or_default();
+                m.body = self.decrypt_content(&id, &m.body, nonce).await?;
+                if let Some(ref html) = m.body_html {
+                    m.body_html = Some(self.decrypt_content(&id, html, nonce).await?);
+                }
+                m.encryption_nonce = None;
+            }
+            result.push(m);
+        }
+        Ok(result)
+    }
+
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>> {
         // Search operates on stored (potentially encrypted) content
         self.inner.search_messages(query).await
@@ -605,6 +628,7 @@ mod tests {
         async fn list_documents(&self, _thread_id: Option<&str>) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn update_document(&self, _id: &str, _title: Option<&str>, _content: Option<&str>) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn delete_document(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        async fn update_document_position(&self, _id: &str, _x: f32, _y: f32) -> DbResult<()> { Ok(()) }
         async fn search_documents_by_title(&self, _query: &str) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn create_thread(&self, thread: Thread) -> DbResult<Thread> { Ok(thread) }
         async fn get_thread(&self, _id: &str) -> DbResult<Thread> { Err(DbError::NotFound("mock".into())) }
@@ -647,6 +671,7 @@ mod tests {
         async fn list_messages(&self, _conversation_id: &str, _before: Option<chrono::DateTime<chrono::Utc>>, _limit: u32) -> DbResult<Vec<Message>> { Ok(vec![]) }
         async fn update_message_read_status(&self, _id: &str, _status: ReadStatus) -> DbResult<Message> { Err(DbError::NotFound("mock".into())) }
         async fn delete_message(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        async fn list_all_messages(&self) -> DbResult<Vec<Message>> { Ok(vec![]) }
         async fn search_messages(&self, _query: &str) -> DbResult<Vec<Message>> { Ok(vec![]) }
         // Conversations
         async fn create_conversation(&self, conversation: Conversation) -> DbResult<Conversation> { Ok(conversation) }
