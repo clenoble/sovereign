@@ -2,7 +2,7 @@
 
 Full codebase review across all 10 crates + Svelte frontend.
 
-**Status**: Issues #1-15 resolved. Performance (#16-18) and code quality (#19-23) deferred to next pass.
+**Status**: Issues #1-15 resolved. Issues #18-23 resolved (pass 2). Issues #16-17 (N+1 queries, missing indexes) deferred — requires DB layer changes.
 
 ---
 

@@ -243,7 +243,6 @@ async fn execute_create_document(call: &ToolCall, db: &dyn GraphDB) -> WriteTool
     // Resolve thread ID
     let thread = if let Some(tname) = thread_name {
         db.find_thread_by_name(tname).await.unwrap_or(None)
-            .or_else(|| None) // fallback handled below
     } else {
         None
     };
