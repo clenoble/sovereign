@@ -1495,7 +1495,8 @@ pub async fn complete_onboarding(
         if let Some(ref phrase) = data.canary_phrase {
             if let Ok(auth_result) = auth_store.authenticate(password.as_bytes()) {
                 let canary =
-                    sovereign_crypto::canary::CanaryStore::encrypt(phrase, &auth_result.kek);
+                    sovereign_crypto::canary::CanaryStore::encrypt(phrase, auth_result.kek.as_bytes())
+                        .map_err(|e| e.to_string())?;
                 canary
                     .save(&crypto_dir.join("canary.store"))
                     .map_err(|e| e.to_string())?;
@@ -1521,11 +1522,14 @@ pub async fn complete_onboarding(
                     .collect();
                 let reference =
                     sovereign_crypto::keystroke::KeystrokeReference::from_enrollments(&profiles);
-                let encrypted = reference.encrypt(&auth_result.kek);
-                let ks_json =
-                    serde_json::to_string(&encrypted).map_err(|e| e.to_string())?;
-                std::fs::write(crypto_dir.join("keystroke.store"), ks_json)
-                    .map_err(|e| e.to_string())?;
+                if let Some(ref reference) = reference {
+                    let encrypted = reference.encrypt(auth_result.kek.as_bytes())
+                        .map_err(|e| e.to_string())?;
+                    let ks_json =
+                        serde_json::to_string(&encrypted).map_err(|e| e.to_string())?;
+                    std::fs::write(crypto_dir.join("keystroke.store"), ks_json)
+                        .map_err(|e| e.to_string())?;
+                }
             }
         }
     }
