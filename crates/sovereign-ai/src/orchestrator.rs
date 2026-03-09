@@ -451,7 +451,7 @@ impl Orchestrator {
                 .generate(&full_prompt, 300)
                 .await
             {
-                Ok(r) => r.trim().to_string(),
+                Ok(r) => crate::tools::strip_think_blocks(r.trim()),
                 Err(e) => {
                     tracing::error!("Chat generation failed: {e}");
                     let error_msg = format!("Sorry, I couldn't generate a response: {e}");
@@ -883,8 +883,12 @@ impl Orchestrator {
                                 // Auto-detect prompt format from the model filename.
                                 let detected = crate::llm::format::detect_format_from_filename(&model_name);
                                 classifier.swap_formatter(detected);
+                                // Apply recommended sampling for the new model family.
+                                let sampling = classifier.formatter.default_sampling_config();
+                                classifier.router.set_sampling(sampling);
                                 let format_name = match detected {
                                     crate::llm::format::PromptFormat::ChatML => "chatml",
+                                    crate::llm::format::PromptFormat::ChatMLQwen3 => "chatml-qwen3",
                                     crate::llm::format::PromptFormat::Mistral => "mistral",
                                     crate::llm::format::PromptFormat::Llama3 => "llama3",
                                 };

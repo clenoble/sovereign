@@ -1,9 +1,10 @@
 //! Model-agnostic prompt formatting.
 //!
 //! Defines the `PromptFormatter` trait so the orchestrator can work with
-//! different LLM families (Qwen/ChatML, Mistral, Llama 3) without changing
-//! prompt construction, history assembly, or tool-call parsing logic.
+//! different LLM families (Qwen/ChatML, Mistral, Llama 3, Qwen 3.5) without
+//! changing prompt construction, history assembly, or tool-call parsing logic.
 
+use super::backend::SamplingConfig;
 use super::context::{ChatRole, ChatTurn};
 
 /// Supported prompt formats, selectable via `AiConfig.prompt_format`.
@@ -11,6 +12,8 @@ use super::context::{ChatRole, ChatTurn};
 pub enum PromptFormat {
     /// Qwen2.5 / Hermes — `<|im_start|>role\n...\n<|im_end|>`
     ChatML,
+    /// Qwen 3.5 — ChatML with `/no_think` thinking-mode suppression.
+    ChatMLQwen3,
     /// Mistral v0.3 / Ministral — `[INST]...[/INST]`
     Mistral,
     /// Llama 3.x — `<|start_header_id|>role<|end_header_id|>`
@@ -21,6 +24,7 @@ impl PromptFormat {
     /// Parse from config string. Returns `ChatML` for unknown values.
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
+            "qwen3" | "chatml-qwen3" => Self::ChatMLQwen3,
             "mistral" => Self::Mistral,
             "llama3" | "llama" => Self::Llama3,
             _ => Self::ChatML,
@@ -57,6 +61,11 @@ pub trait PromptFormatter: Send + Sync {
 
     /// Wrap a tool-call JSON string in the model's expected tags (for few-shot examples).
     fn wrap_tool_call_example(&self, json: &str) -> String;
+
+    /// Recommended sampling parameters for this model family.
+    fn default_sampling_config(&self) -> SamplingConfig {
+        SamplingConfig::default()
+    }
 }
 
 /// Detect the prompt format from a GGUF filename.
@@ -71,12 +80,15 @@ pub trait PromptFormatter: Send + Sync {
 ///  - `"Qwen2.5-3B-Instruct-Q4_K_M.gguf"` → `ChatML` (default)
 pub fn detect_format_from_filename(filename: &str) -> PromptFormat {
     let lower = filename.to_lowercase();
-    if lower.contains("mistral") || lower.contains("ministral") {
+    if lower.contains("qwen3") {
+        // Qwen 3.x — ChatML with thinking-mode suppression
+        PromptFormat::ChatMLQwen3
+    } else if lower.contains("mistral") || lower.contains("ministral") {
         PromptFormat::Mistral
     } else if lower.contains("llama") {
         PromptFormat::Llama3
     } else {
-        // Qwen, Hermes, and anything unknown default to ChatML
+        // Qwen 2.5, Hermes, and anything unknown default to ChatML
         PromptFormat::ChatML
     }
 }
@@ -85,6 +97,7 @@ pub fn detect_format_from_filename(filename: &str) -> PromptFormat {
 pub fn create_formatter(format: PromptFormat) -> Box<dyn PromptFormatter> {
     match format {
         PromptFormat::ChatML => Box::new(ChatMLFormatter),
+        PromptFormat::ChatMLQwen3 => Box::new(Qwen3Formatter),
         PromptFormat::Mistral => Box::new(MistralFormatter),
         PromptFormat::Llama3 => Box::new(Llama3Formatter),
     }
@@ -152,6 +165,79 @@ impl PromptFormatter for ChatMLFormatter {
 
     fn wrap_tool_call_example(&self, json: &str) -> String {
         format!("<tool_call>\n{json}\n</tool_call>")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Qwen 3.5 (ChatML + thinking-mode suppression)
+// ---------------------------------------------------------------------------
+
+pub struct Qwen3Formatter;
+
+impl PromptFormatter for Qwen3Formatter {
+    fn format_system_user(&self, system: &str, user: &str) -> String {
+        format!(
+            "<|im_start|>system\n{system}\n/no_think\n<|im_end|>\n\
+             <|im_start|>user\n{user}\n<|im_end|>\n\
+             <|im_start|>assistant\n"
+        )
+    }
+
+    fn format_conversation(&self, system: &str, turns: &[ChatTurn]) -> String {
+        let mut prompt = format!("<|im_start|>system\n{system}\n/no_think\n<|im_end|>\n");
+        for turn in turns {
+            let role = match turn.role {
+                ChatRole::User => "user",
+                ChatRole::Assistant => "assistant",
+                ChatRole::Tool => "tool",
+            };
+            prompt.push_str(&format!(
+                "<|im_start|>{role}\n{}\n<|im_end|>\n",
+                turn.content
+            ));
+        }
+        prompt.push_str("<|im_start|>assistant\n");
+        prompt
+    }
+
+    fn tool_call_open_tag(&self) -> &str {
+        "<tool_call>"
+    }
+
+    fn tool_call_close_tag(&self) -> &str {
+        "</tool_call>"
+    }
+
+    fn format_tool_turn(&self, content: &str) -> String {
+        content.to_string()
+    }
+
+    fn chars_per_token(&self) -> f64 {
+        3.8
+    }
+
+    fn tool_call_format_instruction(&self) -> String {
+        "To use a tool, you MUST output exactly this format (no markdown, no code fences):\n\
+         <tool_call>\n\
+         {\"name\": \"tool_name\", \"arguments\": {\"key\": \"value\"}}\n\
+         </tool_call>\n\n\
+         You can call one tool per turn. After seeing the result, either call another tool or give your final answer.\n\
+         For create/rename/move actions, ALWAYS use the tool — never just describe the action in text.\n"
+            .to_string()
+    }
+
+    fn wrap_tool_call_example(&self, json: &str) -> String {
+        format!("<tool_call>\n{json}\n</tool_call>")
+    }
+
+    fn default_sampling_config(&self) -> SamplingConfig {
+        SamplingConfig {
+            temperature: 1.0,
+            top_p: 0.95,
+            top_k: 20,
+            presence_penalty: 1.5,
+            seed: 42,
+        }
     }
 }
 
@@ -453,5 +539,96 @@ mod tests {
         let llama = Llama3Formatter;
         // Llama3 uses bare JSON
         assert_eq!(llama.wrap_tool_call_example(json), json);
+    }
+
+    // --- Qwen 3.5 tests ---
+
+    #[test]
+    fn qwen3_single_turn_has_no_think() {
+        let f = Qwen3Formatter;
+        let prompt = f.format_system_user("You are helpful.", "Hello");
+        assert!(prompt.starts_with("<|im_start|>system\n"));
+        assert!(prompt.contains("You are helpful."));
+        assert!(prompt.contains("/no_think\n<|im_end|>"));
+        assert!(prompt.contains("<|im_start|>user\nHello\n<|im_end|>"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
+    }
+
+    #[test]
+    fn qwen3_multi_turn_no_think_only_in_system() {
+        let f = Qwen3Formatter;
+        let turns = vec![
+            ChatTurn { role: ChatRole::User, content: "hi".into() },
+            ChatTurn { role: ChatRole::Assistant, content: "hello".into() },
+            ChatTurn { role: ChatRole::User, content: "bye".into() },
+        ];
+        let prompt = f.format_conversation("sys", &turns);
+        // /no_think appears exactly once, in the system block
+        assert_eq!(prompt.matches("/no_think").count(), 1);
+        assert!(prompt.contains("<|im_start|>system\nsys\n/no_think\n<|im_end|>"));
+        // User/assistant turns are normal ChatML
+        assert!(prompt.contains("<|im_start|>user\nhi\n<|im_end|>"));
+        assert!(prompt.contains("<|im_start|>assistant\nhello\n<|im_end|>"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
+    }
+
+    #[test]
+    fn qwen3_tool_call_tags_match_chatml() {
+        let f = Qwen3Formatter;
+        assert_eq!(f.tool_call_open_tag(), "<tool_call>");
+        assert_eq!(f.tool_call_close_tag(), "</tool_call>");
+    }
+
+    #[test]
+    fn qwen3_sampling_config() {
+        let f = Qwen3Formatter;
+        let s = f.default_sampling_config();
+        assert!((s.temperature - 1.0).abs() < f32::EPSILON);
+        assert!((s.top_p - 0.95).abs() < f32::EPSILON);
+        assert_eq!(s.top_k, 20);
+        assert!((s.presence_penalty - 1.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn chatml_sampling_config_is_default() {
+        let f = ChatMLFormatter;
+        let s = f.default_sampling_config();
+        let d = SamplingConfig::default();
+        assert!((s.temperature - d.temperature).abs() < f32::EPSILON);
+        assert!((s.top_p - d.top_p).abs() < f32::EPSILON);
+        assert_eq!(s.top_k, d.top_k);
+    }
+
+    #[test]
+    fn detect_format_qwen3() {
+        assert_eq!(
+            detect_format_from_filename("Qwen3.5-4B-Instruct-Q4_K_M.gguf"),
+            PromptFormat::ChatMLQwen3,
+        );
+        assert_eq!(
+            detect_format_from_filename("qwen3-9b-q5.gguf"),
+            PromptFormat::ChatMLQwen3,
+        );
+        assert_eq!(
+            detect_format_from_filename("Qwen3.5-35B-A3B-Q4_K_M.gguf"),
+            PromptFormat::ChatMLQwen3,
+        );
+    }
+
+    #[test]
+    fn detect_format_qwen25_unchanged() {
+        assert_eq!(
+            detect_format_from_filename("Qwen2.5-3B-Instruct-Q4_K_M.gguf"),
+            PromptFormat::ChatML,
+        );
+    }
+
+    #[test]
+    fn format_from_str_qwen3() {
+        assert_eq!(PromptFormat::from_str("qwen3"), PromptFormat::ChatMLQwen3);
+        assert_eq!(PromptFormat::from_str("chatml-qwen3"), PromptFormat::ChatMLQwen3);
+        // Existing formats unchanged
+        assert_eq!(PromptFormat::from_str("chatml"), PromptFormat::ChatML);
+        assert_eq!(PromptFormat::from_str("mistral"), PromptFormat::Mistral);
     }
 }

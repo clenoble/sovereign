@@ -76,6 +76,7 @@ impl IntentClassifier {
         let old = self.config.prompt_format.clone();
         let new_name = match new_format {
             format::PromptFormat::ChatML => "chatml",
+            format::PromptFormat::ChatMLQwen3 => "chatml-qwen3",
             format::PromptFormat::Mistral => "mistral",
             format::PromptFormat::Llama3 => "llama3",
         };
@@ -99,7 +100,8 @@ impl IntentClassifier {
 
         let system = build_router_system_prompt();
         let prompt = format_single_turn(&*self.formatter, &system, user_text);
-        let response = self.router.generate(&prompt, 200).await?;
+        let raw_response = self.router.generate(&prompt, 200).await?;
+        let response = crate::tools::strip_think_blocks(&raw_response);
         tracing::debug!("Router response: {response}");
 
         let mut intent = parse_intent_response(&response)?;
@@ -152,7 +154,8 @@ impl IntentClassifier {
 
         let system = build_reasoning_system_prompt();
         let prompt = format_single_turn(&*self.formatter, &system, user_text);
-        let response = reasoning.generate(&prompt, 300).await?;
+        let raw_response = reasoning.generate(&prompt, 300).await?;
+        let response = crate::tools::strip_think_blocks(&raw_response);
         tracing::debug!("Reasoning response: {response}");
 
         parse_intent_response(&response)
