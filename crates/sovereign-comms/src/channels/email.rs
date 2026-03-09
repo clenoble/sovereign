@@ -37,49 +37,21 @@ impl EmailChannel {
         }
     }
 
-    /// Get or create a conversation for an email thread, using a local cache
-    /// to avoid repeated full-DB loads.
     async fn get_or_create_conversation(
         &self,
         subject: &str,
         participant_ids: Vec<String>,
         cache: &mut HashMap<String, Conversation>,
     ) -> Result<Conversation, CommsError> {
-        if let Some(conv) = cache.get(subject) {
-            return Ok(conv.clone());
-        }
-
-        // Create new conversation
-        let conv = Conversation::new(
-            subject.to_string(),
-            ChannelType::Email,
-            participant_ids,
-        );
-        let created = self.db.create_conversation(conv).await.map_err(CommsError::from)?;
-        cache.insert(subject.to_string(), created.clone());
-        Ok(created)
+        super::helpers::get_or_create_conversation(
+            self.db.as_ref(), subject, ChannelType::Email, participant_ids, cache,
+        ).await
     }
 
-    /// Resolve an email address to a contact ID, creating a stub if needed.
     async fn resolve_contact_id(&self, address: &str, display_name: Option<&str>) -> Result<String, CommsError> {
-        // Check if contact exists
-        if let Some(contact) = self.db.find_contact_by_address(address).await? {
-            return Ok(contact.id_string().unwrap_or_default());
-        }
-
-        // Create stub contact
-        let name = display_name
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| address.to_string());
-        let mut contact = Contact::new(name, false);
-        contact.addresses.push(ChannelAddress {
-            channel: ChannelType::Email,
-            address: address.to_string(),
-            display_name: display_name.map(|s| s.to_string()),
-            is_primary: true,
-        });
-        let created = self.db.create_contact(contact).await?;
-        Ok(created.id_string().unwrap_or_default())
+        super::helpers::resolve_contact_id(
+            self.db.as_ref(), ChannelType::Email, address, display_name,
+        ).await
     }
 
     /// Parse a raw email into a Message struct.

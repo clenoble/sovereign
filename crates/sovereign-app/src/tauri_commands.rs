@@ -13,6 +13,33 @@ use tauri::State;
 use crate::tauri_state::AppState;
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Aggregated conversation stats per contact.
+struct ContactAggregates {
+    unread_by_contact: std::collections::HashMap<String, u32>,
+    channels_by_contact: std::collections::HashMap<String, HashSet<String>>,
+}
+
+/// Compute unread counts and channel sets per contact from all conversations.
+async fn aggregate_conversations(db: &dyn GraphDB) -> Result<ContactAggregates, String> {
+    let conversations = db.list_conversations(None).await.map_err(|e| e.to_string())?;
+    let mut unread_by_contact: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut channels_by_contact: std::collections::HashMap<String, HashSet<String>> = std::collections::HashMap::new();
+    for conv in &conversations {
+        for pid in &conv.participant_contact_ids {
+            *unread_by_contact.entry(pid.clone()).or_default() += conv.unread_count;
+            channels_by_contact
+                .entry(pid.clone())
+                .or_default()
+                .insert(conv.channel.to_string());
+        }
+    }
+    Ok(ContactAggregates { unread_by_contact, channels_by_contact })
+}
+
+// ---------------------------------------------------------------------------
 // DTOs (serializable types returned to the frontend)
 // ---------------------------------------------------------------------------
 
@@ -933,18 +960,12 @@ pub async fn canvas_load(state: State<'_, AppState>) -> Result<CanvasData, Strin
     let contacts = state.db.list_contacts().await.map_err(|e| e.to_string())?;
 
     // Compute unread counts per contact from conversations
+    let agg = aggregate_conversations(state.db.as_ref()).await?;
+    let unread_by_contact = agg.unread_by_contact;
+    let channels_by_contact = agg.channels_by_contact;
+
+    // Also load raw conversations for message timeline
     let conversations = state.db.list_conversations(None).await.map_err(|e| e.to_string())?;
-    let mut unread_by_contact: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    let mut channels_by_contact: std::collections::HashMap<String, HashSet<String>> = std::collections::HashMap::new();
-    for conv in &conversations {
-        for pid in &conv.participant_contact_ids {
-            *unread_by_contact.entry(pid.clone()).or_default() += conv.unread_count;
-            channels_by_contact
-                .entry(pid.clone())
-                .or_default()
-                .insert(conv.channel.to_string());
-        }
-    }
 
     // Collect milestones across all threads
     let mut all_milestones = Vec::new();
@@ -1180,19 +1201,9 @@ pub async fn move_document_to_thread(
 #[tauri::command]
 pub async fn list_contacts(state: State<'_, AppState>) -> Result<Vec<ContactSummaryDto>, String> {
     let contacts = state.db.list_contacts().await.map_err(|e| e.to_string())?;
-    let conversations = state.db.list_conversations(None).await.map_err(|e| e.to_string())?;
-
-    let mut unread_by_contact: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    let mut channels_by_contact: std::collections::HashMap<String, HashSet<String>> = std::collections::HashMap::new();
-    for conv in &conversations {
-        for pid in &conv.participant_contact_ids {
-            *unread_by_contact.entry(pid.clone()).or_default() += conv.unread_count;
-            channels_by_contact
-                .entry(pid.clone())
-                .or_default()
-                .insert(conv.channel.to_string());
-        }
-    }
+    let agg = aggregate_conversations(state.db.as_ref()).await?;
+    let unread_by_contact = agg.unread_by_contact;
+    let channels_by_contact = agg.channels_by_contact;
 
     Ok(contacts
         .into_iter()

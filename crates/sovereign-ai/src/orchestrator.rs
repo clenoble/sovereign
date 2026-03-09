@@ -1256,42 +1256,9 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Scan document content for injection attempts. Emits InjectionDetected events.
-    /// Returns true if injection was detected (caller should refuse to process).
-    // TODO: integrate into execute_action pipeline — call before processing user-supplied content
-    #[allow(dead_code)]
-    pub async fn scan_document_for_injection(&self, doc_id: &str) -> bool {
-        match self.db.get_document(doc_id).await {
-            Ok(doc) => {
-                let matches = injection::scan_for_injection(&doc.content);
-                if !matches.is_empty() {
-                    let top = &matches[0];
-                    tracing::warn!(
-                        "Injection detected in {}: {} (severity {})",
-                        doc_id,
-                        top.pattern_name,
-                        top.severity
-                    );
-                    self.log_action(
-                        "injection_detected",
-                        &format!("{}: {}", doc_id, top.pattern_name),
-                    );
-                    let indicator_descriptions: Vec<String> = matches.iter()
-                        .map(|m| m.pattern_name.clone())
-                        .collect();
-                    let _ = self.event_tx.send(OrchestratorEvent::InjectionDetected {
-                        source: doc_id.to_string(),
-                        pattern: top.pattern_name.clone(),
-                        indicators: indicator_descriptions,
-                        severity: top.severity,
-                    });
-                    return true;
-                }
-                false
-            }
-            Err(_) => false,
-        }
-    }
+    // Injection scanning is handled inline in the chat agent loop (handle_chat)
+    // where tool outputs are scanned via injection::scan_for_injection() before
+    // being fed back to the LLM. See the tool execution block above.
 
     /// Assess the reliability of web content using local LLM.
     ///

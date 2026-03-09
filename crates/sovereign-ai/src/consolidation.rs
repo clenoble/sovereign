@@ -89,22 +89,19 @@ pub async fn run_cycle(
     let existing_rels = db.list_all_relationships().await?;
     let existing_suggestions = db.list_pending_suggestions().await?;
 
-    // Build a set of existing pairs (bidirectional) for fast lookup
+    // Build a set of existing pairs (normalized: smaller ID first) for fast lookup
     let mut existing_pairs: HashSet<(String, String)> = HashSet::new();
+    let insert_pair = |pairs: &mut HashSet<(String, String)>, a: String, b: String| {
+        if a <= b { pairs.insert((a, b)); } else { pairs.insert((b, a)); }
+    };
     for rel in &existing_rels {
         if let (Some(in_t), Some(out_t)) = (&rel.in_, &rel.out) {
-            let a = sovereign_db::schema::thing_to_raw(in_t);
-            let b = sovereign_db::schema::thing_to_raw(out_t);
-            existing_pairs.insert((a.clone(), b.clone()));
-            existing_pairs.insert((b, a));
+            insert_pair(&mut existing_pairs, sovereign_db::schema::thing_to_raw(in_t), sovereign_db::schema::thing_to_raw(out_t));
         }
     }
     for sugg in &existing_suggestions {
         if let (Some(in_t), Some(out_t)) = (&sugg.in_, &sugg.out) {
-            let a = sovereign_db::schema::thing_to_raw(in_t);
-            let b = sovereign_db::schema::thing_to_raw(out_t);
-            existing_pairs.insert((a.clone(), b.clone()));
-            existing_pairs.insert((b, a));
+            insert_pair(&mut existing_pairs, sovereign_db::schema::thing_to_raw(in_t), sovereign_db::schema::thing_to_raw(out_t));
         }
     }
 
@@ -165,8 +162,9 @@ async fn find_candidate_pairs(
             let a_id = a.id_string().unwrap_or_default();
             let b_id = b.id_string().unwrap_or_default();
 
-            // Skip if already related
-            if existing_pairs.contains(&(a_id.clone(), b_id.clone())) {
+            // Skip if already related (normalize pair for lookup)
+            let pair_key = if a_id <= b_id { (a_id.clone(), b_id.clone()) } else { (b_id.clone(), a_id.clone()) };
+            if existing_pairs.contains(&pair_key) {
                 continue;
             }
 

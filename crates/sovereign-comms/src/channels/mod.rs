@@ -1,3 +1,5 @@
+pub mod helpers;
+
 #[cfg(feature = "email")]
 pub mod email;
 

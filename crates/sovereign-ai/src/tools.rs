@@ -89,67 +89,16 @@ pub const WRITE_TOOLS: &[ToolDef] = &[
     },
 ];
 
-/// All available tools (read + write).
-pub const TOOLS: &[ToolDef] = &[
-    // Read tools (Observe level)
-    ToolDef {
-        name: "search_documents",
-        description: "Search documents by title or content keyword. Returns matching titles and IDs.",
-        parameters: r#"{"query": "search term"}"#,
-    },
-    ToolDef {
-        name: "list_threads",
-        description: "List all threads (projects) with document counts.",
-        parameters: "{}",
-    },
-    ToolDef {
-        name: "get_document",
-        description: "Get the full content of a document by title.",
-        parameters: r#"{"title": "document title"}"#,
-    },
-    ToolDef {
-        name: "list_documents",
-        description: "List documents, optionally filtered by thread name.",
-        parameters: r#"{"thread": "thread name (optional)"}"#,
-    },
-    ToolDef {
-        name: "search_messages",
-        description: "Search conversation messages by keyword.",
-        parameters: r#"{"query": "search term"}"#,
-    },
-    ToolDef {
-        name: "list_contacts",
-        description: "List all contacts with their communication channels.",
-        parameters: "{}",
-    },
-    // Write tools (Modify level — gated by action gravity)
-    ToolDef {
-        name: "create_document",
-        description: "Create a new owned document. Requires user confirmation.",
-        parameters: r#"{"title": "document title", "thread_name": "thread name (optional, defaults to first thread)"}"#,
-    },
-    ToolDef {
-        name: "create_thread",
-        description: "Create a new thread (project). Requires user confirmation.",
-        parameters: r#"{"name": "thread name"}"#,
-    },
-    ToolDef {
-        name: "rename_thread",
-        description: "Rename an existing thread. Requires user confirmation.",
-        parameters: r#"{"old_name": "current thread name", "new_name": "new thread name"}"#,
-    },
-    ToolDef {
-        name: "move_document",
-        description: "Move a document to a different thread. Requires user confirmation.",
-        parameters: r#"{"document_title": "document title", "thread_name": "destination thread name"}"#,
-    },
-];
+/// All available tools (read + write), derived from READ_TOOLS and WRITE_TOOLS.
+pub fn all_tools() -> impl Iterator<Item = &'static ToolDef> {
+    READ_TOOLS.iter().chain(WRITE_TOOLS.iter())
+}
 
 /// Format tool definitions as a text block for the system prompt.
 /// Uses the formatter's tool-call instruction format.
 pub fn format_tool_descriptions(formatter: &dyn PromptFormatter) -> String {
     let mut out = String::from("You have access to these tools:\n");
-    for tool in TOOLS {
+    for tool in all_tools() {
         out.push_str(&format!(
             "- {}: {} Parameters: {}\n",
             tool.name, tool.description, tool.parameters
@@ -221,7 +170,7 @@ pub fn parse_tool_calls(output: &str, formatter: Option<&dyn PromptFormatter>) -
     if calls.is_empty() {
         let stripped = strip_code_fences(output);
         if let Ok(call) = serde_json::from_str::<ToolCall>(&stripped) {
-            if TOOLS.iter().any(|t| t.name == call.name) {
+            if all_tools().any(|t| t.name == call.name) {
                 calls.push(call);
             }
         }
@@ -769,7 +718,7 @@ mod tests {
     fn format_tool_descriptions_contains_all_tools() {
         let fmt = crate::llm::format::ChatMLFormatter;
         let desc = format_tool_descriptions(&fmt);
-        for tool in TOOLS {
+        for tool in all_tools() {
             assert!(desc.contains(tool.name), "Missing tool: {}", tool.name);
         }
         assert!(desc.contains("<tool_call>"));

@@ -91,7 +91,6 @@ export interface ModelEntry {
 }
 
 // Health / status
-export const greet = (name: string) => invoke<string>('greet', { name });
 export const getStatus = () => invoke<AppStatus>('get_status');
 
 // Chat
@@ -104,13 +103,6 @@ export const searchQuery = (query: string) => invoke<void>('search_query', { que
 // Action gate
 export const approveAction = () => invoke<void>('approve_action');
 export const rejectAction = (reason: string) => invoke<void>('reject_action', { reason });
-export const acceptSuggestion = (action: string) => invoke<void>('accept_suggestion', { action });
-export const dismissSuggestion = (action: string) => invoke<void>('dismiss_suggestion', { action });
-
-// Documents
-export const listDocuments = (threadId?: string) =>
-	invoke<DocSummary[]>('list_documents', { threadId: threadId ?? null });
-export const listThreads = () => invoke<ThreadSummary[]>('list_threads');
 
 // Theme
 export const toggleTheme = () => invoke<string>('toggle_theme');

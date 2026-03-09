@@ -5,6 +5,7 @@
 	import { toggleChat } from '$lib/stores/chat.svelte';
 	import { subscribeToEvents } from '$lib/api/events';
 	import { getTheme, checkAuthState, getProfile } from '$lib/api/commands';
+	import { stopNowTimer } from '$lib/stores/canvas.svelte';
 
 	import Taskbar from '$lib/components/Taskbar.svelte';
 	import Bubble from '$lib/components/Bubble.svelte';
@@ -98,6 +99,7 @@
 
 		return () => {
 			unlisten();
+			stopNowTimer();
 			window.removeEventListener('keydown', handleKeydown);
 		};
 	});

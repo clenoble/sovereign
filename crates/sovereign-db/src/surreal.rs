@@ -40,6 +40,26 @@ fn parse_thing(id: &str) -> DbResult<(&str, &str)> {
         .ok_or_else(|| DbError::InvalidId(format!("Expected 'table:id' format, got: {id}")))
 }
 
+/// Parse and validate that an ID belongs to the expected table.
+fn parse_and_validate<'a>(id: &'a str, expected: &str) -> DbResult<(&'a str, &'a str)> {
+    let (table, key) = parse_thing(id)?;
+    if table != expected {
+        return Err(DbError::InvalidId(format!(
+            "Expected {expected} ID, got table: {table}"
+        )));
+    }
+    Ok((table, key))
+}
+
+/// Parse an ID string into a SurrealDB `Thing`, defaulting to "document" table if no colon.
+fn id_to_thing(s: &str) -> Thing {
+    if let Some((tb, id)) = s.split_once(':') {
+        Thing::from((tb.to_string(), id.to_string()))
+    } else {
+        Thing::from(("document".to_string(), s.to_string()))
+    }
+}
+
 #[async_trait]
 impl GraphDB for SurrealGraphDB {
     async fn connect(&self) -> DbResult<()> {
@@ -83,10 +103,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn get_document(&self, id: &str) -> DbResult<Document> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "document")?;
         let doc: Option<Document> = self.db.select((table, key)).await?;
         doc.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
@@ -131,10 +148,7 @@ impl GraphDB for SurrealGraphDB {
         title: Option<&str>,
         content: Option<&str>,
     ) -> DbResult<Document> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "document")?;
 
         // Fetch current document
         let current: Option<Document> = self.db.select((table, key)).await?;
@@ -160,10 +174,7 @@ impl GraphDB for SurrealGraphDB {
         score: Option<f32>,
         assessment_json: Option<&str>,
     ) -> DbResult<Document> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "document")?;
 
         let current: Option<Document> = self.db.select((table, key)).await?;
         let mut doc = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
@@ -189,7 +200,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
-        let (_table, _key) = parse_thing(id)?;
+        parse_and_validate(id, "document")?;
         self.db
             .query("UPDATE $id SET spatial_x = $x, spatial_y = $y")
             .bind(("id", id.to_string()))
@@ -200,10 +211,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn delete_document(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "document")?;
         let _: Option<Document> = self.db.delete((table, key)).await?;
         Ok(())
     }
@@ -216,10 +224,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn get_thread(&self, id: &str) -> DbResult<Thread> {
-        let (table, key) = parse_thing(id)?;
-        if table != "thread" {
-            return Err(DbError::InvalidId(format!("Expected thread ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "thread")?;
         let thread: Option<Thread> = self.db.select((table, key)).await?;
         thread.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
@@ -250,10 +255,7 @@ impl GraphDB for SurrealGraphDB {
         name: Option<&str>,
         description: Option<&str>,
     ) -> DbResult<Thread> {
-        let (table, key) = parse_thing(id)?;
-        if table != "thread" {
-            return Err(DbError::InvalidId(format!("Expected thread ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "thread")?;
 
         let current: Option<Thread> = self.db.select((table, key)).await?;
         let mut thread = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
@@ -270,10 +272,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn delete_thread(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "thread" {
-            return Err(DbError::InvalidId(format!("Expected thread ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "thread")?;
         let _: Option<Thread> = self.db.delete((table, key)).await?;
         Ok(())
     }
@@ -283,10 +282,7 @@ impl GraphDB for SurrealGraphDB {
         doc_id: &str,
         new_thread_id: &str,
     ) -> DbResult<Document> {
-        let (table, key) = parse_thing(doc_id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(doc_id, "document")?;
 
         let updated: Option<Document> = self.db
             .update((table, key))
@@ -301,12 +297,7 @@ impl GraphDB for SurrealGraphDB {
     // -- Adopt ---
 
     async fn adopt_document(&self, id: &str) -> DbResult<Document> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!(
-                "Expected document ID, got table: {table}"
-            )));
-        }
+        let (table, key) = parse_and_validate(id, "document")?;
         let updated: Option<Document> = self.db
             .update((table, key))
             .merge(serde_json::json!({
@@ -365,12 +356,7 @@ impl GraphDB for SurrealGraphDB {
     // -- Soft delete ---
 
     async fn soft_delete_document(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!(
-                "Expected document ID, got table: {table}"
-            )));
-        }
+        let (table, key) = parse_and_validate(id, "document")?;
         let result: Option<Document> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
@@ -382,12 +368,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn restore_soft_deleted_document(&self, id: &str) -> DbResult<Document> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!(
-                "Expected document ID, got table: {table}"
-            )));
-        }
+        let (table, key) = parse_and_validate(id, "document")?;
         let updated: Option<Document> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "deleted_at": null }))
@@ -396,12 +377,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn soft_delete_thread(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "thread" {
-            return Err(DbError::InvalidId(format!(
-                "Expected thread ID, got table: {table}"
-            )));
-        }
+        let (table, key) = parse_and_validate(id, "thread")?;
         let result: Option<Thread> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
@@ -413,12 +389,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn restore_soft_deleted_thread(&self, id: &str) -> DbResult<Thread> {
-        let (table, key) = parse_thing(id)?;
-        if table != "thread" {
-            return Err(DbError::InvalidId(format!(
-                "Expected thread ID, got table: {table}"
-            )));
-        }
+        let (table, key) = parse_and_validate(id, "thread")?;
         let updated: Option<Thread> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "deleted_at": null }))
@@ -432,15 +403,16 @@ impl GraphDB for SurrealGraphDB {
         let cutoff_str = cutoff.to_rfc3339();
 
         // Delete documents and threads older than cutoff in a single round-trip.
-        // No need to deserialize the DELETE results.
-        self.db
-            .query("DELETE FROM document WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff;\
-                    DELETE FROM thread WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff")
+        let mut resp = self.db
+            .query("DELETE FROM document WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff RETURN BEFORE;\
+                    DELETE FROM thread WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff RETURN BEFORE")
             .bind(("cutoff", cutoff_str))
             .await
             .map_err(|e| DbError::Query(e.to_string()))?;
 
-        Ok(0)
+        let deleted_docs: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        let deleted_threads: Vec<serde_json::Value> = resp.take(1).unwrap_or_default();
+        Ok((deleted_docs.len() + deleted_threads.len()) as u64)
     }
 
     // -- Milestones ---
@@ -462,12 +434,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn delete_milestone(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "milestone" {
-            return Err(DbError::InvalidId(format!(
-                "Expected milestone ID, got table: {table}"
-            )));
-        }
+        let (table, key) = parse_and_validate(id, "milestone")?;
         let _: Option<Milestone> = self.db.delete((table, key)).await?;
         Ok(())
     }
@@ -485,15 +452,8 @@ impl GraphDB for SurrealGraphDB {
         let relation_type_str = relation_type.to_string();
 
         // Parse "table:id" strings into Thing records for RELATE
-        let parse_thing = |s: &str| -> Thing {
-            if let Some((tb, id)) = s.split_once(':') {
-                Thing::from((tb.to_string(), id.to_string()))
-            } else {
-                Thing::from(("document".to_string(), s.to_string()))
-            }
-        };
-        let from = parse_thing(from_id);
-        let to = parse_thing(to_id);
+        let from = id_to_thing(from_id);
+        let to = id_to_thing(to_id);
 
         let mut result = self
             .db
@@ -561,17 +521,11 @@ impl GraphDB for SurrealGraphDB {
     ) -> DbResult<SuggestedLink> {
         let now = Utc::now();
         let relation_type_str = relation_type.to_string();
-        let source_str = serde_json::to_string(&source).unwrap_or_else(|_| "\"consolidation\"".into());
+        let source_str = serde_json::to_string(&source)
+            .map_err(|e| DbError::Query(format!("Failed to serialize source: {e}")))?;
 
-        let parse_thing = |s: &str| -> Thing {
-            if let Some((tb, id)) = s.split_once(':') {
-                Thing::from((tb.to_string(), id.to_string()))
-            } else {
-                Thing::from(("document".to_string(), s.to_string()))
-            }
-        };
-        let from = parse_thing(from_id);
-        let to = parse_thing(to_id);
+        let from = id_to_thing(from_id);
+        let to = id_to_thing(to_id);
 
         let mut result = self
             .db
@@ -628,7 +582,8 @@ impl GraphDB for SurrealGraphDB {
         status: SuggestionStatus,
     ) -> DbResult<SuggestedLink> {
         let now = Utc::now();
-        let status_str = serde_json::to_string(&status).unwrap_or_else(|_| "\"dismissed\"".into());
+        let status_str = serde_json::to_string(&status)
+            .map_err(|e| DbError::Query(format!("Failed to serialize status: {e}")))?;
 
         // Fetch the suggestion first
         let link: Option<SuggestedLink> = self.db.select(("suggested_link", id)).await?;
@@ -734,10 +689,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn get_commit(&self, commit_id: &str) -> DbResult<Commit> {
-        let (table, key) = parse_thing(commit_id)?;
-        if table != "commit" {
-            return Err(DbError::InvalidId(format!("Expected commit ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(commit_id, "commit")?;
         let commit: Option<Commit> = self.db.select((table, key)).await?;
         commit.ok_or_else(|| DbError::NotFound(commit_id.to_string()))
     }
@@ -746,10 +698,7 @@ impl GraphDB for SurrealGraphDB {
         let commit = self.get_commit(commit_id).await?;
 
         // Update document to the snapshot's state
-        let (table, key) = parse_thing(doc_id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(doc_id, "document")?;
         let current: Option<Document> = self.db.select((table, key)).await?;
         let mut doc = current.ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
         doc.title = commit.snapshot.title.clone();
@@ -774,10 +723,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn get_contact(&self, id: &str) -> DbResult<Contact> {
-        let (table, key) = parse_thing(id)?;
-        if table != "contact" {
-            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "contact")?;
         let contact: Option<Contact> = self.db.select((table, key)).await?;
         contact.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
@@ -798,10 +744,7 @@ impl GraphDB for SurrealGraphDB {
         notes: Option<&str>,
         avatar: Option<&str>,
     ) -> DbResult<Contact> {
-        let (table, key) = parse_thing(id)?;
-        if table != "contact" {
-            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "contact")?;
         let current: Option<Contact> = self.db.select((table, key)).await?;
         let mut contact = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
 
@@ -821,19 +764,13 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn delete_contact(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "contact" {
-            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "contact")?;
         let _: Option<Contact> = self.db.delete((table, key)).await?;
         Ok(())
     }
 
     async fn soft_delete_contact(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "contact" {
-            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "contact")?;
         let result: Option<Contact> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
@@ -860,10 +797,7 @@ impl GraphDB for SurrealGraphDB {
         contact_id: &str,
         address: crate::schema::ChannelAddress,
     ) -> DbResult<Contact> {
-        let (table, key) = parse_thing(contact_id)?;
-        if table != "contact" {
-            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(contact_id, "contact")?;
         let current: Option<Contact> = self.db.select((table, key)).await?;
         let mut contact = current.ok_or_else(|| DbError::NotFound(contact_id.to_string()))?;
         contact.addresses.push(address);
@@ -881,10 +815,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn get_message(&self, id: &str) -> DbResult<Message> {
-        let (table, key) = parse_thing(id)?;
-        if table != "message" {
-            return Err(DbError::InvalidId(format!("Expected message ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "message")?;
         let message: Option<Message> = self.db.select((table, key)).await?;
         message.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
@@ -926,10 +857,7 @@ impl GraphDB for SurrealGraphDB {
         id: &str,
         status: ReadStatus,
     ) -> DbResult<Message> {
-        let (table, key) = parse_thing(id)?;
-        if table != "message" {
-            return Err(DbError::InvalidId(format!("Expected message ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "message")?;
         let updated: Option<Message> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "read_status": status }))
@@ -938,10 +866,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn delete_message(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "message" {
-            return Err(DbError::InvalidId(format!("Expected message ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "message")?;
         let _: Option<Message> = self.db.delete((table, key)).await?;
         Ok(())
     }
@@ -974,10 +899,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn get_conversation(&self, id: &str) -> DbResult<Conversation> {
-        let (table, key) = parse_thing(id)?;
-        if table != "conversation" {
-            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "conversation")?;
         let conv: Option<Conversation> = self.db.select((table, key)).await?;
         conv.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
@@ -1013,10 +935,7 @@ impl GraphDB for SurrealGraphDB {
         id: &str,
         unread_count: u32,
     ) -> DbResult<Conversation> {
-        let (table, key) = parse_thing(id)?;
-        if table != "conversation" {
-            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "conversation")?;
         let updated: Option<Conversation> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "unread_count": unread_count }))
@@ -1029,10 +948,7 @@ impl GraphDB for SurrealGraphDB {
         id: &str,
         at: chrono::DateTime<chrono::Utc>,
     ) -> DbResult<Conversation> {
-        let (table, key) = parse_thing(id)?;
-        if table != "conversation" {
-            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "conversation")?;
         let updated: Option<Conversation> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "last_message_at": at.to_rfc3339() }))
@@ -1041,10 +957,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn delete_conversation(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "conversation" {
-            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "conversation")?;
         let _: Option<Conversation> = self.db.delete((table, key)).await?;
         Ok(())
     }
@@ -1054,10 +967,7 @@ impl GraphDB for SurrealGraphDB {
         conversation_id: &str,
         thread_id: &str,
     ) -> DbResult<Conversation> {
-        let (table, key) = parse_thing(conversation_id)?;
-        if table != "conversation" {
-            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(conversation_id, "conversation")?;
         let updated: Option<Conversation> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "linked_thread_id": thread_id }))

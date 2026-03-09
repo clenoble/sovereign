@@ -341,3 +341,11 @@ function startNowTimer() {
 		}
 	}, 600_000);
 }
+
+/** Stop the "Now" line refresh timer. Call on unmount to prevent leaks. */
+export function stopNowTimer() {
+	if (nowTimer) {
+		clearInterval(nowTimer);
+		nowTimer = null;
+	}
+}

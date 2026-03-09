@@ -29,16 +29,7 @@ use crate::search::SearchState;
 use crate::taskbar::TaskbarState;
 use crate::theme;
 
-/// Voice event type mirrored here so sovereign-ui doesn't depend on sovereign-ai.
-#[derive(Debug, Clone)]
-pub enum VoiceEvent {
-    WakeWordDetected,
-    ListeningStarted,
-    TranscriptionReady(String),
-    ListeningStopped,
-    TtsSpeaking(String),
-    TtsDone,
-}
+pub use sovereign_core::interfaces::VoiceEvent;
 
 /// All messages the application handles.
 #[derive(Debug, Clone)]

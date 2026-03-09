@@ -1,15 +1,5 @@
 pub use sovereign_core::interfaces::OrchestratorEvent;
-
-/// Events from the voice pipeline to the UI.
-#[derive(Debug, Clone)]
-pub enum VoiceEvent {
-    WakeWordDetected,
-    ListeningStarted,
-    TranscriptionReady(String),
-    ListeningStopped,
-    TtsSpeaking(String),
-    TtsDone,
-}
+pub use sovereign_core::interfaces::VoiceEvent;
 
 #[cfg(test)]
 mod tests {
