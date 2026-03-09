@@ -149,6 +149,42 @@ impl GraphDB for SurrealGraphDB {
         updated.ok_or_else(|| DbError::Query("Failed to update document".into()))
     }
 
+    async fn update_document_reliability(
+        &self,
+        id: &str,
+        source_url: Option<&str>,
+        classification: Option<&str>,
+        score: Option<f32>,
+        assessment_json: Option<&str>,
+    ) -> DbResult<Document> {
+        let (table, key) = parse_thing(id)?;
+        if table != "document" {
+            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
+        }
+
+        let current: Option<Document> = self.db.select((table, key)).await?;
+        let mut doc = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+
+        if let Some(u) = source_url {
+            doc.source_url = Some(u.to_string());
+        }
+        if let Some(c) = classification {
+            doc.reliability_classification = Some(c.to_string());
+        }
+        if let Some(s) = score {
+            doc.reliability_score = Some(s);
+        }
+        if let Some(a) = assessment_json {
+            doc.reliability_assessment = Some(a.to_string());
+        }
+        if classification.is_some() || score.is_some() {
+            doc.assessed_at = Some(Utc::now());
+        }
+
+        let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to update document reliability".into()))
+    }
+
     async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
         let (_table, _key) = parse_thing(id)?;
         self.db

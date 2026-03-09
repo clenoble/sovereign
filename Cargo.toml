@@ -84,7 +84,7 @@ uuid = { version = "1.20", features = ["v4"] }
 rand = "0.10"
 
 # Tauri (optional — UI migration)
-tauri = { version = "2.10", features = ["devtools"] }
+tauri = { version = "2.10", features = ["devtools", "unstable"] }
 tauri-build = { version = "2.5", features = [] }
 
 # Voice pipeline
@@ -92,3 +92,8 @@ whisper-rs = "0.15"
 cpal = "0.17"
 rustpotter = "3.0"
 ringbuf = "0.4"
+
+# Web browsing
+reqwest = { version = "0.13", features = ["rustls"] }
+readability = "0.3"
+url = "2.5"

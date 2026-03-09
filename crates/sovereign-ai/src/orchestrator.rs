@@ -1289,6 +1289,25 @@ impl Orchestrator {
         }
     }
 
+    /// Assess the reliability of web content using local LLM.
+    ///
+    /// Two-step: classifies as Factual/Opinion/Fiction, then scores
+    /// rubric criteria 0-5. Uses the router (3B) model for both steps
+    /// to avoid loading the heavier reasoning model.
+    pub async fn assess_reliability(
+        &self,
+        text: &str,
+    ) -> Result<crate::reliability::ReliabilityResult> {
+        let classifier = self.classifier.lock().await;
+        let result = crate::reliability::assess_reliability(
+            &classifier.router,
+            &*classifier.formatter,
+            text,
+        )
+        .await?;
+        Ok(result)
+    }
+
     /// Generate a proactive suggestion based on current context.
     /// Called after N seconds of idle time. Never auto-executes.
     /// Uses adaptive thresholds from the user profile to decide whether to show.

@@ -113,6 +113,19 @@ pub struct InjectionDetectedPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct BrowserNavigatedPayload {
+    pub url: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReliabilityAssessedPayload {
+    pub doc_id: String,
+    pub classification: String,
+    pub score: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ThreadMergedPayload {
     pub target_id: String,
     pub source_id: String,
@@ -300,7 +313,29 @@ pub fn spawn_event_forwarder(
                     );
                 }
 
-                // All other events: log but don't emit (Phase 4+ will handle)
+                // Web browsing events
+                OrchestratorEvent::BrowserNavigated { url, title } => {
+                    let _ = app_handle.emit(
+                        "browser-navigated",
+                        BrowserNavigatedPayload { url, title },
+                    );
+                }
+
+                OrchestratorEvent::BrowserContentExtracted { url, title, .. } => {
+                    let _ = app_handle.emit(
+                        "browser-content-extracted",
+                        BrowserNavigatedPayload { url, title },
+                    );
+                }
+
+                OrchestratorEvent::ReliabilityAssessed { doc_id, classification, score } => {
+                    let _ = app_handle.emit(
+                        "reliability-assessed",
+                        ReliabilityAssessedPayload { doc_id, classification, score },
+                    );
+                }
+
+                // All other events: log but don't emit
                 other => {
                     tracing::debug!("Unhandled orchestrator event: {:?}", other);
                 }

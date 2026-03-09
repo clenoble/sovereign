@@ -29,6 +29,21 @@ pub struct Document {
     /// Base64-encoded encryption nonce. None means content is plaintext.
     #[serde(default)]
     pub encryption_nonce: Option<String>,
+    /// Source URL if this document was fetched from the web.
+    #[serde(default)]
+    pub source_url: Option<String>,
+    /// Content classification: "Factual", "Opinion", or "Fiction".
+    #[serde(default)]
+    pub reliability_classification: Option<String>,
+    /// Reliability score (0.0–5.0, CRABE scale).
+    #[serde(default)]
+    pub reliability_score: Option<f32>,
+    /// JSON array of rubric scores: [{indicator, analysis, score}].
+    #[serde(default)]
+    pub reliability_assessment: Option<String>,
+    /// When the reliability assessment was last run.
+    #[serde(default)]
+    pub assessed_at: Option<DateTime<Utc>>,
 }
 
 /// Thread (project/topic grouping)
@@ -136,6 +151,11 @@ impl Document {
             head_commit: None,
             deleted_at: None,
             encryption_nonce: None,
+            source_url: None,
+            reliability_classification: None,
+            reliability_score: None,
+            reliability_assessment: None,
+            assessed_at: None,
         }
     }
 

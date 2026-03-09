@@ -6,6 +6,8 @@ import { app, type BubbleState } from '$lib/stores/app.svelte';
 import { openById } from '$lib/stores/documents.svelte';
 import { refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
 import { refreshContacts } from '$lib/stores/contacts.svelte';
+import { setBrowserNavigated, setBrowserContentExtracted, setBrowserReliability } from '$lib/stores/browser.svelte';
+import type { ReliabilityResultDto } from '$lib/api/commands';
 
 // Payload types matching the Rust-side structs
 interface ChatResponsePayload {
@@ -79,6 +81,20 @@ interface InjectionDetectedPayload {
 	source: string;
 	indicators: string[];
 	severity: number;
+}
+interface BrowserNavigatedPayload {
+	url: string;
+	title: string;
+}
+interface BrowserContentExtractedPayload {
+	url: string;
+	title: string;
+	text: string;
+}
+interface ReliabilityAssessedPayload {
+	doc_id: string;
+	classification: string;
+	score: number;
 }
 
 /** Subscribe to all backend events. Returns an unlisten function. */
@@ -209,6 +225,25 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 			pushSystem(
 				`\u26a0\ufe0f Injection detected [${severityLabel}] in "${p.source}": ${p.indicators.join(', ')}.${filtered}`
 			);
+		})
+	);
+
+	// Browser events
+	unlisteners.push(
+		await listen<BrowserNavigatedPayload>('browser-navigated', (e) => {
+			setBrowserNavigated(e.payload.url, e.payload.title);
+		})
+	);
+
+	unlisteners.push(
+		await listen<BrowserContentExtractedPayload>('browser-content-extracted', (e) => {
+			setBrowserContentExtracted(e.payload.text);
+		})
+	);
+
+	unlisteners.push(
+		await listen<ReliabilityAssessedPayload>('reliability-assessed', (e) => {
+			canvasRefresh();
 		})
 	);
 

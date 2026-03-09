@@ -6,7 +6,18 @@
 	import { canvas, navigateToDoc as canvasNavigateToDoc } from '$lib/stores/canvas.svelte';
 	import { openById } from '$lib/stores/documents.svelte';
 	import { contactsState } from '$lib/stores/contacts.svelte';
+	import { browser, openBrowser as openBrowserStore, closeBrowser as closeBrowserStore } from '$lib/stores/browser.svelte';
+	import { openBrowser as openBrowserCmd, closeBrowserCmd } from '$lib/api/commands';
 	import SkillsPanel from './SkillsPanel.svelte';
+
+	async function handleBrowse() {
+		if (browser.isOpen) {
+			closeBrowserStore();
+			try { await closeBrowserCmd(); } catch { /* ignore */ }
+		} else {
+			openBrowserStore('https://www.google.com');
+		}
+	}
 
 	function handleModels() {
 		app.modelPanelVisible = !app.modelPanelVisible;
@@ -100,6 +111,8 @@
 	</div>
 
 	<div class="right">
+		<button class="tb-btn tb-text" class:active={browser.isOpen} onclick={handleBrowse} title="Browse (Ctrl+B)">Browse</button>
+
 		<div class="skills-anchor">
 			<button class="tb-btn tb-text" class:active={app.skillsPanelVisible} onclick={handleSkills} title="Skills">Skills</button>
 			<SkillsPanel />

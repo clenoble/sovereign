@@ -30,7 +30,13 @@ export const themes = {
 		'--prov-owned': '#5a9fd4',
 		'--prov-owned-bg': '#1b2a3a',
 		'--prov-external': '#e07c6a',
-		'--prov-external-bg': '#3a2020'
+		'--prov-external-bg': '#3a2020',
+		'--reliability-high': '#10B981',
+		'--reliability-high-bg': '#064e3b',
+		'--reliability-medium': '#F59E0B',
+		'--reliability-medium-bg': '#78350f',
+		'--reliability-low': '#EF4444',
+		'--reliability-low-bg': '#7f1d1d'
 	},
 	light: {
 		'--bg-primary': '#f5f5f0',
@@ -61,7 +67,13 @@ export const themes = {
 		'--prov-owned': '#3a7fc4',
 		'--prov-owned-bg': '#e8f0f8',
 		'--prov-external': '#c05545',
-		'--prov-external-bg': '#fce8e8'
+		'--prov-external-bg': '#fce8e8',
+		'--reliability-high': '#059669',
+		'--reliability-high-bg': '#d1fae5',
+		'--reliability-medium': '#D97706',
+		'--reliability-medium-bg': '#fef3c7',
+		'--reliability-low': '#DC2626',
+		'--reliability-low-bg': '#fee2e2'
 	}
 } as const;
 

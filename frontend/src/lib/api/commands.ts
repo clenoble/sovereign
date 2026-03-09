@@ -160,6 +160,9 @@ export interface CanvasDocDto {
 	spatial_y: number;
 	created_at: string;
 	modified_at: string;
+	reliability_classification: string | null;
+	reliability_score: number | null;
+	source_url: string | null;
 }
 
 export interface ThreadDto {
@@ -400,3 +403,77 @@ export const importFile = (filePath: string, threadId?: string) =>
 export const getCommsConfig = () => invoke<CommsConfigDto>('get_comms_config');
 export const saveCommsConfig = (data: SaveCommsConfigDto) =>
 	invoke<void>('save_comms_config', { data });
+
+// ---------------------------------------------------------------------------
+// Web Browsing & Reliability
+// ---------------------------------------------------------------------------
+
+export interface FetchedPageDto {
+	url: string;
+	title: string;
+	body_markdown: string;
+	raw_text: string;
+}
+
+export interface ReliabilityResultDto {
+	classification: 'Factual' | 'Opinion' | 'Fiction';
+	final_score: number;
+	raw_assessment: RubricScoreDto[];
+}
+
+export interface RubricScoreDto {
+	indicator: string;
+	analysis: string;
+	score: number;
+}
+
+export interface Rect {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+// Embedded browser commands
+export const openBrowser = (url: string, bounds: Rect) =>
+	invoke<void>('open_browser', { url, bounds });
+export const closeBrowserCmd = () => invoke<void>('close_browser');
+export const navigateBrowser = (url: string) =>
+	invoke<void>('navigate_browser', { url });
+export const browserBack = () => invoke<void>('browser_back');
+export const browserForward = () => invoke<void>('browser_forward');
+export const browserRefresh = () => invoke<void>('browser_refresh');
+export const setBrowserBounds = (bounds: Rect) =>
+	invoke<void>('set_browser_bounds', { bounds });
+export const setBrowserVisible = (visible: boolean) =>
+	invoke<void>('set_browser_visible', { visible });
+
+// Web page fetch & extraction
+export const fetchWebPage = (url: string) =>
+	invoke<FetchedPageDto>('fetch_web_page', { url });
+
+// Reliability assessment
+export const assessReliability = (text: string) =>
+	invoke<ReliabilityResultDto>('assess_reliability', { text });
+export const reassessReliability = (docId: string) =>
+	invoke<ReliabilityResultDto>('reassess_reliability', { docId });
+
+// Save web page as document
+export const saveWebPage = (
+	url: string,
+	title: string,
+	content: string,
+	threadId?: string,
+	classification?: string,
+	score?: number,
+	assessmentJson?: string
+) =>
+	invoke<CanvasDocDto>('save_web_page', {
+		url,
+		title,
+		content,
+		threadId: threadId ?? null,
+		classification: classification ?? null,
+		score: score ?? null,
+		assessmentJson: assessmentJson ?? null
+	});
