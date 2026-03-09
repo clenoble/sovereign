@@ -21,6 +21,7 @@ pub struct MockGraphDB {
     conversations: RwLock<HashMap<String, Conversation>>,
     commits: RwLock<HashMap<String, Vec<Commit>>>,
     relationships: RwLock<Vec<RelatedTo>>,
+    suggested_links: RwLock<Vec<SuggestedLink>>,
     next_id: AtomicU64,
 }
 
@@ -34,6 +35,7 @@ impl MockGraphDB {
             conversations: RwLock::new(HashMap::new()),
             commits: RwLock::new(HashMap::new()),
             relationships: RwLock::new(Vec::new()),
+            suggested_links: RwLock::new(Vec::new()),
             next_id: AtomicU64::new(1),
         }
     }
@@ -206,6 +208,93 @@ impl GraphDB for MockGraphDB {
         Ok(self.relationships.read().unwrap().clone())
     }
     async fn traverse(&self, _doc_id: &str, _depth: u32, _limit: u32) -> DbResult<Vec<Document>> { Ok(vec![]) }
+
+    // -- Suggested Links ---
+
+    async fn create_suggested_link(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        relation_type: RelationType,
+        strength: f32,
+        rationale: &str,
+        source: SuggestionSource,
+    ) -> DbResult<SuggestedLink> {
+        let key = self.next_key();
+        let link = SuggestedLink {
+            id: Some(Self::make_thing("suggested_link", &key)),
+            in_: Some(Self::make_thing("document", to_id.split(':').last().unwrap_or(to_id))),
+            out: Some(Self::make_thing("document", from_id.split(':').last().unwrap_or(from_id))),
+            relation_type,
+            strength,
+            rationale: rationale.to_string(),
+            source,
+            status: SuggestionStatus::Pending,
+            created_at: Utc::now(),
+            resolved_at: None,
+        };
+        self.suggested_links.write().unwrap().push(link.clone());
+        Ok(link)
+    }
+
+    async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> {
+        let links = self.suggested_links.read().unwrap();
+        Ok(links.iter().filter(|l| l.status == SuggestionStatus::Pending).cloned().collect())
+    }
+
+    async fn list_suggestions_for_document(&self, doc_id: &str) -> DbResult<Vec<SuggestedLink>> {
+        let links = self.suggested_links.read().unwrap();
+        let id_part = doc_id.split(':').last().unwrap_or(doc_id);
+        Ok(links
+            .iter()
+            .filter(|l| {
+                let in_match = l.in_.as_ref().map(|t| t.id.to_raw() == id_part).unwrap_or(false);
+                let out_match = l.out.as_ref().map(|t| t.id.to_raw() == id_part).unwrap_or(false);
+                in_match || out_match
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn resolve_suggestion(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+    ) -> DbResult<SuggestedLink> {
+        let result = {
+            let mut links = self.suggested_links.write().unwrap();
+            let link = links
+                .iter_mut()
+                .find(|l| l.id.as_ref().map(|t| t.id.to_raw() == id).unwrap_or(false))
+                .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+
+            link.status = status.clone();
+            link.resolved_at = Some(Utc::now());
+            link.clone()
+        }; // write lock dropped here
+
+        // If accepted, create a real relationship
+        if status == SuggestionStatus::Accepted {
+            if let (Some(in_thing), Some(out_thing)) = (&result.in_, &result.out) {
+                let from_str = crate::schema::thing_to_raw(out_thing);
+                let to_str = crate::schema::thing_to_raw(in_thing);
+                self.create_relationship(&from_str, &to_str, result.relation_type.clone(), result.strength).await?;
+            }
+        }
+        Ok(result)
+    }
+
+    async fn suggestion_exists(&self, from_id: &str, to_id: &str) -> DbResult<bool> {
+        let links = self.suggested_links.read().unwrap();
+        let from_part = from_id.split(':').last().unwrap_or(from_id);
+        let to_part = to_id.split(':').last().unwrap_or(to_id);
+        let exists = links.iter().any(|l| {
+            let in_id = l.in_.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+            let out_id = l.out.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+            (in_id == to_part && out_id == from_part) || (in_id == from_part && out_id == to_part)
+        });
+        Ok(exists)
+    }
 
     async fn adopt_document(&self, id: &str) -> DbResult<Document> {
         let mut docs = self.documents.write().unwrap();
@@ -573,5 +662,121 @@ mod tests {
 
         let all = db.list_threads().await.unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn mock_create_and_list_suggested_links() {
+        let db = MockGraphDB::new();
+        let link = db
+            .create_suggested_link(
+                "document:a",
+                "document:b",
+                RelationType::References,
+                0.8,
+                "Both discuss CRDTs",
+                SuggestionSource::Consolidation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(link.status, SuggestionStatus::Pending);
+        assert!(link.resolved_at.is_none());
+
+        let pending = db.list_pending_suggestions().await.unwrap();
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mock_resolve_suggestion_accepted_creates_relationship() {
+        let db = MockGraphDB::new();
+        let link = db
+            .create_suggested_link(
+                "document:a",
+                "document:b",
+                RelationType::Supports,
+                0.7,
+                "Related topics",
+                SuggestionSource::Consolidation,
+            )
+            .await
+            .unwrap();
+        let link_id = link.id.as_ref().unwrap().id.to_raw();
+
+        let resolved = db.resolve_suggestion(&link_id, SuggestionStatus::Accepted).await.unwrap();
+        assert_eq!(resolved.status, SuggestionStatus::Accepted);
+        assert!(resolved.resolved_at.is_some());
+
+        // Should have created a real relationship
+        let rels = db.list_all_relationships().await.unwrap();
+        assert_eq!(rels.len(), 1);
+
+        // Pending list should be empty
+        let pending = db.list_pending_suggestions().await.unwrap();
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mock_resolve_suggestion_dismissed_no_relationship() {
+        let db = MockGraphDB::new();
+        let link = db
+            .create_suggested_link(
+                "document:x",
+                "document:y",
+                RelationType::Contradicts,
+                0.5,
+                "Opposing views",
+                SuggestionSource::Chat,
+            )
+            .await
+            .unwrap();
+        let link_id = link.id.as_ref().unwrap().id.to_raw();
+
+        db.resolve_suggestion(&link_id, SuggestionStatus::Dismissed).await.unwrap();
+
+        let rels = db.list_all_relationships().await.unwrap();
+        assert!(rels.is_empty());
+
+        let pending = db.list_pending_suggestions().await.unwrap();
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mock_suggestion_exists_bidirectional() {
+        let db = MockGraphDB::new();
+        db.create_suggested_link(
+            "document:a",
+            "document:b",
+            RelationType::References,
+            0.6,
+            "test",
+            SuggestionSource::Consolidation,
+        )
+        .await
+        .unwrap();
+
+        // Forward
+        assert!(db.suggestion_exists("document:a", "document:b").await.unwrap());
+        // Reverse
+        assert!(db.suggestion_exists("document:b", "document:a").await.unwrap());
+        // Unrelated
+        assert!(!db.suggestion_exists("document:a", "document:c").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn mock_list_pending_excludes_resolved() {
+        let db = MockGraphDB::new();
+        let l1 = db
+            .create_suggested_link("document:a", "document:b", RelationType::Supports, 0.8, "r1", SuggestionSource::Consolidation)
+            .await
+            .unwrap();
+        db.create_suggested_link("document:c", "document:d", RelationType::References, 0.6, "r2", SuggestionSource::Consolidation)
+            .await
+            .unwrap();
+
+        let l1_id = l1.id.as_ref().unwrap().id.to_raw();
+        db.resolve_suggestion(&l1_id, SuggestionStatus::Accepted).await.unwrap();
+
+        let pending = db.list_pending_suggestions().await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].rationale, "r2");
     }
 }

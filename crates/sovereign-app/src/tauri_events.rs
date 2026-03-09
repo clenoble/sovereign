@@ -138,6 +138,24 @@ pub struct ThreadSplitPayload {
     pub doc_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct LinkSuggestedPayload {
+    pub suggestion_id: String,
+    pub from_doc_id: String,
+    pub from_title: String,
+    pub to_doc_id: String,
+    pub to_title: String,
+    pub relation_type: String,
+    pub strength: f32,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LinkSuggestionResolvedPayload {
+    pub suggestion_id: String,
+    pub accepted: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Event forwarder
 // ---------------------------------------------------------------------------
@@ -332,6 +350,27 @@ pub fn spawn_event_forwarder(
                     let _ = app_handle.emit(
                         "reliability-assessed",
                         ReliabilityAssessedPayload { doc_id, classification, score },
+                    );
+                }
+
+                // Memory consolidation events
+                OrchestratorEvent::LinkSuggested {
+                    suggestion_id, from_doc_id, from_title,
+                    to_doc_id, to_title, relation_type, strength, rationale,
+                } => {
+                    let _ = app_handle.emit(
+                        "link-suggested",
+                        LinkSuggestedPayload {
+                            suggestion_id, from_doc_id, from_title,
+                            to_doc_id, to_title, relation_type, strength, rationale,
+                        },
+                    );
+                }
+
+                OrchestratorEvent::LinkSuggestionResolved { suggestion_id, accepted } => {
+                    let _ = app_handle.emit(
+                        "link-suggestion-resolved",
+                        LinkSuggestionResolvedPayload { suggestion_id, accepted },
                     );
                 }
 

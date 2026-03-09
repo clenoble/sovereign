@@ -458,6 +458,31 @@ export const assessReliability = (text: string) =>
 export const reassessReliability = (docId: string) =>
 	invoke<ReliabilityResultDto>('reassess_reliability', { docId });
 
+// Memory consolidation — AI-suggested links
+export interface SuggestionDto {
+	id: string;
+	from_doc_id: string;
+	from_title: string;
+	to_doc_id: string;
+	to_title: string;
+	relation_type: string;
+	strength: number;
+	rationale: string;
+	source: string;
+}
+
+export const listPendingSuggestions = () =>
+	invoke<SuggestionDto[]>('list_pending_suggestions');
+
+export const acceptLinkSuggestion = (id: string) =>
+	invoke<void>('accept_link_suggestion', { id });
+
+export const dismissLinkSuggestion = (id: string) =>
+	invoke<void>('dismiss_link_suggestion', { id });
+
+export const triggerConsolidation = () =>
+	invoke<number>('trigger_consolidation');
+
 // Save web page as document
 export const saveWebPage = (
 	url: string,
