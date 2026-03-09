@@ -4,19 +4,21 @@
 
 An experimental local-first graphical environment with on-device AI, end-to-end encryption, and peer-to-peer sync.
 
-Sovereign explores what personal computing looks like when nothing leaves your machine — no cloud accounts, no telemetry, no external servers. AI runs locally via quantized Qwen 2.5 models through llama.cpp. Documents are encrypted at rest with per-document keys. Devices sync directly over libp2p.
+Sovereign explores what personal computing looks like when nothing leaves your machine — no cloud accounts, no telemetry, no external servers. AI runs locally via quantized Qwen models (2.5 and 3.5) through llama.cpp. Documents are encrypted at rest with per-document keys. Devices sync directly over libp2p.
 
-This is a prototype. Built in Rust. 10 crates. ~16K lines. Co-developed with [Claude](https://claude.ai) by Anthropic.
+This is a prototype. Built in Rust. 10 crates. ~18K lines. Co-developed with [Claude](https://claude.ai) by Anthropic.
 
 ## What it explores
 
-- **On-device AI** — A 3B router classifies intent; a 7B model handles complex queries. Multi-turn chat with tool calling, trust tracking, and prompt injection detection. No API keys, no subscriptions.
+- **On-device AI** — A 3B router classifies intent; a 7B model handles complex queries. Multi-turn chat with tool calling, trust tracking, and prompt injection detection. Supports Qwen 2.5 and 3.5 (with thinking-mode suppression), Mistral, and Llama3. No API keys, no subscriptions.
 - **Spatial canvas** — Documents live on an infinite 2D canvas. Time runs left to right, thread lanes top to bottom. Adaptive level-of-detail: full cards at close zoom, density heatmap at extreme zoom-out. Minimap, sticky lane labels, cascade stacking for same-date cards.
+- **Embedded browser** — Browse the web from within Sovereign. An LLM-powered reliability assessment scores external content on domain-specific rubrics (factual integrity, logical coherence, rhetorical style). Save pages to your workspace with provenance and reliability metadata.
+- **Memory consolidation** — Background AI process discovers semantic links between documents. Suggests relationships (supports, references, contradicts, continues, derived-from) with strength scores and rationale. Accept or dismiss — dismissed pairs are never re-suggested.
 - **Action gravity** — Friction scales with irreversibility. Reading is instant. Deleting requires confirmation and a 30-day undo window. Security enforced by code architecture, not prompts.
 - **Encryption & social recovery** — XChaCha20-Poly1305 with per-document keys. Zero plaintext on disk. Shamir secret sharing splits your recovery key across trusted guardians — 3 of 5 can reconstruct it.
 - **Peer-to-peer sync** — Device pairing over libp2p. Encrypted manifests ensure even the network can't see your data.
 - **Unified communications** — Email, Signal, WhatsApp — organized by person, not by app. Conversations stay local.
-- **Content skills** — Composable tools instead of monolithic apps. Markdown editor, PDF export, search, image handling, file import.
+- **Content skills** — Composable tools instead of monolithic apps. Markdown editor, PDF export, search, image handling, file import. Third-party WASM skill plugins via the Component Model.
 - **Voice pipeline** — Wake word, Whisper speech-to-text, Piper TTS (optional).
 
 ## Architecture
@@ -28,15 +30,15 @@ Rust workspace with 10 crates:
 | `sovereign-core` | Shared types, config, interfaces, user profile, security primitives |
 | `sovereign-db` | SurrealDB graph storage (in-memory and RocksDB persistent) |
 | `sovereign-crypto` | XChaCha20-Poly1305, key hierarchy, Shamir secret sharing, guardian recovery |
-| `sovereign-ai` | LLM orchestrator, intent classification, chat agent loop, tool calling, trust, voice |
+| `sovereign-ai` | LLM orchestrator, intent classification, chat agent loop, tool calling, trust, voice, reliability assessment, memory consolidation |
 | `sovereign-ui` | Iced 0.14 GUI — taskbar, panels, chat, search, theming (legacy) |
 | `sovereign-canvas` | Infinite canvas — thread lanes, document cards, relationship arrows, minimap (legacy) |
 | `sovereign-skills` | Skill registry — markdown editor, search, image, PDF export, file import |
 | `sovereign-p2p` | libp2p networking, device pairing, encrypted sync |
 | `sovereign-comms` | Unified communications — email (IMAP/SMTP), Signal, WhatsApp |
-| `sovereign-app` | Binary entry point — CLI dispatch and GUI bootstrap |
+| `sovereign-app` | Binary entry point — CLI dispatch, GUI bootstrap, embedded browser, Tauri commands |
 
-Plus a **Tauri 2.0 + Svelte 5 frontend** (`frontend/`) — the active UI, built with SvelteKit 2, Vite, and Tauri IPC. Includes timeline canvas, AI chat panel, onboarding wizard, settings, and trust dashboard.
+Plus a **Tauri 2.0 + Svelte 5 frontend** (`frontend/`) — the active UI, built with SvelteKit 2, Vite, and Tauri IPC. Includes timeline canvas, AI chat panel, embedded browser, suggestion panel, onboarding wizard, settings, and trust dashboard.
 
 ## Getting started
 
@@ -54,15 +56,19 @@ Plus a **Tauri 2.0 + Svelte 5 frontend** (`frontend/`) — the active UI, built 
 pip install huggingface-hub
 
 # Router — intent classification (~2 GB)
+# Qwen 2.5:
 huggingface-cli download Qwen/Qwen2.5-3B-Instruct-GGUF \
   qwen2.5-3b-instruct-q4_k_m.gguf --local-dir models/
+# Or Qwen 3.5 (thinking-mode auto-suppressed):
+huggingface-cli download Qwen/Qwen3-4B-GGUF \
+  qwen3-4b-q4_k_m.gguf --local-dir models/
 
 # Reasoning — complex queries (~5 GB)
 huggingface-cli download Qwen/Qwen2.5-7B-Instruct-GGUF \
   qwen2.5-7b-instruct-q4_k_m.gguf --local-dir models/
 ```
 
-Filenames must match `config/default.toml`.
+Filenames must match `config/default.toml`. Qwen 3.5 models are auto-detected from the GGUF filename and use optimized sampling parameters with `/no_think` thinking-mode suppression.
 
 ### 2. Build & run (Tauri UI — recommended)
 
@@ -110,6 +116,8 @@ Settings live in `config/default.toml`. Override at runtime with `sovereign --co
 | `comms-email` | Email channel (IMAP/SMTP) |
 | `comms-signal` | Signal channel |
 | `comms-whatsapp` | WhatsApp Business API channel |
+| `web-browse` | Embedded browser with LLM reliability assessment |
+| `encrypted-log` | Per-entry encrypted session log (on by default) |
 
 ## Tests
 
@@ -124,7 +132,7 @@ cargo test -p sovereign-ai --no-default-features -j 4
 
 This is an experimental prototype. Try it, break it, contribute. See [open issues](https://github.com/clenoble/sovereign/issues) for good starting points.
 
-Ideas we haven't built yet: federation, plugin marketplace, mobile companion, collaborative editing, rich document format (WYSIWYG).
+Ideas we haven't built yet: federation, plugin marketplace, mobile companion, collaborative editing, rich document format (WYSIWYG), semantic search via embeddings.
 
 ## License
 

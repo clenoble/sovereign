@@ -28,19 +28,23 @@ This is critical — APIs change between versions and stale knowledge causes cas
 
 ### AI Orchestrator Architecture (`sovereign-ai`)
 
-The orchestrator uses local Qwen2.5 models via llama-cpp-2 (no cloud, no external servers):
-- **Router (3B)**: Fast intent classification — classifies user input into ~20 action types
+The orchestrator uses local Qwen models (2.5 and 3.5) via llama-cpp-2 (no cloud, no external servers):
+- **Router (3B–4B)**: Fast intent classification — classifies user input into ~20 action types. Supports Qwen 2.5-3B and Qwen 3.5-4B (with `/no_think` thinking-mode suppression).
 - **Reasoning (7B)**: Escalation model for complex/ambiguous queries (loaded on demand, unloaded after 5min idle)
 - **Chat agent loop**: Multi-turn with tool calling — loads session history, gathers workspace context, iterates up to 5 rounds of generate → tool call → execute → feed back
 - **6 read-only tools**: `search_documents`, `list_threads`, `get_document`, `list_documents`, `search_messages`, `list_contacts` — all Observe level (Level 0), no confirmation needed
 - **4 write tools**: `create_document`, `create_thread`, `rename_thread`, `move_document` — Modify level (Level 3), require confirmation
-- **Prompt format**: ChatML (`<|im_start|>role\n...\n<|im_end|>`), also supports Mistral and Llama3 formats via `PromptFormatter` trait
+- **Prompt format**: ChatML (`<|im_start|>role\n...\n<|im_end|>`), ChatMLQwen3 (adds `/no_think` suppression), Mistral, and Llama3 formats via `PromptFormatter` trait
+- **Per-model sampling**: `SamplingConfig` allows each model family to use optimized temperature, top_k, top_p, and presence_penalty. Qwen 3.5 uses aggressive sampling (temp=1.0, top_p=0.95, presence_penalty=1.5).
 - **Tool call format**: `<tool_call>{"name":"...","arguments":{...}}</tool_call>` — learned via few-shot
+- **Thinking-mode suppression**: Qwen 3.5 models inject `/no_think` in system prompts; `strip_think_blocks()` defensively removes any leaked `<think>...</think>` tags from output.
 
 - **Unified input path**: Both search bar and chat panel go through classify → gate → dispatch. `handle_chat()` delegates to `handle_query()`, avoiding duplicate routing logic.
-- **Model-agnostic**: Supports hot-swapping between Qwen, Mistral, Llama3 and other GGUF models at runtime. Fuzzy model resolution with alias expansion (e.g. "mistral" finds "Ministral-3B-...").
+- **Model-agnostic**: Supports hot-swapping between Qwen 2.5, Qwen 3.5, Mistral, Llama3 and other GGUF models at runtime. Fuzzy model resolution with alias expansion (e.g. "mistral" finds "Ministral-3B-..."). Format auto-detected from GGUF filename.
+- **Memory consolidation**: Background process discovers semantic links between documents when idle (60s cooldown, 30s poll). Scores candidate pairs via 3B router, suggests relationships with strength ≥ 0.4. See `consolidation.rs`.
+- **Content reliability assessment**: LLM-powered scoring of external web content. Two-step: classify (factual/opinion/fiction) → score on domain-specific rubric (2–3 criteria, 0–5 each). See `reliability.rs`.
 
-Key modules: `intent/` (classifier + parser), `llm/` (backend, async_backend, prompts, context, format), `orchestrator.rs`, `tools.rs`, `action_gate.rs`, `trust.rs`, `injection.rs`, `session_log.rs`, `autocommit.rs`, `voice/`
+Key modules: `intent/` (classifier + parser), `llm/` (backend, async_backend, prompts, context, format), `orchestrator.rs`, `tools.rs`, `action_gate.rs`, `trust.rs`, `injection.rs`, `session_log.rs`, `autocommit.rs`, `consolidation.rs`, `reliability.rs`, `voice/`
 
 ### UX Principles (from `sovereign_os_ux_principles.md`)
 
@@ -78,15 +82,19 @@ frontend/src/
     │   ├── app.svelte.ts       # Auth, bubble state, pending actions
     │   ├── canvas.svelte.ts    # Camera, docs, threads, timeline layout, heatmap
     │   ├── chat.svelte.ts      # Messages, visibility, generating state
+    │   ├── browser.svelte.ts   # Embedded browser: URL, title, reliability, bounds
+    │   ├── suggestions.svelte.ts # AI-suggested document links (pending list)
     │   ├── documents.svelte.ts
     │   ├── contacts.svelte.ts
     │   └── theme.svelte.ts
     ├── components/
     │   ├── Canvas.svelte       # Background: lanes, ticks, heatmap, "Now" line
     │   ├── CanvasCard.svelte   # LOD cards with cascade stacking + z-index
-    │   ├── Bubble.svelte       # AI bubble with animated state ring
+    │   ├── Bubble.svelte       # AI bubble with animated state ring + suggestion badge
     │   ├── Chat.svelte         # Chat panel: markdown, approve/reject, provenance
     │   ├── Minimap.svelte      # Viewport indicator + "Now" line
+    │   ├── BrowserPanel.svelte # Embedded browser with reliability assessment
+    │   ├── SuggestionPanel.svelte # AI-suggested document links (accept/dismiss)
     │   ├── OnboardingWizard.svelte
     │   ├── SettingsPanel.svelte
     │   └── ...                 # Search, Taskbar, LoginScreen, panels
@@ -266,6 +274,10 @@ git push origin main
 The binary crate (`sovereign-app`) is split into focused modules:
 - `cli.rs` — Clap CLI struct and Commands enum. **Subcommand is optional** — running `sovereign.exe` with no args defaults to `run` (launches GUI).
 - `commands.rs` — Async CLI handler functions (create/get/list/update/delete for docs, threads, relationships, commits, contacts, conversations)
+- `tauri_commands.rs` — 40+ Tauri `invoke()` command handlers (chat, documents, threads, contacts, settings, browser, suggestions, reliability)
+- `tauri_events.rs` — `OrchestratorEvent` → Tauri `emit()` bridge with typed payloads
+- `browser.rs` — Embedded Tauri webview lifecycle: create, navigate, back/forward/refresh, set bounds, destroy
+- `web.rs` — Web content fetching via `reqwest` + `readability` text extraction (8KB truncation for LLM, 12KB for display)
 - `setup.rs` — DB creation, crypto initialization, orchestrator callback wiring
 - `seed.rs` — Sample data seeding on first launch (DB data + user profile + session log history)
-- `main.rs` — Entry point: CLI dispatch + GUI bootstrap (`run_gui`)
+- `main.rs` — Entry point: CLI dispatch + GUI bootstrap (`run_gui`) + idle-watcher for background memory consolidation

@@ -47,7 +47,7 @@ These require design choices before implementation. Best done together.
 |---|---------|-------------|-----------------|--------|
 | 7 | **Rich document format (WYSIWYG)** | Markdown-only vs full rich text? Iced text_editor vs embedded webview (milkdown/ProseMirror)? How to store: raw markdown, HTML, or custom AST? | sovereign-skills, sovereign-ui, sovereign-db | Large |
 | 8 | **Progressive canvas density** | How to cluster semantically? Transition thresholds (card count per viewport)? Heatmap rendering (shader-based vs CPU rasterize)? | sovereign-canvas | Large |
-| 9 | **Skill sandbox / confinement** | Landlock (Linux) vs AppContainer (Windows) vs WASM? IPC protocol (JSON-RPC over Unix socket vs shared memory)? How to handle skill crashes? | sovereign-skills, sovereign-core | Large |
+| 9 | ~~**Skill sandbox / confinement**~~ | ~~Landlock (Linux) vs AppContainer (Windows) vs WASM?~~ **DONE** — WASM Component Model with wasmtime, WIT contracts, capability-based permissions, fuel-limited execution. See `doc/writing-skills.md`. | sovereign-skills, sovereign-core | ~~Large~~ |
 | 10 | **P2P CRDT-based conflict resolution** | Which CRDT library (yrs/automerge-rs)? Per-document or per-field CRDTs? How to merge thread structure? Conflict UI for non-mergeable changes? | sovereign-p2p, sovereign-db | Large |
 | 11 | **Guardian recovery UI flow** | Full-screen wizard vs panel? How to discover guardians (QR, libp2p, manual ID)? Progress feedback during 3-of-5 shard collection? Timeout/retry UX? | sovereign-ui, sovereign-p2p, sovereign-crypto | Large |
 | 12 | ~~**Session log encryption**~~ | ~~Encrypt per-entry or whole file?~~ **DONE** — Per-entry XChaCha20-Poly1305 encryption with SHA-256 hash chain for tamper detection. Feature: `encrypted-log` (on by default). | sovereign-ai, sovereign-crypto | ~~Medium~~ |
@@ -93,14 +93,14 @@ These are the features where we should discuss architecture before coding. Ranke
 
 4. ~~**Session log encryption (#12)**~~ — **DONE**. Per-entry XChaCha20-Poly1305 with SHA-256 hash chain.
 
-5. **Skill sandbox (#9)** — Prerequisite for community skills. No urgency until third-party skills exist, but architecture should be decided early to avoid retrofitting.
+5. ~~**Skill sandbox (#9)**~~ — **DONE**. WASM Component Model with wasmtime, WIT interface contracts, capability-based permissions. Third-party skill developer guide at `doc/writing-skills.md`.
 
 ---
 
 ## Completed
 
 <details>
-<summary>Click to expand (29 completed items)</summary>
+<summary>Click to expand (33 completed items)</summary>
 
 - [x] Fix cli_integration test on Windows (TOML backslash escaping) — commit 617ffc5
 - [x] Fix ggml flash-attention crash — commit 85fdf05
@@ -131,5 +131,9 @@ These are the features where we should discuss architecture before coding. Ranke
 - [x] Skill sandbox Phase 1: typed Capability enum, SkillContext, SkillDbAccess trait, execute_skill() gating — commit 3e5d903
 - [x] Skill sandbox Phase 2: WASM plugin runtime with wasmtime Component Model, WIT contracts, word-count-wasm example — commit 1606097
 - [x] Session log encryption: per-entry XChaCha20-Poly1305 with SHA-256 hash chain for tamper detection (`encrypted-log` feature, on by default)
+- [x] Embedded browser with LLM content reliability assessment — Tauri webview, content extraction (JS + readability), two-step reliability scoring (classify → rubric), save pages with provenance — commit 5dd5d0d
+- [x] Qwen 3.5 support with thinking-mode suppression (`/no_think`) and per-model sampling configs (`SamplingConfig`) — commit 73e041f
+- [x] Memory consolidation: background AI-suggested document links — `consolidation.rs`, `SuggestionPanel.svelte`, idle-watcher scheduling, accept/dismiss lifecycle — commit f9cd5ad
+- [x] Version bump to 0.0.2 — commit 467c348
 
 </details>

@@ -86,9 +86,10 @@ Sovereign GE is a 10-crate Rust workspace plus a Svelte frontend. Here's how the
 1. **User types in search bar or chat panel** (Svelte frontend)
 2. Frontend calls Tauri `invoke()` → Rust command handler
 3. Both go through the same path: `handle_query()` → `IntentClassifier.classify()` → action gate → `execute_action()`
-4. The classifier uses a local 3B GGUF model (Qwen2.5) to determine intent (search, open, create_thread, chat, etc.)
+4. The classifier uses a local 3B GGUF model (Qwen 2.5 or 3.5) to determine intent (search, open, create_thread, chat, browse, etc.)
 5. For "chat" intent, the agent loop runs: build prompt → generate → parse tool calls → execute tools → feed results back → repeat (up to 5 rounds)
 6. Results emit `OrchestratorEvent`s via Tauri `emit()` → frontend event listener updates stores → reactive UI updates
+7. **Background consolidation**: When idle (no user interaction for 60s, model not busy), runs memory consolidation to discover and suggest document links
 
 ### Tauri Frontend Architecture
 
@@ -99,6 +100,8 @@ The active UI is a Svelte 5 + SvelteKit 2 app bundled via Tauri 2.0:
 - **Events** (`lib/api/events.ts`): Listens for `OrchestratorEvent` from the Rust backend and dispatches to stores.
 - **Canvas** (`Canvas.svelte` + `CanvasCard.svelte`): HTML5 Canvas for background (grid, lanes, date ticks, heatmap) with DOM-overlaid cards. Camera with pan/zoom, 4 LOD tiers (full → title → dot → heatmap).
 - **Timeline layout**: X-axis = document `modified_at`, Y-axis = thread lanes. "Now" line, adaptive date tick spacing (day → week → month → year), density heatmap at extreme zoom-out.
+- **Browser** (`BrowserPanel.svelte`): Embedded Tauri webview with URL bar, navigation buttons, content extraction, and LLM reliability assessment with color-coded score pills.
+- **Suggestions** (`SuggestionPanel.svelte`): Displays AI-suggested document links from memory consolidation with accept/dismiss actions.
 
 ### Directory Layout
 
@@ -117,6 +120,8 @@ frontend/                        # Tauri + Svelte 5 web UI
 │       │   ├── app.svelte.ts    # Auth state, bubble state, pending actions
 │       │   ├── canvas.svelte.ts # Camera, documents, threads, timeline layout, heatmap
 │       │   ├── chat.svelte.ts   # Chat messages, visibility, generating state
+│       │   ├── browser.svelte.ts # Embedded browser: URL, title, reliability, bounds
+│       │   ├── suggestions.svelte.ts # AI-suggested document links (pending list)
 │       │   ├── documents.svelte.ts
 │       │   ├── contacts.svelte.ts
 │       │   └── theme.svelte.ts
@@ -127,6 +132,8 @@ frontend/                        # Tauri + Svelte 5 web UI
 │       │   ├── BubblePreview.svelte # SVG bubble face variants
 │       │   ├── Chat.svelte      # Chat panel with markdown, approval buttons
 │       │   ├── Minimap.svelte   # Canvas minimap with viewport indicator
+│       │   ├── BrowserPanel.svelte # Embedded browser with reliability assessment
+│       │   ├── SuggestionPanel.svelte # AI-suggested document links
 │       │   ├── Taskbar.svelte   # Bottom taskbar
 │       │   ├── Search.svelte    # Search overlay
 │       │   ├── OnboardingWizard.svelte
@@ -151,12 +158,14 @@ crates/
 │   │   ├── classifier.rs # 3B router + 7B reasoning escalation
 │   │   └── parser.rs     # Heuristic + JSON intent parsing
 │   ├── llm/
-│   │   ├── backend.rs    # llama-cpp-2 inference (global OnceLock backend)
+│   │   ├── backend.rs    # llama-cpp-2 inference + SamplingConfig (per-model params)
 │   │   ├── async_backend.rs # Async wrapper (spawn_blocking)
 │   │   ├── prompt.rs     # System prompts, few-shot examples
 │   │   ├── context.rs    # Multi-turn prompt assembly
-│   │   └── format.rs     # PromptFormatter: ChatML, Mistral, Llama3
-│   ├── tools.rs          # 10 tools (6 read-only, 4 write)
+│   │   └── format.rs     # PromptFormatter: ChatML, ChatMLQwen3, Mistral, Llama3
+│   ├── tools.rs          # 10 tools (6 read-only, 4 write) + strip_think_blocks()
+│   ├── consolidation.rs  # Memory consolidation: background AI-suggested document links
+│   ├── reliability.rs    # LLM content reliability assessment (factual/opinion/fiction)
 │   ├── action_gate.rs    # Authorization: action levels, plane checking
 │   ├── trust.rs          # Per-workflow trust tracking
 │   ├── injection.rs      # Prompt injection detection
@@ -186,9 +195,13 @@ crates/
 ├── sovereign-p2p/src/
 │   └── node.rs           # libp2p node, sync commands/events
 └── sovereign-app/src/
-    ├── main.rs           # Entry point
+    ├── main.rs           # Entry point + idle-watcher for consolidation
     ├── cli.rs            # Clap CLI definition
     ├── commands.rs       # CLI command handlers
+    ├── tauri_commands.rs # Tauri invoke() command handlers (40+ commands)
+    ├── tauri_events.rs   # OrchestratorEvent → Tauri emit() bridge
+    ├── browser.rs        # Embedded Tauri webview lifecycle
+    ├── web.rs            # Web content fetching + readability extraction
     ├── setup.rs          # DB + orchestrator wiring
     └── seed.rs           # First-launch sample data
 ```
@@ -211,6 +224,8 @@ Most heavy dependencies are opt-in:
 | `comms-email` | off | Email (IMAP/SMTP) |
 | `comms-signal` | off | Signal messenger |
 | `comms-whatsapp` | off | WhatsApp (stub) |
+| `web-browse` | off | Embedded browser with LLM reliability assessment |
+| `encrypted-log` | ON | Per-entry encrypted session log with hash chain |
 
 To build with the Tauri UI (most common for contributors):
 ```bash
@@ -297,6 +312,7 @@ cargo test -p sovereign-app --test cli_integration -j 4
 | [doc/plans/todolist.md](doc/plans/todolist.md) | Open issues and feature roadmap |
 | [doc/legal/sovereign_os_ethics.md](doc/legal/sovereign_os_ethics.md) | Ethical analysis and binding design constraints |
 | [doc/writing-skills.md](doc/writing-skills.md) | Guide for writing third-party WASM skill plugins |
+| [doc/plans/consolidated-memory.md](doc/plans/consolidated-memory.md) | Memory consolidation design (AI-suggested document links) |
 
 ---
 

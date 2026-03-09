@@ -1,6 +1,6 @@
 # Memory Consolidation — AI-Suggested Document Links
 
-**Status**: Draft — review before implementing
+**Status**: Implemented — commit f9cd5ad (2026-03-09)
 
 ## Context
 
