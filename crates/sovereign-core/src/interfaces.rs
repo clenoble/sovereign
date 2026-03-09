@@ -154,6 +154,17 @@ pub enum VoiceMode {
     PushToTalk,
 }
 
+/// Events from the voice pipeline to the UI.
+#[derive(Debug, Clone)]
+pub enum VoiceEvent {
+    WakeWordDetected,
+    ListeningStarted,
+    TranscriptionReady(String),
+    ListeningStopped,
+    TtsSpeaking(String),
+    TtsDone,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

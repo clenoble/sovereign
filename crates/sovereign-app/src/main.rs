@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+#[cfg(feature = "duress")]
 mod duress;
 mod seed;
 mod setup;
@@ -840,38 +841,8 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             None
         };
 
-        // Convert voice_rx to UI's VoiceEvent type
-        let ui_voice_rx = voice_rx.map(|rx| {
-            let (ui_tx, ui_rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                while let Ok(event) = rx.recv() {
-                    let ui_event = match event {
-                        sovereign_ai::VoiceEvent::WakeWordDetected => {
-                            sovereign_ui::app::VoiceEvent::WakeWordDetected
-                        }
-                        sovereign_ai::VoiceEvent::ListeningStarted => {
-                            sovereign_ui::app::VoiceEvent::ListeningStarted
-                        }
-                        sovereign_ai::VoiceEvent::TranscriptionReady(t) => {
-                            sovereign_ui::app::VoiceEvent::TranscriptionReady(t)
-                        }
-                        sovereign_ai::VoiceEvent::ListeningStopped => {
-                            sovereign_ui::app::VoiceEvent::ListeningStopped
-                        }
-                        sovereign_ai::VoiceEvent::TtsSpeaking(t) => {
-                            sovereign_ui::app::VoiceEvent::TtsSpeaking(t)
-                        }
-                        sovereign_ai::VoiceEvent::TtsDone => {
-                            sovereign_ui::app::VoiceEvent::TtsDone
-                        }
-                    };
-                    if ui_tx.send(ui_event).is_err() {
-                        break;
-                    }
-                }
-            });
-            ui_rx
-        });
+        // VoiceEvent is now defined in sovereign-core — both crates use the same type.
+        let ui_voice_rx = voice_rx;
 
         // Auto-commit engine
         let autocommit = Arc::new(tokio::sync::Mutex::new(

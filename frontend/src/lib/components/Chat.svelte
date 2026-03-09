@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { chat, pushUser, pushSystem, clearGenerating, toggleChat, recentMessages } from '$lib/stores/chat.svelte';
-	import { app } from '$lib/stores/app.svelte';
-	import { chatMessage, approveAction, rejectAction } from '$lib/api/commands';
+	import { app, confirmPendingAction, rejectPendingAction } from '$lib/stores/app.svelte';
+	import { chatMessage } from '$lib/api/commands';
 	import { renderMarkdown } from '$lib/utils/markdown';
 
 	let inputValue = $state('');
@@ -33,17 +33,15 @@
 			const lower = text.toLowerCase();
 			if (['yes', 'y', 'go ahead', 'sure', 'ok', 'okay', 'approve'].includes(lower)) {
 				pushUser(text);
-				pushSystem('Approved.');
-				await approveAction();
+				await confirmPendingAction();
 				return;
 			} else if (['no', 'n', 'cancel', 'reject', 'stop'].includes(lower)) {
 				pushUser(text);
-				pushSystem('Rejected.');
-				await rejectAction('User rejected via chat');
+				await rejectPendingAction('User rejected via chat');
 				return;
 			}
 			// Any other input cancels the pending action and processes normally
-			await rejectAction('User provided new input');
+			await rejectPendingAction('User provided new input');
 		}
 
 		pushUser(text);
@@ -92,15 +90,8 @@
 		} catch { /* clipboard not available */ }
 	}
 
-	async function handleQuickApprove() {
-		pushSystem('Approved.');
-		await approveAction();
-	}
-
-	async function handleQuickReject() {
-		pushSystem('Rejected.');
-		await rejectAction('User rejected via button');
-	}
+	const handleQuickApprove = () => confirmPendingAction();
+	const handleQuickReject = () => rejectPendingAction('User rejected via button');
 
 	function isInjectionWarning(text: string): boolean {
 		return text.includes('Injection detected');

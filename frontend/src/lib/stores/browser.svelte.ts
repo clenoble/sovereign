@@ -16,6 +16,11 @@ export const browser = $state({
 	bounds: { x: 0, y: 0, width: 0, height: 0 }
 });
 
+/**
+ * Set browser panel state to open. This only updates UI state —
+ * the actual Tauri webview is created by BrowserPanel on mount
+ * (which reads `browser.bounds` to position the webview).
+ */
 export function openBrowser(url: string) {
 	browser.url = url;
 	browser.isOpen = true;

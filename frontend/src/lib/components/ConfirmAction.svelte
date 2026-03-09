@@ -1,27 +1,8 @@
 <script lang="ts">
-	import { app } from '$lib/stores/app.svelte';
-	import { approveAction, rejectAction } from '$lib/api/commands';
-	import { pushSystem } from '$lib/stores/chat.svelte';
+	import { app, confirmPendingAction, rejectPendingAction } from '$lib/stores/app.svelte';
 
-	async function handleApprove() {
-		pushSystem('Approved.');
-		app.pendingAction = null;
-		try {
-			await approveAction();
-		} catch (e) {
-			pushSystem(`Approve error: ${e}`);
-		}
-	}
-
-	async function handleReject() {
-		pushSystem('Rejected.');
-		app.pendingAction = null;
-		try {
-			await rejectAction('User rejected via UI');
-		} catch (e) {
-			pushSystem(`Reject error: ${e}`);
-		}
-	}
+	const handleApprove = () => confirmPendingAction();
+	const handleReject = () => rejectPendingAction('User rejected via UI');
 </script>
 
 {#if app.pendingAction}

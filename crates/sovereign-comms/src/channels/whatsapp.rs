@@ -52,49 +52,25 @@ impl WhatsAppChannel {
         )
     }
 
-    /// Get or create a conversation for a WhatsApp chat, using a local cache.
     async fn get_or_create_conversation(
         &self,
         title: &str,
         participant_ids: Vec<String>,
         cache: &mut HashMap<String, Conversation>,
     ) -> Result<Conversation, CommsError> {
-        if let Some(conv) = cache.get(title) {
-            return Ok(conv.clone());
-        }
-
-        let conv = Conversation::new(
-            title.to_string(),
-            ChannelType::WhatsApp,
-            participant_ids,
-        );
-        let created = self.db.create_conversation(conv).await.map_err(CommsError::from)?;
-        cache.insert(title.to_string(), created.clone());
-        Ok(created)
+        super::helpers::get_or_create_conversation(
+            self.db.as_ref(), title, ChannelType::WhatsApp, participant_ids, cache,
+        ).await
     }
 
-    /// Resolve a phone number to a contact ID, creating a stub if needed.
     async fn resolve_contact_id(
         &self,
         phone: &str,
         display_name: Option<&str>,
     ) -> Result<String, CommsError> {
-        if let Some(contact) = self.db.find_contact_by_address(phone).await? {
-            return Ok(contact.id_string().unwrap_or_default());
-        }
-
-        let name = display_name
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| phone.to_string());
-        let mut contact = Contact::new(name, false);
-        contact.addresses.push(ChannelAddress {
-            channel: ChannelType::WhatsApp,
-            address: phone.to_string(),
-            display_name: display_name.map(|s| s.to_string()),
-            is_primary: true,
-        });
-        let created = self.db.create_contact(contact).await?;
-        Ok(created.id_string().unwrap_or_default())
+        super::helpers::resolve_contact_id(
+            self.db.as_ref(), ChannelType::WhatsApp, phone, display_name,
+        ).await
     }
 }
 
