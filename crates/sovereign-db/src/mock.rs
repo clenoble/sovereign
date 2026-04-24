@@ -203,7 +203,8 @@ impl GraphDB for MockGraphDB {
         Ok(rel)
     }
 
-    async fn list_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
+    async fn list_outgoing_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
+    async fn list_incoming_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
     async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>> {
         Ok(self.relationships.read().unwrap().clone())
     }

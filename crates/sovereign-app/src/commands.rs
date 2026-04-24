@@ -104,12 +104,17 @@ pub async fn add_relationship(
 
 pub async fn list_relationships(config: &AppConfig, doc_id: String) -> Result<()> {
     let db = create_db(config).await?;
-    let rels = db.list_relationships(&doc_id).await?;
-    for r in &rels {
+    let outgoing = db.list_outgoing_relationships(&doc_id).await?;
+    let incoming = db.list_incoming_relationships(&doc_id).await?;
+    for r in &outgoing {
         let id = r.id.as_ref().map(|t| thing_to_raw(t)).unwrap_or_default();
-        println!("{id}\t{}\tstrength={:.2}", r.relation_type, r.strength);
+        println!("{id}\tout\t{}\tstrength={:.2}", r.relation_type, r.strength);
     }
-    println!("({} relationships)", rels.len());
+    for r in &incoming {
+        let id = r.id.as_ref().map(|t| thing_to_raw(t)).unwrap_or_default();
+        println!("{id}\tin\t{}\tstrength={:.2}", r.relation_type, r.strength);
+    }
+    println!("({} relationships)", outgoing.len() + incoming.len());
     Ok(())
 }
 
