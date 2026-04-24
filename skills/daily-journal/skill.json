@@ -1,0 +1,9 @@
+{
+    "name": "Daily Journal",
+    "version": "0.1.0",
+    "description": "Open or create today's dated entry in the Journal thread (auto-created on first use)",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["write_all_documents"],
+    "file_types": []
+}

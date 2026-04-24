@@ -1,0 +1,9 @@
+{
+    "name": "Backlink Map",
+    "version": "0.1.0",
+    "description": "List all documents that reference the current one",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_all_documents"],
+    "file_types": []
+}

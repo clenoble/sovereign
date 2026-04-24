@@ -314,6 +314,9 @@ mod tests {
         use crate::skills::json_yaml_formatter::JsonYamlFormatterSkill;
         use crate::skills::csv_to_md::CsvToMdSkill;
         use crate::skills::redactor::RedactorSkill;
+        use crate::skills::backlink_map::BacklinkMapSkill;
+        use crate::skills::orphan_finder::OrphanFinderSkill;
+        use crate::skills::daily_journal::DailyJournalSkill;
 
         let mut registry = SkillRegistry::new();
         registry.register(Box::new(TextEditorSkill));
@@ -336,8 +339,11 @@ mod tests {
         registry.register(Box::new(JsonYamlFormatterSkill));
         registry.register(Box::new(CsvToMdSkill));
         registry.register(Box::new(RedactorSkill));
+        registry.register(Box::new(BacklinkMapSkill));
+        registry.register(Box::new(OrphanFinderSkill));
+        registry.register(Box::new(DailyJournalSkill));
 
-        assert_eq!(registry.all_skills().len(), 20);
+        assert_eq!(registry.all_skills().len(), 23);
         assert!(registry.find_skill("text-editor").is_some());
         assert!(registry.find_skill("image").is_some());
         assert!(registry.find_skill("pdf-export").is_some());
@@ -358,5 +364,8 @@ mod tests {
         assert!(registry.find_skill("json-yaml-formatter").is_some());
         assert!(registry.find_skill("csv-to-md").is_some());
         assert!(registry.find_skill("redactor").is_some());
+        assert!(registry.find_skill("backlink-map").is_some());
+        assert!(registry.find_skill("orphan-finder").is_some());
+        assert!(registry.find_skill("daily-journal").is_some());
     }
 }

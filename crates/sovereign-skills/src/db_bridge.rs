@@ -98,6 +98,34 @@ impl SkillDbAccess for SurrealGraphDB {
             .collect())
     }
 
+    fn find_or_create_thread(
+        &self,
+        name: &str,
+        description: &str,
+    ) -> anyhow::Result<String> {
+        use sovereign_db::schema::Thread;
+
+        let id_opt = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(GraphDB::find_thread_by_name(self, name))
+        })?;
+
+        if let Some(thread) = id_opt {
+            if let Some(id) = thread.id_string() {
+                return Ok(id);
+            }
+        }
+
+        let thread = Thread::new(name.to_string(), description.to_string());
+        let created = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(GraphDB::create_thread(self, thread))
+        })?;
+        created
+            .id_string()
+            .ok_or_else(|| anyhow::anyhow!("Created thread had no id"))
+    }
+
     fn list_all_documents_with_link_counts(
         &self,
     ) -> anyhow::Result<Vec<(String, String, u32, u32)>> {
