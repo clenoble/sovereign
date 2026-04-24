@@ -138,7 +138,7 @@ None / list of WIT host-db functions that would need to be added (cross-referenc
 Optional. Library suggestions, edge cases, gotchas worth flagging to a contributor.
 ```
 
-### Targets (19 specs)
+### Targets (20 specs)
 
 **Formatting & Style (4):**
 - Remove Duplicates
@@ -185,7 +185,7 @@ Phase 1 (gap fixes) ──┐
 Phase 2a (db access) ─┴─→ Phase 3 Wave D (3 skills)
 Phase 2b (llm access) ───→ Phase 3 Wave E (1 skill)
                           │
-                          └─→ Phase 4 (19 community specs, parallel to anything)
+                          └─→ Phase 4 (20 community specs, parallel to anything)
 ```
 
 Phase 4 is independent of every other phase — specs can be written at any point, including during Phase 3 if energy fits the writing register better than the implementation register.

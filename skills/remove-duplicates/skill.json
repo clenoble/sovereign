@@ -1,0 +1,9 @@
+{
+    "name": "Remove Duplicates",
+    "version": "0.0.1",
+    "description": "Deduplicate repeated lines or paragraphs (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["read_document", "write_document"],
+    "file_types": ["md", "txt"]
+}
