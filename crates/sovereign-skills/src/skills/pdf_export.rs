@@ -141,7 +141,7 @@ mod tests {
     fn export_returns_nonempty_pdf_bytes() {
         let skill = PdfExportSkill;
         let doc = make_doc();
-        let ctx = SkillContext { granted: std::collections::HashSet::new(), db: None };
+        let ctx = SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None };
         let result = skill.execute("export", &doc, "", &ctx);
         // May fail if fonts not installed — that's expected in CI
         match result {

@@ -1710,6 +1710,7 @@ impl SovereignApp {
         sovereign_skills::SkillContext {
             granted,
             db: self.skill_db.clone(),
+            llm: None,
         }
     }
 

@@ -110,6 +110,15 @@ impl Orchestrator {
         })
     }
 
+    /// Run a one-shot generation against the loaded router model.
+    /// Used by skills that need LLM inference (e.g. Thread Summary) via
+    /// the SkillLlmAccess bridge in sovereign-app. Holds the classifier
+    /// lock for the duration of the call.
+    pub async fn generate(&self, prompt: &str, max_tokens: u32) -> Result<String> {
+        let classifier = self.classifier.lock().await;
+        classifier.router.generate(prompt, max_tokens).await
+    }
+
     /// Attach a decision channel for user confirmations of Level 3+ actions.
     pub fn set_decision_rx(&mut self, rx: tokio::sync::mpsc::Receiver<ActionDecision>) {
         self.decision_rx = Some(tokio::sync::Mutex::new(rx));

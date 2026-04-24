@@ -246,6 +246,7 @@ mod tests {
         let ctx = SkillContext {
             granted: [Capability::ReadDocument].into_iter().collect(),
             db: None,
+            llm: None,
         };
         let result = registry.execute_skill("test", "any", &doc, "", &ctx);
         assert!(result.is_ok());
@@ -265,6 +266,7 @@ mod tests {
         let ctx = SkillContext {
             granted: std::collections::HashSet::new(),
             db: None,
+            llm: None,
         };
         let result = registry.execute_skill("test", "any", &doc, "", &ctx);
         assert!(result.is_err());
@@ -283,6 +285,7 @@ mod tests {
         let ctx = SkillContext {
             granted: std::collections::HashSet::new(),
             db: None,
+            llm: None,
         };
         let result = registry.execute_skill("nonexistent", "any", &doc, "", &ctx);
         assert!(result.is_err());
