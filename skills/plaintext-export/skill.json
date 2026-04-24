@@ -1,0 +1,9 @@
+{
+    "name": "Plaintext Export",
+    "version": "0.1.0",
+    "description": "Strip all markdown formatting and export the document as plain text",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_document"],
+    "file_types": ["md", "markdown"]
+}

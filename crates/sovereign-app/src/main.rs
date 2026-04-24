@@ -186,6 +186,13 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             registry.register(Box::new(sovereign_skills::skills::duplicate_document::DuplicateDocumentSkill));
             registry.register(Box::new(sovereign_skills::skills::markdown_editor::MarkdownEditorSkill));
             registry.register(Box::new(sovereign_skills::skills::video::VideoSkill));
+            // Wave A: read_document only
+            registry.register(Box::new(sovereign_skills::skills::outline_extractor::OutlineExtractorSkill));
+            registry.register(Box::new(sovereign_skills::skills::link_checker::LinkCheckerSkill));
+            registry.register(Box::new(sovereign_skills::skills::pii_detector::PiiDetectorSkill));
+            registry.register(Box::new(sovereign_skills::skills::readability_score::ReadabilityScoreSkill));
+            registry.register(Box::new(sovereign_skills::skills::html_export::HtmlExportSkill));
+            registry.register(Box::new(sovereign_skills::skills::plaintext_export::PlaintextExportSkill));
             tracing::info!("Registered {} core skills", registry.all_skills().len());
 
             // Create orchestrator channels
@@ -528,6 +535,25 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         ));
         registry.register(Box::new(
             sovereign_skills::skills::video::VideoSkill,
+        ));
+        // Wave A: read_document only
+        registry.register(Box::new(
+            sovereign_skills::skills::outline_extractor::OutlineExtractorSkill,
+        ));
+        registry.register(Box::new(
+            sovereign_skills::skills::link_checker::LinkCheckerSkill,
+        ));
+        registry.register(Box::new(
+            sovereign_skills::skills::pii_detector::PiiDetectorSkill,
+        ));
+        registry.register(Box::new(
+            sovereign_skills::skills::readability_score::ReadabilityScoreSkill,
+        ));
+        registry.register(Box::new(
+            sovereign_skills::skills::html_export::HtmlExportSkill,
+        ));
+        registry.register(Box::new(
+            sovereign_skills::skills::plaintext_export::PlaintextExportSkill,
         ));
         tracing::info!("Registered {} core skills", registry.all_skills().len());
 

@@ -1,0 +1,9 @@
+{
+    "name": "HTML Export",
+    "version": "0.1.0",
+    "description": "Render the document as a single-file standalone HTML with inline CSS",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_document"],
+    "file_types": ["md", "markdown"]
+}

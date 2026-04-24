@@ -1,0 +1,9 @@
+{
+    "name": "PII Detector",
+    "version": "0.1.0",
+    "description": "Scan for emails, phone numbers, SSNs, credit cards, and IP addresses",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_document"],
+    "file_types": ["md", "txt"]
+}

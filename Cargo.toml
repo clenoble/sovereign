@@ -63,6 +63,12 @@ genpdf = "0.2"
 # PDF text extraction
 pdf-extract = "0.10"
 
+# Markdown parsing / rendering (used by HTML Export, Plaintext Export)
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+
+# Regex (used by Link Checker, PII Detector)
+regex = "1.12"
+
 # UI framework
 iced = { version = "0.14", features = ["tokio", "wgpu", "image", "markdown", "canvas"] }
 open = "5.3"

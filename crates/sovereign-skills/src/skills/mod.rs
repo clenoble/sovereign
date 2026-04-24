@@ -1,9 +1,15 @@
 pub mod duplicate_document;
 pub mod file_import;
 pub mod find_replace;
+pub mod html_export;
 pub mod image;
+pub mod link_checker;
 pub mod markdown_editor;
+pub mod outline_extractor;
 pub mod pdf_export;
+pub mod pii_detector;
+pub mod plaintext_export;
+pub mod readability_score;
 pub mod search;
 pub mod text_editor;
 pub mod video;
