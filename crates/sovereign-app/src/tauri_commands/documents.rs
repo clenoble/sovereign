@@ -297,8 +297,15 @@ pub async fn execute_skill(
         title: doc.title,
         content: fields,
     };
+    // Auto-grant exactly the capabilities the skill declares, matching the
+    // legacy Iced build_skill_context behavior at sovereign-ui app.rs:1704.
+    let granted: HashSet<_> = state
+        .skill_registry
+        .find_skill(&skill_name)
+        .map(|s| s.required_capabilities().into_iter().collect())
+        .unwrap_or_default();
     let ctx = SkillContext {
-        granted: HashSet::new(),
+        granted,
         db: Some(state.skill_db.clone()),
         llm: state.skill_llm.clone(),
     };

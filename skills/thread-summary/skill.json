@@ -1,0 +1,9 @@
+{
+    "name": "Thread Summary",
+    "version": "0.1.0",
+    "description": "LLM-powered bullet-point summary of every document in the current thread",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_all_documents", "llm_inference"],
+    "file_types": []
+}
