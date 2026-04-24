@@ -554,6 +554,11 @@ mod tests {
             head_commit: None,
             deleted_at: None,
             encryption_nonce: None,
+            source_url: None,
+            reliability_classification: None,
+            reliability_score: None,
+            reliability_assessment: None,
+            assessed_at: None,
         }
     }
 
