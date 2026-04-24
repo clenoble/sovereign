@@ -42,6 +42,21 @@ pub trait SkillDbAccess: Send + Sync {
     fn list_documents(&self, thread_id: Option<&str>) -> anyhow::Result<Vec<(String, String)>>;
     /// Create a new document, returns the document ID.
     fn create_document(&self, title: &str, thread_id: &str, content: &str) -> anyhow::Result<String>;
+
+    /// List outgoing relationships from a document.
+    /// Returns (relation_type, target_id) for each edge where this document is the source.
+    fn list_relationships(&self, doc_id: &str) -> anyhow::Result<Vec<(String, String)>>;
+
+    /// List backlinks pointing to a document.
+    /// Returns (source_id, relation_type) for each edge where this document is the target.
+    fn list_backlinks(&self, doc_id: &str) -> anyhow::Result<Vec<(String, String)>>;
+
+    /// List all documents with their incoming and outgoing link counts.
+    /// Returns (id, title, in_degree, out_degree). Used by Orphan Finder
+    /// to identify documents nothing links to (in_degree == 0).
+    fn list_all_documents_with_link_counts(
+        &self,
+    ) -> anyhow::Result<Vec<(String, String, u32, u32)>>;
 }
 
 /// Resources available to a skill during execution.
