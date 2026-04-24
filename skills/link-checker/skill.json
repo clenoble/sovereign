@@ -1,0 +1,9 @@
+{
+    "name": "Link Checker",
+    "version": "0.1.0",
+    "description": "Extract all URLs from a document (markdown links, autolinks, bare URLs)",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_document"],
+    "file_types": ["md", "markdown"]
+}

@@ -304,6 +304,12 @@ mod tests {
         use crate::skills::search::SearchSkill;
         use crate::skills::file_import::FileImportSkill;
         use crate::skills::duplicate_document::DuplicateDocumentSkill;
+        use crate::skills::outline_extractor::OutlineExtractorSkill;
+        use crate::skills::link_checker::LinkCheckerSkill;
+        use crate::skills::pii_detector::PiiDetectorSkill;
+        use crate::skills::readability_score::ReadabilityScoreSkill;
+        use crate::skills::html_export::HtmlExportSkill;
+        use crate::skills::plaintext_export::PlaintextExportSkill;
 
         let mut registry = SkillRegistry::new();
         registry.register(Box::new(TextEditorSkill));
@@ -316,8 +322,14 @@ mod tests {
         registry.register(Box::new(SearchSkill));
         registry.register(Box::new(FileImportSkill));
         registry.register(Box::new(DuplicateDocumentSkill));
+        registry.register(Box::new(OutlineExtractorSkill));
+        registry.register(Box::new(LinkCheckerSkill));
+        registry.register(Box::new(PiiDetectorSkill));
+        registry.register(Box::new(ReadabilityScoreSkill));
+        registry.register(Box::new(HtmlExportSkill));
+        registry.register(Box::new(PlaintextExportSkill));
 
-        assert_eq!(registry.all_skills().len(), 10);
+        assert_eq!(registry.all_skills().len(), 16);
         assert!(registry.find_skill("text-editor").is_some());
         assert!(registry.find_skill("image").is_some());
         assert!(registry.find_skill("pdf-export").is_some());
@@ -328,5 +340,11 @@ mod tests {
         assert!(registry.find_skill("search").is_some());
         assert!(registry.find_skill("file-import").is_some());
         assert!(registry.find_skill("duplicate-document").is_some());
+        assert!(registry.find_skill("outline-extractor").is_some());
+        assert!(registry.find_skill("link-checker").is_some());
+        assert!(registry.find_skill("pii-detector").is_some());
+        assert!(registry.find_skill("readability-score").is_some());
+        assert!(registry.find_skill("html-export").is_some());
+        assert!(registry.find_skill("plaintext-export").is_some());
     }
 }

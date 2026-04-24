@@ -1,0 +1,9 @@
+{
+    "name": "Readability Score",
+    "version": "0.1.0",
+    "description": "Compute Flesch-Kincaid, Gunning Fog, and Coleman-Liau readability indices",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_document"],
+    "file_types": ["md", "txt"]
+}
