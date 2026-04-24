@@ -69,6 +69,12 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 # Regex (used by Link Checker, PII Detector)
 regex = "1.12"
 
+# YAML parsing (maintained fork of serde_yaml; used by JSON/YAML Formatter)
+serde_yml = "0.0.12"
+
+# CSV parsing (used by CSV → Markdown Table)
+csv = "1.4"
+
 # UI framework
 iced = { version = "0.14", features = ["tokio", "wgpu", "image", "markdown", "canvas"] }
 open = "5.3"
