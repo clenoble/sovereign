@@ -57,6 +57,16 @@ pub trait SkillDbAccess: Send + Sync {
     fn list_all_documents_with_link_counts(
         &self,
     ) -> anyhow::Result<Vec<(String, String, u32, u32)>>;
+
+    /// Find a thread by name (case-insensitive substring match) and return
+    /// its id. If no match is found, create a new thread with the given
+    /// name and description and return its id. Used by skills that target
+    /// a well-known thread (e.g. Daily Journal -> "Journal").
+    fn find_or_create_thread(
+        &self,
+        name: &str,
+        description: &str,
+    ) -> anyhow::Result<String>;
 }
 
 /// Narrow LLM interface exposed to skills.

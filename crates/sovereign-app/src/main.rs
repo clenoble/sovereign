@@ -198,6 +198,10 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             registry.register(Box::new(sovereign_skills::skills::json_yaml_formatter::JsonYamlFormatterSkill));
             registry.register(Box::new(sovereign_skills::skills::csv_to_md::CsvToMdSkill));
             registry.register(Box::new(sovereign_skills::skills::redactor::RedactorSkill));
+            // Wave D: read_all / write_all (cross-document)
+            registry.register(Box::new(sovereign_skills::skills::backlink_map::BacklinkMapSkill));
+            registry.register(Box::new(sovereign_skills::skills::orphan_finder::OrphanFinderSkill));
+            registry.register(Box::new(sovereign_skills::skills::daily_journal::DailyJournalSkill));
             tracing::info!("Registered {} core skills", registry.all_skills().len());
 
             // Create orchestrator channels
@@ -572,6 +576,16 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         ));
         registry.register(Box::new(
             sovereign_skills::skills::redactor::RedactorSkill,
+        ));
+        // Wave D: read_all / write_all (cross-document)
+        registry.register(Box::new(
+            sovereign_skills::skills::backlink_map::BacklinkMapSkill,
+        ));
+        registry.register(Box::new(
+            sovereign_skills::skills::orphan_finder::OrphanFinderSkill,
+        ));
+        registry.register(Box::new(
+            sovereign_skills::skills::daily_journal::DailyJournalSkill,
         ));
         tracing::info!("Registered {} core skills", registry.all_skills().len());
 

@@ -1,4 +1,6 @@
+pub mod backlink_map;
 pub mod csv_to_md;
+pub mod daily_journal;
 pub mod duplicate_document;
 pub mod file_import;
 pub mod find_replace;
@@ -7,6 +9,7 @@ pub mod image;
 pub mod json_yaml_formatter;
 pub mod link_checker;
 pub mod markdown_editor;
+pub mod orphan_finder;
 pub mod outline_extractor;
 pub mod pdf_export;
 pub mod pii_detector;
