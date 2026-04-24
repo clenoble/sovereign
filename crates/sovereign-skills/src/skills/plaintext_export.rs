@@ -1,6 +1,7 @@
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 use crate::manifest::Capability;
+use crate::markdown_util::sanitize_filename;
 use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
 pub struct PlaintextExportSkill;
@@ -180,45 +181,14 @@ fn collapse_blank_lines(s: &str) -> String {
     out
 }
 
-fn sanitize_filename(title: &str) -> String {
-    let s: String = title
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || matches!(c, '-' | '.' | '_' | ' ') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let trimmed = s.trim().trim_matches('.');
-    if trimmed.is_empty() {
-        "document".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sovereign_core::content::ContentFields;
-
-    fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }
-    }
-
-    fn make_doc(title: &str, body: &str) -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: title.into(),
-            content: ContentFields { body: body.into(), ..Default::default() },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc_with_title};
 
     fn run(body: &str) -> String {
         let skill = PlaintextExportSkill;
-        let doc = make_doc("X", body);
+        let doc = make_doc_with_title("X", body);
         let result = skill.execute("export", &doc, "", &dummy_ctx()).unwrap();
         if let SkillOutput::File { data, .. } = result {
             String::from_utf8(data).unwrap()
@@ -266,7 +236,7 @@ mod tests {
     #[test]
     fn output_filename_uses_txt_extension() {
         let skill = PlaintextExportSkill;
-        let doc = make_doc("Title", "body");
+        let doc = make_doc_with_title("Title", "body");
         let result = skill.execute("export", &doc, "", &dummy_ctx()).unwrap();
         if let SkillOutput::File { name, mime_type, .. } = result {
             assert_eq!(name, "Title.txt");

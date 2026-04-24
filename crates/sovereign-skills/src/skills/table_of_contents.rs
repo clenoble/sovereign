@@ -1,6 +1,6 @@
-use sovereign_core::content::ContentFields;
-
+use crate::content_util::replace_body;
 use crate::manifest::Capability;
+use crate::markdown_util::{scan_headings, slugify};
 use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
 pub struct TableOfContentsSkill;
@@ -43,11 +43,7 @@ impl CoreSkill for TableOfContentsSkill {
             }
             _ => anyhow::bail!("Unknown action: {action}"),
         };
-        Ok(SkillOutput::ContentUpdate(ContentFields {
-            body: new_body,
-            images: doc.content.images.clone(),
-            videos: doc.content.videos.clone(),
-        }))
+        Ok(SkillOutput::ContentUpdate(replace_body(doc, new_body)))
     }
 
     fn actions(&self) -> Vec<(String, String)> {
@@ -77,7 +73,6 @@ fn insert_or_replace(body: &str) -> String {
         }
     }
 
-    // No marker present — insert after the first H1 if any, else at the top.
     if let Some(first_h1_end) = first_h1_line_end(body) {
         let mut out = String::with_capacity(body.len() + block.len() + 4);
         out.push_str(&body[..first_h1_end]);
@@ -102,7 +97,6 @@ fn first_h1_line_end(body: &str) -> Option<usize> {
             && trimmed.starts_with("# ")
             && !trimmed.starts_with("## ")
         {
-            // include the trailing newline
             return Some(offset + line.len() - usize::from(line.ends_with('\n')));
         }
         offset += line.len();
@@ -115,7 +109,6 @@ fn build_toc(body: &str) -> String {
     if headings.is_empty() {
         return String::from("_(no headings found)_");
     }
-    // Skip the document's H1 (usually the title) — TOC starts at H2.
     let min_level = headings
         .iter()
         .map(|(l, _)| *l)
@@ -135,99 +128,10 @@ fn build_toc(body: &str) -> String {
     out.trim_end().to_string()
 }
 
-/// ATX-only heading scanner, fence-aware. Matches `#`..`######` followed by a
-/// space. Returns (level, text) pairs in document order.
-fn scan_headings(body: &str) -> Vec<(u8, String)> {
-    let mut out = Vec::new();
-    let mut in_fence = false;
-    let mut fence_marker: Option<&str> = None;
-    for line in body.lines() {
-        let trimmed = line.trim_start();
-        if let Some(marker) = fence_marker {
-            if trimmed.starts_with(marker) {
-                in_fence = false;
-                fence_marker = None;
-            }
-            continue;
-        }
-        if trimmed.starts_with("```") {
-            in_fence = true;
-            fence_marker = Some("```");
-            continue;
-        }
-        if trimmed.starts_with("~~~") {
-            in_fence = true;
-            fence_marker = Some("~~~");
-            continue;
-        }
-        if !in_fence {
-            if let Some((l, t)) = parse_atx(trimmed) {
-                out.push((l, t));
-            }
-        }
-    }
-    out
-}
-
-fn parse_atx(line: &str) -> Option<(u8, String)> {
-    let bytes = line.as_bytes();
-    let mut level = 0u8;
-    while level < 6 && bytes.get(level as usize) == Some(&b'#') {
-        level += 1;
-    }
-    if level == 0 {
-        return None;
-    }
-    let rest = &line[level as usize..];
-    if !rest.is_empty() && !rest.starts_with(' ') {
-        return None;
-    }
-    Some((level, rest.trim().trim_end_matches('#').trim().to_string()))
-}
-
-/// GitHub-style slug: lowercase, spaces → hyphens, drop everything else
-/// except alphanumerics and hyphens.
-fn slugify(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if c.is_alphanumeric() {
-            out.extend(c.to_lowercase());
-        } else if c == ' ' || c == '-' || c == '_' {
-            out.push('-');
-        }
-    }
-    // Collapse consecutive hyphens
-    let mut collapsed = String::with_capacity(out.len());
-    let mut prev_hyphen = false;
-    for c in out.chars() {
-        if c == '-' {
-            if !prev_hyphen {
-                collapsed.push(c);
-            }
-            prev_hyphen = true;
-        } else {
-            collapsed.push(c);
-            prev_hyphen = false;
-        }
-    }
-    collapsed.trim_matches('-').to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }
-    }
-
-    fn make_doc(body: &str) -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "T".into(),
-            content: ContentFields { body: body.into(), ..Default::default() },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc};
 
     fn run(action: &str, body: &str) -> anyhow::Result<String> {
         let skill = TableOfContentsSkill;
@@ -246,7 +150,6 @@ mod tests {
         assert!(out.contains(TOC_CLOSE));
         assert!(out.contains("- [Section A](#section-a)"));
         assert!(out.contains("- [Section B](#section-b)"));
-        // TOC appears after H1, before "Intro"
         let toc_pos = out.find(TOC_OPEN).unwrap();
         let intro_pos = out.find("Intro").unwrap();
         assert!(toc_pos < intro_pos);
@@ -267,7 +170,6 @@ mod tests {
         let out = run("insert", &body).unwrap();
         assert!(!out.contains("Old"));
         assert!(out.contains("- [New Section](#new-section)"));
-        // Only one TOC block remains
         assert_eq!(out.matches(TOC_OPEN).count(), 1);
     }
 
@@ -296,21 +198,5 @@ mod tests {
         assert!(out.contains("- [A](#a)"));
         assert!(out.contains("  - [A1](#a1)"));
         assert!(out.contains("  - [A2](#a2)"));
-    }
-
-    #[test]
-    fn skips_headings_inside_code_fences() {
-        let body = "# T\n\n## Real\n\n```\n## Fake\n```\n\n## Also Real\n";
-        let out = run("insert", body).unwrap();
-        assert!(out.contains("- [Real](#real)"));
-        assert!(out.contains("- [Also Real](#also-real)"));
-        assert!(!out.contains("Fake"));
-    }
-
-    #[test]
-    fn slugify_handles_punctuation_and_case() {
-        assert_eq!(slugify("Hello, World!"), "hello-world");
-        assert_eq!(slugify("Section 1.2"), "section-12");
-        assert_eq!(slugify("snake_case_thing"), "snake-case-thing");
     }
 }

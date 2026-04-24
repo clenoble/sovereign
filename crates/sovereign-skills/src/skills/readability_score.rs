@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::manifest::Capability;
+use crate::markdown_util::strip_markdown_lite;
 use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
 pub struct ReadabilityScoreSkill;
@@ -131,68 +132,6 @@ fn round1(x: f32) -> f32 {
     (x * 10.0).round() / 10.0
 }
 
-/// Drop the heaviest markdown noise so syllable/word counts reflect prose:
-/// strip fenced code blocks, inline code spans, and link target syntax (keep
-/// the visible link text). Headings (`#`), emphasis (`*`, `_`) characters are
-/// non-alphabetic so they don't perturb counts directly — leave them.
-fn strip_markdown_lite(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut in_fence = false;
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
-            continue;
-        }
-        out.push_str(&strip_inline(line));
-        out.push('\n');
-    }
-    out
-}
-
-fn strip_inline(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '`' => {
-                // skip until closing backtick on same line
-                for c2 in chars.by_ref() {
-                    if c2 == '`' {
-                        break;
-                    }
-                }
-            }
-            '[' => {
-                // [text](url) — collect text, skip url
-                let mut text = String::new();
-                let mut closed = false;
-                for c2 in chars.by_ref() {
-                    if c2 == ']' {
-                        closed = true;
-                        break;
-                    }
-                    text.push(c2);
-                }
-                out.push_str(&text);
-                if closed && chars.peek() == Some(&'(') {
-                    chars.next();
-                    for c2 in chars.by_ref() {
-                        if c2 == ')' {
-                            break;
-                        }
-                    }
-                }
-            }
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
 fn count_sentences(text: &str) -> usize {
     let mut n = 0usize;
     let mut prev_was_terminator = false;
@@ -249,19 +188,7 @@ fn is_vowel(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sovereign_core::content::ContentFields;
-
-    fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }
-    }
-
-    fn make_doc(body: &str) -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "Test".into(),
-            content: ContentFields { body: body.into(), ..Default::default() },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc};
 
     fn run(body: &str) -> serde_json::Value {
         let skill = ReadabilityScoreSkill;
@@ -291,32 +218,10 @@ mod tests {
 
     #[test]
     fn syllable_estimate_reasonable() {
-        // "readability" = 5 syllables (rea-da-bil-i-ty); we accept 4-6
         let s = count_syllables("readability");
         assert!((4..=6).contains(&s), "readability syllables: {s}");
-        // Common short words
         assert_eq!(count_syllables("cat"), 1);
         assert_eq!(count_syllables("simple"), 2);
-    }
-
-    #[test]
-    fn strips_code_fences() {
-        let stripped = strip_markdown_lite("text\n```\ncode goes here\n```\nmore text\n");
-        assert!(!stripped.contains("code goes here"));
-        assert!(stripped.contains("text"));
-        assert!(stripped.contains("more text"));
-    }
-
-    #[test]
-    fn strips_inline_code() {
-        let stripped = strip_inline("Use the `foo` function.");
-        assert_eq!(stripped, "Use the  function.");
-    }
-
-    #[test]
-    fn keeps_link_text_drops_url() {
-        let stripped = strip_inline("See [the docs](https://example.com) please.");
-        assert_eq!(stripped, "See the docs please.");
     }
 
     #[test]
@@ -325,7 +230,6 @@ mod tests {
                     Pack my box with five dozen liquor jugs. \
                     The five boxing wizards jump quickly.";
         let v = run(body);
-        // Sanity: positive grade-level estimates within a plausible range
         let fk = v["flesch_kincaid_grade"].as_f64().unwrap();
         let gf = v["gunning_fog"].as_f64().unwrap();
         let cl = v["coleman_liau"].as_f64().unwrap();

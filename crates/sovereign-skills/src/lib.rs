@@ -1,7 +1,11 @@
+pub mod content_util;
 pub mod db_bridge;
 pub mod manifest;
+pub mod markdown_util;
 pub mod registry;
 pub mod skills;
+#[cfg(test)]
+pub mod test_util;
 pub mod traits;
 #[cfg(feature = "wasm-plugins")]
 pub mod wasm;

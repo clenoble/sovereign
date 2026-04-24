@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 
 use regex::Regex;
-use sovereign_core::content::ContentFields;
 
+use crate::content_util::replace_body;
 use crate::manifest::Capability;
 use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
@@ -44,11 +44,7 @@ impl CoreSkill for JsonYamlFormatterSkill {
             _ => anyhow::bail!("Unknown action: {action}"),
         };
         let new_body = transform_blocks(&doc.content.body, mode);
-        Ok(SkillOutput::ContentUpdate(ContentFields {
-            body: new_body,
-            images: doc.content.images.clone(),
-            videos: doc.content.videos.clone(),
-        }))
+        Ok(SkillOutput::ContentUpdate(replace_body(doc, new_body)))
     }
 
     fn actions(&self) -> Vec<(String, String)> {
@@ -127,18 +123,7 @@ fn yaml_to_flow(formatted_yaml: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }
-    }
-
-    fn make_doc(body: &str) -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "T".into(),
-            content: ContentFields { body: body.into(), ..Default::default() },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc};
 
     fn run(action: &str, body: &str) -> String {
         let skill = JsonYamlFormatterSkill;
