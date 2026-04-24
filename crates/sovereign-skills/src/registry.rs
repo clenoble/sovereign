@@ -317,6 +317,7 @@ mod tests {
         use crate::skills::backlink_map::BacklinkMapSkill;
         use crate::skills::orphan_finder::OrphanFinderSkill;
         use crate::skills::daily_journal::DailyJournalSkill;
+        use crate::skills::thread_summary::ThreadSummarySkill;
 
         let mut registry = SkillRegistry::new();
         registry.register(Box::new(TextEditorSkill));
@@ -342,8 +343,9 @@ mod tests {
         registry.register(Box::new(BacklinkMapSkill));
         registry.register(Box::new(OrphanFinderSkill));
         registry.register(Box::new(DailyJournalSkill));
+        registry.register(Box::new(ThreadSummarySkill));
 
-        assert_eq!(registry.all_skills().len(), 23);
+        assert_eq!(registry.all_skills().len(), 24);
         assert!(registry.find_skill("text-editor").is_some());
         assert!(registry.find_skill("image").is_some());
         assert!(registry.find_skill("pdf-export").is_some());
@@ -367,5 +369,6 @@ mod tests {
         assert!(registry.find_skill("backlink-map").is_some());
         assert!(registry.find_skill("orphan-finder").is_some());
         assert!(registry.find_skill("daily-journal").is_some());
+        assert!(registry.find_skill("thread-summary").is_some());
     }
 }

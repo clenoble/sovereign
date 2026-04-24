@@ -202,6 +202,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             registry.register(Box::new(sovereign_skills::skills::backlink_map::BacklinkMapSkill));
             registry.register(Box::new(sovereign_skills::skills::orphan_finder::OrphanFinderSkill));
             registry.register(Box::new(sovereign_skills::skills::daily_journal::DailyJournalSkill));
+            // Wave E: LLM-using
+            registry.register(Box::new(sovereign_skills::skills::thread_summary::ThreadSummarySkill));
             tracing::info!("Registered {} core skills", registry.all_skills().len());
 
             // Create orchestrator channels
@@ -586,6 +588,10 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         ));
         registry.register(Box::new(
             sovereign_skills::skills::daily_journal::DailyJournalSkill,
+        ));
+        // Wave E: LLM-using
+        registry.register(Box::new(
+            sovereign_skills::skills::thread_summary::ThreadSummarySkill,
         ));
         tracing::info!("Registered {} core skills", registry.all_skills().len());
 

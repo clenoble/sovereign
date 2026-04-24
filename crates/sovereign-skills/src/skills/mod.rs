@@ -19,5 +19,6 @@ pub mod redactor;
 pub mod search;
 pub mod table_of_contents;
 pub mod text_editor;
+pub mod thread_summary;
 pub mod video;
 pub mod word_count;
