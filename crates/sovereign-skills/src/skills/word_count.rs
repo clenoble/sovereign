@@ -66,7 +66,7 @@ mod tests {
     use sovereign_core::content::ContentFields;
 
     fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None }
+        SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }
     }
 
     fn make_doc(body: &str) -> SkillDocument {

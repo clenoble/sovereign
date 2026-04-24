@@ -9,4 +9,4 @@ pub mod wasm;
 pub use db_bridge::wrap_db;
 pub use manifest::{Capability, SkillManifest};
 pub use registry::SkillRegistry;
-pub use traits::{CoreSkill, SkillContext, SkillDbAccess, SkillDocument, SkillOutput};
+pub use traits::{CoreSkill, SkillContext, SkillDbAccess, SkillDocument, SkillLlmAccess, SkillOutput};

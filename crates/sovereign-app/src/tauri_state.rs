@@ -23,6 +23,9 @@ pub struct AppState {
     pub config: AppConfig,
     pub skill_registry: Arc<sovereign_skills::SkillRegistry>,
     pub skill_db: Arc<dyn sovereign_skills::SkillDbAccess>,
+    /// LLM access for skills that declare `Capability::LlmInference`.
+    /// `None` when the orchestrator failed to initialize (model load error).
+    pub skill_llm: Option<Arc<dyn sovereign_skills::SkillLlmAccess>>,
     pub decision_tx: tokio::sync::mpsc::Sender<ActionDecision>,
     pub feedback_tx: tokio::sync::mpsc::Sender<FeedbackEvent>,
     /// Sender end for orchestrator events (for forwarding to Tauri events).

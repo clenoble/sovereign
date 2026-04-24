@@ -300,6 +300,7 @@ pub async fn execute_skill(
     let ctx = SkillContext {
         granted: HashSet::new(),
         db: Some(state.skill_db.clone()),
+        llm: state.skill_llm.clone(),
     };
     let output = state
         .skill_registry

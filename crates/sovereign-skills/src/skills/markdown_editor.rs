@@ -129,7 +129,7 @@ mod tests {
     fn normalize_adds_blank_lines_around_headings() {
         let doc = make_doc("text\n# Heading\nmore text");
         let skill = MarkdownEditorSkill;
-        let result = skill.execute("normalize", &doc, "", &SkillContext { granted: std::collections::HashSet::new(), db: None }).unwrap();
+        let result = skill.execute("normalize", &doc, "", &SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
                 assert!(cf.body.contains("text\n\n# Heading\n\nmore text"));
@@ -154,7 +154,7 @@ mod tests {
     fn preview_returns_structured_data() {
         let doc = make_doc("# Test");
         let skill = MarkdownEditorSkill;
-        let result = skill.execute("preview", &doc, "", &SkillContext { granted: std::collections::HashSet::new(), db: None }).unwrap();
+        let result = skill.execute("preview", &doc, "", &SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }).unwrap();
         assert!(matches!(result, SkillOutput::StructuredData { .. }));
     }
 
@@ -162,7 +162,7 @@ mod tests {
     fn unknown_action_fails() {
         let doc = make_doc("");
         let skill = MarkdownEditorSkill;
-        assert!(skill.execute("unknown", &doc, "", &SkillContext { granted: std::collections::HashSet::new(), db: None }).is_err());
+        assert!(skill.execute("unknown", &doc, "", &SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }).is_err());
     }
 
     #[test]

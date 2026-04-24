@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod llm_bridge;
 #[cfg(feature = "duress")]
 mod duress;
 mod err;
@@ -240,6 +241,10 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     // Clone orchestrator for consolidation idle-watcher
     let consolidation_orch = orchestrator.clone();
 
+    // Bridge orchestrator into SkillLlmAccess for skills that need inference.
+    let skill_llm: Option<Arc<dyn sovereign_skills::SkillLlmAccess>> =
+        orchestrator.as_ref().map(|o| llm_bridge::wrap_orchestrator(o.clone()));
+
     // Build Tauri app
     tauri::Builder::default()
         .manage(tauri_state::AppState {
@@ -248,6 +253,7 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             config: config.clone(),
             skill_registry,
             skill_db,
+            skill_llm,
             decision_tx,
             feedback_tx,
             orch_tx,

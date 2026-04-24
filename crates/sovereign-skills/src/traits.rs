@@ -59,11 +59,21 @@ pub trait SkillDbAccess: Send + Sync {
     ) -> anyhow::Result<Vec<(String, String, u32, u32)>>;
 }
 
+/// Narrow LLM interface exposed to skills.
+/// Skills never see the orchestrator — only this single inference call.
+pub trait SkillLlmAccess: Send + Sync {
+    /// Run inference against the currently loaded model.
+    /// `max_tokens` caps the response length. Returns the generated text
+    /// stripped of any model-specific control tokens.
+    fn generate(&self, prompt: &str, max_tokens: u32) -> anyhow::Result<String>;
+}
+
 /// Resources available to a skill during execution.
 /// The registry checks that required_capabilities() is a subset of granted.
 pub struct SkillContext {
     pub granted: HashSet<Capability>,
     pub db: Option<Arc<dyn SkillDbAccess>>,
+    pub llm: Option<Arc<dyn SkillLlmAccess>>,
 }
 
 /// Trait for core skills that are compiled into the Sovereign GE binary.
@@ -164,6 +174,7 @@ mod tests {
         let ctx = SkillContext {
             granted: skill.required_capabilities().into_iter().collect(),
             db: None,
+            llm: None,
         };
         let result = skill.execute("save", &doc, "", &ctx).unwrap();
         match result {

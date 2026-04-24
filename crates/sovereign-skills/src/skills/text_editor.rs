@@ -69,7 +69,7 @@ mod tests {
     fn save_returns_content_update_with_new_body() {
         let skill = TextEditorSkill;
         let doc = make_doc();
-        let ctx = SkillContext { granted: std::collections::HashSet::new(), db: None };
+        let ctx = SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None };
         let result = skill.execute("save", &doc, "new body text", &ctx).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
