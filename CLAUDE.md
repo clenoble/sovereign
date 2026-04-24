@@ -221,18 +221,17 @@ cargo.exe test --target-dir "C:/cargo-target" -j 2
 
 **VSCode `git.untrackedChanges` is set to `hidden`** because SurrealDB `.db` files (10k+) flood source control despite being in `.gitignore`. This means new files won't appear in the Source Control panel — you must `git add <file>` explicitly.
 
-The repo on the NAS is at `\\nas\home\Current\Projets\03 - user-centered OS` (bare repo).
+The repo on the NAS is at `\\nas\home\Current\Projets\03 - user-centered OS.git` (bare repo — `.git` suffix is the standard bare-repo naming convention, matching the sibling `02 - circular fashion.git`).
 
 ### Windows (from bash — Claude Code / Git Bash)
 
 Remote URL uses UNC path (already configured):
 ```bash
 # Remote should be set to:
-git remote set-url origin '//nas/home/Current/Projets/03 - user-centered OS'
+git remote set-url origin '//nas/home/Current/Projets/03 - user-centered OS.git'
 
-# Safe directory exceptions (one-time, already configured):
-git config --global --add safe.directory '//nas/home/Current/Projets/03 - user-centered OS'
-git config --global --add safe.directory '//nas/home/Current/Projets/03 - user-centered OS/.git'
+# Safe directory exception (one-time, already configured):
+git config --global --add safe.directory '//nas/home/Current/Projets/03 - user-centered OS.git'
 
 # Push / pull
 git push origin main
@@ -255,11 +254,10 @@ WSL cannot use UNC paths — mount the NAS first:
 sudo mount -t drvfs 'Z:' /mnt/nas
 
 # 2. Ensure git trusts the NAS path (one-time)
-git config --global --add safe.directory '/mnt/nas/03 - user-centered OS'
-git config --global --add safe.directory '/mnt/nas/03 - user-centered OS/.git'
+git config --global --add safe.directory '/mnt/nas/03 - user-centered OS.git'
 
 # 3. Set remote to WSL-accessible path
-git remote set-url origin '/mnt/nas/03 - user-centered OS'
+git remote set-url origin '/mnt/nas/03 - user-centered OS.git'
 
 # 4. Push
 git push origin main
