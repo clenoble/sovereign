@@ -310,6 +310,10 @@ mod tests {
         use crate::skills::readability_score::ReadabilityScoreSkill;
         use crate::skills::html_export::HtmlExportSkill;
         use crate::skills::plaintext_export::PlaintextExportSkill;
+        use crate::skills::table_of_contents::TableOfContentsSkill;
+        use crate::skills::json_yaml_formatter::JsonYamlFormatterSkill;
+        use crate::skills::csv_to_md::CsvToMdSkill;
+        use crate::skills::redactor::RedactorSkill;
 
         let mut registry = SkillRegistry::new();
         registry.register(Box::new(TextEditorSkill));
@@ -328,8 +332,12 @@ mod tests {
         registry.register(Box::new(ReadabilityScoreSkill));
         registry.register(Box::new(HtmlExportSkill));
         registry.register(Box::new(PlaintextExportSkill));
+        registry.register(Box::new(TableOfContentsSkill));
+        registry.register(Box::new(JsonYamlFormatterSkill));
+        registry.register(Box::new(CsvToMdSkill));
+        registry.register(Box::new(RedactorSkill));
 
-        assert_eq!(registry.all_skills().len(), 16);
+        assert_eq!(registry.all_skills().len(), 20);
         assert!(registry.find_skill("text-editor").is_some());
         assert!(registry.find_skill("image").is_some());
         assert!(registry.find_skill("pdf-export").is_some());
@@ -346,5 +354,9 @@ mod tests {
         assert!(registry.find_skill("readability-score").is_some());
         assert!(registry.find_skill("html-export").is_some());
         assert!(registry.find_skill("plaintext-export").is_some());
+        assert!(registry.find_skill("table-of-contents").is_some());
+        assert!(registry.find_skill("json-yaml-formatter").is_some());
+        assert!(registry.find_skill("csv-to-md").is_some());
+        assert!(registry.find_skill("redactor").is_some());
     }
 }

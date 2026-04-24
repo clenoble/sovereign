@@ -193,6 +193,11 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             registry.register(Box::new(sovereign_skills::skills::readability_score::ReadabilityScoreSkill));
             registry.register(Box::new(sovereign_skills::skills::html_export::HtmlExportSkill));
             registry.register(Box::new(sovereign_skills::skills::plaintext_export::PlaintextExportSkill));
+            // Wave B: read_document + write_document
+            registry.register(Box::new(sovereign_skills::skills::table_of_contents::TableOfContentsSkill));
+            registry.register(Box::new(sovereign_skills::skills::json_yaml_formatter::JsonYamlFormatterSkill));
+            registry.register(Box::new(sovereign_skills::skills::csv_to_md::CsvToMdSkill));
+            registry.register(Box::new(sovereign_skills::skills::redactor::RedactorSkill));
             tracing::info!("Registered {} core skills", registry.all_skills().len());
 
             // Create orchestrator channels
@@ -554,6 +559,19 @@ fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         ));
         registry.register(Box::new(
             sovereign_skills::skills::plaintext_export::PlaintextExportSkill,
+        ));
+        // Wave B: read_document + write_document
+        registry.register(Box::new(
+            sovereign_skills::skills::table_of_contents::TableOfContentsSkill,
+        ));
+        registry.register(Box::new(
+            sovereign_skills::skills::json_yaml_formatter::JsonYamlFormatterSkill,
+        ));
+        registry.register(Box::new(
+            sovereign_skills::skills::csv_to_md::CsvToMdSkill,
+        ));
+        registry.register(Box::new(
+            sovereign_skills::skills::redactor::RedactorSkill,
         ));
         tracing::info!("Registered {} core skills", registry.all_skills().len());
 
