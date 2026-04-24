@@ -133,19 +133,7 @@ fn extract_links(body: &str) -> Vec<Link> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sovereign_core::content::ContentFields;
-
-    fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }
-    }
-
-    fn make_doc(body: &str) -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "Test".into(),
-            content: ContentFields { body: body.into(), ..Default::default() },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc};
 
     fn run(body: &str) -> serde_json::Value {
         let skill = LinkCheckerSkill;

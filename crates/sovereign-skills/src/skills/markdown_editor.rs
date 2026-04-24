@@ -1,6 +1,6 @@
+use crate::content_util::replace_body;
 use crate::manifest::Capability;
 use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
-use sovereign_core::content::ContentFields;
 
 /// Skill for document-level markdown operations.
 ///
@@ -65,14 +65,6 @@ impl CoreSkill for MarkdownEditorSkill {
 
     fn file_types(&self) -> Vec<String> {
         vec!["md".into()]
-    }
-}
-
-fn replace_body(doc: &SkillDocument, body: String) -> ContentFields {
-    ContentFields {
-        body,
-        images: doc.content.images.clone(),
-        videos: doc.content.videos.clone(),
     }
 }
 
@@ -321,25 +313,13 @@ fn normalize_markdown(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sovereign_core::content::ContentFields;
-
-    fn make_doc(body: &str) -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "Test".into(),
-            content: ContentFields {
-                body: body.into(),
-                images: vec![],
-                videos: vec![],
-            },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc};
 
     #[test]
     fn normalize_adds_blank_lines_around_headings() {
         let doc = make_doc("text\n# Heading\nmore text");
         let skill = MarkdownEditorSkill;
-        let result = skill.execute("normalize", &doc, "", &SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }).unwrap();
+        let result = skill.execute("normalize", &doc, "", &dummy_ctx()).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
                 assert!(cf.body.contains("text\n\n# Heading\n\nmore text"));
@@ -364,7 +344,7 @@ mod tests {
     fn preview_returns_structured_data() {
         let doc = make_doc("# Test");
         let skill = MarkdownEditorSkill;
-        let result = skill.execute("preview", &doc, "", &SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }).unwrap();
+        let result = skill.execute("preview", &doc, "", &dummy_ctx()).unwrap();
         assert!(matches!(result, SkillOutput::StructuredData { .. }));
     }
 
@@ -372,7 +352,7 @@ mod tests {
     fn unknown_action_fails() {
         let doc = make_doc("");
         let skill = MarkdownEditorSkill;
-        assert!(skill.execute("unknown", &doc, "", &SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }).is_err());
+        assert!(skill.execute("unknown", &doc, "", &dummy_ctx()).is_err());
     }
 
     #[test]
@@ -389,9 +369,7 @@ mod tests {
     fn run(action: &str, body: &str, params: &str) -> String {
         let skill = MarkdownEditorSkill;
         let doc = make_doc(body);
-        let result = skill
-            .execute(action, &doc, params, &SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None })
-            .unwrap();
+        let result = skill.execute(action, &doc, params, &dummy_ctx()).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => cf.body,
             _ => panic!("Expected ContentUpdate"),
@@ -461,7 +439,7 @@ mod tests {
     fn case_unknown_mode_errors() {
         let skill = MarkdownEditorSkill;
         let doc = make_doc("anything");
-        let result = skill.execute("convert_case", &doc, "klingon", &SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None });
+        let result = skill.execute("convert_case", &doc, "klingon", &dummy_ctx());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unknown case mode"));
     }

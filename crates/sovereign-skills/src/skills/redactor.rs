@@ -1,5 +1,4 @@
-use sovereign_core::content::ContentFields;
-
+use crate::content_util::replace_body;
 use crate::manifest::Capability;
 use crate::skills::pii_detector::detect;
 use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
@@ -35,11 +34,7 @@ impl CoreSkill for RedactorSkill {
         match action {
             "redact" => {
                 let new_body = redact(&doc.content.body);
-                Ok(SkillOutput::ContentUpdate(ContentFields {
-                    body: new_body,
-                    images: doc.content.images.clone(),
-                    videos: doc.content.videos.clone(),
-                }))
+                Ok(SkillOutput::ContentUpdate(replace_body(doc, new_body)))
             }
             _ => anyhow::bail!("Unknown action: {action}"),
         }
@@ -72,18 +67,7 @@ fn redact(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }
-    }
-
-    fn make_doc(body: &str) -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "T".into(),
-            content: ContentFields { body: body.into(), ..Default::default() },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc};
 
     fn run(body: &str) -> String {
         let skill = RedactorSkill;

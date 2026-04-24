@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 
 use regex::Regex;
-use sovereign_core::content::ContentFields;
 
+use crate::content_util::replace_body;
 use crate::manifest::Capability;
 use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
@@ -42,11 +42,7 @@ impl CoreSkill for CsvToMdSkill {
                 } else {
                     body.clone()
                 };
-                Ok(SkillOutput::ContentUpdate(ContentFields {
-                    body: new_body,
-                    images: doc.content.images.clone(),
-                    videos: doc.content.videos.clone(),
-                }))
+                Ok(SkillOutput::ContentUpdate(replace_body(doc, new_body)))
             }
             _ => anyhow::bail!("Unknown action: {action}"),
         }
@@ -164,18 +160,7 @@ fn escape_cell(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }
-    }
-
-    fn make_doc(body: &str) -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "T".into(),
-            content: ContentFields { body: body.into(), ..Default::default() },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc};
 
     fn run(body: &str) -> String {
         let skill = CsvToMdSkill;

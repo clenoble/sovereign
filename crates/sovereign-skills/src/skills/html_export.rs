@@ -1,6 +1,7 @@
 use pulldown_cmark::{html, Options, Parser};
 
 use crate::manifest::Capability;
+use crate::markdown_util::sanitize_filename;
 use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
 pub struct HtmlExportSkill;
@@ -120,48 +121,15 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Strip filesystem-unfriendly characters; keep alphanumerics, dashes, dots,
-/// underscores, and spaces. Falls back to "document" if everything was stripped.
-fn sanitize_filename(title: &str) -> String {
-    let s: String = title
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || matches!(c, '-' | '.' | '_' | ' ') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let trimmed = s.trim().trim_matches('.');
-    if trimmed.is_empty() {
-        "document".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sovereign_core::content::ContentFields;
-
-    fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None, llm: None }
-    }
-
-    fn make_doc(title: &str, body: &str) -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: title.into(),
-            content: ContentFields { body: body.into(), ..Default::default() },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc_with_title};
 
     #[test]
     fn renders_basic_markdown_to_html() {
         let skill = HtmlExportSkill;
-        let doc = make_doc("My Doc", "# Hello\n\nWorld");
+        let doc = make_doc_with_title("My Doc", "# Hello\n\nWorld");
         let result = skill.execute("export", &doc, "", &dummy_ctx()).unwrap();
         if let SkillOutput::File { name, mime_type, data } = result {
             assert_eq!(name, "My Doc.html");
@@ -188,13 +156,5 @@ mod tests {
     fn html_escapes_title() {
         let escaped = html_escape("Hello <world> & \"friends\"");
         assert_eq!(escaped, "Hello &lt;world&gt; &amp; &quot;friends&quot;");
-    }
-
-    #[test]
-    fn sanitizes_unsafe_filename_chars() {
-        assert_eq!(sanitize_filename("foo/bar.txt"), "foo_bar.txt");
-        assert_eq!(sanitize_filename("a:b?c*"), "a_b_c_");
-        assert_eq!(sanitize_filename(""), "document");
-        assert_eq!(sanitize_filename("..."), "document");
     }
 }
