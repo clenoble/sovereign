@@ -1,0 +1,9 @@
+{
+    "name": "Entropy Scanner",
+    "version": "0.0.1",
+    "description": "Flag high-entropy strings that may be secrets or API keys (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["read_document"],
+    "file_types": ["md", "txt"]
+}

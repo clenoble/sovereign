@@ -1,0 +1,9 @@
+{
+    "name": "Frontmatter Parser",
+    "version": "0.0.1",
+    "description": "Extract YAML/TOML frontmatter as structured data (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["read_document"],
+    "file_types": ["md", "markdown"]
+}

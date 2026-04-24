@@ -1,0 +1,9 @@
+{
+    "name": "Meeting Notes Template",
+    "version": "0.0.1",
+    "description": "Stamp a structured meeting-notes template into a new document (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["write_all_documents"],
+    "file_types": []
+}

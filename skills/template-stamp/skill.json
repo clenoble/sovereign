@@ -1,0 +1,9 @@
+{
+    "name": "Template Stamp",
+    "version": "0.0.1",
+    "description": "Fill a document template with variable substitution from params (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["read_document", "write_document"],
+    "file_types": ["md", "markdown"]
+}
