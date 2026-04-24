@@ -73,15 +73,11 @@ impl SkillDbAccess for SurrealGraphDB {
     fn list_relationships(&self, doc_id: &str) -> anyhow::Result<Vec<(String, String)>> {
         let rels = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
-                .block_on(GraphDB::list_relationships(self, doc_id))
+                .block_on(GraphDB::list_outgoing_relationships(self, doc_id))
         })?;
         Ok(rels
             .iter()
             .filter_map(|r| {
-                let source = r.in_.as_ref().map(thing_to_raw)?;
-                if source != doc_id {
-                    return None;
-                }
                 let target = r.out.as_ref().map(thing_to_raw)?;
                 Some((r.relation_type.to_string(), target))
             })
@@ -91,15 +87,11 @@ impl SkillDbAccess for SurrealGraphDB {
     fn list_backlinks(&self, doc_id: &str) -> anyhow::Result<Vec<(String, String)>> {
         let rels = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
-                .block_on(GraphDB::list_relationships(self, doc_id))
+                .block_on(GraphDB::list_incoming_relationships(self, doc_id))
         })?;
         Ok(rels
             .iter()
             .filter_map(|r| {
-                let target = r.out.as_ref().map(thing_to_raw)?;
-                if target != doc_id {
-                    return None;
-                }
                 let source = r.in_.as_ref().map(thing_to_raw)?;
                 Some((source, r.relation_type.to_string()))
             })

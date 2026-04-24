@@ -489,15 +489,29 @@ impl GraphDB for SurrealGraphDB {
             .ok_or_else(|| DbError::Query("Failed to create relationship".into()))
     }
 
-    async fn list_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
-        let id = doc_id.to_string();
+    async fn list_outgoing_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
+        let doc = id_to_thing(doc_id);
         let mut result = self
             .db
-            .query("SELECT * FROM related_to WHERE in = $id OR out = $id")
-            .bind(("id", id))
+            .query("SELECT VALUE ->related_to.* FROM $doc")
+            .bind(("doc", doc))
             .await?;
-        let rels: Vec<RelatedTo> = result.take(0)?;
-        Ok(rels)
+        // SELECT VALUE on a graph traversal yields one inner array per matched
+        // FROM row; when $doc resolves to a single record the outer Vec has
+        // length 0 or 1. Flatten to a flat list of edges.
+        let nested: Vec<Vec<RelatedTo>> = result.take(0)?;
+        Ok(nested.into_iter().flatten().collect())
+    }
+
+    async fn list_incoming_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
+        let doc = id_to_thing(doc_id);
+        let mut result = self
+            .db
+            .query("SELECT VALUE <-related_to.* FROM $doc")
+            .bind(("doc", doc))
+            .await?;
+        let nested: Vec<Vec<RelatedTo>> = result.take(0)?;
+        Ok(nested.into_iter().flatten().collect())
     }
 
     async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>> {
@@ -1129,8 +1143,10 @@ mod tests {
             .unwrap();
         assert!(rel.id.is_some());
 
-        let rels = db.list_relationships(&id1).await.unwrap();
-        assert_eq!(rels.len(), 1);
+        let outgoing = db.list_outgoing_relationships(&id1).await.unwrap();
+        assert_eq!(outgoing.len(), 1);
+        let incoming = db.list_incoming_relationships(&id2).await.unwrap();
+        assert_eq!(incoming.len(), 1);
     }
 
     #[tokio::test]

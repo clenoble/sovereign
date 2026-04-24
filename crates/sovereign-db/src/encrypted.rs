@@ -225,8 +225,12 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.create_relationship(from_id, to_id, relation_type, strength).await
     }
 
-    async fn list_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
-        self.inner.list_relationships(doc_id).await
+    async fn list_outgoing_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
+        self.inner.list_outgoing_relationships(doc_id).await
+    }
+
+    async fn list_incoming_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
+        self.inner.list_incoming_relationships(doc_id).await
     }
 
     async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>> {
@@ -638,7 +642,8 @@ mod tests {
         async fn find_thread_by_name(&self, _name: &str) -> DbResult<Option<Thread>> { Ok(None) }
         async fn move_document_to_thread(&self, _doc_id: &str, _new_thread_id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn create_relationship(&self, _from_id: &str, _to_id: &str, _relation_type: RelationType, _strength: f32) -> DbResult<RelatedTo> { Err(DbError::NotFound("mock".into())) }
-        async fn list_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
+        async fn list_outgoing_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
+        async fn list_incoming_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
         async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
         async fn traverse(&self, _doc_id: &str, _depth: u32, _limit: u32) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn adopt_document(&self, _id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }

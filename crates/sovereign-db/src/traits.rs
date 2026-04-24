@@ -80,7 +80,11 @@ pub trait GraphDB: Send + Sync {
         strength: f32,
     ) -> DbResult<RelatedTo>;
 
-    async fn list_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>>;
+    /// List edges where this document is the source (outgoing).
+    async fn list_outgoing_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>>;
+
+    /// List edges where this document is the target (incoming / backlinks).
+    async fn list_incoming_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>>;
 
     /// List all relationships in the database.
     async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>>;
