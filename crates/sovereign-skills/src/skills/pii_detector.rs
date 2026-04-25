@@ -138,7 +138,7 @@ fn phone_re() -> &'static Regex {
     RE.get_or_init(|| {
         Regex::new(
             r"(?x)
-            (?:\+?\d{1,3}[\s\-.])?     # optional country code
+            (?:\+\d{1,3}[\s\-.])?     # optional country code (must start with +)
             \(?\d{3}\)?[\s\-.]\d{3}[\s\-.]\d{4}
             ",
         )

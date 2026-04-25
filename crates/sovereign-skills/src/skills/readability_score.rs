@@ -213,7 +213,7 @@ mod tests {
     fn simple_sentence_counts_correctly() {
         let v = run("The cat sat on the mat. The dog ran fast.");
         assert_eq!(v["sentences"], 2);
-        assert_eq!(v["words"], 11);
+        assert_eq!(v["words"], 10);
     }
 
     #[test]
