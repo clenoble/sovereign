@@ -90,6 +90,21 @@ impl GraphDB for SurrealGraphDB {
             DEFINE INDEX IF NOT EXISTS idx_doc_is_owned ON document FIELDS is_owned;\
             DEFINE INDEX IF NOT EXISTS idx_doc_deleted_at ON document FIELDS deleted_at;\
             DEFINE INDEX IF NOT EXISTS idx_thread_deleted_at ON thread FIELDS deleted_at;\
+            DEFINE INDEX IF NOT EXISTS idx_doc_pii_scanned ON document FIELDS pii_scanned_at;\
+            DEFINE INDEX IF NOT EXISTS idx_msg_pii_scanned ON message FIELDS pii_scanned_at;\
+            DEFINE INDEX IF NOT EXISTS idx_contact_entity ON contact FIELDS entity_id;\
+            DEFINE INDEX IF NOT EXISTS idx_contact_pii_scanned ON contact FIELDS pii_scanned_at;\
+            DEFINE INDEX IF NOT EXISTS idx_entity_name ON entity FIELDS name;\
+            DEFINE INDEX IF NOT EXISTS idx_entity_kind ON entity FIELDS kind;\
+            DEFINE INDEX IF NOT EXISTS idx_entity_deleted_at ON entity FIELDS deleted_at;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_entity ON pii_record FIELDS entity_id;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_kind ON pii_record FIELDS kind;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_stored_secret ON pii_record FIELDS stored_secret;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_review_state ON pii_record FIELDS review_state;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_deleted_at ON pii_record FIELDS deleted_at;\
+            DEFINE INDEX IF NOT EXISTS idx_share_pii ON share_record FIELDS pii_record_id;\
+            DEFINE INDEX IF NOT EXISTS idx_share_entity ON share_record FIELDS to_entity_id;\
+            DEFINE INDEX IF NOT EXISTS idx_share_at ON share_record FIELDS shared_at;\
         ";
         self.db
             .query(schema)

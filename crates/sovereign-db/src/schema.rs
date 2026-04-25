@@ -44,6 +44,19 @@ pub struct Document {
     /// When the reliability assessment was last run.
     #[serde(default)]
     pub assessed_at: Option<DateTime<Utc>>,
+    // --- PII pipeline fields (see doc/plans/pii-management-dashboard.md) ---
+    /// Base64-encoded ciphertext of the original (pre-tokenization) body.
+    /// `content.body` holds the canonical (tokenized) form; this preserves
+    /// the original for L3-gated reveal, surviving LLM-NER false positives.
+    #[serde(default)]
+    pub body_raw_encrypted: Option<String>,
+    /// Base64-encoded XChaCha20 nonce paired with `body_raw_encrypted`.
+    #[serde(default)]
+    pub body_raw_nonce: Option<String>,
+    /// When this document was last processed by the PII pipeline. None means
+    /// the document has not yet been scanned.
+    #[serde(default)]
+    pub pii_scanned_at: Option<DateTime<Utc>>,
 }
 
 /// Thread (project/topic grouping)
@@ -204,6 +217,9 @@ impl Document {
             reliability_score: None,
             reliability_assessment: None,
             assessed_at: None,
+            body_raw_encrypted: None,
+            body_raw_nonce: None,
+            pii_scanned_at: None,
         }
     }
 
@@ -341,6 +357,13 @@ pub struct Contact {
     pub deleted_at: Option<String>,
     #[serde(default)]
     pub encryption_nonce: Option<String>,
+    /// Entity this contact belongs to (e.g. an employee at an org).
+    /// None means the contact is unassigned.
+    #[serde(default)]
+    pub entity_id: Option<String>,
+    /// When this contact was last processed by the PII pipeline.
+    #[serde(default)]
+    pub pii_scanned_at: Option<DateTime<Utc>>,
 }
 
 impl Contact {
@@ -357,6 +380,8 @@ impl Contact {
             modified_at: now,
             deleted_at: None,
             encryption_nonce: None,
+            entity_id: None,
+            pii_scanned_at: None,
         }
     }
 
@@ -395,6 +420,17 @@ pub struct Message {
     pub deleted_at: Option<String>,
     #[serde(default)]
     pub encryption_nonce: Option<String>,
+    // --- PII pipeline fields ---
+    /// Base64-encoded ciphertext of the original (pre-tokenization) body.
+    /// `body` holds the canonical (tokenized) form.
+    #[serde(default)]
+    pub body_raw_encrypted: Option<String>,
+    /// Base64-encoded XChaCha20 nonce paired with `body_raw_encrypted`.
+    #[serde(default)]
+    pub body_raw_nonce: Option<String>,
+    /// When this message was last processed by the PII pipeline.
+    #[serde(default)]
+    pub pii_scanned_at: Option<DateTime<Utc>>,
 }
 
 impl Message {
@@ -426,6 +462,9 @@ impl Message {
             created_at: now,
             deleted_at: None,
             encryption_nonce: None,
+            body_raw_encrypted: None,
+            body_raw_nonce: None,
+            pii_scanned_at: None,
         }
     }
 
@@ -472,6 +511,244 @@ impl Conversation {
     }
 }
 
+// === PII Management & Dashboard schemas ===
+//
+// See doc/plans/pii-management-dashboard.md for the design.
+// Invariant: at-rest, document/message bodies hold reference tokens of the
+// form `[pii:<record_id>]`; raw values live encrypted in `PiiRecord` and in
+// the per-source `body_raw_encrypted` / `body_raw_nonce` blobs.
+
+/// Kind of business / personal entity that aggregates PII, contacts,
+/// stored secrets, and sharing records.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum EntityKind {
+    /// The user themselves — sentinel entity for self-PII (own bank account,
+    /// own passport, etc.).
+    #[serde(rename = "self")]
+    SelfEntity,
+    /// An organization or business (Acme Corp, my bank, my insurance).
+    Org,
+    /// A person who isn't an organization (a doctor, a friend).
+    Person,
+    /// A service or platform (GitHub, an API provider, a SaaS).
+    Service,
+}
+
+impl Default for EntityKind {
+    fn default() -> Self {
+        Self::Org
+    }
+}
+
+/// Aggregating node: a business entity, organization, person, or service that
+/// PII belongs to or is shared with. The organizing axis of the dashboard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Entity {
+    pub id: Option<Thing>,
+    pub name: String,
+    pub kind: EntityKind,
+    /// Domains associated with this entity (e.g. `acme.com`, `acme.ch`).
+    /// Used for auto-attribution when scanning email addresses or browser URLs.
+    #[serde(default)]
+    pub domains: Vec<String>,
+    /// Linked Contact node IDs (raw `contact:abc` strings).
+    #[serde(default)]
+    pub contact_ids: Vec<String>,
+    #[serde(default)]
+    pub notes: String,
+    pub is_owned: bool,
+    pub created_at: DateTime<Utc>,
+    pub modified_at: DateTime<Utc>,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+}
+
+impl Entity {
+    pub fn new(name: String, kind: EntityKind) -> Self {
+        let now = Utc::now();
+        Self {
+            id: None,
+            name,
+            kind,
+            domains: Vec::new(),
+            contact_ids: Vec::new(),
+            notes: String::new(),
+            is_owned: true,
+            created_at: now,
+            modified_at: now,
+            deleted_at: None,
+        }
+    }
+
+    pub fn id_string(&self) -> Option<String> {
+        self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+}
+
+/// Category of a PII finding or stored secret.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PiiKind {
+    Email,
+    Phone,
+    /// US Social Security Number.
+    Ssn,
+    CreditCard,
+    Ipv4,
+    /// Swiss AVS / AHV social-insurance number.
+    Avs,
+    /// ISO 13616 international bank account number.
+    Iban,
+    Passport,
+    /// Date of birth.
+    Dob,
+    Address,
+    PersonName,
+    OrgName,
+    Password,
+    ApiToken,
+    BankAccount,
+    /// Free-form government-issued ID (national ID card, driver's licence, etc.).
+    DocumentId,
+    /// Free-form vault note.
+    Note,
+    Other,
+}
+
+/// What kind of node a `SourceRef` points at.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceKind {
+    Document,
+    Message,
+    Contact,
+    /// Vault entries created directly by the user have no body source.
+    /// Reserved for future use.
+    UserInput,
+}
+
+/// Reference back to a span in source content where a PII finding was
+/// discovered. Offsets are into the source's tokenized canonical body.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceRef {
+    pub source_kind: SourceKind,
+    pub source_id: String,
+    /// UTF-8 byte offset of the reference token's start.
+    pub span_start: usize,
+    /// UTF-8 byte offset of the reference token's end (exclusive).
+    pub span_end: usize,
+}
+
+/// Lifecycle of a PII finding from detection through user review.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ReviewState {
+    /// Detected but not confirmed by the user (typically below NER confidence
+    /// threshold, or new-domain entity awaiting confirmation).
+    Unreviewed,
+    /// User confirmed this is real PII attributable to this entity.
+    Confirmed,
+    /// User dismissed as a false positive.
+    Dismissed,
+}
+
+impl Default for ReviewState {
+    fn default() -> Self {
+        Self::Unreviewed
+    }
+}
+
+/// A piece of personal information — either discovered during scanning
+/// (`stored_secret = false`) or deliberately stored by the user
+/// (`stored_secret = true`, the KeePass role). Value is encrypted at rest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PiiRecord {
+    pub id: Option<Thing>,
+    pub kind: PiiKind,
+    /// Base64-encoded ciphertext of the PII value (XChaCha20-Poly1305 AEAD).
+    pub value_encrypted: String,
+    /// Base64-encoded 24-byte XChaCha20 nonce.
+    pub value_nonce: String,
+    /// Optional human label (e.g. "main bank password"). Plaintext.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Entity this PII belongs to or is associated with.
+    #[serde(default)]
+    pub entity_id: Option<String>,
+    /// True = user-entered vault entry. False = discovered via scan.
+    #[serde(default)]
+    pub stored_secret: bool,
+    /// Detection confidence (1.0 for regex, 0.0–1.0 for LLM-NER).
+    /// Vault entries default to 1.0.
+    pub confidence: f32,
+    /// All source locations referencing this record. Vault entries default to
+    /// empty.
+    #[serde(default)]
+    pub sources: Vec<SourceRef>,
+    pub discovered_at: DateTime<Utc>,
+    /// Last time the value was decrypted and shown to the user.
+    #[serde(default)]
+    pub last_revealed_at: Option<DateTime<Utc>>,
+    /// Number of times the value has been used (e.g. autofilled into a form).
+    /// Useful staleness signal.
+    #[serde(default)]
+    pub use_count: u32,
+    pub review_state: ReviewState,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+}
+
+impl PiiRecord {
+    pub fn id_string(&self) -> Option<String> {
+        self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+}
+
+/// Channel through which a PII disclosure occurred.
+///
+/// Broader than `ChannelType` because signup-via-web is a disclosure that
+/// doesn't correspond to any `Message`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ShareChannel {
+    Email,
+    Sms,
+    Signal,
+    WhatsApp,
+    Matrix,
+    Phone,
+    /// Web form submission (signup, contact form, etc.).
+    Web,
+    /// Manual log entry by the user (e.g. recording a phone disclosure).
+    Other,
+}
+
+/// Edge: PiiRecord → Entity. Records that a PII value was disclosed to an
+/// entity at a moment in time. Always outbound; receiving PII isn't tracked
+/// here (those become `PiiRecord`s with `entity_id = sender`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShareRecord {
+    pub id: Option<Thing>,
+    pub pii_record_id: String,
+    pub to_entity_id: String,
+    /// Optional Message that carried the disclosure. None for web-form or
+    /// manual disclosures.
+    #[serde(default)]
+    pub via_message_id: Option<String>,
+    /// Optional URL where the disclosure happened (e.g. signup form URL).
+    #[serde(default)]
+    pub via_url: Option<String>,
+    pub shared_at: DateTime<Utc>,
+    pub channel: ShareChannel,
+}
+
+impl ShareRecord {
+    pub fn id_string(&self) -> Option<String> {
+        self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,5 +772,158 @@ mod tests {
         assert_eq!(json, "\"branchesfrom\"");
         let back: RelationType = serde_json::from_str(&json).unwrap();
         assert_eq!(back, RelationType::BranchesFrom);
+    }
+
+    // === PII schema tests ===
+
+    #[test]
+    fn entity_kind_self_serializes_lowercase() {
+        // The variant is named `SelfEntity` to avoid the reserved keyword,
+        // but it must serialize as "self" to match user-facing semantics.
+        let json = serde_json::to_string(&EntityKind::SelfEntity).unwrap();
+        assert_eq!(json, "\"self\"");
+        let back: EntityKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, EntityKind::SelfEntity);
+    }
+
+    #[test]
+    fn entity_kind_default_is_org() {
+        assert_eq!(EntityKind::default(), EntityKind::Org);
+    }
+
+    #[test]
+    fn entity_new_sets_sane_defaults() {
+        let e = Entity::new("Acme Corp".to_string(), EntityKind::Org);
+        assert_eq!(e.name, "Acme Corp");
+        assert_eq!(e.kind, EntityKind::Org);
+        assert!(e.domains.is_empty());
+        assert!(e.contact_ids.is_empty());
+        assert!(e.is_owned);
+        assert!(e.deleted_at.is_none());
+    }
+
+    #[test]
+    fn pii_kind_avs_iban_round_trip() {
+        let json = serde_json::to_string(&PiiKind::Avs).unwrap();
+        assert_eq!(json, "\"avs\"");
+        let json2 = serde_json::to_string(&PiiKind::Iban).unwrap();
+        assert_eq!(json2, "\"iban\"");
+        let back: PiiKind = serde_json::from_str("\"credit_card\"").unwrap();
+        assert_eq!(back, PiiKind::CreditCard);
+    }
+
+    #[test]
+    fn review_state_default_is_unreviewed() {
+        assert_eq!(ReviewState::default(), ReviewState::Unreviewed);
+    }
+
+    #[test]
+    fn pii_record_round_trip() {
+        let rec = PiiRecord {
+            id: None,
+            kind: PiiKind::Email,
+            value_encrypted: "ZXhhbXBsZQ==".into(),
+            value_nonce: "bm9uY2U=".into(),
+            label: Some("work email".into()),
+            entity_id: Some("entity:acme".into()),
+            stored_secret: false,
+            confidence: 1.0,
+            sources: vec![SourceRef {
+                source_kind: SourceKind::Document,
+                source_id: "document:abc".into(),
+                span_start: 10,
+                span_end: 30,
+            }],
+            discovered_at: Utc::now(),
+            last_revealed_at: None,
+            use_count: 0,
+            review_state: ReviewState::Confirmed,
+            deleted_at: None,
+        };
+        let json = serde_json::to_string(&rec).unwrap();
+        let back: PiiRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.kind, PiiKind::Email);
+        assert_eq!(back.label.as_deref(), Some("work email"));
+        assert_eq!(back.sources.len(), 1);
+        assert_eq!(back.sources[0].span_start, 10);
+        assert_eq!(back.review_state, ReviewState::Confirmed);
+    }
+
+    #[test]
+    fn share_channel_web_round_trip() {
+        let json = serde_json::to_string(&ShareChannel::Web).unwrap();
+        assert_eq!(json, "\"web\"");
+        let back: ShareChannel = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ShareChannel::Web);
+    }
+
+    #[test]
+    fn share_record_round_trip_without_message() {
+        // Web-form disclosures have no Message but should still serialize.
+        let rec = ShareRecord {
+            id: None,
+            pii_record_id: "pii_record:xyz".into(),
+            to_entity_id: "entity:acme".into(),
+            via_message_id: None,
+            via_url: Some("https://acme.com/signup".into()),
+            shared_at: Utc::now(),
+            channel: ShareChannel::Web,
+        };
+        let json = serde_json::to_string(&rec).unwrap();
+        let back: ShareRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.channel, ShareChannel::Web);
+        assert!(back.via_message_id.is_none());
+        assert_eq!(back.via_url.as_deref(), Some("https://acme.com/signup"));
+    }
+
+    #[test]
+    fn document_new_defaults_pii_fields_to_none() {
+        let doc = Document::new("test".into(), "thread:t1".into(), true);
+        assert!(doc.body_raw_encrypted.is_none());
+        assert!(doc.body_raw_nonce.is_none());
+        assert!(doc.pii_scanned_at.is_none());
+    }
+
+    #[test]
+    fn message_new_defaults_pii_fields_to_none() {
+        let msg = Message::new(
+            "conv:c1".into(),
+            ChannelType::Email,
+            MessageDirection::Outbound,
+            "contact:from".into(),
+            vec!["contact:to".into()],
+            "hello".into(),
+        );
+        assert!(msg.body_raw_encrypted.is_none());
+        assert!(msg.body_raw_nonce.is_none());
+        assert!(msg.pii_scanned_at.is_none());
+    }
+
+    #[test]
+    fn contact_new_defaults_pii_fields_to_none() {
+        let c = Contact::new("Alice".into(), false);
+        assert!(c.entity_id.is_none());
+        assert!(c.pii_scanned_at.is_none());
+    }
+
+    #[test]
+    fn document_deserializes_old_payload_without_pii_fields() {
+        // Backward-compat: existing on-disk documents without PII fields must
+        // deserialize cleanly with the new fields defaulted.
+        let old_json = r#"{
+            "id": null,
+            "title": "Legacy",
+            "content": "{}",
+            "thread_id": "thread:1",
+            "is_owned": true,
+            "created_at": "2026-01-01T00:00:00Z",
+            "modified_at": "2026-01-01T00:00:00Z",
+            "spatial_x": 0.0,
+            "spatial_y": 0.0
+        }"#;
+        let doc: Document = serde_json::from_str(old_json).unwrap();
+        assert_eq!(doc.title, "Legacy");
+        assert!(doc.body_raw_encrypted.is_none());
+        assert!(doc.pii_scanned_at.is_none());
     }
 }
