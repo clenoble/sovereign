@@ -143,7 +143,7 @@ New floating panel `PiiDashboardPanel.svelte` under [frontend/src/lib/components
 Layout (three-column):
 
 1. **Entity list** (left) — scrollable, entities sorted by PII count descending, grouped by `kind`. Provenance cue: shape differentiation (rounded rectangle for `Self`, parallelogram for external — extending the Sovereignty Halo convention).
-2. **Entity detail** (center) — tabs: *Inventory* (discovered PII), *Vault* (stored secrets), *Shared* (ledger entries for this entity). Each row has masked value by default, reveal button (L3), copy button (L3), redact/purge button (L5).
+2. **Entity detail** (center) — tabs: *Inventory* (discovered PII), *Vault* (stored secrets), *Shared* (ledger entries — outbound PII disclosures including signup events), *Cookies* (live webview cookies for this entity's domains). Each row has masked value by default, reveal button (L3), copy button (L3), delete button (L5 for cookies / redact for findings).
 3. **Review queue** (right, collapsible) — `Unreviewed` findings awaiting user confirmation. One-click confirm-entity or dismiss.
 
 New store `pii.svelte.ts` mirrors `contacts.svelte.ts` shape with filter/group helpers.
@@ -169,6 +169,50 @@ When the user sends an outbound message via any `sovereign-comms` channel:
 
 Historical messages are not retroactively scanned (per user: no real data yet).
 
+## Embedded browser integration
+
+The "cookie manager" framing requires deep integration with the embedded Tauri webview already used by `BrowserPanel`. Three flows tie together; all are **user-initiated** rather than auto-triggered (matching the *Plan Visibility* and *Action Gravity* UX rules — silent form-snooping is the wrong default).
+
+### New-account flow (signup + password generation)
+
+When the user is on a signup page and clicks **Save credentials** in the BrowserPanel toolbar:
+
+1. A content-script injection (Tauri 2 webview eval) reads form input fields, identifying email / phone / address / name / password slots by `type` / `autocomplete` / `name` heuristics.
+2. Sovereign offers a password generator: configurable length (default 24), character set (alphanumeric + symbols, with options to exclude ambiguous chars). Implemented in [crates/sovereign-crypto/src/password_gen.rs](../../crates/sovereign-crypto/src/password_gen.rs) using `rand::rngs::OsRng`. Generated password is auto-typed into the form via webview eval; user submits as normal.
+3. On submit, captured fields are surfaced in a confirm-and-edit dialog: `entity = <inferred from current URL domain>`. Auto-create the entity if no domain match exists.
+4. Each captured field becomes a `PiiRecord(stored_secret=true)` linked to the entity. Password = `kind=Password`; others their respective kinds.
+5. A `ShareRecord` is written for each `PiiRecord` — signup is itself a sharing event (the user just disclosed this PII to the entity). Channel = `Web` (new variant on `ShareRecord.channel`).
+
+### Existing-account flow (autofill from vault)
+
+When the user is on a domain Sovereign recognizes (an entity exists with this domain) and clicks **Fill from vault** in the BrowserPanel toolbar:
+
+1. Sovereign queries the vault for entries under that entity. Multiple → chooser; none → "no credentials saved" with a shortcut to the New Secret flow.
+2. On user confirm (L3 Modify gate), the password is decrypted and injected into the form via webview eval. `last_revealed_at` updated. Decrypted value held in JS scope only for fill, never logged.
+3. If a successful submit follows (heuristic: navigation away from the login URL within 5s), increment `use_count` on the vault entry — useful staleness signal.
+
+### Cookie management
+
+Cookies live in the webview's **native** cookie store, not in `sovereign-db`:
+
+- WebView2 (Windows): `%LOCALAPPDATA%\sovereign\EBWebView\Default\Network\Cookies` (SQLite)
+- WKWebView (macOS) / WebKitGTK (Linux): analogous OS-managed paths
+
+Sovereign does **not** mirror cookies — they are session state, owned by the webview. The dashboard is a UI on top of the webview's cookie API (`tauri::webview::Webview::cookies()` in Tauri 2).
+
+The Cookies tab in the entity-detail view lists cookies for that entity's `domains[]`:
+
+- Columns: name, domain, value (masked, L3 to reveal), expiry, http-only, secure, same-site.
+- Per-row actions: reveal (L3), copy (L3), delete (L5 — irreversible session loss).
+- Per-entity bulk action: "Clear all cookies for this entity" (L5).
+
+New Tauri commands:
+- `list_cookies_for_entity(entity_id) -> Vec<CookieDto>` — joins live webview cookies against `Entity.domains[]`
+- `delete_cookie(domain, name) -> Result<()>`
+- `clear_entity_cookies(entity_id) -> Result<usize>`
+
+Cookie values may themselves contain PII (e.g., an email in a session cookie). These are surfaced as cookies, not also as `PiiRecord`s, to avoid double-bookkeeping. If the user wants a cookie value persisted as a vault entry (e.g., a long-lived API token cookie), the Cookies tab offers **promote to vault** — copies the value into a new `PiiRecord(stored_secret=true)` and leaves the cookie in place.
+
 ## Critical files
 
 New:
@@ -178,6 +222,9 @@ New:
 - [frontend/src/lib/components/PiiDashboardPanel.svelte](../../frontend/src/lib/components/PiiDashboardPanel.svelte)
 - [frontend/src/lib/components/EntityListItem.svelte](../../frontend/src/lib/components/EntityListItem.svelte), `PiiRow.svelte`, `VaultAddDialog.svelte`, `ReviewQueueItem.svelte`
 - [frontend/src/lib/stores/pii.svelte.ts](../../frontend/src/lib/stores/pii.svelte.ts)
+- [crates/sovereign-crypto/src/password_gen.rs](../../crates/sovereign-crypto/src/password_gen.rs) — OsRng-backed password generator with configurable length / charset
+- [crates/sovereign-app/src/browser_pii.rs](../../crates/sovereign-app/src/browser_pii.rs) — webview form-field extraction, autofill injection, cookie API wrappers
+- [frontend/src/lib/components/SignupCapturePrompt.svelte](../../frontend/src/lib/components/SignupCapturePrompt.svelte), `AutofillPrompt.svelte`, `CookieRow.svelte`
 
 Modified:
 - [crates/sovereign-db/src/schema.rs](../../crates/sovereign-db/src/schema.rs) — new schemas + `body_canonical` / `body_raw_encrypted` on `Document`, `Message`; `entity_id` on `Contact`
@@ -189,6 +236,8 @@ Modified:
 - [frontend/src/lib/stores/app.svelte.ts](../../frontend/src/lib/stores/app.svelte.ts) — `piiDashboardVisible`
 - [frontend/src/lib/components/Taskbar.svelte](../../frontend/src/lib/components/Taskbar.svelte) — entry point
 - [frontend/src/lib/api/commands.ts](../../frontend/src/lib/api/commands.ts) — wrappers
+- [crates/sovereign-app/src/browser.rs](../../crates/sovereign-app/src/browser.rs) — expose form-event hook + webview cookie API surface
+- [frontend/src/lib/components/BrowserPanel.svelte](../../frontend/src/lib/components/BrowserPanel.svelte) — add *Save credentials* / *Fill from vault* toolbar buttons
 - [CLAUDE.md](../../CLAUDE.md) — architecture notes under Orchestrator + new UX principle: "PII-by-reference: canonical bodies hold tokens, not raw values"
 
 ## Implementation order (not phased releases — sequential dependencies inside one feature)
@@ -200,7 +249,8 @@ Modified:
 5. Resolution API — `resolve_pii_tokens` Tauri command, action-gate integration.
 6. Dashboard UI — panel shell, stores, taskbar entry, three-column layout, add-secret dialog, review queue.
 7. Ledger write path — outbound hooks in `sovereign-comms`, UI confirmation surface.
-8. Accessibility audit — set the new panel as the reference implementation for ARIA + focus trap, backport pattern to other panels as follow-up.
+8. Embedded browser integration — password generator, signup-capture flow, autofill flow, webview cookie API + Cookies tab.
+9. Accessibility audit — set the new panel as the reference implementation for ARIA + focus trap, backport pattern to other panels as follow-up.
 
 ## Verification
 
@@ -224,11 +274,13 @@ E2E (manual, via the Tauri app):
 - Create a document with email, phone, Swiss IBAN, a person name. Verify dashboard shows 4 findings, correctly grouped by entity.
 - Add a vault entry (bank password for Credit Suisse). Reveal, confirm Action Gravity dialog, copy, verify 30s clipboard clear.
 - Send an email containing a vault-referenced token. Verify ledger entry appears under that entity.
+- In the embedded browser, navigate to a test signup page, click *Save credentials*, generate a password, submit the form. Verify entity auto-created, vault entry stored, `ShareRecord` written with `channel=Web`.
+- Navigate to a known site, click *Fill from vault*, confirm the L3 dialog, verify the password is injected into the form.
+- Open dashboard → entity detail → Cookies tab. Verify cookies appear; reveal one (L3 dialog), copy, delete (L5 dialog). Promote a session cookie to vault and verify a new `PiiRecord(stored_secret=true)` appears while the cookie remains.
 - Keyboard navigation through dashboard: tab order, escape closes, focus returns to taskbar.
 
 ## Open items for future consideration (out of scope for this plan)
 
-- Browser auto-fill integration via embedded Tauri webview (KeePass-style).
 - OTP generation / TOTP codes for 2FA secrets.
 - Per-entity risk scoring based on PII volume + share frequency.
 - Audit log hash-chain for dashboard operations (tied to the broader `audit log hash chain` roadmap item).
