@@ -32,7 +32,7 @@ mod tests {
             title: "T".into(),
             content: ContentFields {
                 body: "old".into(),
-                images: vec![ContentImage { path: "img.png".into(), caption: None }],
+                images: vec![ContentImage { path: "img.png".into(), caption: String::new() }],
                 videos: vec![],
             },
         };
