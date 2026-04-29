@@ -216,11 +216,17 @@ fn digits_only(s: &str) -> String {
 fn propose_service_entity(domain: &str) -> Entity {
     let mut e = Entity::new(domain.to_string(), EntityKind::Service);
     e.domains = vec![domain.to_ascii_lowercase()];
+    // Proposed entities are not yet user-confirmed: the dashboard's
+    // review queue uses is_owned to distinguish "the user accepted this
+    // entity into their graph" from "the pipeline inferred this exists".
+    e.is_owned = false;
     e
 }
 
 fn propose_named_entity(name: String, kind: EntityKind) -> Entity {
-    Entity::new(name, kind)
+    let mut e = Entity::new(name, kind);
+    e.is_owned = false;
+    e
 }
 
 #[cfg(test)]
@@ -340,6 +346,8 @@ mod tests {
         let e = &r.proposed_entities[0];
         assert_eq!(e.kind, EntityKind::Service);
         assert_eq!(e.domains, vec!["unknown.com"]);
+        // Proposed, not yet user-confirmed.
+        assert!(!e.is_owned);
     }
 
     #[test]
@@ -414,6 +422,7 @@ mod tests {
         assert_eq!(r.proposed_entities.len(), 1);
         assert_eq!(r.proposed_entities[0].kind, EntityKind::Person);
         assert_eq!(r.proposed_entities[0].name, "Charlie Newcomer");
+        assert!(!r.proposed_entities[0].is_owned);
     }
 
     #[test]

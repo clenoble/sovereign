@@ -8,6 +8,7 @@ description = "AI orchestrator with llama.cpp inference (Phase 3)"
 sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
 sovereign-skills = { workspace = true }
+sovereign-crypto = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
@@ -27,7 +28,6 @@ ringbuf = { workspace = true, optional = true }
 rustpotter = { workspace = true, optional = true }
 
 # Optional P2P deps
-sovereign-crypto = { workspace = true, optional = true }
 sovereign-p2p = { workspace = true, optional = true }
 
 # Encrypted session log deps
@@ -42,5 +42,5 @@ default = ["cuda", "encrypted-log"]
 cuda = ["llama-cpp-2/cuda"]
 voice-stt = ["whisper-rs", "cpal", "ringbuf"]
 wake-word = ["voice-stt", "rustpotter"]
-p2p = ["sovereign-crypto", "sovereign-p2p"]
-encrypted-log = ["sovereign-crypto", "sha2", "base64"]
+p2p = ["sovereign-p2p"]
+encrypted-log = ["sha2", "base64"]
