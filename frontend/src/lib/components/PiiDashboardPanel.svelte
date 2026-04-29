@@ -7,12 +7,15 @@
 		recordsForEntity,
 		inventoryForEntity,
 		piiCountForEntity,
+		recordsByState,
 		refreshPiiRecords,
 		unreviewedCount
 	} from '$lib/stores/pii.svelte';
 	import {
 		revealPiiRecord,
 		redactPiiRecord,
+		confirmPiiRecord,
+		dismissPiiRecord,
 		type PiiRecord,
 		type PiiEntity
 	} from '$lib/api/commands';
@@ -93,6 +96,35 @@
 		} catch (e) {
 			console.error('redact failed:', e);
 		}
+	}
+
+	async function confirmReview(record: PiiRecord) {
+		try {
+			await confirmPiiRecord(record.id);
+			refreshPiiRecords();
+		} catch (e) {
+			console.error('confirm failed:', e);
+		}
+	}
+
+	async function dismissReview(record: PiiRecord) {
+		try {
+			await dismissPiiRecord(record.id);
+			refreshPiiRecords();
+		} catch (e) {
+			console.error('dismiss failed:', e);
+		}
+	}
+
+	// Truncate a source-id label so it fits in the narrow right column.
+	function shortSource(record: PiiRecord): string {
+		const src = record.sources[0];
+		if (!src) return '';
+		const id = src.source_id;
+		// Keep "table:" prefix + last 8 of the key for orientation.
+		const colon = id.indexOf(':');
+		if (colon < 0 || id.length <= colon + 9) return id;
+		return `${id.slice(0, colon + 1)}…${id.slice(-8)}`;
 	}
 
 	function selectEntity(id: string | null) {
@@ -382,14 +414,49 @@
 				</div>
 			</section>
 
-			<!-- Column 3: Review queue placeholder. Full UI lands in 6d. -->
+			<!-- Column 3: Review queue -->
 			<aside class="review-column" aria-label="Review queue">
 				<header class="review-header">
 					<h4>Review queue</h4>
 					<span class="review-count">{unreviewedCount()}</span>
 				</header>
-				<div class="review-placeholder">
-					Confirm/dismiss UI lands in 6d.
+				<div class="review-list">
+					{#each recordsByState('unreviewed') as record (record.id)}
+						<div class="review-item">
+							<div class="review-meta">
+								<span class="review-kind">[{kindLabel(record.kind)}]</span>
+								<span class="review-confidence">
+									{(record.confidence * 100).toFixed(0)}%
+								</span>
+							</div>
+							{#if record.label}
+								<div class="review-label">{record.label}</div>
+							{/if}
+							{#if record.sources.length > 0}
+								<div class="review-source" title={record.sources[0].source_id}>
+									from {record.sources[0].source_kind}: {shortSource(record)}
+								</div>
+							{/if}
+							<div class="review-actions">
+								<button
+									class="row-btn confirm"
+									onclick={() => confirmReview(record)}
+									title="Confirm — this is real PII (L2)"
+								>
+									Confirm
+								</button>
+								<button
+									class="row-btn dismiss"
+									onclick={() => dismissReview(record)}
+									title="Dismiss — false positive (L2)"
+								>
+									Dismiss
+								</button>
+							</div>
+						</div>
+					{:else}
+						<div class="empty">Nothing to review.</div>
+					{/each}
 				</div>
 			</aside>
 		</div>
@@ -633,10 +700,63 @@
 		font-size: 0.8rem;
 		color: var(--text-secondary);
 	}
-	.review-placeholder {
-		padding: 14px;
-		font-size: 0.8rem;
+	.review-list {
+		flex: 1;
+		overflow-y: auto;
+	}
+
+	.review-item {
+		padding: 10px 14px;
+		border-bottom: 1px solid var(--border);
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.review-meta {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		font-size: 0.75rem;
+	}
+	.review-kind {
+		color: var(--text-primary);
+		font-weight: 500;
+	}
+	.review-confidence {
 		color: var(--text-secondary);
+	}
+	.review-label {
+		font-size: 0.8rem;
+		color: var(--text-primary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.review-source {
+		font-size: 0.7rem;
+		color: var(--text-secondary);
+		font-family: monospace;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.review-actions {
+		display: flex;
+		gap: 4px;
+		margin-top: 4px;
+	}
+	.review-actions .row-btn {
+		flex: 1;
+	}
+	.row-btn.confirm {
+		background: var(--accent);
+		color: #000;
+		border-color: var(--accent);
+	}
+	.row-btn.dismiss {
+		background: var(--bg-hover);
 	}
 
 	.empty {
