@@ -695,6 +695,14 @@ impl GraphDB for EncryptedGraphDB {
             .update_message_pii_fields(id, body_raw_encrypted, body_raw_nonce, pii_scanned_at)
             .await
     }
+
+    async fn update_contact_pii_fields(
+        &self,
+        id: &str,
+        pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> DbResult<()> {
+        self.inner.update_contact_pii_fields(id, pii_scanned_at).await
+    }
 }
 
 #[cfg(test)]
@@ -863,5 +871,6 @@ mod tests {
         async fn update_document_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
         async fn update_message_body(&self, _id: &str, _body: &str, _body_html: Option<&str>) -> DbResult<()> { Ok(()) }
         async fn update_message_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
+        async fn update_contact_pii_fields(&self, _id: &str, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
     }
 }

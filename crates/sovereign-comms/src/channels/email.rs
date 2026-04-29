@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 use crate::channel::{ChannelStatus, CommunicationChannel, OutgoingMessage, SyncResult};
 use crate::config::EmailAccountConfig;
 use crate::error::CommsError;
-use crate::pii_hook::MessageIngestHook;
+use crate::pii_hook::{ContactIngestHook, MessageIngestHook};
 
 /// Email channel implementation using IMAP (fetch) and SMTP (send).
 pub struct EmailChannel {
@@ -22,6 +22,7 @@ pub struct EmailChannel {
     status: ChannelStatus,
     last_sync: Option<DateTime<Utc>>,
     pii_hook: Option<Arc<dyn MessageIngestHook>>,
+    pii_contact_hook: Option<Arc<dyn ContactIngestHook>>,
 }
 
 impl EmailChannel {
@@ -37,6 +38,7 @@ impl EmailChannel {
             status: ChannelStatus::Disconnected,
             last_sync: None,
             pii_hook: None,
+            pii_contact_hook: None,
         }
     }
 
@@ -48,9 +50,23 @@ impl EmailChannel {
         self
     }
 
+    /// Attach a PII contact-ingest hook, invoked once per freshly-created
+    /// contact (whether via `resolve_contact_id` during message ingest
+    /// or via the channel's own `resolve_contact` trait method).
+    pub fn with_pii_contact_hook(mut self, hook: Arc<dyn ContactIngestHook>) -> Self {
+        self.pii_contact_hook = Some(hook);
+        self
+    }
+
     async fn run_pii_hook(&self, message: &sovereign_db::schema::Message) {
         if let Some(hook) = &self.pii_hook {
             hook.after_message_created(message).await;
+        }
+    }
+
+    async fn run_pii_contact_hook(&self, contact: &sovereign_db::schema::Contact) {
+        if let Some(hook) = &self.pii_contact_hook {
+            hook.after_contact_created(contact).await;
         }
     }
 
@@ -67,7 +83,11 @@ impl EmailChannel {
 
     async fn resolve_contact_id(&self, address: &str, display_name: Option<&str>) -> Result<String, CommsError> {
         super::helpers::resolve_contact_id(
-            self.db.as_ref(), ChannelType::Email, address, display_name,
+            self.db.as_ref(),
+            ChannelType::Email,
+            address,
+            display_name,
+            self.pii_contact_hook.as_ref(),
         ).await
     }
 
@@ -431,7 +451,9 @@ impl CommunicationChannel for EmailChannel {
             display_name: None,
             is_primary: true,
         });
-        self.db.create_contact(contact).await.map_err(CommsError::from)
+        let created = self.db.create_contact(contact).await.map_err(CommsError::from)?;
+        self.run_pii_contact_hook(&created).await;
+        Ok(created)
     }
 }
 

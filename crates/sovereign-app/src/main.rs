@@ -12,6 +12,8 @@ mod tauri_events;
 #[cfg(feature = "encryption")]
 mod pii_ingest;
 #[cfg(all(feature = "comms", feature = "encryption"))]
+mod pii_contact_hook;
+#[cfg(all(feature = "comms", feature = "encryption"))]
 mod pii_message_hook;
 mod tauri_state;
 
