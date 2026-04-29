@@ -8,6 +8,7 @@
 	import { contactsState } from '$lib/stores/contacts.svelte';
 	import { browser, openBrowser as openBrowserStore, closeBrowser as closeBrowserStore } from '$lib/stores/browser.svelte';
 	import { openBrowser as openBrowserCmd, closeBrowserCmd } from '$lib/api/commands';
+	import { piiState, loadPii, unreviewedCount } from '$lib/stores/pii.svelte';
 	import SkillsPanel from './SkillsPanel.svelte';
 
 	async function handleBrowse() {
@@ -51,6 +52,15 @@
 
 	function handleSkills() {
 		app.skillsPanelVisible = !app.skillsPanelVisible;
+	}
+
+	function handlePiiDashboard() {
+		app.piiDashboardVisible = !app.piiDashboardVisible;
+		// Lazy-load on first open so cold-start time isn't taxed by an
+		// extra DB roundtrip.
+		if (app.piiDashboardVisible && !piiState.loaded) {
+			loadPii();
+		}
 	}
 
 	function openDoc(id: string) {
@@ -124,6 +134,27 @@
 				<path d="M2 6 L8 10 L14 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
 			</svg>
 			{#if totalUnread > 0}
+				<span class="unread-dot"></span>
+			{/if}
+		</button>
+
+		<button
+			class="tb-btn"
+			class:active={app.piiDashboardVisible}
+			onclick={handlePiiDashboard}
+			title="PII dashboard (P)"
+		>
+			<!-- Shield with eye glyph: identity protection. -->
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<path
+					d="M8 1.5 L13 3.5 L13 8 C13 11 10.5 13.5 8 14.5 C5.5 13.5 3 11 3 8 L3 3.5 Z"
+					stroke="currentColor"
+					stroke-width="1.5"
+					stroke-linejoin="round"
+				/>
+				<circle cx="8" cy="8" r="1.5" fill="currentColor" />
+			</svg>
+			{#if piiState.loaded && unreviewedCount() > 0}
 				<span class="unread-dot"></span>
 			{/if}
 		</button>

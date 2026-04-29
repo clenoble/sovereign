@@ -496,3 +496,101 @@ export const saveWebPage = (
 		score: score ?? null,
 		assessmentJson: assessmentJson ?? null
 	});
+
+// ---------------------------------------------------------------------------
+// PII management & dashboard
+// ---------------------------------------------------------------------------
+
+export type PiiAccessLevel =
+	| 'preview'
+	| 'masked_sample'
+	| 'reveal'
+	| 'raw_original';
+
+export type EntityKindString = 'self' | 'org' | 'person' | 'service';
+
+export type ReviewStateString = 'unreviewed' | 'confirmed' | 'dismissed';
+
+export interface PiiEntity {
+	id: string;
+	name: string;
+	kind: EntityKindString;
+	domains: string[];
+	contact_ids: string[];
+	notes: string;
+	is_owned: boolean;
+	created_at: string;
+	modified_at: string;
+}
+
+export interface PiiSourceRef {
+	source_kind: 'document' | 'message' | 'contact' | 'session_log' | 'user_input';
+	source_id: string;
+	span_start: number;
+	span_end: number;
+}
+
+export interface PiiRecord {
+	id: string;
+	/** snake_case kind: "email" | "phone" | "ssn" | "credit_card" | "ipv4" | "avs"
+	 *  | "iban" | "passport" | "dob" | "address" | "person_name" | "org_name"
+	 *  | "password" | "api_token" | "bank_account" | "document_id" | "note" | "other" */
+	kind: string;
+	label: string | null;
+	entity_id: string | null;
+	stored_secret: boolean;
+	confidence: number;
+	review_state: ReviewStateString;
+	discovered_at: string;
+	last_revealed_at: string | null;
+	use_count: number;
+	sources: PiiSourceRef[];
+}
+
+export interface ResolvedBody {
+	body: string;
+	access_level: PiiAccessLevel;
+}
+
+/** Resolve every `[pii:<id>]` token in a Document or Message body. */
+export const resolvePiiTokens = (
+	sourceKind: 'document' | 'message',
+	sourceId: string,
+	accessLevel: PiiAccessLevel
+) =>
+	invoke<ResolvedBody>('resolve_pii_tokens', {
+		sourceKind,
+		sourceId,
+		accessLevel
+	});
+
+/** List all entities (excludes soft-deleted), ordered by name. */
+export const listPiiEntities = () => invoke<PiiEntity[]>('list_pii_entities');
+
+/** Fetch one entity by ID. */
+export const getPiiEntity = (id: string) =>
+	invoke<PiiEntity>('get_pii_entity', { id });
+
+/** List PiiRecords with optional filters. All AND-combined. */
+export const listPiiRecords = (
+	entityId?: string | null,
+	reviewState?: ReviewStateString | null,
+	storedSecret?: boolean | null
+) =>
+	invoke<PiiRecord[]>('list_pii_records', {
+		entityId: entityId ?? null,
+		reviewState: reviewState ?? null,
+		storedSecret: storedSecret ?? null
+	});
+
+/** Mark an Unreviewed record as Confirmed. L2 Annotate. */
+export const confirmPiiRecord = (id: string) =>
+	invoke<void>('confirm_pii_record', { id });
+
+/** Mark an Unreviewed record as Dismissed (false positive). L2 Annotate. */
+export const dismissPiiRecord = (id: string) =>
+	invoke<void>('dismiss_pii_record', { id });
+
+/** Soft-delete a PiiRecord. L5 Destruct — caller must confirm first. */
+export const redactPiiRecord = (id: string) =>
+	invoke<void>('redact_pii_record', { id });

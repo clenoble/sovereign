@@ -15,6 +15,7 @@
 	import ModelPanel from '$lib/components/ModelPanel.svelte';
 	import InboxPanel from '$lib/components/InboxPanel.svelte';
 	import ContactPanel from '$lib/components/ContactPanel.svelte';
+	import PiiDashboardPanel from '$lib/components/PiiDashboardPanel.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import LoginScreen from '$lib/components/LoginScreen.svelte';
 	import OnboardingWizard from '$lib/components/OnboardingWizard.svelte';
@@ -128,6 +129,7 @@
 		<ModelPanel />
 		<InboxPanel />
 		<ContactPanel />
+		<PiiDashboardPanel />
 		<ContextMenu />
 		<SettingsPanel />
 		<Taskbar />
