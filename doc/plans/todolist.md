@@ -10,15 +10,15 @@
 **Status:** Fixed — whisper gated behind `voice-stt` feature flag (off by default)
 **Resolution:** Option 5 implemented. `whisper-rs`, `cpal`, and `ringbuf` are now optional dependencies in `sovereign-ai`, gated behind the `voice-stt` feature. Default builds exclude whisper entirely, eliminating the ggml symbol collision. Enable with `--features voice-stt` on Linux/WSL where it works.
 
-### 2. ~~NAS target directory intermittent write failures~~ — MITIGATED
+### 2. ~~Network-share target directory intermittent write failures~~ — MITIGATED
 
 **Status:** Mitigated — all batch scripts now kill stale processes before building
-**Resolution:** `_build.bat`, `_check.bat`, and `_run.bat` now kill orphaned `cargo.exe`/`rustc.exe` processes and clean stale sovereign artifacts before invoking cargo. This addresses the most common cause (stale SMB file locks). Windows Defender exclusion is still recommended for further reliability.
+**Resolution:** `_build.bat`, `_check.bat`, and `_run.bat` now kill orphaned `cargo.exe`/`rustc.exe` processes and clean stale sovereign artifacts before invoking cargo. This addresses the most common cause (stale SMB file locks when the cargo target dir is on a network share). Windows Defender exclusion is still recommended for further reliability.
 
-### 3. ~~C: drive nearly full (3.5 GB free)~~ — RESOLVED
+### 3. ~~Local disk space pressure~~ — RESOLVED
 
-**Status:** Resolved — C: drive freed up, local builds now use `C:/cargo-target`
-**Resolution:** Disk cleaned up. Debug builds work locally (~15 min). NAS (`Z:\cargo-target`) available as fallback.
+**Status:** Resolved — local disk freed up, builds now use cargo's default `./target`
+**Resolution:** Disk cleaned up. Debug builds work locally (~15 min). The batch wrappers honor `SOVEREIGN_TARGET_DIR` if you want to redirect to a faster drive or network share.
 
 </details>
 

@@ -157,10 +157,14 @@ mod tests {
         (dk, kek)
     }
 
+    fn scratch_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
     #[test]
     fn create_and_unwrap_document_key() {
         let (_, kek) = test_keys();
-        let mut db = KeyDatabase::new(PathBuf::from("/tmp/test-keys.db"));
+        let mut db = KeyDatabase::new(scratch_path("test-keys.db"));
         let dk = db.create_document_key("document:abc", &kek, 1).unwrap();
         let recovered = db.unwrap_current("document:abc", &kek).unwrap();
         assert_eq!(dk.as_bytes(), recovered.as_bytes());
@@ -168,14 +172,14 @@ mod tests {
 
     #[test]
     fn key_not_found() {
-        let db = KeyDatabase::new(PathBuf::from("/tmp/test-keys.db"));
+        let db = KeyDatabase::new(scratch_path("test-keys.db"));
         assert!(db.get_current("nonexistent").is_err());
     }
 
     #[test]
     fn multiple_epochs() {
         let (_, kek) = test_keys();
-        let mut db = KeyDatabase::new(PathBuf::from("/tmp/test-keys.db"));
+        let mut db = KeyDatabase::new(scratch_path("test-keys.db"));
         let _dk1 = db.create_document_key("doc:1", &kek, 1).unwrap();
         let dk2 = db.create_document_key("doc:1", &kek, 2).unwrap();
 
@@ -232,7 +236,7 @@ mod tests {
     #[test]
     fn len_and_contains() {
         let (_, kek) = test_keys();
-        let mut db = KeyDatabase::new(PathBuf::from("/tmp/test-keys.db"));
+        let mut db = KeyDatabase::new(scratch_path("test-keys.db"));
         assert!(db.is_empty());
         assert_eq!(db.len(), 0);
 

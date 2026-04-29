@@ -21,6 +21,9 @@ env/
 *.swo
 *~
 
+# Local-only Claude / dev notes (machine-specific paths, NAS workflows, etc.)
+CLAUDE.local.md
+
 # OS
 .DS_Store
 Thumbs.db

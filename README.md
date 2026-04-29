@@ -92,7 +92,9 @@ cargo build --release -j 4
 cargo run --release -- run
 
 # Windows (PowerShell)
-$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+# LIBCLANG_PATH must point to your LLVM bin directory (default winget install location shown).
+# Adjust if you installed LLVM elsewhere.
+$env:LIBCLANG_PATH = "$env:ProgramFiles\LLVM\bin"
 cargo build --release -p sovereign-app
 .\target\release\sovereign.exe run
 ```

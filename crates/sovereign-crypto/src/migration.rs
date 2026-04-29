@@ -79,10 +79,14 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn scratch_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
     #[test]
     fn encrypt_documents_batch() {
         let kek = Kek::generate();
-        let mut key_db = KeyDatabase::new(PathBuf::from("/tmp/migration-test.db"));
+        let mut key_db = KeyDatabase::new(scratch_path("migration-test.db"));
 
         let plans = vec![
             DocumentEncryptionPlan {
@@ -124,7 +128,7 @@ mod tests {
     #[test]
     fn encrypt_empty_batch() {
         let kek = Kek::generate();
-        let mut key_db = KeyDatabase::new(PathBuf::from("/tmp/migration-test-empty.db"));
+        let mut key_db = KeyDatabase::new(scratch_path("migration-test-empty.db"));
         let results = encrypt_documents(&[], &mut key_db, &kek, None).unwrap();
         assert!(results.is_empty());
     }
