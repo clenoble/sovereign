@@ -12,6 +12,7 @@ use zeroize::Zeroizing;
 use crate::channel::{ChannelStatus, CommunicationChannel, OutgoingMessage, SyncResult};
 use crate::config::EmailAccountConfig;
 use crate::error::CommsError;
+use crate::pii_hook::MessageIngestHook;
 
 /// Email channel implementation using IMAP (fetch) and SMTP (send).
 pub struct EmailChannel {
@@ -20,6 +21,7 @@ pub struct EmailChannel {
     password: Zeroizing<String>,
     status: ChannelStatus,
     last_sync: Option<DateTime<Utc>>,
+    pii_hook: Option<Arc<dyn MessageIngestHook>>,
 }
 
 impl EmailChannel {
@@ -34,6 +36,21 @@ impl EmailChannel {
             password: Zeroizing::new(password),
             status: ChannelStatus::Disconnected,
             last_sync: None,
+            pii_hook: None,
+        }
+    }
+
+    /// Attach a PII ingest hook that will be invoked after every
+    /// `create_message` on this channel. Without a hook, message bodies
+    /// land in the DB raw and an idle sweep handles tokenization later.
+    pub fn with_pii_hook(mut self, hook: Arc<dyn MessageIngestHook>) -> Self {
+        self.pii_hook = Some(hook);
+        self
+    }
+
+    async fn run_pii_hook(&self, message: &sovereign_db::schema::Message) {
+        if let Some(hook) = &self.pii_hook {
+            hook.after_message_created(message).await;
         }
     }
 
@@ -335,8 +352,9 @@ impl CommunicationChannel for EmailChannel {
                 db_msg.subject = msg.subject.clone();
                 db_msg.sent_at = Utc::now();
 
-                if let Err(e) = self.db.create_message(db_msg).await {
-                    tracing::warn!("Failed to persist outbound message: {e}");
+                match self.db.create_message(db_msg).await {
+                    Ok(persisted) => self.run_pii_hook(&persisted).await,
+                    Err(e) => tracing::warn!("Failed to persist outbound message: {e}"),
                 }
 
                 // Update conversation last_message_at
@@ -371,7 +389,8 @@ impl CommunicationChannel for EmailChannel {
                 }
             }
 
-            self.db.create_message(msg.clone()).await?;
+            let persisted = self.db.create_message(msg.clone()).await?;
+            self.run_pii_hook(&persisted).await;
             new_messages += 1;
 
             // Update conversation unread count and last_message_at

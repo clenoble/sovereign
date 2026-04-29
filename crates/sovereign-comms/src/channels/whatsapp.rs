@@ -11,6 +11,7 @@ use sovereign_db::GraphDB;
 use crate::channel::{ChannelStatus, CommunicationChannel, OutgoingMessage, SyncResult};
 use crate::config::WhatsAppAccountConfig;
 use crate::error::CommsError;
+use crate::pii_hook::MessageIngestHook;
 
 /// WhatsApp channel implementation using Meta's Cloud API.
 ///
@@ -22,6 +23,7 @@ pub struct WhatsAppChannel {
     access_token: String,
     status: ChannelStatus,
     last_sync: Option<DateTime<Utc>>,
+    pii_hook: Option<Arc<dyn MessageIngestHook>>,
     #[cfg(feature = "whatsapp")]
     client: reqwest::Client,
 }
@@ -38,8 +40,26 @@ impl WhatsAppChannel {
             access_token,
             status: ChannelStatus::Disconnected,
             last_sync: None,
+            pii_hook: None,
             #[cfg(feature = "whatsapp")]
             client: reqwest::Client::new(),
+        }
+    }
+
+    /// Attach a PII ingest hook. The hook will be invoked by the
+    /// webhook handler after each message is persisted (the webhook
+    /// path is not currently wired into sovereign-app; this is here
+    /// for symmetry with EmailChannel and SignalChannel).
+    pub fn with_pii_hook(mut self, hook: Arc<dyn MessageIngestHook>) -> Self {
+        self.pii_hook = Some(hook);
+        self
+    }
+
+    /// Run the PII hook for a freshly-persisted message. Webhook
+    /// handlers should call this after each `db.create_message`.
+    pub async fn run_pii_hook(&self, message: &sovereign_db::schema::Message) {
+        if let Some(hook) = &self.pii_hook {
+            hook.after_message_created(message).await;
         }
     }
 

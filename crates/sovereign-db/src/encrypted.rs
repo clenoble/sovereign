@@ -570,6 +570,47 @@ impl GraphDB for EncryptedGraphDB {
             .update_document_pii_fields(id, body_raw_encrypted, body_raw_nonce, pii_scanned_at)
             .await
     }
+
+    async fn update_message_body(
+        &self,
+        id: &str,
+        body: &str,
+        body_html: Option<&str>,
+    ) -> DbResult<()> {
+        // Encrypt the rewritten canonical body just like create_message
+        // would have, so subsequent reads decrypt correctly. Reuse the
+        // existing per-doc key for this message ID.
+        let (encrypted_body, _nonce) = self
+            .encrypt_content(id, body)
+            .await
+            .map_err(|e| DbError::Query(format!("update_message_body encrypt: {e}")))?;
+        let encrypted_html = match body_html {
+            Some(h) => Some(
+                self.encrypt_content(id, h)
+                    .await
+                    .map(|(ct, _)| ct)
+                    .map_err(|e| DbError::Query(format!("update_message_body encrypt html: {e}")))?,
+            ),
+            None => None,
+        };
+        self.inner
+            .update_message_body(id, &encrypted_body, encrypted_html.as_deref())
+            .await
+    }
+
+    async fn update_message_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> DbResult<()> {
+        // body_raw_* is already ciphertext from the AI layer's vault
+        // primitive — pass through.
+        self.inner
+            .update_message_pii_fields(id, body_raw_encrypted, body_raw_nonce, pii_scanned_at)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -728,5 +769,7 @@ mod tests {
         async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord> { Ok(record) }
         async fn update_pii_record_sources(&self, _id: &str, _sources: Vec<SourceRef>) -> DbResult<()> { Ok(()) }
         async fn update_document_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
+        async fn update_message_body(&self, _id: &str, _body: &str, _body_html: Option<&str>) -> DbResult<()> { Ok(()) }
+        async fn update_message_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
     }
 }

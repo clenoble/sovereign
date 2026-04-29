@@ -681,6 +681,40 @@ impl GraphDB for MockGraphDB {
         doc.pii_scanned_at = pii_scanned_at;
         Ok(())
     }
+
+    async fn update_message_body(
+        &self,
+        id: &str,
+        body: &str,
+        body_html: Option<&str>,
+    ) -> DbResult<()> {
+        let mut messages = self.messages.write().unwrap();
+        let msg = messages
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        msg.body = body.to_string();
+        if let Some(h) = body_html {
+            msg.body_html = Some(h.to_string());
+        }
+        Ok(())
+    }
+
+    async fn update_message_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let mut messages = self.messages.write().unwrap();
+        let msg = messages
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        msg.body_raw_encrypted = body_raw_encrypted.map(str::to_string);
+        msg.body_raw_nonce = body_raw_nonce.map(str::to_string);
+        msg.pii_scanned_at = pii_scanned_at;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
