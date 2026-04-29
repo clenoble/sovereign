@@ -119,14 +119,12 @@ impl SovereignNode {
 
         let listen_id = self
             .swarm
-            .listen_on(addr)
+            .listen_on(addr.clone())
             .map_err(|e| P2pError::Transport(e.to_string()))?;
 
         info!("Listening with id {:?}", listen_id);
 
-        Ok(format!("/ip4/0.0.0.0/udp/{}/quic-v1", config.listen_port)
-            .parse()
-            .unwrap())
+        Ok(addr)
     }
 
     /// Run the event loop. Blocks until shutdown.
