@@ -475,6 +475,9 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::suggestions::accept_link_suggestion,
             tauri_commands::suggestions::dismiss_link_suggestion,
             tauri_commands::suggestions::trigger_consolidation,
+            // PII resolution (5c). Stubs out to a clear error string
+            // when the `encryption` feature isn't enabled.
+            tauri_commands::pii::resolve_pii_tokens,
         ])
         .setup(move |app| {
             // Auto-open DevTools in debug builds
