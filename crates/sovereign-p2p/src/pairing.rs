@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn add_remove_device() {
-        let mut pm = PairingManager::new(PathBuf::from("/tmp/paired.json"));
+        let mut pm = PairingManager::new(std::env::temp_dir().join("paired.json"));
         let device = PairedDevice {
             peer_id: "peer-123".into(),
             device_name: "My Phone".into(),

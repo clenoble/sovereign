@@ -540,14 +540,13 @@ mod tests {
     use super::*;
     use sovereign_crypto::kek::Kek;
     use sovereign_crypto::key_db::KeyDatabase;
-    use std::path::PathBuf;
 
     fn test_kek() -> Kek {
         Kek::generate()
     }
 
     fn test_key_db() -> KeyDatabase {
-        KeyDatabase::new(PathBuf::from("/tmp/test-encrypted-db-keys.db"))
+        KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-keys.db"))
     }
 
     #[test]
