@@ -7,9 +7,16 @@
 		recordsForEntity,
 		inventoryForEntity,
 		piiCountForEntity,
+		refreshPiiRecords,
 		unreviewedCount
 	} from '$lib/stores/pii.svelte';
-	import type { PiiRecord, PiiEntity } from '$lib/api/commands';
+	import {
+		revealPiiRecord,
+		redactPiiRecord,
+		type PiiRecord,
+		type PiiEntity
+	} from '$lib/api/commands';
+	import VaultAddDialog from './VaultAddDialog.svelte';
 
 	// Drag state — modeled on InboxPanel.
 	let position = $state({ x: 80, y: 60 });
@@ -17,11 +24,76 @@
 	let dragStart = { x: 0, y: 0 };
 	let dragOriginal = { x: 0, y: 0 };
 
+	// Per-record revealed state. Map<recordId, plaintext>; absent = hidden.
+	let revealed = $state<Record<string, string>>({});
+	// Records whose reveal call is in flight, to disable repeated clicks.
+	let revealing = $state<Record<string, boolean>>({});
+	// Vault add dialog open/close.
+	let vaultAddOpen = $state(false);
+
 	onMount(() => {
 		if (!piiState.loaded) {
 			loadPii();
 		}
 	});
+
+	async function toggleReveal(record: PiiRecord) {
+		if (record.id in revealed) {
+			delete revealed[record.id];
+			revealed = { ...revealed };
+			return;
+		}
+		revealing[record.id] = true;
+		revealing = { ...revealing };
+		try {
+			const plaintext = await revealPiiRecord(record.id);
+			revealed[record.id] = plaintext;
+			revealed = { ...revealed };
+			// Refresh metadata so last_revealed_at updates in the UI.
+			refreshPiiRecords();
+		} catch (e) {
+			console.error('reveal failed:', e);
+		} finally {
+			delete revealing[record.id];
+			revealing = { ...revealing };
+		}
+	}
+
+	async function copyValue(record: PiiRecord) {
+		// Fetch fresh plaintext (don't trust the cached reveal map — the
+		// user may have hidden it after a previous reveal).
+		try {
+			const plaintext = await revealPiiRecord(record.id);
+			await navigator.clipboard.writeText(plaintext);
+			// Per the plan: clipboard auto-clears after 30s.
+			setTimeout(() => {
+				navigator.clipboard.readText().then((current) => {
+					if (current === plaintext) {
+						navigator.clipboard.writeText('');
+					}
+				}).catch(() => { /* clipboard read denied — best effort */ });
+			}, 30_000);
+			refreshPiiRecords();
+		} catch (e) {
+			console.error('copy failed:', e);
+		}
+	}
+
+	async function redact(record: PiiRecord) {
+		// Confirm before destructive action — L5 per the plan.
+		const ok = window.confirm(
+			`Redact this ${record.kind} record? It will be soft-deleted from the inventory.`
+		);
+		if (!ok) return;
+		try {
+			await redactPiiRecord(record.id);
+			delete revealed[record.id];
+			revealed = { ...revealed };
+			refreshPiiRecords();
+		} catch (e) {
+			console.error('redact failed:', e);
+		}
+	}
 
 	function selectEntity(id: string | null) {
 		piiState.selectedEntityId = id;
@@ -238,6 +310,14 @@
 					</nav>
 				</header>
 
+				{#if piiState.activeTab === 'vault'}
+					<div class="tab-toolbar">
+						<button class="primary" onclick={() => (vaultAddOpen = true)}>
+							+ New secret
+						</button>
+					</div>
+				{/if}
+
 				<div class="record-list">
 					{#each visibleRecords as record (record.id)}
 						<div class="record-row">
@@ -245,11 +325,43 @@
 							<span class="record-label">
 								{record.label ?? '(no label)'}
 							</span>
-							<span class="record-meta">
-								confidence {(record.confidence * 100).toFixed(0)}%
-								{#if record.last_revealed_at}
-									· revealed {new Date(record.last_revealed_at).toLocaleDateString()}
+							<span class="record-value">
+								{#if revealing[record.id]}
+									<span class="value-loading">…</span>
+								{:else if record.id in revealed}
+									<code class="value-plain">{revealed[record.id]}</code>
+								{:else}
+									<span class="value-hidden">(hidden)</span>
 								{/if}
+							</span>
+							<span class="record-meta">
+								{(record.confidence * 100).toFixed(0)}%
+								{#if record.last_revealed_at}
+									· {new Date(record.last_revealed_at).toLocaleDateString()}
+								{/if}
+							</span>
+							<span class="record-actions">
+								<button
+									class="row-btn"
+									onclick={() => toggleReveal(record)}
+									title={record.id in revealed ? 'Hide value' : 'Reveal (L3)'}
+								>
+									{record.id in revealed ? 'Hide' : 'Reveal'}
+								</button>
+								<button
+									class="row-btn"
+									onclick={() => copyValue(record)}
+									title="Copy to clipboard (auto-clears after 30s)"
+								>
+									Copy
+								</button>
+								<button
+									class="row-btn redact"
+									onclick={() => redact(record)}
+									title="Redact (L5 — soft delete)"
+								>
+									Redact
+								</button>
 							</span>
 							<span class="record-state state-{record.review_state}">
 								{record.review_state}
@@ -260,6 +372,8 @@
 						<div class="empty">
 							{#if piiState.activeTab === 'shared' || piiState.activeTab === 'cookies'}
 								Coming in a later step.
+							{:else if piiState.activeTab === 'vault'}
+								No secrets stored yet — click "+ New secret" above.
 							{:else}
 								No {piiState.activeTab} entries.
 							{/if}
@@ -280,6 +394,12 @@
 			</aside>
 		</div>
 	</div>
+
+	<VaultAddDialog
+		open={vaultAddOpen}
+		onClose={() => (vaultAddOpen = false)}
+		defaultEntityId={piiState.selectedEntityId}
+	/>
 {/if}
 
 <style>
