@@ -16,7 +16,8 @@ use tokio::sync::RwLock;
 use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
-    PiiRecord, ReadStatus, RelatedTo, RelationType, SourceRef, Thread,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, SourceRef, SuggestedLink,
+    SuggestionSource, SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -179,6 +180,56 @@ impl GraphDB for EncryptedGraphDB {
         self.decrypt_documents(docs).await
     }
 
+    async fn update_document_reliability(
+        &self,
+        id: &str,
+        source_url: Option<&str>,
+        classification: Option<&str>,
+        score: Option<f32>,
+        assessment_json: Option<&str>,
+    ) -> DbResult<Document> {
+        let doc = self
+            .inner
+            .update_document_reliability(id, source_url, classification, score, assessment_json)
+            .await?;
+        self.decrypt_document(doc).await
+    }
+
+    // Suggested links: metadata only — no encrypted content fields, pass through.
+    async fn create_suggested_link(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        relation_type: RelationType,
+        strength: f32,
+        rationale: &str,
+        source: SuggestionSource,
+    ) -> DbResult<SuggestedLink> {
+        self.inner
+            .create_suggested_link(from_id, to_id, relation_type, strength, rationale, source)
+            .await
+    }
+
+    async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> {
+        self.inner.list_pending_suggestions().await
+    }
+
+    async fn list_suggestions_for_document(&self, doc_id: &str) -> DbResult<Vec<SuggestedLink>> {
+        self.inner.list_suggestions_for_document(doc_id).await
+    }
+
+    async fn resolve_suggestion(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+    ) -> DbResult<SuggestedLink> {
+        self.inner.resolve_suggestion(id, status).await
+    }
+
+    async fn suggestion_exists(&self, from_id: &str, to_id: &str) -> DbResult<bool> {
+        self.inner.suggestion_exists(from_id, to_id).await
+    }
+
     // Thread operations pass through unchanged
     async fn create_thread(&self, thread: Thread) -> DbResult<Thread> {
         self.inner.create_thread(thread).await
@@ -306,6 +357,10 @@ impl GraphDB for EncryptedGraphDB {
 
     async fn list_milestones(&self, thread_id: &str) -> DbResult<Vec<Milestone>> {
         self.inner.list_milestones(thread_id).await
+    }
+
+    async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>> {
+        self.inner.list_all_milestones().await
     }
 
     async fn delete_milestone(&self, id: &str) -> DbResult<()> {
@@ -471,6 +526,35 @@ impl GraphDB for EncryptedGraphDB {
         for mut m in msgs {
             if let Some(nonce) = &m.encryption_nonce {
                 let id = m.id.as_ref()
+                    .map(|t| crate::schema::thing_to_raw(t))
+                    .unwrap_or_default();
+                m.body = self.decrypt_content(&id, &m.body, nonce).await?;
+                if let Some(ref html) = m.body_html {
+                    m.body_html = Some(self.decrypt_content(&id, html, nonce).await?);
+                }
+                m.encryption_nonce = None;
+            }
+            result.push(m);
+        }
+        Ok(result)
+    }
+
+    async fn list_messages_in_time_range(
+        &self,
+        after: chrono::DateTime<chrono::Utc>,
+        before: chrono::DateTime<chrono::Utc>,
+        limit: u32,
+    ) -> DbResult<Vec<Message>> {
+        let msgs = self
+            .inner
+            .list_messages_in_time_range(after, before, limit)
+            .await?;
+        let mut result = Vec::with_capacity(msgs.len());
+        for mut m in msgs {
+            if let Some(nonce) = &m.encryption_nonce {
+                let id = m
+                    .id
+                    .as_ref()
                     .map(|t| crate::schema::thing_to_raw(t))
                     .unwrap_or_default();
                 m.body = self.decrypt_content(&id, &m.body, nonce).await?;
@@ -711,6 +795,12 @@ mod tests {
         async fn delete_document(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn update_document_position(&self, _id: &str, _x: f32, _y: f32) -> DbResult<()> { Ok(()) }
         async fn search_documents_by_title(&self, _query: &str) -> DbResult<Vec<Document>> { Ok(vec![]) }
+        async fn update_document_reliability(&self, _id: &str, _source_url: Option<&str>, _classification: Option<&str>, _score: Option<f32>, _assessment_json: Option<&str>) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
+        async fn create_suggested_link(&self, _from_id: &str, _to_id: &str, _relation_type: RelationType, _strength: f32, _rationale: &str, _source: SuggestionSource) -> DbResult<SuggestedLink> { Err(DbError::NotFound("mock".into())) }
+        async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> { Ok(vec![]) }
+        async fn list_suggestions_for_document(&self, _doc_id: &str) -> DbResult<Vec<SuggestedLink>> { Ok(vec![]) }
+        async fn resolve_suggestion(&self, _id: &str, _status: SuggestionStatus) -> DbResult<SuggestedLink> { Err(DbError::NotFound("mock".into())) }
+        async fn suggestion_exists(&self, _from_id: &str, _to_id: &str) -> DbResult<bool> { Ok(false) }
         async fn create_thread(&self, thread: Thread) -> DbResult<Thread> { Ok(thread) }
         async fn get_thread(&self, _id: &str) -> DbResult<Thread> { Err(DbError::NotFound("mock".into())) }
         async fn list_threads(&self) -> DbResult<Vec<Thread>> { Ok(vec![]) }
@@ -737,6 +827,7 @@ mod tests {
         async fn restore_document(&self, _doc_id: &str, _commit_id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn create_milestone(&self, milestone: Milestone) -> DbResult<Milestone> { Ok(milestone) }
         async fn list_milestones(&self, _thread_id: &str) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
+        async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
         async fn delete_milestone(&self, _id: &str) -> DbResult<()> { Ok(()) }
         // Contacts
         async fn create_contact(&self, contact: Contact) -> DbResult<Contact> { Ok(contact) }
@@ -754,6 +845,7 @@ mod tests {
         async fn update_message_read_status(&self, _id: &str, _status: ReadStatus) -> DbResult<Message> { Err(DbError::NotFound("mock".into())) }
         async fn delete_message(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn list_all_messages(&self) -> DbResult<Vec<Message>> { Ok(vec![]) }
+        async fn list_messages_in_time_range(&self, _after: chrono::DateTime<chrono::Utc>, _before: chrono::DateTime<chrono::Utc>, _limit: u32) -> DbResult<Vec<Message>> { Ok(vec![]) }
         async fn search_messages(&self, _query: &str) -> DbResult<Vec<Message>> { Ok(vec![]) }
         // Conversations
         async fn create_conversation(&self, conversation: Conversation) -> DbResult<Conversation> { Ok(conversation) }
