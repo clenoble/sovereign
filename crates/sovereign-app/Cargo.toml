@@ -14,6 +14,7 @@ sovereign-db = { workspace = true }
 sovereign-skills = { workspace = true }
 sovereign-ai = { workspace = true, default-features = false }
 tokio = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

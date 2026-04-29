@@ -11,6 +11,7 @@
 use serde::Serialize;
 use sovereign_ai::pii::resolve::AccessLevel;
 use sovereign_db::schema::{thing_to_raw, ReviewState, ShareChannel, ShareRecord};
+use sovereign_db::GraphDB;
 use tauri::State;
 
 use crate::err::ToStringErr;
