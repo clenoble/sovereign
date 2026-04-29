@@ -318,6 +318,12 @@ pub trait GraphDB: Send + Sync {
     /// (`stored_secret == true`) arrive from the dashboard "new secret" flow.
     async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord>;
 
+    /// Fetch a `PiiRecord` by ID. The returned record's `value_encrypted`
+    /// is still ciphertext — callers decrypt via `EncryptedBlob` and the
+    /// `DeviceKey`. Used by the resolution API (step 5) when expanding
+    /// `[pii:<record_id>]` tokens.
+    async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord>;
+
     /// Replace a record's `sources` list. Used by the ingest hook after
     /// canonical-body substitution to update spans from indexed
     /// placeholders to the post-substitution placeholder spans.
@@ -325,6 +331,15 @@ pub trait GraphDB: Send + Sync {
         &self,
         id: &str,
         sources: Vec<SourceRef>,
+    ) -> DbResult<()>;
+
+    /// Set `last_revealed_at` on a PiiRecord. Called by the resolution
+    /// API every time the user reveals a value (L3 Modify), so the
+    /// dashboard can show "this PII was last viewed N hours ago".
+    async fn update_pii_record_revealed_at(
+        &self,
+        id: &str,
+        last_revealed_at: chrono::DateTime<Utc>,
     ) -> DbResult<()>;
 
     /// Set the PII-pipeline-managed fields on a Document: encrypted raw

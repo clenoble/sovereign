@@ -18,6 +18,7 @@ pub mod ingest;
 pub mod ner;
 pub mod pipeline;
 pub mod regex;
+pub mod resolve;
 
 pub use sovereign_db::schema::PiiKind;
 pub use sovereign_skills::skills::pii_detector::Locale;

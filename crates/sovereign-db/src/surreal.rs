@@ -1056,6 +1056,12 @@ impl GraphDB for SurrealGraphDB {
         created.ok_or_else(|| DbError::Query("Failed to create pii_record".into()))
     }
 
+    async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let rec: Option<PiiRecord> = self.db.select((table, key)).await?;
+        rec.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
     async fn update_pii_record_sources(
         &self,
         id: &str,
@@ -1065,6 +1071,22 @@ impl GraphDB for SurrealGraphDB {
         let updated: Option<PiiRecord> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "sources": sources }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn update_pii_record_revealed_at(
+        &self,
+        id: &str,
+        last_revealed_at: DateTime<Utc>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "last_revealed_at": last_revealed_at }))
             .await?;
         if updated.is_none() {
             return Err(DbError::NotFound(id.to_string()));

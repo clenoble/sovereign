@@ -635,12 +635,26 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.create_pii_record(record).await
     }
 
+    async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord> {
+        // PiiRecord values are encrypted at the AI layer (vault primitive)
+        // before reaching the DB — this decorator passes through.
+        self.inner.get_pii_record(id).await
+    }
+
     async fn update_pii_record_sources(
         &self,
         id: &str,
         sources: Vec<SourceRef>,
     ) -> DbResult<()> {
         self.inner.update_pii_record_sources(id, sources).await
+    }
+
+    async fn update_pii_record_revealed_at(
+        &self,
+        id: &str,
+        last_revealed_at: chrono::DateTime<chrono::Utc>,
+    ) -> DbResult<()> {
+        self.inner.update_pii_record_revealed_at(id, last_revealed_at).await
     }
 
     async fn update_document_pii_fields(
@@ -867,7 +881,9 @@ mod tests {
         async fn create_entity(&self, entity: Entity) -> DbResult<Entity> { Ok(entity) }
         async fn list_entities(&self) -> DbResult<Vec<Entity>> { Ok(vec![]) }
         async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord> { Ok(record) }
+        async fn get_pii_record(&self, _id: &str) -> DbResult<PiiRecord> { Err(DbError::NotFound("mock".into())) }
         async fn update_pii_record_sources(&self, _id: &str, _sources: Vec<SourceRef>) -> DbResult<()> { Ok(()) }
+        async fn update_pii_record_revealed_at(&self, _id: &str, _last_revealed_at: chrono::DateTime<chrono::Utc>) -> DbResult<()> { Ok(()) }
         async fn update_document_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
         async fn update_message_body(&self, _id: &str, _body: &str, _body_html: Option<&str>) -> DbResult<()> { Ok(()) }
         async fn update_message_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
