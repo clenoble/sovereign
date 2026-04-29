@@ -33,6 +33,9 @@ pub struct Orchestrator {
     profile_dir: PathBuf,
     model_dir: String,
     n_gpu_layers: i32,
+    /// Device key for PII pipeline encryption of session-log content.
+    /// None = pass-through (raw user input + chat responses go to log).
+    pii_device_key: Option<Arc<sovereign_crypto::device_key::DeviceKey>>,
     #[cfg(feature = "encrypted-log")]
     session_log_key: Option<[u8; 32]>,
     #[cfg(feature = "p2p")]
@@ -101,6 +104,7 @@ impl Orchestrator {
             profile_dir,
             model_dir,
             n_gpu_layers,
+            pii_device_key: None,
             #[cfg(feature = "encrypted-log")]
             session_log_key: None,
             #[cfg(feature = "p2p")]
@@ -156,6 +160,17 @@ impl Orchestrator {
 
     /// Enable session log encryption with the given key.
     ///
+    /// Attach the device key used by the PII pipeline to encrypt
+    /// findings discovered in user inputs and chat responses. With a
+    /// key set, every `log_user_input` / `log_chat_response` is
+    /// pre-tokenized: the canonical body (with `[pii:<record_id>]`
+    /// tokens) lands in the session log, and PiiRecord rows are
+    /// written for each finding. Without a key, log entries pass
+    /// through raw and the idle sweep handles tokenization later.
+    pub fn set_pii_device_key(&mut self, key: Arc<sovereign_crypto::device_key::DeviceKey>) {
+        self.pii_device_key = Some(key);
+    }
+
     /// Re-opens the session log in encrypted mode. Each subsequent entry will be
     /// encrypted with XChaCha20-Poly1305 and hash-chained to the previous entry
     /// for tamper detection.
@@ -248,12 +263,10 @@ impl Orchestrator {
             intent.origin,
         );
 
-        // Log user input
-        if let Some(ref log) = self.session_log {
-            if let Ok(mut log) = log.lock() {
-                log.log_user_input("text", query, &intent.action);
-            }
-        }
+        // Log user input — pre-tokenized so the AI's later context
+        // injection (load_session_entries) sees [pii:<id>] tokens, not
+        // raw values.
+        self.log_user_input_pii_aware("text", query, &intent.action).await;
 
         // Gate check: plane violation
         if let Some(reason) = action_gate::check_plane_violation(&intent) {
@@ -378,12 +391,10 @@ impl Orchestrator {
     /// Multi-turn chat agent loop with tool calling and conversation history.
     /// Called from execute_action when the classified intent is "chat" or "unknown".
     async fn run_chat_agent_loop(&self, message: &str) -> Result<()> {
-        // 1. Log user input
-        if let Some(ref log) = self.session_log {
-            if let Ok(mut log) = log.lock() {
-                log.log_user_input("chat", message, "chat");
-            }
-        }
+        // 1. Log user input — pre-tokenized so subsequent
+        // load_session_entries calls feed canonical-form chat history
+        // into the LLM context.
+        self.log_user_input_pii_aware("chat", message, "chat").await;
 
         let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
             BubbleVisualState::ProcessingOwned,
@@ -435,7 +446,7 @@ impl Orchestrator {
             if iterations > Self::MAX_AGENT_ITERATIONS {
                 let fallback =
                     "I had trouble processing that request. Could you rephrase it?";
-                self.log_chat_response(fallback);
+                self.log_chat_response_pii_aware(fallback).await;
                 let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
                     text: fallback.into(),
                 });
@@ -464,7 +475,7 @@ impl Orchestrator {
                 Err(e) => {
                     tracing::error!("Chat generation failed: {e}");
                     let error_msg = format!("Sorry, I couldn't generate a response: {e}");
-                    self.log_chat_response(&error_msg);
+                    self.log_chat_response_pii_aware(&error_msg).await;
                     let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
                         text: error_msg,
                     });
@@ -619,7 +630,7 @@ impl Orchestrator {
                     iterations
                 ),
             );
-            self.log_chat_response(&text_response);
+            self.log_chat_response_pii_aware(&text_response).await;
             let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
                 text: text_response,
             });
@@ -638,6 +649,85 @@ impl Orchestrator {
         if let Some(ref log) = self.session_log {
             if let Ok(mut log) = log.lock() {
                 log.log_chat_response(response);
+            }
+        }
+    }
+
+    /// Run PII ingest over a session-log text (user input or chat
+    /// response). Returns the canonical form with `[pii:<record_id>]`
+    /// tokens. When `pii_device_key` isn't set (encryption off, or
+    /// crypto init failed), passes through unchanged.
+    ///
+    /// Synthesizes a `source_id` of `"session:<rfc3339>"` since the
+    /// session log is JSONL on disk, not a SurrealDB row. Best-effort —
+    /// errors are logged via `tracing::warn!` and the original text is
+    /// returned so the chat pipeline never blocks on ingest.
+    async fn tokenize_session_text(&self, content: &str) -> String {
+        let device_key = match self.pii_device_key.as_ref() {
+            Some(k) => k.clone(),
+            None => return content.to_string(),
+        };
+        let source_id = format!("session:{}", chrono::Utc::now().to_rfc3339());
+
+        let entities = match self.db.list_entities().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("session-log PII: list_entities failed: {e}");
+                return content.to_string();
+            }
+        };
+        let contacts = match self.db.list_contacts().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("session-log PII: list_contacts failed: {e}");
+                return content.to_string();
+            }
+        };
+        let sink = crate::pii::ingest::GraphDbPiiSink::new(self.db.clone());
+        let config = crate::pii::pipeline::PipelineConfig::default();
+
+        match crate::pii::ingest::ingest_text(
+            content,
+            &source_id,
+            sovereign_db::schema::SourceKind::SessionLog,
+            &config,
+            None,
+            None,
+            &entities,
+            &contacts,
+            &sink,
+            device_key.as_ref(),
+        )
+        .await
+        {
+            Ok(result) => result.canonical_body,
+            Err(e) => {
+                tracing::warn!("session-log PII: ingest_text failed: {e}");
+                content.to_string()
+            }
+        }
+    }
+
+    /// `log_user_input` with PII tokenization. The canonical form is
+    /// what gets persisted to the session log and (later) fed to the
+    /// AI as conversation context.
+    async fn log_user_input_pii_aware(&self, mode: &str, content: &str, intent: &str) {
+        let canonical = self.tokenize_session_text(content).await;
+        if let Some(ref log) = self.session_log {
+            if let Ok(mut log) = log.lock() {
+                log.log_user_input(mode, &canonical, intent);
+            }
+        }
+    }
+
+    /// `log_chat_response` with PII tokenization. AI responses can
+    /// echo PII back (e.g. quoting the user's data), so they go
+    /// through the pipeline too.
+    async fn log_chat_response_pii_aware(&self, response: &str) {
+        let canonical = self.tokenize_session_text(response).await;
+        if let Some(ref log) = self.session_log {
+            if let Ok(mut log) = log.lock() {
+                log.log_chat_response(&canonical);
             }
         }
     }

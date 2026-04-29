@@ -634,11 +634,15 @@ pub enum PiiKind {
 
 /// What kind of node a `SourceRef` points at.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum SourceKind {
     Document,
     Message,
     Contact,
+    /// File-based session log (orchestrator chat history). source_id
+    /// is a synthetic `"session:<rfc3339>"` since the log is JSONL,
+    /// not a SurrealDB row.
+    SessionLog,
     /// Vault entries created directly by the user have no body source.
     /// Reserved for future use.
     UserInput,
