@@ -14,6 +14,7 @@
 
 pub mod entity_disambig;
 pub mod ner;
+pub mod pipeline;
 pub mod regex;
 
 pub use sovereign_db::schema::PiiKind;
