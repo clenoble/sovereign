@@ -24,6 +24,7 @@ pub struct MockGraphDB {
     suggested_links: RwLock<Vec<SuggestedLink>>,
     entities: RwLock<HashMap<String, Entity>>,
     pii_records: RwLock<HashMap<String, PiiRecord>>,
+    share_records: RwLock<HashMap<String, ShareRecord>>,
     next_id: AtomicU64,
 }
 
@@ -40,6 +41,7 @@ impl MockGraphDB {
             suggested_links: RwLock::new(Vec::new()),
             entities: RwLock::new(HashMap::new()),
             pii_records: RwLock::new(HashMap::new()),
+            share_records: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(1),
         }
     }
@@ -718,6 +720,29 @@ impl GraphDB for MockGraphDB {
             .get(id)
             .cloned()
             .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn create_share_record(&self, mut record: ShareRecord) -> DbResult<ShareRecord> {
+        let key = self.next_key();
+        let thing = Self::make_thing("share_record", &key);
+        let id_str = thing_to_raw(&thing);
+        record.id = Some(thing);
+        self.share_records.write().unwrap().insert(id_str, record.clone());
+        Ok(record)
+    }
+
+    async fn list_share_records_for_entity(
+        &self,
+        entity_id: &str,
+    ) -> DbResult<Vec<ShareRecord>> {
+        let records = self.share_records.read().unwrap();
+        let mut out: Vec<ShareRecord> = records
+            .values()
+            .filter(|r| r.to_entity_id == entity_id)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| b.shared_at.cmp(&a.shared_at));
+        Ok(out)
     }
 
     async fn update_pii_record_sources(

@@ -11,7 +11,7 @@ use sovereign_db::GraphDB;
 use crate::channel::{ChannelStatus, CommunicationChannel, OutgoingMessage, SyncResult};
 use crate::config::SignalAccountConfig;
 use crate::error::CommsError;
-use crate::pii_hook::{ContactIngestHook, MessageIngestHook};
+use crate::pii_hook::{ContactIngestHook, MessageIngestHook, ShareIngestHook};
 
 /// Signal channel implementation using the linked-device protocol.
 ///
@@ -25,6 +25,7 @@ pub struct SignalChannel {
     last_sync: Option<DateTime<Utc>>,
     pii_hook: Option<Arc<dyn MessageIngestHook>>,
     pii_contact_hook: Option<Arc<dyn ContactIngestHook>>,
+    pii_share_hook: Option<Arc<dyn ShareIngestHook>>,
 }
 
 impl SignalChannel {
@@ -36,6 +37,7 @@ impl SignalChannel {
             last_sync: None,
             pii_hook: None,
             pii_contact_hook: None,
+            pii_share_hook: None,
         }
     }
 
@@ -62,6 +64,16 @@ impl SignalChannel {
         if let Some(hook) = &self.pii_contact_hook {
             hook.after_contact_created(contact).await;
         }
+    }
+
+    /// Attach a sharing-ledger hook. Currently dormant in Signal —
+    /// `send_message` doesn't persist outbound messages to the DB
+    /// (presage handles transport directly), so there's no fire site
+    /// here yet. Field exists for symmetry with EmailChannel; once
+    /// outbound persistence is added the hook will activate.
+    pub fn with_pii_share_hook(mut self, hook: Arc<dyn ShareIngestHook>) -> Self {
+        self.pii_share_hook = Some(hook);
+        self
     }
 
     async fn get_or_create_conversation(
