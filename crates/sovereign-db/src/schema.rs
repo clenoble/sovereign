@@ -5,8 +5,13 @@ use serde::{Deserialize, Serialize};
 use surrealdb::sql::Thing;
 
 /// Format a Thing ID as "table:key" without backtick escaping.
+///
+/// Uses `Id::to_raw()` to extract the unescaped key — the default `Display`
+/// impl on `Id` quotes special characters (e.g. colons) with backticks,
+/// which would break round-trips with `raw_to_thing` and produce surprising
+/// IDs in frontend DTOs.
 pub fn thing_to_raw(t: &Thing) -> String {
-    format!("{}:{}", t.tb, t.id)
+    format!("{}:{}", t.tb, t.id.to_raw())
 }
 
 /// Parse a `"table:key"` string back into a Thing. Splits on the first
