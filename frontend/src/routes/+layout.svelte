@@ -71,6 +71,10 @@
 				if (app.inboxVisible) { app.inboxVisible = false; return; }
 				if (app.contactPanelState) { app.contactPanelState = null; return; }
 				if (app.skillsPanelVisible) { app.skillsPanelVisible = false; return; }
+				// PII dashboard's Escape is handled by its focusTrap when
+				// focus is inside the panel; this fallback covers the case
+				// where focus escaped the panel (e.g. clicked outside).
+				if (app.piiDashboardVisible) { app.piiDashboardVisible = false; return; }
 				return;
 			}
 
@@ -94,6 +98,11 @@
 			// I: toggle inbox
 			if (e.key === 'i' || e.key === 'I') {
 				app.inboxVisible = !app.inboxVisible;
+			}
+
+			// P: toggle PII dashboard
+			if (e.key === 'p' || e.key === 'P') {
+				app.piiDashboardVisible = !app.piiDashboardVisible;
 			}
 		};
 		window.addEventListener('keydown', handleKeydown);

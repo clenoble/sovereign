@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { app } from '$lib/stores/app.svelte';
+	import { focusTrap } from '$lib/actions/focusTrap';
 	import {
 		piiState,
 		loadPii,
@@ -249,6 +250,10 @@
 		aria-modal="false"
 		aria-label="PII management dashboard"
 		style="left: {position.x}px; top: {position.y}px;"
+		use:focusTrap={{
+			active: app.piiDashboardVisible,
+			onEscape: () => (app.piiDashboardVisible = false)
+		}}
 	>
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
