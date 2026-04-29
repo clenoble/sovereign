@@ -12,6 +12,7 @@
 //!
 //! See `doc/plans/pii-management-dashboard.md` for the design.
 
+pub mod ner;
 pub mod regex;
 
 pub use sovereign_db::schema::PiiKind;
