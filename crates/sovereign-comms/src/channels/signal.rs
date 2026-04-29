@@ -11,6 +11,7 @@ use sovereign_db::GraphDB;
 use crate::channel::{ChannelStatus, CommunicationChannel, OutgoingMessage, SyncResult};
 use crate::config::SignalAccountConfig;
 use crate::error::CommsError;
+use crate::pii_hook::MessageIngestHook;
 
 /// Signal channel implementation using the linked-device protocol.
 ///
@@ -22,6 +23,7 @@ pub struct SignalChannel {
     db: Arc<dyn GraphDB>,
     status: ChannelStatus,
     last_sync: Option<DateTime<Utc>>,
+    pii_hook: Option<Arc<dyn MessageIngestHook>>,
 }
 
 impl SignalChannel {
@@ -31,6 +33,20 @@ impl SignalChannel {
             db,
             status: ChannelStatus::Disconnected,
             last_sync: None,
+            pii_hook: None,
+        }
+    }
+
+    /// Attach a PII ingest hook that will be invoked after every
+    /// `create_message` on this channel.
+    pub fn with_pii_hook(mut self, hook: Arc<dyn MessageIngestHook>) -> Self {
+        self.pii_hook = Some(hook);
+        self
+    }
+
+    async fn run_pii_hook(&self, message: &sovereign_db::schema::Message) {
+        if let Some(hook) = &self.pii_hook {
+            hook.after_message_created(message).await;
         }
     }
 
@@ -260,7 +276,8 @@ impl CommunicationChannel for SignalChannel {
                 }
             }
 
-            self.db.create_message(msg.clone()).await?;
+            let persisted = self.db.create_message(msg.clone()).await?;
+            self.run_pii_hook(&persisted).await;
             new_messages += 1;
         }
 

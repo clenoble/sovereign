@@ -338,4 +338,27 @@ pub trait GraphDB: Send + Sync {
         body_raw_nonce: Option<&str>,
         pii_scanned_at: Option<chrono::DateTime<Utc>>,
     ) -> DbResult<()>;
+
+    /// Replace a Message's `body` (and optionally `body_html`) — used
+    /// after PII ingest to rewrite the body in canonical form with
+    /// `[pii:<record_id>]` tokens. There is no general-purpose
+    /// `update_message` method because the body is the only field we
+    /// rewrite post-ingest; everything else is set at create time.
+    async fn update_message_body(
+        &self,
+        id: &str,
+        body: &str,
+        body_html: Option<&str>,
+    ) -> DbResult<()>;
+
+    /// Set the PII-pipeline-managed fields on a Message: encrypted raw
+    /// body + nonce, plus the scan timestamp. Mirrors
+    /// `update_document_pii_fields` for the Message table.
+    async fn update_message_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<chrono::DateTime<Utc>>,
+    ) -> DbResult<()>;
 }

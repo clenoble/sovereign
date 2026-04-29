@@ -11,6 +11,8 @@ mod tauri_commands;
 mod tauri_events;
 #[cfg(feature = "encryption")]
 mod pii_ingest;
+#[cfg(all(feature = "comms", feature = "encryption"))]
+mod pii_message_hook;
 mod tauri_state;
 
 #[cfg(feature = "web-browse")]
