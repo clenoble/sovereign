@@ -15,6 +15,8 @@ mod pii_ingest;
 mod pii_contact_hook;
 #[cfg(all(feature = "comms", feature = "encryption"))]
 mod pii_message_hook;
+#[cfg(all(feature = "comms", feature = "encryption"))]
+mod pii_sweep;
 mod tauri_state;
 
 #[cfg(feature = "web-browse")]
@@ -332,6 +334,16 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     // Clone orchestrator for consolidation idle-watcher
     let consolidation_orch = orchestrator.clone();
 
+    // Clones for the PII sweep idle-watcher (4e4). The sweep cycle
+    // takes db + device_key directly so it can run independently of
+    // the orchestrator's model — useful because the sweep is regex-only
+    // and shouldn't wait for an idle LLM.
+    #[cfg(all(feature = "comms", feature = "encryption"))]
+    let pii_sweep_db: std::sync::Arc<dyn sovereign_db::GraphDB> = db.clone();
+    #[cfg(all(feature = "comms", feature = "encryption"))]
+    let pii_sweep_device_key: Option<Arc<sovereign_crypto::device_key::DeviceKey>> =
+        _crypto_state.as_ref().map(|(dk, _, _)| dk.clone());
+
     // Bridge orchestrator into SkillLlmAccess for skills that need inference.
     let skill_llm: Option<Arc<dyn sovereign_skills::SkillLlmAccess>> =
         orchestrator.as_ref().map(|o| llm_bridge::wrap_orchestrator(o.clone()));
@@ -536,6 +548,27 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                             }
                         }
                         last_run = Instant::now();
+                    }
+                });
+            }
+
+            // PII sweep idle-watcher — rescans documents, messages, and
+            // contacts that lack a `pii_scanned_at` marker. Runs every
+            // 5 minutes; each cycle scans up to BATCH_SIZE items per
+            // kind. Doesn't depend on model idle since it's regex-only.
+            #[cfg(all(feature = "comms", feature = "encryption"))]
+            if let Some(device_key) = pii_sweep_device_key {
+                let db = pii_sweep_db.clone();
+                tauri::async_runtime::spawn(async move {
+                    use std::time::Duration;
+                    let interval = Duration::from_secs(300);
+                    // First run after a short delay, so app startup
+                    // tasks (seeding, schema init) have settled.
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    loop {
+                        let _stats =
+                            pii_sweep::run_sweep_cycle(db.clone(), device_key.clone()).await;
+                        tokio::time::sleep(interval).await;
                     }
                 });
             }
