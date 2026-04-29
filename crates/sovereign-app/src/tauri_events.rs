@@ -162,7 +162,6 @@ pub struct LinkSuggestionResolvedPayload {
 
 /// Spawn a background thread that forwards orchestrator events to the Tauri
 /// frontend via `app_handle.emit()`.
-#[cfg(feature = "tauri-ui")]
 pub fn spawn_event_forwarder(
     app_handle: tauri::AppHandle,
     orch_rx: std::sync::mpsc::Receiver<OrchestratorEvent>,

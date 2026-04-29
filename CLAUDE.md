@@ -11,7 +11,7 @@ This is critical — APIs change between versions and stale knowledge causes cas
 
 ## Workspace Architecture
 
-10-crate Rust workspace (~16k lines):
+8-crate Rust workspace (~12k lines):
 
 | Crate | Role |
 |-------|------|
@@ -19,12 +19,12 @@ This is critical — APIs change between versions and stale knowledge causes cas
 | `sovereign-db` | SurrealDB graph database — documents, threads, relationships, contacts, conversations |
 | `sovereign-crypto` | Encryption (XChaCha20-Poly1305), key management, content signing |
 | `sovereign-ai` | LLM orchestrator, intent classification, chat agent loop, tools, trust, voice pipeline |
-| `sovereign-ui` | Iced 0.14 GUI — panels, chat, search bar, theming (legacy) |
-| `sovereign-canvas` | Spatial canvas — document cards, thread zones, drag-and-drop (legacy) |
 | `sovereign-skills` | Skill registry and built-in skills (markdown editor, PDF export, video) |
 | `sovereign-p2p` | libp2p peer-to-peer sync (experimental) |
 | `sovereign-comms` | Communications — email (IMAP/SMTP), Signal (via presage) |
-| `sovereign-app` | Binary crate — CLI, GUI bootstrap, setup, seeding |
+| `sovereign-app` | Binary crate — CLI, Tauri bootstrap, setup, seeding |
+
+**UI:** the Svelte 5 + Tauri 2 frontend in `frontend/` is the only supported UI. The previous Iced-based `sovereign-ui` and `sovereign-canvas` crates were retired.
 
 ### AI Orchestrator Architecture (`sovereign-ai`)
 
@@ -61,7 +61,7 @@ These 8 principles are implemented across the codebase — respect them when mod
 
 ### Tauri Frontend (`frontend/`)
 
-The active UI is a **Svelte 5 + SvelteKit 2 + Tauri 2.0** web app (replaces the legacy Iced GUI). Stack: Svelte 5.51, SvelteKit 2.50, Tauri 2.10, Vite 7.3.
+The UI is a **Svelte 5 + SvelteKit 2 + Tauri 2.0** web app. Stack: Svelte 5.51, SvelteKit 2.50, Tauri 2.10, Vite 7.3.
 
 **Key patterns:**
 - **Stores use `.svelte.ts` rune modules** — export `$state({})` objects + named functions. Components import and read properties directly (no `$` prefix). Svelte 4 `writable` stores fail with async Tauri IPC.
@@ -106,8 +106,6 @@ frontend/src/
 ```bash
 cd frontend && npm install && npm run build    # produces frontend/build/
 ```
-
-**Feature flag:** `--features tauri-ui` on `sovereign-app` (mutually exclusive with `iced-ui`).
 
 ## Build & Development
 
@@ -157,7 +155,7 @@ The wrappers:
 **From a native Windows shell (PowerShell / cmd):**
 ```powershell
 # Build a specific crate (uses defaults)
-_build.bat build -p sovereign-canvas -j 2
+_build.bat build -p sovereign-skills -j 2
 
 # Override target dir for this invocation
 $env:SOVEREIGN_TARGET_DIR = "D:\cargo-target"
@@ -228,7 +226,7 @@ Set the full environment from the bash section above, then:
 cargo.exe test -p sovereign-ai --no-default-features -j 2
 
 # Single crate
-cargo.exe test -p sovereign-canvas -j 2
+cargo.exe test -p sovereign-skills -j 2
 
 # All crates except sovereign-ai
 cargo.exe test -j 2
@@ -258,7 +256,7 @@ The public mirror is on GitHub: `https://github.com/clenoble/sovereign.git`.
 
 ## sovereign-app Module Structure
 The binary crate (`sovereign-app`) is split into focused modules:
-- `cli.rs` — Clap CLI struct and Commands enum. **Subcommand is optional** — running `sovereign.exe` with no args defaults to `run` (launches GUI).
+- `cli.rs` — Clap CLI struct and Commands enum. **Subcommand is optional** — running `sovereign.exe` with no args defaults to `run` (launches the Tauri app).
 - `commands.rs` — Async CLI handler functions (create/get/list/update/delete for docs, threads, relationships, commits, contacts, conversations)
 - `tauri_commands.rs` — 40+ Tauri `invoke()` command handlers (chat, documents, threads, contacts, settings, browser, suggestions, reliability)
 - `tauri_events.rs` — `OrchestratorEvent` → Tauri `emit()` bridge with typed payloads
@@ -266,4 +264,4 @@ The binary crate (`sovereign-app`) is split into focused modules:
 - `web.rs` — Web content fetching via `reqwest` + `readability` text extraction (8KB truncation for LLM, 12KB for display)
 - `setup.rs` — DB creation, crypto initialization, orchestrator callback wiring
 - `seed.rs` — Sample data seeding on first launch (DB data + user profile + session log history)
-- `main.rs` — Entry point: CLI dispatch + GUI bootstrap (`run_gui`) + idle-watcher for background memory consolidation
+- `main.rs` — Entry point: CLI dispatch + Tauri bootstrap (`run_tauri`: orchestrator, crypto, P2P, voice pipeline, session-log key, idle-watcher for background memory consolidation)
