@@ -9,6 +9,17 @@ pub fn thing_to_raw(t: &Thing) -> String {
     format!("{}:{}", t.tb, t.id)
 }
 
+/// Parse a `"table:key"` string back into a Thing. Splits on the first
+/// colon; everything after it is the key. Returns None if the input has
+/// no colon, an empty table, or an empty key.
+pub fn raw_to_thing(s: &str) -> Option<Thing> {
+    let (table, key) = s.split_once(':')?;
+    if table.is_empty() || key.is_empty() {
+        return None;
+    }
+    Some(Thing::from((table.to_string(), key.to_string())))
+}
+
 /// Document node in the graph
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
@@ -752,6 +763,26 @@ impl ShareRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_to_thing_round_trip() {
+        let t = raw_to_thing("entity:abc123").unwrap();
+        assert_eq!(thing_to_raw(&t), "entity:abc123");
+    }
+
+    #[test]
+    fn raw_to_thing_rejects_malformed() {
+        assert!(raw_to_thing("noseparator").is_none());
+        assert!(raw_to_thing(":noTable").is_none());
+        assert!(raw_to_thing("noKey:").is_none());
+    }
+
+    #[test]
+    fn raw_to_thing_handles_keys_with_colons() {
+        // Keys can themselves contain colons; split_once is correct here.
+        let t = raw_to_thing("entity:abc:def").unwrap();
+        assert_eq!(thing_to_raw(&t), "entity:abc:def");
+    }
 
     #[test]
     fn branches_from_display_and_parse() {
