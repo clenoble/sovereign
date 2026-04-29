@@ -12,6 +12,7 @@
 //!
 //! See `doc/plans/pii-management-dashboard.md` for the design.
 
+pub mod commit;
 pub mod entity_disambig;
 pub mod ner;
 pub mod pipeline;
