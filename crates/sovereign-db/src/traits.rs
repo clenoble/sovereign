@@ -361,4 +361,15 @@ pub trait GraphDB: Send + Sync {
         body_raw_nonce: Option<&str>,
         pii_scanned_at: Option<chrono::DateTime<Utc>>,
     ) -> DbResult<()>;
+
+    /// Set the PII-pipeline-managed fields on a Contact. Contact has no
+    /// `body_raw_encrypted` (notes are already encrypted via the per-doc
+    /// key by `EncryptedGraphDB`); only `pii_scanned_at` is set here.
+    /// Caller uses the existing `update_contact` method to rewrite
+    /// `notes` with canonical-form tokens.
+    async fn update_contact_pii_fields(
+        &self,
+        id: &str,
+        pii_scanned_at: Option<chrono::DateTime<Utc>>,
+    ) -> DbResult<()>;
 }

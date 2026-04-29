@@ -715,6 +715,19 @@ impl GraphDB for MockGraphDB {
         msg.pii_scanned_at = pii_scanned_at;
         Ok(())
     }
+
+    async fn update_contact_pii_fields(
+        &self,
+        id: &str,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let mut contacts = self.contacts.write().unwrap();
+        let c = contacts
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        c.pii_scanned_at = pii_scanned_at;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

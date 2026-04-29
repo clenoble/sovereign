@@ -8,5 +8,5 @@ pub mod sync_engine;
 pub use channel::{ChannelStatus, CommunicationChannel, OutgoingMessage, SyncResult};
 pub use config::{CommsConfig, EmailAccountConfig, SignalAccountConfig, WhatsAppAccountConfig};
 pub use error::CommsError;
-pub use pii_hook::MessageIngestHook;
+pub use pii_hook::{ContactIngestHook, MessageIngestHook};
 pub use sync_engine::{CommsEvent, CommsSync};

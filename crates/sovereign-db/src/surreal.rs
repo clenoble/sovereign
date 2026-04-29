@@ -1129,6 +1129,22 @@ impl GraphDB for SurrealGraphDB {
         }
         Ok(())
     }
+
+    async fn update_contact_pii_fields(
+        &self,
+        id: &str,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "contact")?;
+        let patch = serde_json::json!({
+            "pii_scanned_at": pii_scanned_at,
+        });
+        let updated: Option<Contact> = self.db.update((table, key)).merge(patch).await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

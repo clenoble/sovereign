@@ -14,7 +14,7 @@
 //! `pii_scanned_at` marker.
 
 use async_trait::async_trait;
-use sovereign_db::schema::Message;
+use sovereign_db::schema::{Contact, Message};
 
 /// Invoked once per `Message` after `db.create_message` has assigned an
 /// ID. Implementations typically call `db.update_message_body` and
@@ -26,4 +26,22 @@ use sovereign_db::schema::Message;
 #[async_trait]
 pub trait MessageIngestHook: Send + Sync {
     async fn after_message_created(&self, message: &Message);
+}
+
+/// Invoked once per `Contact` after `db.create_contact` has assigned an
+/// ID. Channels create stub contacts whenever they encounter a new
+/// address (resolve_contact_id), so this fires on first sight of every
+/// counterparty.
+///
+/// Implementations typically:
+///   - write a `PiiRecord` per `ChannelAddress` (Email / Phone kind)
+///     so the dashboard inventory knows the contact's identifiers
+///     without modifying the addresses themselves (addresses ARE the
+///     identifier — they stay raw, per the plan)
+///   - if `notes` is non-empty, scan + tokenize and rewrite via
+///     `db.update_contact`
+///   - call `db.update_contact_pii_fields` to set `pii_scanned_at`.
+#[async_trait]
+pub trait ContactIngestHook: Send + Sync {
+    async fn after_contact_created(&self, contact: &Contact);
 }
