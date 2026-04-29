@@ -8,6 +8,39 @@ Decisive constraint from user: there are no real users or data yet, so the featu
 
 Intended outcome: at-rest, the Sovereign graph contains **references** to PII records, never raw values in unmanaged locations. Raw values live in encrypted PII records keyed to an entity. Rendering resolves references to display form under Action Gravity gates. The dashboard shows the entity axis, the inventory, the vault, and the sharing ledger as one navigable surface.
 
+## Status — 2026-04-29
+
+Steps 1–7 shipped end-to-end on `pii-management-dashboard`. Steps 8 and 9 are not yet started; a few items inside the shipped steps are deliberately deferred.
+
+### Shipped
+
+| Step | Last commit on branch | Substance |
+|---|---|---|
+| 1. Data model | `9f7a563` | `Entity`, `PiiRecord`, `ShareRecord` + enums; `body_raw_encrypted`/`body_raw_nonce`/`pii_scanned_at` on Document/Message; `entity_id`+`pii_scanned_at` on Contact; 11 SurrealDB indexes; 10 unit tests. |
+| 2. Crypto `vault.rs` | `825d70e` | `EncryptedBlob` (XChaCha20-Poly1305 under `DeviceKey`, base64 storage shape matching the schema fields); 12 unit tests. |
+| 3. Detection pipeline | `0106154` → `61f7621` | Locale-aware regex (Swiss/EU: AVS, IBAN, passport, DOB, Swiss postal address) + LLM-NER for person/org/free-form-address + entity disambiguation (domain / contact-phone-digits / fuzzy name) + pipeline orchestrator with 0.7 review threshold. Mock-backend tests across the stages. |
+| 4. Ingest hooks | `d612869` → `b56b651` | (4a) tokenization primitive — canonical body with `[pii:N]` slots, deferred (Unreviewed) findings stay readable. (4b) `ingest_text` orchestrator + `PiiSink` trait. (4c) `GraphDB` writes + `GraphDbPiiSink` adapter. (4d) Document save/import. (4e1) Email/Signal/WhatsApp message paths. (4e2) Contact addresses + notes. (4e3) Session log (orchestrator pre-tokenizes user input + chat responses). (4e4) Idle sweep. |
+| 5. Resolution API | `ec09a83` + `e102ef0` | `pii::resolve` module: token parser, kind-specific masks (4 access levels — Preview/MaskedSample/Reveal/RawOriginal), `last_revealed_at` side effect on Reveal, error-tolerant placeholder substitution. `resolve_pii_tokens` Tauri command (always compiled, error stub when encryption is off). 24 unit tests. |
+| 6. Dashboard UI | `2368a41` → `16573e3` | (6a) Backend reads + DTOs + confirm/dismiss/redact commands. (6b) `pii.svelte.ts` store, `PiiDashboardPanel.svelte` 3-column floating panel, taskbar shield icon. (6c) Per-row Reveal/Copy/Redact, 30s clipboard auto-clear, `VaultAddDialog`, `create_vault_entry`. (6d) Review queue right column. (6e) `focusTrap` action + `P` keyboard shortcut + Escape fallback in the layout's keydown handler. |
+| 7. Sharing ledger | `05d76ec` + `a0ef9c7` | (7a) `ShareIngestHook` trait + GraphDB share-record methods + `PiiShareHook` impl + EmailChannel `send_message` wiring (re-fetches canonical body, writes one ShareRecord per token×recipient entity). (7b) `list_share_records_for_entity` Tauri command + Shared tab in the dashboard with lazy-load cache. |
+
+### Deferred (inside shipped steps)
+
+- **Pre-send confirmation UI** ("This message contains 2 PII items that will be logged to your sharing ledger"). Plan section *Ledger write path* specifies this; not built. Ledger writes happen automatically post-send instead. Reasonable to add when there's a frontend message-composer view to hook into.
+- **Signal + WhatsApp outbound share-hook firing.** The hook field is plumbed on both channels for symmetry, but their `send_message` paths don't currently persist outbound to the DB (presage handles Signal transport; WhatsApp uses webhooks for inbound only). Needs outbound persistence wiring before the share hook activates. Email is the only channel currently wired end-to-end.
+- **ShareRecords for unattributed contacts.** `ShareRecord.to_entity_id` is non-optional, so disclosures to contacts without `entity_id` are silently skipped at write time. Two ways to close the gap: auto-create a stub entity at share-write, or backfill ShareRecords retroactively when the user attributes a contact in the dashboard.
+- **Step 6 Cookies tab.** Tab is in the UI as a tooltip-disabled placeholder; depends on step 8's webview cookie API.
+- **Step 9 a11y backport.** `focusTrap` action + dialog ARIA + Escape conventions were established for the PII panel in 6e. Plan calls for "backport pattern to other panels as follow-up" — not done. InboxPanel / ContactPanel / ModelPanel / SettingsPanel / SkillsPanel still have the existing ad-hoc handling.
+
+### Left to ship
+
+- **Step 8 — Embedded browser integration.** Password generator (`crates/sovereign-crypto/src/password_gen.rs`), signup-capture flow (`crates/sovereign-app/src/browser_pii.rs`, content-script injection via Tauri 2 webview eval), autofill from vault, webview cookie API surface + Cookies tab. New Svelte components: `SignupCapturePrompt`, `AutofillPrompt`, `CookieRow`. Modifies `BrowserPanel.svelte` to add *Save credentials* / *Fill from vault* toolbar buttons.
+- **Step 9 — Accessibility audit (full).** Backport `focusTrap` + dialog ARIA + Escape pattern from the PII panel to the other floating panels. The action is already in `frontend/src/lib/actions/focusTrap.ts`; this is mechanical application.
+
+### Validation status
+
+The build machine has been validating commits through the session and feeding back fixes (visible on the branch as separate small commits — `thing_to_raw` escaping, `wrap_tool_call_example` test stubs, `EncryptedGraphDB` missing trait delegates, etc.). Step 7's commits (`05d76ec`, `a0ef9c7`) and parts of step 6 may not yet be fully validated on the build machine; that's the natural next checkpoint before continuing with step 8.
+
 ## Architectural decision: PII-by-reference with dual-encrypted storage
 
 At ingest, text is scanned for PII. Each finding produces a `PiiRecord` encrypted under device key with metadata (kind, entity_id, discovered_at, source_ref). The source text is stored as two fields:
