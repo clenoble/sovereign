@@ -288,6 +288,14 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                         o.set_session_log_key(session_key);
                     }
 
+                    // Wire device key into the orchestrator so session log
+                    // entries (user input + chat responses) get PII-tokenized
+                    // at write time.
+                    #[cfg(feature = "encryption")]
+                    if let Some((ref device_key, _, _)) = _crypto_state {
+                        o.set_pii_device_key(device_key.clone());
+                    }
+
                     tracing::info!("AI orchestrator initialized (Tauri mode)");
                     Some(Arc::new(o))
                 }
