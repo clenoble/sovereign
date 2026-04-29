@@ -6,7 +6,7 @@ An experimental local-first graphical environment with on-device AI, end-to-end 
 
 Sovereign explores what personal computing looks like when nothing leaves your machine — no cloud accounts, no telemetry, no external servers. AI runs locally via quantized Qwen models (2.5 and 3.5) through llama.cpp. Documents are encrypted at rest with per-document keys. Devices sync directly over libp2p.
 
-This is a prototype. Built in Rust. 10 crates. ~18K lines. Co-developed with [Claude](https://claude.ai) by Anthropic.
+This is a prototype. Built in Rust. 8 crates plus a Svelte 5 + Tauri frontend. Co-developed with [Claude](https://claude.ai) by Anthropic.
 
 ## What it explores
 
@@ -23,7 +23,7 @@ This is a prototype. Built in Rust. 10 crates. ~18K lines. Co-developed with [Cl
 
 ## Architecture
 
-Rust workspace with 10 crates:
+Rust workspace with 8 crates:
 
 | Crate | Role |
 |---|---|
@@ -31,14 +31,12 @@ Rust workspace with 10 crates:
 | `sovereign-db` | SurrealDB graph storage (in-memory and RocksDB persistent) |
 | `sovereign-crypto` | XChaCha20-Poly1305, key hierarchy, Shamir secret sharing, guardian recovery |
 | `sovereign-ai` | LLM orchestrator, intent classification, chat agent loop, tool calling, trust, voice, reliability assessment, memory consolidation |
-| `sovereign-ui` | Iced 0.14 GUI — taskbar, panels, chat, search, theming (legacy) |
-| `sovereign-canvas` | Infinite canvas — thread lanes, document cards, relationship arrows, minimap (legacy) |
 | `sovereign-skills` | Skill registry — markdown editor, search, image, PDF export, file import |
 | `sovereign-p2p` | libp2p networking, device pairing, encrypted sync |
 | `sovereign-comms` | Unified communications — email (IMAP/SMTP), Signal, WhatsApp |
-| `sovereign-app` | Binary entry point — CLI dispatch, GUI bootstrap, embedded browser, Tauri commands |
+| `sovereign-app` | Binary entry point — CLI dispatch, Tauri bootstrap, embedded browser, Tauri commands |
 
-Plus a **Tauri 2.0 + Svelte 5 frontend** (`frontend/`) — the active UI, built with SvelteKit 2, Vite, and Tauri IPC. Includes timeline canvas, AI chat panel, embedded browser, suggestion panel, onboarding wizard, settings, and trust dashboard.
+Plus a **Tauri 2.0 + Svelte 5 frontend** (`frontend/`), built with SvelteKit 2, Vite, and Tauri IPC. Includes timeline canvas, AI chat panel, embedded browser, suggestion panel, onboarding wizard, settings, and trust dashboard.
 
 ## Getting started
 
@@ -70,7 +68,7 @@ huggingface-cli download Qwen/Qwen2.5-7B-Instruct-GGUF \
 
 Filenames must match `config/default.toml`. Qwen 3.5 models are auto-detected from the GGUF filename and use optimized sampling parameters with `/no_think` thinking-mode suppression.
 
-### 2. Build & run (Tauri UI — recommended)
+### 2. Build & run
 
 ```bash
 # Install frontend dependencies
@@ -78,26 +76,13 @@ cd frontend && npm install && cd ..
 
 # Build frontend + Rust backend together
 cd frontend && npm run build && cd ..
-cargo build -p sovereign-app --no-default-features --features tauri-ui,encrypted-log -j 4
+cargo build -p sovereign-app --features encrypted-log -j 4
 
 # Or use Tauri CLI for dev mode (hot-reload)
 cd frontend && npm run tauri dev
 ```
 
-### 2b. Build & run (legacy Iced UI)
-
-```bash
-# Linux / WSL2
-cargo build --release -j 4
-cargo run --release -- run
-
-# Windows (PowerShell)
-# LIBCLANG_PATH must point to your LLVM bin directory (default winget install location shown).
-# Adjust if you installed LLVM elsewhere.
-$env:LIBCLANG_PATH = "$env:ProgramFiles\LLVM\bin"
-cargo build --release -p sovereign-app
-.\target\release\sovereign.exe run
-```
+On Windows, set `LIBCLANG_PATH` (defaults to `$env:ProgramFiles\LLVM\bin`) before building if you installed LLVM elsewhere.
 
 On first launch, sample data is seeded automatically.
 
@@ -109,8 +94,6 @@ Settings live in `config/default.toml`. Override at runtime with `sovereign --co
 
 | Flag | What it enables |
 |---|---|
-| `tauri-ui` | Tauri 2.0 + Svelte 5 web UI (active frontend) |
-| `iced-ui` | Iced 0.14 native GUI (legacy, default) |
 | `cuda` | GPU-accelerated LLM inference |
 | `voice-stt` | Wake word detection + Whisper STT |
 | `encryption` | Document encryption, guardian recovery |
