@@ -8,7 +8,7 @@ use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, DocumentSnapshot,
     Entity, Message, Milestone, PiiRecord, ReadStatus, RelatedTo, RelationType,
-    SourceRef, SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
+    ReviewState, SourceRef, SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -1060,6 +1060,78 @@ impl GraphDB for SurrealGraphDB {
         let (table, key) = parse_and_validate(id, "pii_record")?;
         let rec: Option<PiiRecord> = self.db.select((table, key)).await?;
         rec.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn list_pii_records(
+        &self,
+        entity_id: Option<&str>,
+        review_state: Option<ReviewState>,
+        stored_secret: Option<bool>,
+    ) -> DbResult<Vec<PiiRecord>> {
+        // Build the WHERE clause dynamically: deleted_at IS NONE is
+        // always included, plus one clause per supplied filter.
+        let mut clauses: Vec<&str> = vec!["deleted_at IS NONE"];
+        if entity_id.is_some() {
+            clauses.push("entity_id = $entity_id");
+        }
+        if review_state.is_some() {
+            clauses.push("review_state = $review_state");
+        }
+        if stored_secret.is_some() {
+            clauses.push("stored_secret = $stored_secret");
+        }
+        let sql = format!(
+            "SELECT * FROM pii_record WHERE {} ORDER BY discovered_at DESC",
+            clauses.join(" AND ")
+        );
+
+        let mut q = self.db.query(sql);
+        if let Some(eid) = entity_id {
+            q = q.bind(("entity_id", eid.to_string()));
+        }
+        if let Some(rs) = review_state {
+            q = q.bind(("review_state", rs));
+        }
+        if let Some(ss) = stored_secret {
+            q = q.bind(("stored_secret", ss));
+        }
+        let mut result = q.await?;
+        let records: Vec<PiiRecord> = result.take(0)?;
+        Ok(records)
+    }
+
+    async fn update_pii_record_review_state(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "review_state": review_state }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn get_entity(&self, id: &str) -> DbResult<Entity> {
+        let (table, key) = parse_and_validate(id, "entity")?;
+        let entity: Option<Entity> = self.db.select((table, key)).await?;
+        entity.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
 
     async fn update_pii_record_sources(
