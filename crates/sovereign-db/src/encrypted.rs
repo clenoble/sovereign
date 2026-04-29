@@ -558,6 +558,18 @@ impl GraphDB for EncryptedGraphDB {
     ) -> DbResult<()> {
         self.inner.update_pii_record_sources(id, sources).await
     }
+
+    async fn update_document_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> DbResult<()> {
+        self.inner
+            .update_document_pii_fields(id, body_raw_encrypted, body_raw_nonce, pii_scanned_at)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -715,5 +727,6 @@ mod tests {
         async fn list_entities(&self) -> DbResult<Vec<Entity>> { Ok(vec![]) }
         async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord> { Ok(record) }
         async fn update_pii_record_sources(&self, _id: &str, _sources: Vec<SourceRef>) -> DbResult<()> { Ok(()) }
+        async fn update_document_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
     }
 }

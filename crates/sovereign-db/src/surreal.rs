@@ -1071,6 +1071,26 @@ impl GraphDB for SurrealGraphDB {
         }
         Ok(())
     }
+
+    async fn update_document_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "document")?;
+        let patch = serde_json::json!({
+            "body_raw_encrypted": body_raw_encrypted,
+            "body_raw_nonce": body_raw_nonce,
+            "pii_scanned_at": pii_scanned_at,
+        });
+        let updated: Option<Document> = self.db.update((table, key)).merge(patch).await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
