@@ -7,8 +7,8 @@ use surrealdb::Surreal;
 use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, DocumentSnapshot,
-    Message, Milestone, ReadStatus, RelatedTo, RelationType, SuggestedLink,
-    SuggestionSource, SuggestionStatus, Thread,
+    Entity, Message, Milestone, PiiRecord, ReadStatus, RelatedTo, RelationType,
+    SourceRef, SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -1031,6 +1031,45 @@ impl GraphDB for SurrealGraphDB {
             .merge(serde_json::json!({ "linked_thread_id": thread_id }))
             .await?;
         updated.ok_or_else(|| DbError::NotFound(conversation_id.to_string()))
+    }
+
+    // -- Entities ---
+
+    async fn create_entity(&self, entity: Entity) -> DbResult<Entity> {
+        let created: Option<Entity> = self.db.create("entity").content(entity).await?;
+        created.ok_or_else(|| DbError::Query("Failed to create entity".into()))
+    }
+
+    async fn list_entities(&self) -> DbResult<Vec<Entity>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM entity WHERE deleted_at IS NONE ORDER BY name ASC")
+            .await?;
+        let entities: Vec<Entity> = result.take(0)?;
+        Ok(entities)
+    }
+
+    // -- PII Records ---
+
+    async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord> {
+        let created: Option<PiiRecord> = self.db.create("pii_record").content(record).await?;
+        created.ok_or_else(|| DbError::Query("Failed to create pii_record".into()))
+    }
+
+    async fn update_pii_record_sources(
+        &self,
+        id: &str,
+        sources: Vec<SourceRef>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "sources": sources }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
     }
 }
 

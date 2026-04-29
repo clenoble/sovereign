@@ -14,12 +14,15 @@
 //!      `impl PiiSink for SurrealGraphDB`. Until then this trait is
 //!      the single place that knows the AI-layer's needs from the DB.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sovereign_core::interfaces::ModelBackend;
 use sovereign_crypto::device_key::DeviceKey;
 use sovereign_crypto::vault::EncryptedBlob;
-use sovereign_db::schema::{Contact, Entity, PiiRecord, ReviewState, SourceKind, SourceRef};
+use sovereign_db::schema::{thing_to_raw, Contact, Entity, PiiRecord, ReviewState, SourceKind, SourceRef};
+use sovereign_db::traits::GraphDB;
 
 use crate::llm::format::PromptFormatter;
 
@@ -46,6 +49,66 @@ pub trait PiiSink: Send + Sync {
     /// Write a new `Entity` and return its raw ID string. Used for
     /// disambiguator-proposed entities (`is_owned == false`).
     async fn create_entity(&self, entity: Entity) -> anyhow::Result<String>;
+}
+
+/// Bridge from the AI-layer [`PiiSink`] trait to the DB-layer
+/// [`GraphDB`] trait. Lives here because [`PiiSink`] is the AI
+/// layer's view of the DB and the GraphDB methods backing it
+/// (`create_entity`, `create_pii_record`, etc.) live one crate down.
+///
+/// Wraps an `Arc<dyn GraphDB>` so callers can use this with both
+/// `SurrealGraphDB` and `EncryptedGraphDB` (which delegates these
+/// methods through unchanged — see `encrypted.rs`).
+pub struct GraphDbPiiSink {
+    db: Arc<dyn GraphDB>,
+}
+
+impl GraphDbPiiSink {
+    pub fn new(db: Arc<dyn GraphDB>) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait]
+impl PiiSink for GraphDbPiiSink {
+    async fn create_pii_record(&self, record: PiiRecord) -> anyhow::Result<String> {
+        let created = self
+            .db
+            .create_pii_record(record)
+            .await
+            .map_err(|e| anyhow::anyhow!("create_pii_record: {e}"))?;
+        let id = created
+            .id
+            .as_ref()
+            .map(thing_to_raw)
+            .ok_or_else(|| anyhow::anyhow!("create_pii_record returned no id"))?;
+        Ok(id)
+    }
+
+    async fn update_pii_record_sources(
+        &self,
+        id: &str,
+        sources: Vec<SourceRef>,
+    ) -> anyhow::Result<()> {
+        self.db
+            .update_pii_record_sources(id, sources)
+            .await
+            .map_err(|e| anyhow::anyhow!("update_pii_record_sources: {e}"))
+    }
+
+    async fn create_entity(&self, entity: Entity) -> anyhow::Result<String> {
+        let created = self
+            .db
+            .create_entity(entity)
+            .await
+            .map_err(|e| anyhow::anyhow!("create_entity: {e}"))?;
+        let id = created
+            .id
+            .as_ref()
+            .map(thing_to_raw)
+            .ok_or_else(|| anyhow::anyhow!("create_entity returned no id"))?;
+        Ok(id)
+    }
 }
 
 /// Output of [`ingest_text`].
@@ -497,6 +560,58 @@ mod tests {
     }
 
     // --- empty / no-PII ---
+
+    // --- GraphDbPiiSink end-to-end via MockGraphDB ---
+
+    #[tokio::test]
+    async fn graphdb_sink_writes_to_real_db_impl() {
+        use sovereign_db::mock::MockGraphDB;
+        use sovereign_db::traits::GraphDB;
+
+        let dk = test_device_key();
+        let db: Arc<dyn GraphDB> = Arc::new(MockGraphDB::new());
+        let sink = GraphDbPiiSink::new(db.clone());
+        let text = "Email me at alice@example.ch.";
+
+        let result = ingest_text(
+            text,
+            "document:doc-mock",
+            SourceKind::Document,
+            &PipelineConfig::default(),
+            None,
+            None,
+            &[],
+            &[],
+            &sink,
+            &dk,
+        )
+        .await
+        .unwrap();
+
+        // Record IDs are now real "pii_record:<key>" strings minted by
+        // MockGraphDB's next_key counter.
+        assert_eq!(result.record_ids.len(), 1);
+        assert!(
+            result.record_ids[0].starts_with("pii_record:"),
+            "expected real record id, got {:?}",
+            result.record_ids[0]
+        );
+        // Canonical body uses that ID in its placeholder.
+        let token = format!("[pii:{}]", result.record_ids[0]);
+        assert!(
+            result.canonical_body.contains(&token),
+            "canonical={:?} token={:?}",
+            result.canonical_body,
+            token
+        );
+
+        // Entity proposed (Service for unknown domain) was actually written.
+        assert_eq!(result.created_entity_ids.len(), 1);
+        let entities = db.list_entities().await.unwrap();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].domains, vec!["example.ch"]);
+        assert!(!entities[0].is_owned);
+    }
 
     #[tokio::test]
     async fn ingest_clean_text_writes_nothing_but_still_encrypts_raw() {
