@@ -652,6 +652,15 @@ impl GraphDB for MockGraphDB {
         Ok(record)
     }
 
+    async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord> {
+        self.pii_records
+            .read()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
     async fn update_pii_record_sources(
         &self,
         id: &str,
@@ -662,6 +671,19 @@ impl GraphDB for MockGraphDB {
             .get_mut(id)
             .ok_or_else(|| DbError::NotFound(id.to_string()))?;
         record.sources = sources;
+        Ok(())
+    }
+
+    async fn update_pii_record_revealed_at(
+        &self,
+        id: &str,
+        last_revealed_at: DateTime<Utc>,
+    ) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.last_revealed_at = Some(last_revealed_at);
         Ok(())
     }
 
