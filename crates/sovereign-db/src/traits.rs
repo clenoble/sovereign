@@ -3,9 +3,9 @@ use chrono::{DateTime, Utc};
 
 use crate::error::DbResult;
 use crate::schema::{
-    ChannelType, Commit, Contact, Conversation, Document, Message, Milestone,
-    ReadStatus, RelatedTo, RelationType, SuggestedLink, SuggestionSource,
-    SuggestionStatus, Thread,
+    ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, SourceRef, SuggestedLink,
+    SuggestionSource, SuggestionStatus, Thread,
 };
 
 /// Core database abstraction for the Sovereign GE document graph.
@@ -300,4 +300,30 @@ pub trait GraphDB: Send + Sync {
         conversation_id: &str,
         thread_id: &str,
     ) -> DbResult<Conversation>;
+
+    // -- Entities (PII management) ---
+
+    /// Create a new business / personal entity. Used by the PII pipeline
+    /// to write disambiguator-proposed entities (`is_owned == false`)
+    /// and by the dashboard's "new entity" flow (`is_owned == true`).
+    async fn create_entity(&self, entity: Entity) -> DbResult<Entity>;
+
+    /// List all entities (excludes soft-deleted), ordered by name.
+    async fn list_entities(&self) -> DbResult<Vec<Entity>>;
+
+    // -- PII Records ---
+
+    /// Insert a new PiiRecord. Discovered findings (`stored_secret == false`)
+    /// arrive here from the ingest pipeline; vault entries
+    /// (`stored_secret == true`) arrive from the dashboard "new secret" flow.
+    async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord>;
+
+    /// Replace a record's `sources` list. Used by the ingest hook after
+    /// canonical-body substitution to update spans from indexed
+    /// placeholders to the post-substitution placeholder spans.
+    async fn update_pii_record_sources(
+        &self,
+        id: &str,
+        sources: Vec<SourceRef>,
+    ) -> DbResult<()>;
 }

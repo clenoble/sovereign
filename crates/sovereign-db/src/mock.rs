@@ -22,6 +22,8 @@ pub struct MockGraphDB {
     commits: RwLock<HashMap<String, Vec<Commit>>>,
     relationships: RwLock<Vec<RelatedTo>>,
     suggested_links: RwLock<Vec<SuggestedLink>>,
+    entities: RwLock<HashMap<String, Entity>>,
+    pii_records: RwLock<HashMap<String, PiiRecord>>,
     next_id: AtomicU64,
 }
 
@@ -36,6 +38,8 @@ impl MockGraphDB {
             commits: RwLock::new(HashMap::new()),
             relationships: RwLock::new(Vec::new()),
             suggested_links: RwLock::new(Vec::new()),
+            entities: RwLock::new(HashMap::new()),
+            pii_records: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(1),
         }
     }
@@ -617,6 +621,48 @@ impl GraphDB for MockGraphDB {
         let conv = convs.get_mut(conversation_id).ok_or_else(|| DbError::NotFound(conversation_id.to_string()))?;
         conv.linked_thread_id = Some(thread_id.to_string());
         Ok(conv.clone())
+    }
+
+    async fn create_entity(&self, mut entity: Entity) -> DbResult<Entity> {
+        let key = self.next_key();
+        let thing = Self::make_thing("entity", &key);
+        let id_str = thing_to_raw(&thing);
+        entity.id = Some(thing);
+        self.entities.write().unwrap().insert(id_str, entity.clone());
+        Ok(entity)
+    }
+
+    async fn list_entities(&self) -> DbResult<Vec<Entity>> {
+        let entities = self.entities.read().unwrap();
+        let mut out: Vec<Entity> = entities
+            .values()
+            .filter(|e| e.deleted_at.is_none())
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    async fn create_pii_record(&self, mut record: PiiRecord) -> DbResult<PiiRecord> {
+        let key = self.next_key();
+        let thing = Self::make_thing("pii_record", &key);
+        let id_str = thing_to_raw(&thing);
+        record.id = Some(thing);
+        self.pii_records.write().unwrap().insert(id_str, record.clone());
+        Ok(record)
+    }
+
+    async fn update_pii_record_sources(
+        &self,
+        id: &str,
+        sources: Vec<SourceRef>,
+    ) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.sources = sources;
+        Ok(())
     }
 }
 

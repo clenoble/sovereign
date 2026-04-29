@@ -15,8 +15,8 @@ use tokio::sync::RwLock;
 
 use crate::error::{DbError, DbResult};
 use crate::schema::{
-    ChannelType, Commit, Contact, Conversation, Document, Message, Milestone,
-    ReadStatus, RelatedTo, RelationType, Thread,
+    ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, SourceRef, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -533,6 +533,31 @@ impl GraphDB for EncryptedGraphDB {
     ) -> DbResult<Conversation> {
         self.inner.link_conversation_to_thread(conversation_id, thread_id).await
     }
+
+    // -- Entities and PII records pass through unencrypted by this
+    //    decorator: PiiRecord values are already ciphertext (encrypted
+    //    under DeviceKey by the AI layer's vault primitive), and Entity
+    //    has no fields that need additional encryption.
+
+    async fn create_entity(&self, entity: Entity) -> DbResult<Entity> {
+        self.inner.create_entity(entity).await
+    }
+
+    async fn list_entities(&self) -> DbResult<Vec<Entity>> {
+        self.inner.list_entities().await
+    }
+
+    async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord> {
+        self.inner.create_pii_record(record).await
+    }
+
+    async fn update_pii_record_sources(
+        &self,
+        id: &str,
+        sources: Vec<SourceRef>,
+    ) -> DbResult<()> {
+        self.inner.update_pii_record_sources(id, sources).await
+    }
 }
 
 #[cfg(test)]
@@ -685,5 +710,10 @@ mod tests {
         async fn update_conversation_last_message_at(&self, _id: &str, _at: chrono::DateTime<chrono::Utc>) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
         async fn delete_conversation(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn link_conversation_to_thread(&self, _conversation_id: &str, _thread_id: &str) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
+        // Entities + PII records
+        async fn create_entity(&self, entity: Entity) -> DbResult<Entity> { Ok(entity) }
+        async fn list_entities(&self) -> DbResult<Vec<Entity>> { Ok(vec![]) }
+        async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord> { Ok(record) }
+        async fn update_pii_record_sources(&self, _id: &str, _sources: Vec<SourceRef>) -> DbResult<()> { Ok(()) }
     }
 }
