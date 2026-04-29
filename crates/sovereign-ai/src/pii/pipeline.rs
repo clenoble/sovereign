@@ -213,6 +213,9 @@ mod tests {
         fn tool_call_format_instruction(&self) -> String {
             String::new()
         }
+        fn wrap_tool_call_example(&self, json: &str) -> String {
+            json.to_string()
+        }
     }
 
     fn ner_response(entities: &[NerEntity]) -> String {
