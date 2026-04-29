@@ -5,11 +5,13 @@
 	import {
 		piiState,
 		loadPii,
+		loadShareRecordsForEntity,
 		recordsForEntity,
 		inventoryForEntity,
 		piiCountForEntity,
 		recordsByState,
 		refreshPiiRecords,
+		kindForRecordId,
 		unreviewedCount
 	} from '$lib/stores/pii.svelte';
 	import {
@@ -168,9 +170,28 @@
 			case 'vault':
 				return all.filter((r) => r.stored_secret);
 			default:
-				// Shared / cookies tabs land in later steps.
+				// Shared / cookies tabs render their own data outside this
+				// derivation.
 				return [] as PiiRecord[];
 		}
+	});
+
+	// Lazy-load share records when the user switches into the Shared
+	// tab on a real entity (Unattributed has no share records since
+	// ShareRecord requires a to_entity_id).
+	$effect(() => {
+		if (
+			piiState.activeTab === 'shared' &&
+			piiState.selectedEntityId !== null &&
+			!(piiState.selectedEntityId in piiState.shareRecordsByEntity)
+		) {
+			loadShareRecordsForEntity(piiState.selectedEntityId);
+		}
+	});
+
+	let visibleShares = $derived.by(() => {
+		if (piiState.selectedEntityId === null) return [];
+		return piiState.shareRecordsByEntity[piiState.selectedEntityId] ?? [];
 	});
 
 	// Drag handlers
@@ -331,8 +352,10 @@
 						<button
 							class="tab {piiState.activeTab === 'shared' ? 'active' : ''}"
 							onclick={() => (piiState.activeTab = 'shared')}
-							disabled
-							title="Sharing ledger lands in step 7"
+							disabled={piiState.selectedEntityId === null}
+							title={piiState.selectedEntityId === null
+								? 'Select an entity to view its sharing ledger'
+								: 'Outbound disclosures of PII to this entity'}
 						>
 							Shared
 						</button>
@@ -356,65 +379,92 @@
 				{/if}
 
 				<div class="record-list">
-					{#each visibleRecords as record (record.id)}
-						<div class="record-row">
-							<span class="record-kind">[{kindLabel(record.kind)}]</span>
-							<span class="record-label">
-								{record.label ?? '(no label)'}
-							</span>
-							<span class="record-value">
-								{#if revealing[record.id]}
-									<span class="value-loading">…</span>
-								{:else if record.id in revealed}
-									<code class="value-plain">{revealed[record.id]}</code>
+					{#if piiState.activeTab === 'shared'}
+						{#each visibleShares as share (share.id)}
+							<div class="record-row share-row">
+								<span class="record-kind">
+									[{kindLabel(kindForRecordId(share.pii_record_id))}]
+								</span>
+								<span class="record-label">
+									via {share.channel}
+									{#if share.via_url}
+										· {share.via_url}
+									{/if}
+								</span>
+								<span class="record-meta">
+									{new Date(share.shared_at).toLocaleString()}
+								</span>
+							</div>
+						{:else}
+							<div class="empty">
+								{#if piiState.selectedEntityId === null}
+									Select an entity to view its sharing ledger.
 								{:else}
-									<span class="value-hidden">(hidden)</span>
+									No outbound disclosures recorded for this entity yet.
 								{/if}
-							</span>
-							<span class="record-meta">
-								{(record.confidence * 100).toFixed(0)}%
-								{#if record.last_revealed_at}
-									· {new Date(record.last_revealed_at).toLocaleDateString()}
+							</div>
+						{/each}
+					{:else}
+						{#each visibleRecords as record (record.id)}
+							<div class="record-row">
+								<span class="record-kind">[{kindLabel(record.kind)}]</span>
+								<span class="record-label">
+									{record.label ?? '(no label)'}
+								</span>
+								<span class="record-value">
+									{#if revealing[record.id]}
+										<span class="value-loading">…</span>
+									{:else if record.id in revealed}
+										<code class="value-plain">{revealed[record.id]}</code>
+									{:else}
+										<span class="value-hidden">(hidden)</span>
+									{/if}
+								</span>
+								<span class="record-meta">
+									{(record.confidence * 100).toFixed(0)}%
+									{#if record.last_revealed_at}
+										· {new Date(record.last_revealed_at).toLocaleDateString()}
+									{/if}
+								</span>
+								<span class="record-actions">
+									<button
+										class="row-btn"
+										onclick={() => toggleReveal(record)}
+										title={record.id in revealed ? 'Hide value' : 'Reveal (L3)'}
+									>
+										{record.id in revealed ? 'Hide' : 'Reveal'}
+									</button>
+									<button
+										class="row-btn"
+										onclick={() => copyValue(record)}
+										title="Copy to clipboard (auto-clears after 30s)"
+									>
+										Copy
+									</button>
+									<button
+										class="row-btn redact"
+										onclick={() => redact(record)}
+										title="Redact (L5 — soft delete)"
+									>
+										Redact
+									</button>
+								</span>
+								<span class="record-state state-{record.review_state}">
+									{record.review_state}
+								</span>
+							</div>
+						{/each}
+						{#if visibleRecords.length === 0}
+							<div class="empty">
+								{#if piiState.activeTab === 'cookies'}
+									Coming in step 8.
+								{:else if piiState.activeTab === 'vault'}
+									No secrets stored yet — click "+ New secret" above.
+								{:else}
+									No {piiState.activeTab} entries.
 								{/if}
-							</span>
-							<span class="record-actions">
-								<button
-									class="row-btn"
-									onclick={() => toggleReveal(record)}
-									title={record.id in revealed ? 'Hide value' : 'Reveal (L3)'}
-								>
-									{record.id in revealed ? 'Hide' : 'Reveal'}
-								</button>
-								<button
-									class="row-btn"
-									onclick={() => copyValue(record)}
-									title="Copy to clipboard (auto-clears after 30s)"
-								>
-									Copy
-								</button>
-								<button
-									class="row-btn redact"
-									onclick={() => redact(record)}
-									title="Redact (L5 — soft delete)"
-								>
-									Redact
-								</button>
-							</span>
-							<span class="record-state state-{record.review_state}">
-								{record.review_state}
-							</span>
-						</div>
-					{/each}
-					{#if visibleRecords.length === 0}
-						<div class="empty">
-							{#if piiState.activeTab === 'shared' || piiState.activeTab === 'cookies'}
-								Coming in a later step.
-							{:else if piiState.activeTab === 'vault'}
-								No secrets stored yet — click "+ New secret" above.
-							{:else}
-								No {piiState.activeTab} entries.
-							{/if}
-						</div>
+							</div>
+						{/if}
 					{/if}
 				</div>
 			</section>

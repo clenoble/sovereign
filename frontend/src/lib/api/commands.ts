@@ -611,3 +611,20 @@ export interface VaultEntryInput {
 /** Create a vault entry — user-entered secret encrypted under DeviceKey. */
 export const createVaultEntry = (input: VaultEntryInput) =>
 	invoke<PiiRecord>('create_vault_entry', { input });
+
+export interface ShareRecord {
+	id: string;
+	pii_record_id: string;
+	to_entity_id: string;
+	via_message_id: string | null;
+	via_url: string | null;
+	shared_at: string;
+	/** lowercase channel: "email" | "signal" | "whatsapp" | "sms"
+	 *  | "matrix" | "phone" | "web" | "other" */
+	channel: string;
+}
+
+/** List sharing-ledger entries where the recipient is `entityId`,
+ *  most recent first. */
+export const listShareRecordsForEntity = (entityId: string) =>
+	invoke<ShareRecord[]>('list_share_records_for_entity', { entityId });

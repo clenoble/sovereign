@@ -490,6 +490,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             // PII dashboard (6c) — per-record reveal + vault add.
             tauri_commands::pii::reveal_pii_record,
             tauri_commands::pii::create_vault_entry,
+            // PII dashboard (7b) — sharing ledger.
+            tauri_commands::pii::list_share_records_for_entity,
         ])
         .setup(move |app| {
             // Auto-open DevTools in debug builds
