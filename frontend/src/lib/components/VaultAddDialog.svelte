@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { createVaultEntry } from '$lib/api/commands';
 	import { piiState, refreshPiiRecords } from '$lib/stores/pii.svelte';
+	import { focusTrap } from '$lib/actions/focusTrap';
 
 	type Props = {
 		open: boolean;
@@ -55,6 +56,8 @@
 		}
 	}
 
+	// Escape is handled by focusTrap's onEscape — kept here only for
+	// the click-outside backdrop's keyboard fallback.
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') {
 			e.preventDefault();
@@ -90,6 +93,7 @@
 			aria-label="New vault secret"
 			onclick={(e) => e.stopPropagation()}
 			onsubmit={submit}
+			use:focusTrap={{ active: open, onEscape: onClose }}
 		>
 			<header class="vault-dialog-header">
 				<h3>New secret</h3>
