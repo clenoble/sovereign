@@ -406,6 +406,9 @@ Hope that helps!"#;
         fn tool_call_format_instruction(&self) -> String {
             String::new()
         }
+        fn wrap_tool_call_example(&self, json: &str) -> String {
+            json.to_string()
+        }
     }
 
     #[tokio::test]
