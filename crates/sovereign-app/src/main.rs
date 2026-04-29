@@ -478,6 +478,13 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             // PII resolution (5c). Stubs out to a clear error string
             // when the `encryption` feature isn't enabled.
             tauri_commands::pii::resolve_pii_tokens,
+            // PII dashboard (6) — read paths and review/redact write paths.
+            tauri_commands::pii::list_pii_entities,
+            tauri_commands::pii::get_pii_entity,
+            tauri_commands::pii::list_pii_records,
+            tauri_commands::pii::confirm_pii_record,
+            tauri_commands::pii::dismiss_pii_record,
+            tauri_commands::pii::redact_pii_record,
         ])
         .setup(move |app| {
             // Auto-open DevTools in debug builds

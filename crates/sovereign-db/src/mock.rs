@@ -661,6 +661,65 @@ impl GraphDB for MockGraphDB {
             .ok_or_else(|| DbError::NotFound(id.to_string()))
     }
 
+    async fn list_pii_records(
+        &self,
+        entity_id: Option<&str>,
+        review_state: Option<ReviewState>,
+        stored_secret: Option<bool>,
+    ) -> DbResult<Vec<PiiRecord>> {
+        let records = self.pii_records.read().unwrap();
+        let mut out: Vec<PiiRecord> = records
+            .values()
+            .filter(|r| r.deleted_at.is_none())
+            .filter(|r| match entity_id {
+                Some(eid) => r.entity_id.as_deref() == Some(eid),
+                None => true,
+            })
+            .filter(|r| match &review_state {
+                Some(rs) => &r.review_state == rs,
+                None => true,
+            })
+            .filter(|r| match stored_secret {
+                Some(ss) => r.stored_secret == ss,
+                None => true,
+            })
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| b.discovered_at.cmp(&a.discovered_at));
+        Ok(out)
+    }
+
+    async fn update_pii_record_review_state(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+    ) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.review_state = review_state;
+        Ok(())
+    }
+
+    async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.deleted_at = Some(Utc::now().to_rfc3339());
+        Ok(())
+    }
+
+    async fn get_entity(&self, id: &str) -> DbResult<Entity> {
+        self.entities
+            .read()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
     async fn update_pii_record_sources(
         &self,
         id: &str,

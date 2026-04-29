@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
-    PiiRecord, ReadStatus, RelatedTo, RelationType, SourceRef, SuggestedLink,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, SourceRef, SuggestedLink,
     SuggestionSource, SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
@@ -641,6 +641,33 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.get_pii_record(id).await
     }
 
+    async fn list_pii_records(
+        &self,
+        entity_id: Option<&str>,
+        review_state: Option<ReviewState>,
+        stored_secret: Option<bool>,
+    ) -> DbResult<Vec<PiiRecord>> {
+        self.inner
+            .list_pii_records(entity_id, review_state, stored_secret)
+            .await
+    }
+
+    async fn update_pii_record_review_state(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+    ) -> DbResult<()> {
+        self.inner.update_pii_record_review_state(id, review_state).await
+    }
+
+    async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
+        self.inner.soft_delete_pii_record(id).await
+    }
+
+    async fn get_entity(&self, id: &str) -> DbResult<Entity> {
+        self.inner.get_entity(id).await
+    }
+
     async fn update_pii_record_sources(
         &self,
         id: &str,
@@ -882,6 +909,10 @@ mod tests {
         async fn list_entities(&self) -> DbResult<Vec<Entity>> { Ok(vec![]) }
         async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord> { Ok(record) }
         async fn get_pii_record(&self, _id: &str) -> DbResult<PiiRecord> { Err(DbError::NotFound("mock".into())) }
+        async fn list_pii_records(&self, _entity_id: Option<&str>, _review_state: Option<ReviewState>, _stored_secret: Option<bool>) -> DbResult<Vec<PiiRecord>> { Ok(vec![]) }
+        async fn update_pii_record_review_state(&self, _id: &str, _review_state: ReviewState) -> DbResult<()> { Ok(()) }
+        async fn soft_delete_pii_record(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        async fn get_entity(&self, _id: &str) -> DbResult<Entity> { Err(DbError::NotFound("mock".into())) }
         async fn update_pii_record_sources(&self, _id: &str, _sources: Vec<SourceRef>) -> DbResult<()> { Ok(()) }
         async fn update_pii_record_revealed_at(&self, _id: &str, _last_revealed_at: chrono::DateTime<chrono::Utc>) -> DbResult<()> { Ok(()) }
         async fn update_document_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }

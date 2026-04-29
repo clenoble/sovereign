@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use crate::error::DbResult;
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
-    PiiRecord, ReadStatus, RelatedTo, RelationType, SourceRef, SuggestedLink,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, SourceRef, SuggestedLink,
     SuggestionSource, SuggestionStatus, Thread,
 };
 
@@ -323,6 +323,37 @@ pub trait GraphDB: Send + Sync {
     /// `DeviceKey`. Used by the resolution API (step 5) when expanding
     /// `[pii:<record_id>]` tokens.
     async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord>;
+
+    /// List PiiRecords with optional filters. Excludes soft-deleted
+    /// records. Order: most-recently-discovered first.
+    ///
+    /// All filter args are AND-combined: passing `entity_id = Some(...)`,
+    /// `review_state = Some(Confirmed)`, `stored_secret = Some(false)`
+    /// returns confirmed discovered findings for that entity.
+    async fn list_pii_records(
+        &self,
+        entity_id: Option<&str>,
+        review_state: Option<ReviewState>,
+        stored_secret: Option<bool>,
+    ) -> DbResult<Vec<PiiRecord>>;
+
+    /// Set a record's `review_state`. Used by the dashboard's review
+    /// queue when the user confirms or dismisses an Unreviewed finding.
+    async fn update_pii_record_review_state(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+    ) -> DbResult<()>;
+
+    /// Soft-delete a PiiRecord. Sets `deleted_at` so the record falls
+    /// out of `list_pii_records` but remains in the DB for audit / undo.
+    /// Used by the dashboard's redact (L5) action.
+    async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()>;
+
+    // -- Entity reads ---
+
+    /// Fetch an `Entity` by ID.
+    async fn get_entity(&self, id: &str) -> DbResult<Entity>;
 
     /// Replace a record's `sources` list. Used by the ingest hook after
     /// canonical-body substitution to update spans from indexed
