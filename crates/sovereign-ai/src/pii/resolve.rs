@@ -160,13 +160,37 @@ fn mask_domain(domain: &str) -> String {
 }
 
 fn mask_keep_last_n(s: &str, n: usize) -> String {
+    // Count *digits* from the right, not characters — phone numbers and
+    // credit cards may contain spaces, dashes, or dots as separators
+    // ("+41 79 555 12 34", "4242-4242-4242-4242"). Keeping last N chars
+    // would slice into the digit run mid-group and hide the wrong portion.
+    // Walk backwards collecting until we've seen N digits, then mask
+    // every digit before that boundary while preserving the separators.
     let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= n {
-        return "*".repeat(chars.len());
+    let mut digits_seen = 0;
+    let mut keep_from = chars.len();
+    for (i, c) in chars.iter().enumerate().rev() {
+        if c.is_ascii_digit() {
+            digits_seen += 1;
+            if digits_seen == n {
+                keep_from = i;
+                break;
+            }
+        }
     }
-    let masked = "*".repeat(chars.len() - n);
-    let tail: String = chars[chars.len() - n..].iter().collect();
-    format!("{masked}{tail}")
+    if digits_seen < n {
+        // Not enough digits — fall back to redacting every digit.
+        return chars
+            .iter()
+            .map(|c| if c.is_ascii_digit() { '*' } else { *c })
+            .collect();
+    }
+    let prefix: String = chars[..keep_from]
+        .iter()
+        .map(|c| if c.is_ascii_digit() { '*' } else { *c })
+        .collect();
+    let tail: String = chars[keep_from..].iter().collect();
+    format!("{prefix}{tail}")
 }
 
 fn mask_iban(s: &str) -> String {
