@@ -8,6 +8,7 @@ pub mod kek;
 pub mod key_db;
 pub mod keystroke;
 pub mod master_key;
+pub mod vault;
 
 pub mod migration;
 
