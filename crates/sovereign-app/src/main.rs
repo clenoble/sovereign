@@ -485,6 +485,9 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pii::confirm_pii_record,
             tauri_commands::pii::dismiss_pii_record,
             tauri_commands::pii::redact_pii_record,
+            // PII dashboard (6c) — per-record reveal + vault add.
+            tauri_commands::pii::reveal_pii_record,
+            tauri_commands::pii::create_vault_entry,
         ])
         .setup(move |app| {
             // Auto-open DevTools in debug builds

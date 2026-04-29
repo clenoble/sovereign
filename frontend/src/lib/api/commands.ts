@@ -594,3 +594,20 @@ export const dismissPiiRecord = (id: string) =>
 /** Soft-delete a PiiRecord. L5 Destruct — caller must confirm first. */
 export const redactPiiRecord = (id: string) =>
 	invoke<void>('redact_pii_record', { id });
+
+/** Reveal a single PiiRecord's plaintext value. L3 Modify — bumps
+ *  last_revealed_at server-side. */
+export const revealPiiRecord = (id: string) =>
+	invoke<string>('reveal_pii_record', { id });
+
+export interface VaultEntryInput {
+	/** snake_case PiiKind */
+	kind: string;
+	label?: string | null;
+	entity_id?: string | null;
+	value: string;
+}
+
+/** Create a vault entry — user-entered secret encrypted under DeviceKey. */
+export const createVaultEntry = (input: VaultEntryInput) =>
+	invoke<PiiRecord>('create_vault_entry', { input });

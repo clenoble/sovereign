@@ -213,6 +213,118 @@ pub async fn redact_pii_record(
     state.db.soft_delete_pii_record(&id).await.str_err()
 }
 
+/// Reveal a single PiiRecord's plaintext value. L3 Modify — bumps
+/// `last_revealed_at`. Used by the dashboard's per-row reveal button
+/// (one click per record, vs. resolve_pii_tokens which expands every
+/// `[pii:<id>]` token in a body).
+#[cfg(feature = "encryption")]
+#[tauri::command]
+pub async fn reveal_pii_record(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<String, String> {
+    use chrono::Utc;
+    use sovereign_crypto::vault::EncryptedBlob;
+
+    let device_key = state
+        .device_key
+        .as_ref()
+        .ok_or_else(|| "PII reveal unavailable: device key not loaded".to_string())?;
+    let record = state.db.get_pii_record(&id).await.str_err()?;
+    let blob = EncryptedBlob::from_pair(record.value_encrypted, record.value_nonce);
+    let plaintext = blob
+        .decrypt_to_string(device_key)
+        .map_err(|e| format!("decrypt failed: {e}"))?;
+    // Side effect: bump last_revealed_at so the dashboard "last viewed"
+    // hint stays accurate.
+    state
+        .db
+        .update_pii_record_revealed_at(&id, Utc::now())
+        .await
+        .str_err()?;
+    Ok(plaintext)
+}
+
+#[cfg(not(feature = "encryption"))]
+#[tauri::command]
+pub async fn reveal_pii_record(
+    _state: State<'_, AppState>,
+    _id: String,
+) -> Result<String, String> {
+    Err("PII reveal requires the encryption feature to be enabled at build time".to_string())
+}
+
+/// Input for [`create_vault_entry`]. The frontend passes this from the
+/// "New secret" dialog.
+#[derive(Debug, serde::Deserialize)]
+pub struct VaultEntryInput {
+    /// Snake_case PiiKind: "password", "api_token", "bank_account",
+    /// "document_id", "note", or any other PiiKind variant.
+    pub kind: String,
+    /// Optional human label (e.g. "main bank password").
+    pub label: Option<String>,
+    /// Entity this secret belongs to. None means unattributed.
+    pub entity_id: Option<String>,
+    /// The plaintext value to encrypt and store.
+    pub value: String,
+}
+
+/// Create a vault entry — a user-entered secret encrypted under the
+/// DeviceKey. The created PiiRecord is `stored_secret = true`,
+/// `review_state = Confirmed`, `confidence = 1.0`, `sources = []`.
+/// Action level: Modify (L3) per the plan; frontend gates the
+/// confirmation before calling.
+#[cfg(feature = "encryption")]
+#[tauri::command]
+pub async fn create_vault_entry(
+    state: State<'_, AppState>,
+    input: VaultEntryInput,
+) -> Result<PiiRecordDto, String> {
+    use chrono::Utc;
+    use sovereign_crypto::vault::EncryptedBlob;
+    use sovereign_db::schema::{PiiKind, PiiRecord, ReviewState};
+
+    let device_key = state
+        .device_key
+        .as_ref()
+        .ok_or_else(|| "Vault add unavailable: device key not loaded".to_string())?;
+
+    let kind = parse_pii_kind(&input.kind)
+        .ok_or_else(|| format!("unknown PII kind: {}", input.kind))?;
+
+    let blob = EncryptedBlob::encrypt_str(&input.value, device_key)
+        .map_err(|e| format!("vault encrypt failed: {e}"))?;
+
+    let now = Utc::now();
+    let record = PiiRecord {
+        id: None,
+        kind,
+        value_encrypted: blob.ciphertext_b64,
+        value_nonce: blob.nonce_b64,
+        label: input.label,
+        entity_id: input.entity_id,
+        stored_secret: true,
+        confidence: 1.0,
+        sources: vec![],
+        discovered_at: now,
+        last_revealed_at: None,
+        use_count: 0,
+        review_state: ReviewState::Confirmed,
+        deleted_at: None,
+    };
+    let created = state.db.create_pii_record(record).await.str_err()?;
+    Ok(PiiRecordDto::from(created))
+}
+
+#[cfg(not(feature = "encryption"))]
+#[tauri::command]
+pub async fn create_vault_entry(
+    _state: State<'_, AppState>,
+    _input: VaultEntryInput,
+) -> Result<PiiRecordDto, String> {
+    Err("Vault entries require the encryption feature to be enabled at build time".to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -222,6 +334,32 @@ fn parse_review_state(s: &str) -> Option<ReviewState> {
         "unreviewed" => Some(ReviewState::Unreviewed),
         "confirmed" => Some(ReviewState::Confirmed),
         "dismissed" => Some(ReviewState::Dismissed),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "encryption")]
+fn parse_pii_kind(s: &str) -> Option<sovereign_db::schema::PiiKind> {
+    use sovereign_db::schema::PiiKind;
+    match s {
+        "email" => Some(PiiKind::Email),
+        "phone" => Some(PiiKind::Phone),
+        "ssn" => Some(PiiKind::Ssn),
+        "credit_card" => Some(PiiKind::CreditCard),
+        "ipv4" => Some(PiiKind::Ipv4),
+        "avs" => Some(PiiKind::Avs),
+        "iban" => Some(PiiKind::Iban),
+        "passport" => Some(PiiKind::Passport),
+        "dob" => Some(PiiKind::Dob),
+        "address" => Some(PiiKind::Address),
+        "person_name" => Some(PiiKind::PersonName),
+        "org_name" => Some(PiiKind::OrgName),
+        "password" => Some(PiiKind::Password),
+        "api_token" => Some(PiiKind::ApiToken),
+        "bank_account" => Some(PiiKind::BankAccount),
+        "document_id" => Some(PiiKind::DocumentId),
+        "note" => Some(PiiKind::Note),
+        "other" => Some(PiiKind::Other),
         _ => None,
     }
 }
