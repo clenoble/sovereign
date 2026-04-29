@@ -16,8 +16,8 @@ use tokio::sync::RwLock;
 use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
-    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, SourceRef, SuggestedLink,
-    SuggestionSource, SuggestionStatus, Thread,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, ShareRecord, SourceRef,
+    SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -668,6 +668,17 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.get_entity(id).await
     }
 
+    async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> {
+        self.inner.create_share_record(record).await
+    }
+
+    async fn list_share_records_for_entity(
+        &self,
+        entity_id: &str,
+    ) -> DbResult<Vec<ShareRecord>> {
+        self.inner.list_share_records_for_entity(entity_id).await
+    }
+
     async fn update_pii_record_sources(
         &self,
         id: &str,
@@ -913,6 +924,8 @@ mod tests {
         async fn update_pii_record_review_state(&self, _id: &str, _review_state: ReviewState) -> DbResult<()> { Ok(()) }
         async fn soft_delete_pii_record(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn get_entity(&self, _id: &str) -> DbResult<Entity> { Err(DbError::NotFound("mock".into())) }
+        async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> { Ok(record) }
+        async fn list_share_records_for_entity(&self, _entity_id: &str) -> DbResult<Vec<ShareRecord>> { Ok(vec![]) }
         async fn update_pii_record_sources(&self, _id: &str, _sources: Vec<SourceRef>) -> DbResult<()> { Ok(()) }
         async fn update_pii_record_revealed_at(&self, _id: &str, _last_revealed_at: chrono::DateTime<chrono::Utc>) -> DbResult<()> { Ok(()) }
         async fn update_document_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }

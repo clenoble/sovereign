@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 use crate::channel::{ChannelStatus, CommunicationChannel, OutgoingMessage, SyncResult};
 use crate::config::EmailAccountConfig;
 use crate::error::CommsError;
-use crate::pii_hook::{ContactIngestHook, MessageIngestHook};
+use crate::pii_hook::{ContactIngestHook, MessageIngestHook, ShareIngestHook};
 
 /// Email channel implementation using IMAP (fetch) and SMTP (send).
 pub struct EmailChannel {
@@ -23,6 +23,7 @@ pub struct EmailChannel {
     last_sync: Option<DateTime<Utc>>,
     pii_hook: Option<Arc<dyn MessageIngestHook>>,
     pii_contact_hook: Option<Arc<dyn ContactIngestHook>>,
+    pii_share_hook: Option<Arc<dyn ShareIngestHook>>,
 }
 
 impl EmailChannel {
@@ -39,6 +40,7 @@ impl EmailChannel {
             last_sync: None,
             pii_hook: None,
             pii_contact_hook: None,
+            pii_share_hook: None,
         }
     }
 
@@ -67,6 +69,21 @@ impl EmailChannel {
     async fn run_pii_contact_hook(&self, contact: &sovereign_db::schema::Contact) {
         if let Some(hook) = &self.pii_contact_hook {
             hook.after_contact_created(contact).await;
+        }
+    }
+
+    /// Attach a sharing-ledger hook, invoked after every outbound
+    /// message is persisted (and after the per-message PII hook has
+    /// tokenized its body — so the share hook scans the canonical
+    /// form for `[pii:<id>]` tokens).
+    pub fn with_pii_share_hook(mut self, hook: Arc<dyn ShareIngestHook>) -> Self {
+        self.pii_share_hook = Some(hook);
+        self
+    }
+
+    async fn run_pii_share_hook(&self, message: &sovereign_db::schema::Message) {
+        if let Some(hook) = &self.pii_share_hook {
+            hook.after_outbound_message(message).await;
         }
     }
 
@@ -373,7 +390,14 @@ impl CommunicationChannel for EmailChannel {
                 db_msg.sent_at = Utc::now();
 
                 match self.db.create_message(db_msg).await {
-                    Ok(persisted) => self.run_pii_hook(&persisted).await,
+                    Ok(persisted) => {
+                        // Order matters: PII hook tokenizes the body
+                        // FIRST (writing canonical `[pii:<id>]` tokens
+                        // to the DB); then the share hook re-fetches
+                        // and parses those tokens to build the ledger.
+                        self.run_pii_hook(&persisted).await;
+                        self.run_pii_share_hook(&persisted).await;
+                    }
                     Err(e) => tracing::warn!("Failed to persist outbound message: {e}"),
                 }
 

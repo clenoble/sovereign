@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use crate::error::DbResult;
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
-    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, SourceRef, SuggestedLink,
-    SuggestionSource, SuggestionStatus, Thread,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, ShareRecord, SourceRef,
+    SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
 
 /// Core database abstraction for the Sovereign GE document graph.
@@ -354,6 +354,21 @@ pub trait GraphDB: Send + Sync {
 
     /// Fetch an `Entity` by ID.
     async fn get_entity(&self, id: &str) -> DbResult<Entity>;
+
+    // -- Share Records (PII sharing ledger) ---
+
+    /// Insert a new `ShareRecord` documenting that a `PiiRecord` was
+    /// disclosed to an `Entity` at a moment in time. Always outbound;
+    /// receiving PII isn't tracked here.
+    async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord>;
+
+    /// List share records where `to_entity_id == entity_id`. Used by
+    /// the dashboard's Shared tab on the entity-detail panel. Order:
+    /// most-recently-shared first.
+    async fn list_share_records_for_entity(
+        &self,
+        entity_id: &str,
+    ) -> DbResult<Vec<ShareRecord>>;
 
     /// Replace a record's `sources` list. Used by the ingest hook after
     /// canonical-body substitution to update spans from indexed

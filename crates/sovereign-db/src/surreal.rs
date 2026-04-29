@@ -8,7 +8,8 @@ use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, DocumentSnapshot,
     Entity, Message, Milestone, PiiRecord, ReadStatus, RelatedTo, RelationType,
-    ReviewState, SourceRef, SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
+    ReviewState, ShareRecord, SourceRef, SuggestedLink, SuggestionSource,
+    SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -1132,6 +1133,31 @@ impl GraphDB for SurrealGraphDB {
         let (table, key) = parse_and_validate(id, "entity")?;
         let entity: Option<Entity> = self.db.select((table, key)).await?;
         entity.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> {
+        let created: Option<ShareRecord> = self
+            .db
+            .create("share_record")
+            .content(record)
+            .await?;
+        created.ok_or_else(|| DbError::Query("Failed to create share_record".into()))
+    }
+
+    async fn list_share_records_for_entity(
+        &self,
+        entity_id: &str,
+    ) -> DbResult<Vec<ShareRecord>> {
+        let eid = entity_id.to_string();
+        let mut result = self
+            .db
+            .query(
+                "SELECT * FROM share_record WHERE to_entity_id = $eid ORDER BY shared_at DESC",
+            )
+            .bind(("eid", eid))
+            .await?;
+        let records: Vec<ShareRecord> = result.take(0)?;
+        Ok(records)
     }
 
     async fn update_pii_record_sources(

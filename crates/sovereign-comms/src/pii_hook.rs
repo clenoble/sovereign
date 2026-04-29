@@ -16,6 +16,24 @@
 use async_trait::async_trait;
 use sovereign_db::schema::{Contact, Message};
 
+/// Invoked by each channel's `send_message` after the outbound
+/// `Message` has been persisted AND the per-message PII pipeline
+/// (`MessageIngestHook`) has tokenized its body.
+///
+/// Implementations parse the canonical body for `[pii:<record_id>]`
+/// tokens and write a `ShareRecord` per (token × recipient entity)
+/// pair, building the sharing ledger. Outbound-only — inbound
+/// messages don't fire this hook because receiving PII isn't a
+/// disclosure.
+///
+/// Lives in `sovereign-comms` (alongside the message + contact
+/// hooks) so the comms layer can fire it without depending on
+/// `sovereign-ai`.
+#[async_trait]
+pub trait ShareIngestHook: Send + Sync {
+    async fn after_outbound_message(&self, message: &Message);
+}
+
 /// Invoked once per `Message` after `db.create_message` has assigned an
 /// ID. Implementations typically call `db.update_message_body` and
 /// `db.update_message_pii_fields` to persist canonical body + encrypted
