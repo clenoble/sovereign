@@ -326,4 +326,16 @@ pub trait GraphDB: Send + Sync {
         id: &str,
         sources: Vec<SourceRef>,
     ) -> DbResult<()>;
+
+    /// Set the PII-pipeline-managed fields on a Document: encrypted raw
+    /// body + nonce, plus the scan timestamp. Caller is responsible for
+    /// updating `content` separately (via `update_document`) since the
+    /// ingest hook returns the canonical body for the same write path.
+    async fn update_document_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<chrono::DateTime<Utc>>,
+    ) -> DbResult<()>;
 }

@@ -9,6 +9,8 @@ mod setup;
 
 mod tauri_commands;
 mod tauri_events;
+#[cfg(feature = "encryption")]
+mod pii_ingest;
 mod tauri_state;
 
 #[cfg(feature = "web-browse")]
@@ -141,11 +143,16 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     // Compute profile directory (~/.sovereign)
     let profile_dir = sovereign_core::home_dir().join(".sovereign");
 
-    // Initialize crypto subsystem if enabled
+    // Initialize crypto subsystem if enabled. The DeviceKey is wrapped
+    // in Arc so it can be shared with the Tauri AppState for the PII
+    // ingest path (see pii_ingest.rs); without DeviceKey the pipeline
+    // runs in pass-through mode (no records written).
     #[cfg(feature = "encryption")]
     let _crypto_state = if config.crypto.enabled {
         match setup::init_crypto() {
-            Ok((device_key, key_db, kek)) => Some((device_key, key_db, kek)),
+            Ok((device_key, key_db, kek)) => {
+                Some((Arc::new(device_key), key_db, kek))
+            }
             Err(e) => {
                 tracing::warn!("Crypto init failed (continuing without encryption): {e}");
                 None
@@ -362,6 +369,10 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             autocommit: autocommit.clone(),
             model_assignments: std::sync::Mutex::new(model_assignments),
             profile_dir,
+            #[cfg(feature = "encryption")]
+            device_key: _crypto_state
+                .as_ref()
+                .map(|(dk, _, _)| dk.clone()),
         })
         .invoke_handler(tauri::generate_handler![
             // AI: status, chat, search, action gate, models, trust
