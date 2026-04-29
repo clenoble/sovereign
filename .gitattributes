@@ -1,0 +1,4 @@
+# Tauri-generated capability schemas — checked in for IDE/review visibility.
+# Pin to LF so Windows checkouts don't perpetually show them as "modified"
+# under core.autocrlf=true.
+crates/sovereign-app/gen/schemas/*.json text eol=lf
