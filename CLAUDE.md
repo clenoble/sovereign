@@ -119,6 +119,18 @@ Install via `winget` if missing:
 - **CMake**: `winget install Kitware.CMake`
 - **Rust** (stable MSVC): `winget install Rustlang.Rustup`
 - **Node.js** 20+ (for frontend): `winget install OpenJS.NodeJS.LTS`
+- **CUDA Toolkit** (only if building/running with `--features cuda`): `winget install Nvidia.CUDA` — installs to `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v<version>\`. The installer sets `CUDA_PATH` machine-wide but **does not propagate to existing shells** — restart any open terminal after install.
+
+#### CUDA 13 runtime DLL gotcha (Windows)
+CUDA **13.x** changed the runtime DLL layout: `cudart64_13.dll`, `cublas64_13.dll`, `cublasLt64_13.dll` live in `<CUDA_PATH>\bin\x64\`, **not** `<CUDA_PATH>\bin\` like CUDA 12. The installer adds `\bin` to system PATH but **not** `\bin\x64`. Symptom: a clean `--features cuda` build links fine but the resulting exe (or any test binary) fails immediately with `STATUS_DLL_NOT_FOUND` (0xc0000135).
+
+For builds and `cargo test`, the env block must include both:
+```bash
+export PATH="$CUDA_PATH/bin/x64:$CUDA_PATH/bin:$PATH"   # bash
+$env:PATH = "$env:CUDA_PATH\bin\x64;$env:CUDA_PATH\bin;$env:PATH"  # PowerShell
+```
+
+For shipping the release exe, copy the 3 runtime DLLs next to `sovereign.exe` (~485 MB) so end users don't need a CUDA toolkit install — only NVIDIA drivers.
 
 ### WSL2 / Linux
 - Source lives on NAS mount (`/mnt/nas/Current/Projets/03 - user-centered OS/`)
