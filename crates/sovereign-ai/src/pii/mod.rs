@@ -14,6 +14,7 @@
 
 pub mod commit;
 pub mod entity_disambig;
+pub mod ingest;
 pub mod ner;
 pub mod pipeline;
 pub mod regex;
