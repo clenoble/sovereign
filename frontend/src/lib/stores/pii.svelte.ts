@@ -8,9 +8,11 @@
 import {
 	listPiiEntities,
 	listPiiRecords,
+	listShareRecordsForEntity,
 	type PiiEntity,
 	type PiiRecord,
-	type ReviewStateString
+	type ReviewStateString,
+	type ShareRecord
 } from '$lib/api/commands';
 
 /** Reactive PII state. */
@@ -21,7 +23,9 @@ export const piiState = $state({
 	/** Currently-selected entity in the left column. */
 	selectedEntityId: null as string | null,
 	/** Active tab in the entity-detail center column. */
-	activeTab: 'inventory' as 'inventory' | 'vault' | 'shared' | 'cookies'
+	activeTab: 'inventory' as 'inventory' | 'vault' | 'shared' | 'cookies',
+	/** Lazily-loaded ShareRecord list per entity ID. */
+	shareRecordsByEntity: {} as Record<string, ShareRecord[]>
 });
 
 /** Load all entities + all records in one parallel fetch. */
@@ -82,4 +86,39 @@ export function piiCountForEntity(entityId: string): number {
  *  taskbar badge and the right-column queue header. */
 export function unreviewedCount(): number {
 	return piiState.records.filter((r) => r.review_state === 'unreviewed').length;
+}
+
+/** Lazily fetch the ShareRecord list for one entity. Caches per ID;
+ *  call `refreshShareRecordsForEntity` to bypass the cache. */
+export async function loadShareRecordsForEntity(entityId: string) {
+	if (entityId in piiState.shareRecordsByEntity) return;
+	try {
+		const records = await listShareRecordsForEntity(entityId);
+		piiState.shareRecordsByEntity = {
+			...piiState.shareRecordsByEntity,
+			[entityId]: records
+		};
+	} catch (e) {
+		console.error('Failed to load share records:', e);
+	}
+}
+
+/** Force a re-fetch of an entity's share records, ignoring the cache. */
+export async function refreshShareRecordsForEntity(entityId: string) {
+	try {
+		const records = await listShareRecordsForEntity(entityId);
+		piiState.shareRecordsByEntity = {
+			...piiState.shareRecordsByEntity,
+			[entityId]: records
+		};
+	} catch (e) {
+		console.error('Failed to refresh share records:', e);
+	}
+}
+
+/** Look up a record's PiiKind by ID, used by the Shared tab to
+ *  render "Shared <kind> on <date>…". Returns 'other' if the record
+ *  isn't in the cache. */
+export function kindForRecordId(recordId: string): string {
+	return piiState.records.find((r) => r.id === recordId)?.kind ?? 'other';
 }

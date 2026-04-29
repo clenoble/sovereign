@@ -10,7 +10,7 @@
 
 use serde::Serialize;
 use sovereign_ai::pii::resolve::AccessLevel;
-use sovereign_db::schema::{thing_to_raw, ReviewState};
+use sovereign_db::schema::{thing_to_raw, ReviewState, ShareChannel, ShareRecord};
 use tauri::State;
 
 use crate::err::ToStringErr;
@@ -128,6 +128,45 @@ impl From<sovereign_db::schema::PiiRecord> for PiiRecordDto {
     }
 }
 
+/// Frontend view of a ShareRecord — sharing-ledger entry.
+#[derive(Debug, Serialize)]
+pub struct ShareRecordDto {
+    pub id: String,
+    pub pii_record_id: String,
+    pub to_entity_id: String,
+    pub via_message_id: Option<String>,
+    pub via_url: Option<String>,
+    pub shared_at: String,
+    /// Lowercase channel string ("email" | "signal" | "whatsapp" | "sms"
+    /// | "matrix" | "phone" | "web" | "other").
+    pub channel: String,
+}
+
+impl From<ShareRecord> for ShareRecordDto {
+    fn from(r: ShareRecord) -> Self {
+        let channel = match r.channel {
+            ShareChannel::Email => "email",
+            ShareChannel::Sms => "sms",
+            ShareChannel::Signal => "signal",
+            ShareChannel::WhatsApp => "whatsapp",
+            ShareChannel::Matrix => "matrix",
+            ShareChannel::Phone => "phone",
+            ShareChannel::Web => "web",
+            ShareChannel::Other => "other",
+        }
+        .to_string();
+        Self {
+            id: r.id.as_ref().map(thing_to_raw).unwrap_or_default(),
+            pii_record_id: r.pii_record_id,
+            to_entity_id: r.to_entity_id,
+            via_message_id: r.via_message_id,
+            via_url: r.via_url,
+            shared_at: r.shared_at.to_rfc3339(),
+            channel,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard read paths
 // ---------------------------------------------------------------------------
@@ -147,6 +186,21 @@ pub async fn get_pii_entity(
 ) -> Result<EntityDto, String> {
     let entity = state.db.get_entity(&id).await.str_err()?;
     Ok(EntityDto::from(entity))
+}
+
+/// List share-ledger entries where the recipient entity is `entity_id`.
+/// Used by the dashboard's Shared tab. Order: most-recently-shared first.
+#[tauri::command]
+pub async fn list_share_records_for_entity(
+    state: State<'_, AppState>,
+    entity_id: String,
+) -> Result<Vec<ShareRecordDto>, String> {
+    let records = state
+        .db
+        .list_share_records_for_entity(&entity_id)
+        .await
+        .str_err()?;
+    Ok(records.into_iter().map(ShareRecordDto::from).collect())
 }
 
 /// List PiiRecords matching the supplied filters. All filter args are
