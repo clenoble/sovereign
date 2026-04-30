@@ -25,6 +25,7 @@ mod tauri_state;
 mod web;
 mod browser;
 mod browser_pii;
+mod cookie_api;
 
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -498,6 +499,10 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pii::__browser_form_extracted,
             tauri_commands::pii::autofill_pii_record,
             tauri_commands::pii::generate_password,
+            // Cookie API (8c) — Cookies tab.
+            tauri_commands::pii::list_cookies_for_entity,
+            tauri_commands::pii::delete_cookie,
+            tauri_commands::pii::clear_entity_cookies,
         ])
         .setup(move |app| {
             // Auto-open DevTools in debug builds
