@@ -20,6 +20,20 @@
 		saveWebPage,
 		extractFormFields
 	} from '$lib/api/commands';
+	import { piiState, loadPii } from '$lib/stores/pii.svelte';
+
+	function triggerSignupCapture() {
+		piiState.autofillRequested = false;
+		extractFormFields().catch((e) => console.error('extract_form_fields:', e));
+	}
+
+	function triggerAutofill() {
+		piiState.autofillRequested = true;
+		// Make sure the vault catalog is loaded so AutofillPrompt can
+		// match this URL's host against entity domains.
+		if (!piiState.loaded) loadPii();
+		extractFormFields().catch((e) => console.error('extract_form_fields:', e));
+	}
 	import { refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
 
 	let urlInput = $state(browser.url || 'https://www.google.com');
@@ -159,9 +173,14 @@
 		<button class="nav-btn go-btn" onclick={handleNavigate}>Go</button>
 		<button
 			class="nav-btn"
-			onclick={() => extractFormFields().catch((e) => console.error('extract_form_fields:', e))}
+			onclick={triggerSignupCapture}
 			title="Save credentials from this page (signup capture)"
 		>Save credentials</button>
+		<button
+			class="nav-btn"
+			onclick={triggerAutofill}
+			title="Fill credentials from your vault (L3 — confirmation required)"
+		>Fill from vault</button>
 		<button class="nav-btn close-btn" onclick={handleClose} title="Close browser">&times;</button>
 	</div>
 

@@ -29,7 +29,13 @@ export const piiState = $state({
 	/** Active signup-capture extraction. Set when the user clicks
 	 *  "Save credentials" in the BrowserPanel and the
 	 *  `browser-form-extracted` event arrives. */
-	signupCapture: null as import('$lib/api/commands').BrowserFormExtraction | null
+	signupCapture: null as import('$lib/api/commands').BrowserFormExtraction | null,
+	/** Active autofill request. Set when the user clicks "Fill from
+	 *  vault" in the BrowserPanel. The next `browser-form-extracted`
+	 *  event populates `autofillExtraction` instead of
+	 *  `signupCapture`, then the AutofillPrompt opens. */
+	autofillRequested: false,
+	autofillExtraction: null as import('$lib/api/commands').BrowserFormExtraction | null
 });
 
 /** Load all entities + all records in one parallel fetch. */
