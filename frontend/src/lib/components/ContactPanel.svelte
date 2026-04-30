@@ -8,6 +8,7 @@
 		type ContactDetailDto,
 		type MessageDto
 	} from '$lib/api/commands';
+	import { focusTrap } from '$lib/actions/focusTrap';
 
 	let contact = $state<ContactDetailDto | null>(null);
 	let selectedConvIdx = $state(0);
@@ -109,7 +110,17 @@
 </script>
 
 {#if app.contactPanelState && contact}
-	<div class="contact-panel" style="left: {position.x}px; top: {position.y}px;">
+	<div
+		class="contact-panel"
+		role="dialog"
+		aria-modal="false"
+		aria-label="Contact details for {contact.name}"
+		style="left: {position.x}px; top: {position.y}px;"
+		use:focusTrap={{
+			active: app.contactPanelState !== null,
+			onEscape: close
+		}}
+	>
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="panel-toolbar"
