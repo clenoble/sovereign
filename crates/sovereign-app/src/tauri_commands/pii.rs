@@ -467,6 +467,53 @@ pub async fn generate_password(
 }
 
 // ---------------------------------------------------------------------------
+// Cookie management (8c) — Cookies tab in the entity-detail panel
+// ---------------------------------------------------------------------------
+
+/// List cookies whose domain attributes to `entity_id`'s domains[].
+/// Returns an empty list when the entity has no `domains` set, the
+/// browser webview isn't open, or no cookie matches.
+#[tauri::command]
+pub async fn list_cookies_for_entity(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    entity_id: String,
+) -> Result<Vec<crate::cookie_api::CookieDto>, String> {
+    let entity = state.db.get_entity(&entity_id).await.str_err()?;
+    if entity.domains.is_empty() {
+        return Ok(vec![]);
+    }
+    crate::cookie_api::list_cookies_for_domains(&app, &entity.domains)
+}
+
+/// Delete one cookie by (name, domain, path). L5 Destruct per the
+/// plan; the frontend gates the confirmation prompt before calling.
+#[tauri::command]
+pub async fn delete_cookie(
+    app: tauri::AppHandle,
+    name: String,
+    domain: String,
+    path: String,
+) -> Result<(), String> {
+    crate::cookie_api::delete_one(&app, &name, &domain, &path)
+}
+
+/// Bulk-delete every cookie whose domain matches `entity_id`'s
+/// domains. Returns the number deleted. L5 Destruct.
+#[tauri::command]
+pub async fn clear_entity_cookies(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    entity_id: String,
+) -> Result<usize, String> {
+    let entity = state.db.get_entity(&entity_id).await.str_err()?;
+    if entity.domains.is_empty() {
+        return Ok(0);
+    }
+    crate::cookie_api::clear_for_domains(&app, &entity.domains)
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 

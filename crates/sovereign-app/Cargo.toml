@@ -28,6 +28,10 @@ url = { workspace = true }
 # Tauri (Svelte 5 web UI — the only supported frontend)
 tauri = { workspace = true }
 
+# Cookie type used by tauri::Webview::cookies() / delete_cookie().
+# Tauri 2.10 depends on this crate but doesn't re-export it.
+cookie = "0.18"
+
 # Optional crypto / P2P deps
 sovereign-crypto = { workspace = true, optional = true }
 sovereign-p2p = { workspace = true, optional = true }
