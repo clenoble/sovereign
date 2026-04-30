@@ -16,7 +16,11 @@
 	import InboxPanel from '$lib/components/InboxPanel.svelte';
 	import ContactPanel from '$lib/components/ContactPanel.svelte';
 	import PiiDashboardPanel from '$lib/components/PiiDashboardPanel.svelte';
+	import SignupCapturePrompt from '$lib/components/SignupCapturePrompt.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
+	import { piiState } from '$lib/stores/pii.svelte';
+	import { listen } from '@tauri-apps/api/event';
+	import type { BrowserFormExtraction } from '$lib/api/commands';
 	import LoginScreen from '$lib/components/LoginScreen.svelte';
 	import OnboardingWizard from '$lib/components/OnboardingWizard.svelte';
 	import SettingsPanel from '$lib/components/SettingsPanel.svelte';
@@ -107,8 +111,19 @@
 		};
 		window.addEventListener('keydown', handleKeydown);
 
+		// Listen for the browser-form-extracted event triggered by the
+		// "Save credentials" button in BrowserPanel — opens the
+		// SignupCapturePrompt with the captured fields.
+		const unlistenSignup = await listen<BrowserFormExtraction>(
+			'browser-form-extracted',
+			(event) => {
+				piiState.signupCapture = event.payload;
+			}
+		);
+
 		return () => {
 			unlisten();
+			unlistenSignup();
 			stopNowTimer();
 			window.removeEventListener('keydown', handleKeydown);
 		};
@@ -139,6 +154,11 @@
 		<InboxPanel />
 		<ContactPanel />
 		<PiiDashboardPanel />
+		<SignupCapturePrompt
+			open={piiState.signupCapture !== null}
+			extraction={piiState.signupCapture}
+			onClose={() => (piiState.signupCapture = null)}
+		/>
 		<ContextMenu />
 		<SettingsPanel />
 		<Taskbar />

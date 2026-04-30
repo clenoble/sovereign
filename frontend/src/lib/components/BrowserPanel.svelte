@@ -17,7 +17,8 @@
 		setBrowserBounds,
 		setBrowserVisible,
 		assessReliability,
-		saveWebPage
+		saveWebPage,
+		extractFormFields
 	} from '$lib/api/commands';
 	import { refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
 
@@ -156,6 +157,11 @@
 			placeholder="Enter URL or search..."
 		/>
 		<button class="nav-btn go-btn" onclick={handleNavigate}>Go</button>
+		<button
+			class="nav-btn"
+			onclick={() => extractFormFields().catch((e) => console.error('extract_form_fields:', e))}
+			title="Save credentials from this page (signup capture)"
+		>Save credentials</button>
 		<button class="nav-btn close-btn" onclick={handleClose} title="Close browser">&times;</button>
 	</div>
 

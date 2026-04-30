@@ -467,6 +467,182 @@ pub async fn generate_password(
 }
 
 // ---------------------------------------------------------------------------
+// Signup capture (8d) — high-level multi-write command
+// ---------------------------------------------------------------------------
+
+/// One field captured from a signup form, ready to be encrypted +
+/// stored as a PiiRecord. The frontend builds this list after the
+/// user reviews + edits the SignupCapturePrompt.
+#[derive(Debug, serde::Deserialize)]
+pub struct SignupFieldInput {
+    /// snake_case PiiKind ("password", "email", "phone", "first_name",
+    /// "last_name", "address", "text", etc.).
+    pub kind: String,
+    /// User-edited or auto-suggested label (e.g. "main bank password").
+    pub label: Option<String>,
+    /// The value to encrypt + store. May be a generated password or
+    /// the user's typed value.
+    pub value: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SignupCaptureInput {
+    /// URL of the page that triggered the capture, used to look up
+    /// or create the entity (parsed for the host) and recorded as
+    /// `via_url` on each ShareRecord.
+    pub url: String,
+    /// Existing entity ID, or None to auto-create from the URL host.
+    pub entity_id: Option<String>,
+    pub fields: Vec<SignupFieldInput>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SignupCaptureResult {
+    pub entity_id: String,
+    pub record_ids: Vec<String>,
+    pub share_record_count: usize,
+    /// True when this call auto-created the entity (frontend can
+    /// surface that fact in a toast).
+    pub entity_created: bool,
+}
+
+/// Commit a signup capture: resolve/create entity from the URL, write
+/// one PiiRecord per field, write one Web-channel ShareRecord per
+/// record. Atomic in spirit (best-effort: a partial failure leaves
+/// previously-written records in place; the frontend should treat
+/// errors as "some records may have been written, refresh the
+/// dashboard to see").
+///
+/// L4 Transmit per the plan (signup is itself a disclosure to the
+/// entity); the frontend gates the SignupCapturePrompt confirmation
+/// before calling.
+#[cfg(feature = "encryption")]
+#[tauri::command]
+pub async fn commit_signup_capture(
+    state: State<'_, AppState>,
+    input: SignupCaptureInput,
+) -> Result<SignupCaptureResult, String> {
+    use chrono::Utc;
+    use sovereign_crypto::vault::EncryptedBlob;
+    use sovereign_db::schema::{
+        Entity, EntityKind, PiiRecord, ReviewState, ShareChannel, ShareRecord,
+    };
+
+    let device_key = state
+        .device_key
+        .as_ref()
+        .ok_or_else(|| "Signup capture unavailable: device key not loaded".to_string())?;
+
+    // Step 1: resolve or create the entity.
+    let (entity_id, entity_created) = match input.entity_id {
+        Some(id) => (id, false),
+        None => {
+            let host = url::Url::parse(&input.url)
+                .map_err(|e| format!("invalid url: {e}"))?
+                .host_str()
+                .ok_or_else(|| "url has no host".to_string())?
+                .to_ascii_lowercase();
+            // Look for an existing entity with this domain.
+            let entities = state.db.list_entities().await.str_err()?;
+            let existing = entities.iter().find(|e| {
+                e.domains
+                    .iter()
+                    .any(|d| d.eq_ignore_ascii_case(&host))
+            });
+            if let Some(e) = existing {
+                let id = e
+                    .id
+                    .as_ref()
+                    .map(thing_to_raw)
+                    .ok_or_else(|| "matched entity has no id".to_string())?;
+                (id, false)
+            } else {
+                let mut new_entity = Entity::new(host.clone(), EntityKind::Service);
+                new_entity.domains = vec![host];
+                new_entity.is_owned = true; // user just signed up — they own this association
+                let created = state.db.create_entity(new_entity).await.str_err()?;
+                let id = created
+                    .id
+                    .as_ref()
+                    .map(thing_to_raw)
+                    .ok_or_else(|| "create_entity returned no id".to_string())?;
+                (id, true)
+            }
+        }
+    };
+
+    // Step 2: write one PiiRecord per field.
+    let now = Utc::now();
+    let mut record_ids: Vec<String> = Vec::with_capacity(input.fields.len());
+    for field in &input.fields {
+        let kind = parse_pii_kind(&field.kind)
+            .ok_or_else(|| format!("unknown PII kind: {}", field.kind))?;
+        let blob = EncryptedBlob::encrypt_str(&field.value, device_key)
+            .map_err(|e| format!("vault encrypt: {e}"))?;
+        let record = PiiRecord {
+            id: None,
+            kind,
+            value_encrypted: blob.ciphertext_b64,
+            value_nonce: blob.nonce_b64,
+            label: field.label.clone(),
+            entity_id: Some(entity_id.clone()),
+            stored_secret: true,
+            confidence: 1.0,
+            sources: vec![],
+            discovered_at: now,
+            last_revealed_at: None,
+            use_count: 0,
+            review_state: ReviewState::Confirmed,
+            deleted_at: None,
+        };
+        let created = state.db.create_pii_record(record).await.str_err()?;
+        let rid = created
+            .id
+            .as_ref()
+            .map(thing_to_raw)
+            .ok_or_else(|| "create_pii_record returned no id".to_string())?;
+        record_ids.push(rid);
+    }
+
+    // Step 3: write one Web-channel ShareRecord per record. Signup
+    // IS a disclosure — the user just handed these values to the
+    // entity. Per-field share entries let the dashboard's Shared tab
+    // show the full disclosure trail.
+    let mut share_count = 0usize;
+    for record_id in &record_ids {
+        let share = ShareRecord {
+            id: None,
+            pii_record_id: record_id.clone(),
+            to_entity_id: entity_id.clone(),
+            via_message_id: None,
+            via_url: Some(input.url.clone()),
+            shared_at: now,
+            channel: ShareChannel::Web,
+        };
+        match state.db.create_share_record(share).await {
+            Ok(_) => share_count += 1,
+            Err(e) => tracing::warn!("commit_signup: share record failed for {record_id}: {e}"),
+        }
+    }
+
+    Ok(SignupCaptureResult {
+        entity_id,
+        record_ids,
+        share_record_count: share_count,
+        entity_created,
+    })
+}
+
+#[cfg(not(feature = "encryption"))]
+#[tauri::command]
+pub async fn commit_signup_capture(
+    _state: State<'_, AppState>,
+    _input: SignupCaptureInput,
+) -> Result<SignupCaptureResult, String> {
+    Err("Signup capture requires the encryption feature to be enabled at build time".to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Cookie management (8c) — Cookies tab in the entity-detail panel
 // ---------------------------------------------------------------------------
 
