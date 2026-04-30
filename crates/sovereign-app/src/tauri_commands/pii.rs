@@ -381,6 +381,92 @@ pub async fn create_vault_entry(
 }
 
 // ---------------------------------------------------------------------------
+// Browser-PII (8b) — embedded-browser form extraction + autofill
+// ---------------------------------------------------------------------------
+
+/// Trigger a JS scan of the active browser webview for input fields.
+/// Results arrive asynchronously via the `__browser_form_extracted`
+/// command, which re-emits them as the `browser-form-extracted` Tauri
+/// event for the frontend's SignupCapturePrompt.
+#[tauri::command]
+pub async fn extract_form_fields(app: tauri::AppHandle) -> Result<(), String> {
+    crate::browser_pii::trigger_form_extraction(&app)
+}
+
+/// JS-→-Rust callback. Re-emits the payload as a typed Tauri event
+/// the frontend can subscribe to. The leading underscore in the name
+/// matches the existing `__browser_content_extracted` convention used
+/// by `browser.rs`'s extraction script.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn __browser_form_extracted(
+    app: tauri::AppHandle,
+    payload: crate::browser_pii::FormExtractionDto,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    app.emit("browser-form-extracted", payload)
+        .map_err(|e| e.to_string())
+}
+
+/// Decrypt a vault entry's plaintext value and inject it into the
+/// active browser webview's input matching `selector`. L3 Modify per
+/// the plan; the frontend gates the AutofillPrompt before calling.
+/// Bumps `last_revealed_at` and (per the plan) increments `use_count`
+/// — though use_count tracking lands separately when the
+/// successful-submit detector is wired.
+#[cfg(feature = "encryption")]
+#[tauri::command]
+pub async fn autofill_pii_record(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    record_id: String,
+    selector: String,
+) -> Result<(), String> {
+    use chrono::Utc;
+    use sovereign_crypto::vault::EncryptedBlob;
+
+    let device_key = state
+        .device_key
+        .as_ref()
+        .ok_or_else(|| "Autofill unavailable: device key not loaded".to_string())?;
+    let record = state.db.get_pii_record(&record_id).await.str_err()?;
+    let blob = EncryptedBlob::from_pair(record.value_encrypted, record.value_nonce);
+    let plaintext = blob
+        .decrypt_to_string(device_key)
+        .map_err(|e| format!("decrypt failed: {e}"))?;
+
+    crate::browser_pii::autofill_field(&app, &selector, &plaintext)?;
+
+    state
+        .db
+        .update_pii_record_revealed_at(&record_id, Utc::now())
+        .await
+        .str_err()?;
+    Ok(())
+}
+
+#[cfg(not(feature = "encryption"))]
+#[tauri::command]
+pub async fn autofill_pii_record(
+    _state: State<'_, AppState>,
+    _app: tauri::AppHandle,
+    _record_id: String,
+    _selector: String,
+) -> Result<(), String> {
+    Err("Autofill requires the encryption feature to be enabled at build time".to_string())
+}
+
+/// Generate a password according to the supplied policy. Stateless;
+/// purely a wrapper around `sovereign-crypto::password_gen` so the
+/// frontend doesn't need a parallel JS implementation.
+#[tauri::command]
+pub async fn generate_password(
+    policy: sovereign_crypto::password_gen::PasswordPolicy,
+) -> Result<String, String> {
+    sovereign_crypto::password_gen::generate_password(&policy).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
