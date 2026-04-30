@@ -628,3 +628,106 @@ export interface ShareRecord {
  *  most recent first. */
 export const listShareRecordsForEntity = (entityId: string) =>
 	invoke<ShareRecord[]>('list_share_records_for_entity', { entityId });
+
+// ---------------------------------------------------------------------------
+// Browser-PII (step 8) — signup capture, autofill, password gen, cookies
+// ---------------------------------------------------------------------------
+
+export interface PasswordPolicy {
+	length: number;
+	include_uppercase: boolean;
+	include_lowercase: boolean;
+	include_digits: boolean;
+	include_symbols: boolean;
+	exclude_ambiguous: boolean;
+}
+
+export const defaultPasswordPolicy = (): PasswordPolicy => ({
+	length: 24,
+	include_uppercase: true,
+	include_lowercase: true,
+	include_digits: true,
+	include_symbols: true,
+	exclude_ambiguous: true
+});
+
+/** Generate a password using the provided policy (or the default). */
+export const generatePassword = (policy?: PasswordPolicy) =>
+	invoke<string>('generate_password', { policy: policy ?? defaultPasswordPolicy() });
+
+/** Trigger a JS scan of the active browser webview for input fields.
+ *  Results arrive asynchronously as the `browser-form-extracted`
+ *  Tauri event. */
+export const extractFormFields = () =>
+	invoke<void>('extract_form_fields');
+
+export interface BrowserFormField {
+	/** snake_case kind: "password" | "email" | "phone" | "first_name"
+	 *  | "last_name" | "address" | "text" */
+	kind: string;
+	selector: string;
+	value: string;
+	placeholder: string;
+	label: string;
+}
+
+export interface BrowserFormExtraction {
+	url: string;
+	fields: BrowserFormField[];
+}
+
+export interface SignupFieldInput {
+	kind: string;
+	label?: string | null;
+	value: string;
+}
+
+export interface SignupCaptureInput {
+	url: string;
+	entity_id?: string | null;
+	fields: SignupFieldInput[];
+}
+
+export interface SignupCaptureResult {
+	entity_id: string;
+	record_ids: string[];
+	share_record_count: number;
+	entity_created: boolean;
+}
+
+/** Commit a signup capture: resolve/create entity, write one PiiRecord
+ *  per field, write one Web-channel ShareRecord per record. L4 Transmit. */
+export const commitSignupCapture = (input: SignupCaptureInput) =>
+	invoke<SignupCaptureResult>('commit_signup_capture', { input });
+
+/** Decrypt a vault entry's plaintext value and inject it into the
+ *  active browser webview's input matching `selector`. L3 Modify. */
+export const autofillPiiRecord = (recordId: string, selector: string) =>
+	invoke<void>('autofill_pii_record', { recordId, selector });
+
+export interface BrowserCookie {
+	name: string;
+	value: string;
+	domain: string;
+	path: string;
+	/** ISO-8601 string or null for session cookies. */
+	expires: string | null;
+	http_only: boolean;
+	secure: boolean;
+	/** "strict" | "lax" | "none" | "" */
+	same_site: string;
+}
+
+/** List cookies attributable to an entity via its `domains[]`. Returns
+ *  empty when the entity has no domains or the browser isn't open. */
+export const listCookiesForEntity = (entityId: string) =>
+	invoke<BrowserCookie[]>('list_cookies_for_entity', { entityId });
+
+/** Delete one cookie by (name, domain, path). L5 Destruct. */
+export const deleteCookie = (name: string, domain: string, path: string) =>
+	invoke<void>('delete_cookie', { name, domain, path });
+
+/** Bulk-delete every cookie matching one of the entity's domains.
+ *  Returns the count actually removed. L5 Destruct. */
+export const clearEntityCookies = (entityId: string) =>
+	invoke<number>('clear_entity_cookies', { entityId });

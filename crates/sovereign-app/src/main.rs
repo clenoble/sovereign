@@ -503,6 +503,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pii::list_cookies_for_entity,
             tauri_commands::pii::delete_cookie,
             tauri_commands::pii::clear_entity_cookies,
+            // Signup capture (8d) — high-level multi-write commit.
+            tauri_commands::pii::commit_signup_capture,
         ])
         .setup(move |app| {
             // Auto-open DevTools in debug builds

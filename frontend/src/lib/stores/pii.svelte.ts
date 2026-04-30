@@ -25,7 +25,11 @@ export const piiState = $state({
 	/** Active tab in the entity-detail center column. */
 	activeTab: 'inventory' as 'inventory' | 'vault' | 'shared' | 'cookies',
 	/** Lazily-loaded ShareRecord list per entity ID. */
-	shareRecordsByEntity: {} as Record<string, ShareRecord[]>
+	shareRecordsByEntity: {} as Record<string, ShareRecord[]>,
+	/** Active signup-capture extraction. Set when the user clicks
+	 *  "Save credentials" in the BrowserPanel and the
+	 *  `browser-form-extracted` event arrives. */
+	signupCapture: null as import('$lib/api/commands').BrowserFormExtraction | null
 });
 
 /** Load all entities + all records in one parallel fetch. */
