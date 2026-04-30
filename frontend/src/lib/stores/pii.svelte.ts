@@ -9,6 +9,8 @@ import {
 	listPiiEntities,
 	listPiiRecords,
 	listShareRecordsForEntity,
+	listCookiesForEntity,
+	type BrowserCookie,
 	type PiiEntity,
 	type PiiRecord,
 	type ReviewStateString,
@@ -35,7 +37,10 @@ export const piiState = $state({
 	 *  event populates `autofillExtraction` instead of
 	 *  `signupCapture`, then the AutofillPrompt opens. */
 	autofillRequested: false,
-	autofillExtraction: null as import('$lib/api/commands').BrowserFormExtraction | null
+	autofillExtraction: null as import('$lib/api/commands').BrowserFormExtraction | null,
+	/** Lazily-loaded cookie list per entity. Populated on first
+	 *  activation of the Cookies tab. */
+	cookiesByEntity: {} as Record<string, BrowserCookie[]>
 });
 
 /** Load all entities + all records in one parallel fetch. */
@@ -131,4 +136,32 @@ export async function refreshShareRecordsForEntity(entityId: string) {
  *  isn't in the cache. */
 export function kindForRecordId(recordId: string): string {
 	return piiState.records.find((r) => r.id === recordId)?.kind ?? 'other';
+}
+
+/** Lazily fetch cookies for one entity. Caches per ID; call
+ *  `refreshCookiesForEntity` to bypass the cache. */
+export async function loadCookiesForEntity(entityId: string) {
+	if (entityId in piiState.cookiesByEntity) return;
+	try {
+		const cookies = await listCookiesForEntity(entityId);
+		piiState.cookiesByEntity = {
+			...piiState.cookiesByEntity,
+			[entityId]: cookies
+		};
+	} catch (e) {
+		console.error('Failed to load cookies:', e);
+	}
+}
+
+/** Force a re-fetch of an entity's cookies, ignoring the cache. */
+export async function refreshCookiesForEntity(entityId: string) {
+	try {
+		const cookies = await listCookiesForEntity(entityId);
+		piiState.cookiesByEntity = {
+			...piiState.cookiesByEntity,
+			[entityId]: cookies
+		};
+	} catch (e) {
+		console.error('Failed to refresh cookies:', e);
+	}
 }
