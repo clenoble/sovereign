@@ -459,11 +459,18 @@ pub async fn autofill_pii_record(
 /// Generate a password according to the supplied policy. Stateless;
 /// purely a wrapper around `sovereign-crypto::password_gen` so the
 /// frontend doesn't need a parallel JS implementation.
+#[cfg(feature = "encryption")]
 #[tauri::command]
 pub async fn generate_password(
     policy: sovereign_crypto::password_gen::PasswordPolicy,
 ) -> Result<String, String> {
     sovereign_crypto::password_gen::generate_password(&policy).map_err(|e| e.to_string())
+}
+
+#[cfg(not(feature = "encryption"))]
+#[tauri::command]
+pub async fn generate_password(_policy: serde_json::Value) -> Result<String, String> {
+    Err("Password generation requires the encryption feature to be enabled at build time".to_string())
 }
 
 // ---------------------------------------------------------------------------

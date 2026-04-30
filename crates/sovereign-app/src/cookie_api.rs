@@ -122,8 +122,12 @@ pub(crate) fn domain_matches_any(cookie_domain: Option<&str>, entity_domains: &[
         Some(d) if !d.is_empty() => d.trim_start_matches('.').to_ascii_lowercase(),
         _ => return false,
     };
+    // Normalize entity domains the same way as the cookie domain — strip
+    // leading dot and lowercase. Callers may have already lowercased
+    // (e.g. `list_cookies_for_domains`), but apply defensively so direct
+    // callers get case-insensitive matching as documented.
     entity_domains.iter().any(|ed| {
-        let ed = ed.as_str();
+        let ed = ed.trim_start_matches('.').to_ascii_lowercase();
         d == ed || d.ends_with(&format!(".{ed}"))
     })
 }
