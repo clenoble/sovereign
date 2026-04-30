@@ -6,6 +6,8 @@
 		piiState,
 		loadPii,
 		loadShareRecordsForEntity,
+		loadCookiesForEntity,
+		refreshCookiesForEntity,
 		recordsForEntity,
 		inventoryForEntity,
 		piiCountForEntity,
@@ -19,6 +21,9 @@
 		redactPiiRecord,
 		confirmPiiRecord,
 		dismissPiiRecord,
+		deleteCookie,
+		clearEntityCookies,
+		type BrowserCookie,
 		type PiiRecord,
 		type PiiEntity
 	} from '$lib/api/commands';
@@ -194,6 +199,98 @@
 		return piiState.shareRecordsByEntity[piiState.selectedEntityId] ?? [];
 	});
 
+	// Lazy-load cookies on Cookies tab activation. Cookies live in
+	// the native webview store, so this requires the browser to be
+	// open at least once — when not open, the backend returns []
+	// gracefully and we render the empty state.
+	$effect(() => {
+		if (
+			piiState.activeTab === 'cookies' &&
+			piiState.selectedEntityId !== null &&
+			!(piiState.selectedEntityId in piiState.cookiesByEntity)
+		) {
+			loadCookiesForEntity(piiState.selectedEntityId);
+		}
+	});
+
+	let visibleCookies = $derived.by(() => {
+		if (piiState.selectedEntityId === null) return [] as BrowserCookie[];
+		return piiState.cookiesByEntity[piiState.selectedEntityId] ?? [];
+	});
+
+	// Per-cookie revealed state (Map<"name@domain", value>).
+	let cookieRevealed = $state<Record<string, string>>({});
+
+	function cookieKey(c: BrowserCookie): string {
+		return `${c.name}@${c.domain}`;
+	}
+
+	function toggleCookieReveal(c: BrowserCookie) {
+		const key = cookieKey(c);
+		if (key in cookieRevealed) {
+			delete cookieRevealed[key];
+			cookieRevealed = { ...cookieRevealed };
+		} else {
+			// Cookie values come back from the backend in plaintext —
+			// no decrypt needed. Store in the local map so the UI
+			// shows the value until the user toggles back.
+			cookieRevealed[key] = c.value;
+			cookieRevealed = { ...cookieRevealed };
+		}
+	}
+
+	async function copyCookie(c: BrowserCookie) {
+		try {
+			await navigator.clipboard.writeText(c.value);
+			setTimeout(() => {
+				navigator.clipboard.readText().then((current) => {
+					if (current === c.value) {
+						navigator.clipboard.writeText('');
+					}
+				}).catch(() => { /* clipboard read denied */ });
+			}, 30_000);
+		} catch (e) {
+			console.error('cookie copy failed:', e);
+		}
+	}
+
+	async function deleteCookieRow(c: BrowserCookie) {
+		const ok = window.confirm(
+			`Delete cookie "${c.name}" for ${c.domain}? The site may sign you out.`
+		);
+		if (!ok) return;
+		try {
+			await deleteCookie(c.name, c.domain, c.path);
+			if (piiState.selectedEntityId !== null) {
+				await refreshCookiesForEntity(piiState.selectedEntityId);
+			}
+		} catch (e) {
+			console.error('delete_cookie failed:', e);
+		}
+	}
+
+	async function clearAllCookies() {
+		if (piiState.selectedEntityId === null) return;
+		const ok = window.confirm(
+			`Clear ALL cookies for this entity? You'll be signed out everywhere on its domains.`
+		);
+		if (!ok) return;
+		try {
+			await clearEntityCookies(piiState.selectedEntityId);
+			cookieRevealed = {};
+			await refreshCookiesForEntity(piiState.selectedEntityId);
+		} catch (e) {
+			console.error('clear_entity_cookies failed:', e);
+		}
+	}
+
+	async function promoteCookieToVault(_c: BrowserCookie) {
+		// Promote-to-vault — opens the vault add dialog with the cookie's
+		// value pre-filled. Implementation lives in 8c polish; for now
+		// the user can copy the value and paste into the New Secret form.
+		alert('Promote-to-vault is a future polish — copy the value and use "+ New secret".');
+	}
+
 	// Drag handlers
 	function handleHeaderPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
@@ -362,8 +459,10 @@
 						<button
 							class="tab {piiState.activeTab === 'cookies' ? 'active' : ''}"
 							onclick={() => (piiState.activeTab = 'cookies')}
-							disabled
-							title="Cookies tab lands in step 8"
+							disabled={piiState.selectedEntityId === null}
+							title={piiState.selectedEntityId === null
+								? 'Select an entity to view its cookies'
+								: 'Webview cookies attributable to this entity'}
 						>
 							Cookies
 						</button>
@@ -378,8 +477,84 @@
 					</div>
 				{/if}
 
+				{#if piiState.activeTab === 'cookies' && visibleCookies.length > 0}
+					<div class="tab-toolbar">
+						<button class="row-btn redact" onclick={clearAllCookies}>
+							Clear all cookies (L5)
+						</button>
+					</div>
+				{/if}
+
 				<div class="record-list">
-					{#if piiState.activeTab === 'shared'}
+					{#if piiState.activeTab === 'cookies'}
+						{#each visibleCookies as cookie (cookieKey(cookie))}
+							<div class="record-row cookie-row">
+								<span class="record-kind">[Cookie]</span>
+								<span class="record-label">
+									<code class="cookie-name">{cookie.name}</code>
+									<span class="cookie-domain">{cookie.domain}</span>
+								</span>
+								<span class="record-value">
+									{#if cookieKey(cookie) in cookieRevealed}
+										<code class="value-plain">{cookieRevealed[cookieKey(cookie)]}</code>
+									{:else}
+										<span class="value-hidden">(hidden)</span>
+									{/if}
+								</span>
+								<span class="record-meta">
+									{#if cookie.expires}
+										expires {new Date(cookie.expires).toLocaleDateString()}
+									{:else}
+										session
+									{/if}
+									{#if cookie.http_only}· HttpOnly{/if}
+									{#if cookie.secure}· Secure{/if}
+									{#if cookie.same_site}· {cookie.same_site}{/if}
+								</span>
+								<span class="record-actions">
+									<button
+										class="row-btn"
+										onclick={() => toggleCookieReveal(cookie)}
+										title={cookieKey(cookie) in cookieRevealed
+											? 'Hide value'
+											: 'Reveal value (L3)'}
+									>
+										{cookieKey(cookie) in cookieRevealed ? 'Hide' : 'Reveal'}
+									</button>
+									<button
+										class="row-btn"
+										onclick={() => copyCookie(cookie)}
+										title="Copy to clipboard (auto-clears after 30s)"
+									>
+										Copy
+									</button>
+									<button
+										class="row-btn"
+										onclick={() => promoteCookieToVault(cookie)}
+										title="Save this cookie's value as a vault entry"
+									>
+										Vault
+									</button>
+									<button
+										class="row-btn redact"
+										onclick={() => deleteCookieRow(cookie)}
+										title="Delete cookie (L5 — irreversible session loss)"
+									>
+										Delete
+									</button>
+								</span>
+							</div>
+						{:else}
+							<div class="empty">
+								{#if piiState.selectedEntityId === null}
+									Select an entity to view its cookies.
+								{:else}
+									No cookies on this entity's domains. Open the embedded
+									browser and visit a page on the entity's domain to populate.
+								{/if}
+							</div>
+						{/each}
+					{:else if piiState.activeTab === 'shared'}
 						{#each visibleShares as share (share.id)}
 							<div class="record-row share-row">
 								<span class="record-kind">
@@ -456,9 +631,7 @@
 						{/each}
 						{#if visibleRecords.length === 0}
 							<div class="empty">
-								{#if piiState.activeTab === 'cookies'}
-									Coming in step 8.
-								{:else if piiState.activeTab === 'vault'}
+								{#if piiState.activeTab === 'vault'}
 									No secrets stored yet — click "+ New secret" above.
 								{:else}
 									No {piiState.activeTab} entries.
@@ -755,6 +928,17 @@
 		font-size: 0.8rem;
 		color: var(--text-secondary);
 	}
+	.cookie-row .cookie-name {
+		font-family: monospace;
+		font-size: 0.78rem;
+		color: var(--text-primary);
+	}
+	.cookie-row .cookie-domain {
+		font-size: 0.7rem;
+		color: var(--text-secondary);
+		margin-left: 6px;
+	}
+
 	.review-list {
 		flex: 1;
 		overflow-y: auto;
