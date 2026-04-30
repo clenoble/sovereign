@@ -8,9 +8,9 @@ Decisive constraint from user: there are no real users or data yet, so the featu
 
 Intended outcome: at-rest, the Sovereign graph contains **references** to PII records, never raw values in unmanaged locations. Raw values live in encrypted PII records keyed to an entity. Rendering resolves references to display form under Action Gravity gates. The dashboard shows the entity axis, the inventory, the vault, and the sharing ledger as one navigable surface.
 
-## Status — 2026-04-29
+## Status — 2026-04-30
 
-Steps 1–7 shipped end-to-end on `pii-management-dashboard`. Steps 8 and 9 are not yet started; a few items inside the shipped steps are deliberately deferred.
+Steps 1–8 shipped end-to-end on `pii-management-dashboard`. Step 9 is not yet started; a few items inside the shipped steps are deliberately deferred.
 
 ### Shipped
 
@@ -23,23 +23,24 @@ Steps 1–7 shipped end-to-end on `pii-management-dashboard`. Steps 8 and 9 are 
 | 5. Resolution API | `ec09a83` + `e102ef0` | `pii::resolve` module: token parser, kind-specific masks (4 access levels — Preview/MaskedSample/Reveal/RawOriginal), `last_revealed_at` side effect on Reveal, error-tolerant placeholder substitution. `resolve_pii_tokens` Tauri command (always compiled, error stub when encryption is off). 24 unit tests. |
 | 6. Dashboard UI | `2368a41` → `16573e3` | (6a) Backend reads + DTOs + confirm/dismiss/redact commands. (6b) `pii.svelte.ts` store, `PiiDashboardPanel.svelte` 3-column floating panel, taskbar shield icon. (6c) Per-row Reveal/Copy/Redact, 30s clipboard auto-clear, `VaultAddDialog`, `create_vault_entry`. (6d) Review queue right column. (6e) `focusTrap` action + `P` keyboard shortcut + Escape fallback in the layout's keydown handler. |
 | 7. Sharing ledger | `05d76ec` + `a0ef9c7` | (7a) `ShareIngestHook` trait + GraphDB share-record methods + `PiiShareHook` impl + EmailChannel `send_message` wiring (re-fetches canonical body, writes one ShareRecord per token×recipient entity). (7b) `list_share_records_for_entity` Tauri command + Shared tab in the dashboard with lazy-load cache. |
+| 8. Embedded browser | `2bb027f` (8a) → `2fee40b` (8f) | (8a) `password_gen` module — 24-char default, ambiguous-char exclusion, 11 unit tests. (8b) `browser_pii.rs` — JS form extraction + autofill injection via `webview.eval`, JSON-encoded values for safe injection, 7 unit tests. (8c) `cookie_api.rs` — list/delete/clear via Tauri 2.10's `Webview::cookies()` + `cookie::Cookie` (added as direct dep), domain-match predicate with subdomain support, 9 unit tests. (8d) `commit_signup_capture` Tauri command (resolve/create entity from URL host + N PiiRecords + N Web-channel ShareRecords) + `SignupCapturePrompt.svelte` modal with editable fields and password-generate button + "Save credentials" button in BrowserPanel toolbar. (8e) `AutofillPrompt.svelte` with vault-entry picker + URL-host-to-entity match + L3 confirmation + "Fill from vault" button. Same `extract_form_fields` dispatch — flag-based routing in the layout. (8f) Cookies tab in dashboard: lazy-loaded per entity, per-row reveal/copy/delete with 30s clipboard auto-clear, bulk "Clear all cookies (L5)" button. |
 
 ### Deferred (inside shipped steps)
 
 - **Pre-send confirmation UI** ("This message contains 2 PII items that will be logged to your sharing ledger"). Plan section *Ledger write path* specifies this; not built. Ledger writes happen automatically post-send instead. Reasonable to add when there's a frontend message-composer view to hook into.
 - **Signal + WhatsApp outbound share-hook firing.** The hook field is plumbed on both channels for symmetry, but their `send_message` paths don't currently persist outbound to the DB (presage handles Signal transport; WhatsApp uses webhooks for inbound only). Needs outbound persistence wiring before the share hook activates. Email is the only channel currently wired end-to-end.
 - **ShareRecords for unattributed contacts.** `ShareRecord.to_entity_id` is non-optional, so disclosures to contacts without `entity_id` are silently skipped at write time. Two ways to close the gap: auto-create a stub entity at share-write, or backfill ShareRecords retroactively when the user attributes a contact in the dashboard.
-- **Step 6 Cookies tab.** Tab is in the UI as a tooltip-disabled placeholder; depends on step 8's webview cookie API.
-- **Step 9 a11y backport.** `focusTrap` action + dialog ARIA + Escape conventions were established for the PII panel in 6e. Plan calls for "backport pattern to other panels as follow-up" — not done. InboxPanel / ContactPanel / ModelPanel / SettingsPanel / SkillsPanel still have the existing ad-hoc handling.
+- **Promote-cookie-to-vault.** The Cookies tab's per-row "Vault" button is a placeholder that points the user at `+ New secret` with manual paste. A polished version would open `VaultAddDialog` with the cookie's value pre-filled.
+- **Autofill `use_count` increment.** The plan calls for incrementing `use_count` on a successful submit (heuristic: navigation away from login URL within 5s). Not built — the autofill flow currently bumps `last_revealed_at` only.
+- **Step 9 a11y backport.** `focusTrap` action + dialog ARIA + Escape conventions were established for the PII panel in 6e (and reused in `VaultAddDialog`, `SignupCapturePrompt`, `AutofillPrompt`). Plan calls for "backport pattern to other panels as follow-up" — not done. InboxPanel / ContactPanel / ModelPanel / SettingsPanel / SkillsPanel still have the existing ad-hoc handling.
 
 ### Left to ship
 
-- **Step 8 — Embedded browser integration.** Password generator (`crates/sovereign-crypto/src/password_gen.rs`), signup-capture flow (`crates/sovereign-app/src/browser_pii.rs`, content-script injection via Tauri 2 webview eval), autofill from vault, webview cookie API surface + Cookies tab. New Svelte components: `SignupCapturePrompt`, `AutofillPrompt`, `CookieRow`. Modifies `BrowserPanel.svelte` to add *Save credentials* / *Fill from vault* toolbar buttons.
 - **Step 9 — Accessibility audit (full).** Backport `focusTrap` + dialog ARIA + Escape pattern from the PII panel to the other floating panels. The action is already in `frontend/src/lib/actions/focusTrap.ts`; this is mechanical application.
 
 ### Validation status
 
-The build machine has been validating commits through the session and feeding back fixes (visible on the branch as separate small commits — `thing_to_raw` escaping, `wrap_tool_call_example` test stubs, `EncryptedGraphDB` missing trait delegates, etc.). Step 7's commits (`05d76ec`, `a0ef9c7`) and parts of step 6 may not yet be fully validated on the build machine; that's the natural next checkpoint before continuing with step 8.
+The build machine has been validating commits through the session and feeding back fixes (visible on the branch as separate small commits — `thing_to_raw` escaping, `wrap_tool_call_example` test stubs, `EncryptedGraphDB` missing trait delegates, `mask_keep_last_n` digit-counting, etc.). Step 8's commits (`2bb027f` through `2fee40b`) haven't yet been validated on the build machine. The Tauri 2.10 cookies API was verified against docs.rs before writing — `Webview::cookies()` is documented to have known deadlock issues on Windows in synchronous contexts; the cookie commands here run from async Tauri command handlers which should be safe, but worth watching during integration test.
 
 ## Architectural decision: PII-by-reference with dual-encrypted storage
 
