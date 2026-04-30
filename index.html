@@ -421,6 +421,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
           <div class="nav-dropdown-inner">
             <a href="#/spatial-canvas" role="menuitem">Spatial Canvas</a>
             <a href="#/content-skills" role="menuitem">Content & Skills</a>
+            <a href="#/skills" role="menuitem">Skill System</a>
             <a href="#/communications" role="menuitem">Communications</a>
             <a href="#/browser-reliability" role="menuitem">Browser & Reliability</a>
             <a href="#/memory-consolidation" role="menuitem">Memory Consolidation</a>
@@ -621,7 +622,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
         <h3>WASM Skill Plugins</h3>
         <p>Replace monolithic apps with composable skills. Built-in: markdown editor, PDF export,
           search, image viewer. Third-party skills run in a WASM sandbox with capability-based permissions.</p>
-        <a href="#/content-skills" class="learn-more">Skills &amp; sandboxing</a>
+        <a href="#/skills" class="learn-more">Skill system &amp; sandboxing</a>
       </div>
       <div class="feature-card">
         <div class="feature-icon" style="background: rgba(245, 158, 11, 0.1); color: var(--c-gold);" aria-hidden="true">◉</div>
@@ -820,8 +821,13 @@ p { margin-bottom: 1rem; color: var(--c-text); }
         <p>RAM (12 GB min)</p>
       </div>
       <div class="feature-card" style="text-align:center;">
-        <h3 style="font-size: 1.5rem; color: #a882ff; margin-bottom: 4px;">RTX 3060</h3>
-        <p>GPU (optional, CPU fallback)</p>
+        <h3 style="font-size: 1.5rem; color: #a882ff; margin-bottom: 4px;">RTX 3060+</h3>
+        <p style="margin-bottom:8px;">GPU — optional, CPU fallback always works</p>
+        <p style="font-size:0.8rem; color: var(--c-text-dim); line-height:1.5;">
+          8 GB VRAM runs the 3B router + 7B reasoning model simultaneously.
+          CUDA 12/13 via llama.cpp. Enable with <code style="font-size:0.75rem;">--features cuda</code>.
+          CPU-only mode is slower (~3–8× on inference) but fully supported.
+        </p>
       </div>
       <div class="feature-card" style="text-align:center;">
         <h3 style="font-size: 1.5rem; color: var(--c-external); margin-bottom: 4px;">512 GB</h3>
@@ -3447,6 +3453,295 @@ impl CanvasRenderer {
 </main>
 </template>
 
+<template id="page-skills">
+<main id="main" role="main">
+<div class="content-inner">
+
+<div class="page-header">
+  <h1>Skill System</h1>
+  <p class="subtitle">
+    Composable, sandboxed tools that operate on your graph database without owning your data.
+    25 built-in skills, a WASM plugin runtime, and capability-based permissions enforced in code.
+  </p>
+</div>
+
+<!-- TIER 1 -->
+<section class="tier-section tier-1">
+  <div class="tier-header">
+    <span class="tier-badge">1</span>
+    <div>
+      <div class="tier-label">Tier 1: The Elevator Pitch</div>
+      <div class="tier-subtext">10-second read</div>
+    </div>
+  </div>
+  <div class="tier-1-content">
+    <p>
+      Traditional apps own your data. Sovereign's skills are stateless tools — a markdown editor, PDF exporter,
+      thread summarizer — that read from and write to the graph database without storing state themselves.
+      Each skill declares exactly what it needs. The registry enforces those limits in code before execution starts.
+      Third-party skills run in a WASM sandbox with hard memory and CPU limits and no network access.
+    </p>
+  </div>
+</section>
+
+<!-- TIER 2 -->
+<section class="tier-section tier-2">
+  <div class="tier-header">
+    <span class="tier-badge">2</span>
+    <div>
+      <div class="tier-label">Tier 2: How It Works</div>
+      <div class="tier-subtext">1–3 minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-2-content">
+
+    <details open>
+      <summary>Capability System</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Declared Needs, Enforced Limits</h3>
+          <p>
+            Every skill declares a list of capabilities in its manifest. Before execution, the registry
+            verifies that all required capabilities are present in the granted set. A skill that needs
+            <code>write_document</code> but wasn't granted it fails immediately — no partial execution.
+          </p>
+          <ul class="concept-list">
+            <li><strong>ReadDocument / WriteDocument:</strong> Access a single document passed to the skill.</li>
+            <li><strong>ReadAllDocuments / WriteAllDocuments:</strong> Query and modify any document in the workspace (e.g. orphan finder, thread summarizer).</li>
+            <li><strong>ReadFilesystem / WriteFilesystem:</strong> Read or write local files (e.g. file importer, PDF export).</li>
+            <li><strong>Network:</strong> Outbound HTTP access. Not granted to any built-in skill. Community skills may request it; the user sees a warning.</li>
+            <li><strong>LlmInference:</strong> Run a prompt against the locally loaded router or reasoning model. Granted to AI-powered skills like thread summarizer, redactor, and PII detector.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Built-in Skills (25 core)</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Compiled Into the Binary — No IPC Overhead</h3>
+          <p>
+            Core skills use direct Rust trait calls. No serialization, no subprocess, no WASM overhead.
+            They're grouped by what they do:
+          </p>
+          <ul class="concept-list">
+            <li><strong>Editing:</strong> Markdown editor (toolbar, preview toggle), text editor, find &amp; replace, case converter, sort lists, JSON/YAML formatter.</li>
+            <li><strong>Analysis:</strong> Word count, readability score, outline extractor, table of contents, link checker, backlink map, orphan finder.</li>
+            <li><strong>AI-powered:</strong> Thread summarizer, PII detector, redactor — each calls the local LLM via <code>SkillLlmAccess</code>.</li>
+            <li><strong>Export:</strong> PDF export, HTML export, plaintext export.</li>
+            <li><strong>Import &amp; Media:</strong> File import, image handler, CSV → markdown, video (external playback).</li>
+            <li><strong>Workflow:</strong> Duplicate document, daily journal (auto-targets "Journal" thread), search.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>WASM Plugin Runtime</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>wasmtime Component Model — Hard Resource Limits</h3>
+          <p>
+            Third-party skills are compiled to WebAssembly and loaded at runtime via
+            <a href="https://wasmtime.dev" target="_blank" rel="noopener">wasmtime</a>'s Component Model.
+            The sandbox enforces resource limits that no WASM code can bypass:
+          </p>
+          <ul class="concept-list">
+            <li><strong>16 MB memory cap:</strong> Skills cannot allocate more than 16 MB. A plugin that tries to load the user's entire document history will be killed.</li>
+            <li><strong>~1 billion fuel units:</strong> CPU budget expressed as WASM instructions. Prevents runaway loops. Skills that exhaust fuel return an error — they don't hang the app.</li>
+            <li><strong>10 instance limit:</strong> Maximum concurrent plugin instances. Prevents resource exhaustion from rapid skill invocations.</li>
+            <li><strong>No network by default:</strong> WASM host functions expose only the granted DB and LLM interfaces — no raw sockets, no HTTP, unless <code>Network</code> capability was granted.</li>
+            <li><strong>Auto-discovery:</strong> Place a directory with <code>skill.json</code> + a <code>.wasm</code> file in the skills folder. The runner finds it on startup.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>LLM-Aware Skills</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Skills Can Call the Local Model — Narrowly</h3>
+          <p>
+            Skills never see the orchestrator. They get a single narrow interface: <code>SkillLlmAccess</code>,
+            which exposes one method — <code>generate(prompt, max_tokens)</code>. The skill supplies the prompt;
+            the local model (whichever is currently loaded) generates the response.
+            Output is stripped of control tokens before being returned.
+          </p>
+          <ul class="concept-list">
+            <li><strong>Thread summarizer:</strong> Passes document titles + first paragraphs, asks model to synthesize a thread-level summary.</li>
+            <li><strong>PII detector:</strong> Sends document content, asks model to identify names, emails, phone numbers, and addresses.</li>
+            <li><strong>Redactor:</strong> Combines PII detection + structured replacement — replaces identified spans with <code>[REDACTED]</code> tokens.</li>
+          </ul>
+          <p style="margin-top:12px;">
+            The <code>LlmInference</code> capability is required and must be granted by the registry. A skill that requests
+            it without being granted will fail before its <code>execute()</code> method is called.
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Community Skill Catalog (44 specs)</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Specifications Seeded for Third-Party Development</h3>
+          <p>
+            Phase 4 added 44 community skill specifications as seed documents — detailed specs for skills
+            the community can build. Each spec defines the manifest, required capabilities, expected actions,
+            and example inputs/outputs. Highlights:
+          </p>
+          <ul class="concept-list">
+            <li>epub-export, latex-export, changelog-generator, footnote-collector, frontmatter-parser</li>
+            <li>grammar-check, duplicate-finder, entropy-scanner, merge-documents, lorem-ipsum</li>
+            <li>meeting-notes-template, outline-extractor, plaintext-export, readability-score</li>
+          </ul>
+          <p style="margin-top:12px;">See the <a href="https://github.com/clenoble/sovereign/blob/main/docs/third-party-skill-guide.md" target="_blank" rel="noopener">third-party skill developer guide</a> for the full WIT interface contract and build instructions.</p>
+        </div>
+      </div>
+    </details>
+
+  </div>
+</section>
+
+<!-- TIER 3 -->
+<section class="tier-section tier-3">
+  <div class="tier-header">
+    <span class="tier-badge">3</span>
+    <div>
+      <div class="tier-label">Tier 3: Deep Dive</div>
+      <div class="tier-subtext">5+ minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-3-content">
+
+    <div class="deep-section">
+      <h3>Capability Enum</h3>
+      <p>All six capabilities a skill may request. The registry enforces these at call time — a skill cannot perform an action its manifest didn't declare.</p>
+      <div class="code-block"><code>pub enum Capability {
+    ReadDocument,        // read the single doc passed to execute()
+    WriteDocument,       // write back to that same doc
+    ReadAllDocuments,    // query any doc in the workspace
+    WriteAllDocuments,   // create/update any doc in the workspace
+    ReadFilesystem,      // read local files (import, export source)
+    WriteFilesystem,     // write local files (PDF, HTML export)
+    Network,             // outbound HTTP — not granted to built-ins
+    LlmInference,        // call generate() on the loaded local model
+}</code></div>
+    </div>
+
+    <div class="deep-section">
+      <h3>SkillManifest — JSON Structure</h3>
+      <p>Each skill ships a <code>skill.json</code> manifest. WASM skills must include one alongside the <code>.wasm</code> file.</p>
+      <div class="code-block"><code>{
+  "name": "Thread Summarizer",
+  "version": "1.0.0",
+  "description": "Uses the local LLM to write a summary of all documents in a thread.",
+  "author": "Sovereign Team",
+  "skill_type": "core",
+  "capabilities": ["read_all_documents", "write_document", "llm_inference"],
+  "file_types": []
+}</code></div>
+      <p style="margin-top:12px;">
+        <code>file_types</code> — if empty, the skill appears for all document types.
+        <code>skill_type</code> is either <code>"core"</code> (compiled-in) or <code>"community"</code> (WASM sideload).
+      </p>
+    </div>
+
+    <div class="deep-section">
+      <h3>CoreSkill Trait</h3>
+      <p>The interface all built-in skills implement. WASM skills implement the equivalent WIT interface, which the host wraps into this same trait.</p>
+      <div class="code-block"><code>pub trait CoreSkill: Send + Sync {
+    fn name(&amp;self) -> &amp;str;
+    fn required_capabilities(&amp;self) -> Vec&lt;Capability&gt;;
+    fn activate(&amp;mut self) -> anyhow::Result&lt;()&gt;;
+    fn deactivate(&amp;mut self) -> anyhow::Result&lt;()&gt;;
+
+    /// Execute a skill action on a document.
+    /// `action` is one of the strings returned by actions().
+    /// `params` is action-specific JSON (e.g., image path, search query).
+    fn execute(
+        &amp;self,
+        action: &amp;str,
+        doc: &amp;SkillDocument,
+        params: &amp;str,
+        ctx: &amp;SkillContext,
+    ) -> anyhow::Result&lt;SkillOutput&gt;;
+
+    /// List available actions: (action_id, display_label) pairs.
+    fn actions(&amp;self) -> Vec&lt;(String, String)&gt;;
+
+    /// File extensions this skill applies to. Empty = universal.
+    fn file_types(&amp;self) -> Vec&lt;String&gt; { vec![] }
+}</code></div>
+    </div>
+
+    <div class="deep-section">
+      <h3>SkillDbAccess — Narrow Database Interface</h3>
+      <p>Skills never see the full database. They get this subset, and only the methods that match their granted capabilities are callable.</p>
+      <div class="code-block"><code>pub trait SkillDbAccess: Send + Sync {
+    // ReadDocument / ReadAllDocuments
+    fn search_documents(&amp;self, query: &amp;str) -> Result&lt;Vec&lt;(id, title, snippet)&gt;&gt;;
+    fn get_document(&amp;self, id: &amp;str) -> Result&lt;(title, thread_id, content)&gt;;
+    fn list_documents(&amp;self, thread_id: Option&lt;&amp;str&gt;) -> Result&lt;Vec&lt;(id, title)&gt;&gt;;
+
+    // WriteAllDocuments
+    fn create_document(&amp;self, title: &amp;str, thread_id: &amp;str, content: &amp;str) -> Result&lt;String&gt;;
+
+    // Graph queries (ReadAllDocuments)
+    fn list_relationships(&amp;self, doc_id: &amp;str) -> Result&lt;Vec&lt;(relation_type, target_id)&gt;&gt;;
+    fn list_backlinks(&amp;self, doc_id: &amp;str) -> Result&lt;Vec&lt;(source_id, relation_type)&gt;&gt;;
+    fn list_all_documents_with_link_counts(&amp;self) -> Result&lt;Vec&lt;(id, title, in_deg, out_deg)&gt;&gt;;
+
+    // Thread management
+    fn find_or_create_thread(&amp;self, name: &amp;str, description: &amp;str) -> Result&lt;String&gt;;
+}</code></div>
+    </div>
+
+    <div class="deep-section">
+      <h3>WASM Resource Limits</h3>
+      <p>Default limits applied to every WASM plugin. Override via <code>WasmSkillRunner::with_limits()</code> for development/testing.</p>
+      <table class="const-table">
+        <tr><th>Limit</th><th>Default</th><th>Effect if exceeded</th></tr>
+        <tr><td>Memory</td><td>16 MB</td><td>Allocation fails; skill returns error</td></tr>
+        <tr><td>CPU (fuel units)</td><td>~1 billion instructions</td><td>Execution halted; skill returns error</td></tr>
+        <tr><td>Concurrent instances</td><td>10</td><td>New load requests rejected until slot frees</td></tr>
+      </table>
+      <p style="margin-top:12px;">
+        Limits are enforced by the wasmtime engine before host functions are called — they cannot be bypassed from inside the WASM module.
+      </p>
+    </div>
+
+    <div class="deep-section">
+      <h3>SkillOutput — What a Skill Can Return</h3>
+      <div class="code-block"><code>pub enum SkillOutput {
+    /// Updated content to save back to the document
+    ContentUpdate(ContentFields),
+    /// Binary file (PDF, HTML, etc.)
+    File { name: String, mime_type: String, data: Vec&lt;u8&gt; },
+    /// Action had side effects only (e.g. created a new document)
+    None,
+    /// Structured result (word count stats, search hits, PII spans, etc.)
+    StructuredData { kind: String, json: String },
+}</code></div>
+      <p style="margin-top:12px;">
+        The Tauri command layer maps each variant to the appropriate frontend action:
+        <code>ContentUpdate</code> triggers a document save,
+        <code>File</code> triggers a save dialog,
+        <code>StructuredData</code> is displayed inline in the skill panel.
+      </p>
+    </div>
+
+  </div>
+</section>
+
+</div>
+</main>
+</template>
+
 <template id="page-ethics">
 <main id="main" role="main">
 <div class="content-inner">
@@ -5026,6 +5321,7 @@ const ROUTES = {
   '/spatial-canvas': { template: 'page-spatial-canvas', title: 'Spatial Canvas & Versioning — Sovereign GE', description: 'Your documents on an infinite canvas with automatic versioning.' },
   '/communications': { template: 'page-communications', title: 'Unified Communications — Sovereign GE', description: 'One inbox for Email, Signal, and WhatsApp.' },
   '/content-skills': { template: 'page-content-skills', title: 'Content + Skills Architecture — Sovereign GE', description: 'Data ownership through composable tools and graph database.' },
+  '/skills': { template: 'page-skills', title: 'Skill System — Sovereign GE', description: 'Composable, sandboxed tools with a WASM plugin runtime and capability-based permissions enforced in code.' },
   '/ethics': { template: 'page-ethics', title: 'Ethics & Design Constraints — Sovereign GE', description: 'How Sovereign narrows the misuse surface.' },
   '/legal-notice': { template: 'page-legal-notice', title: 'Legal Notice — Sovereign GE', description: 'Terms, disclaimers, and regulatory information.' },
   '/privacy-policy': { template: 'page-privacy-policy', title: 'Privacy Policy — Sovereign GE', description: 'We don\'t collect your data.' },
@@ -5177,6 +5473,9 @@ const PAGE_LINKS = {
   'prompt injection': '#/prompt-injection',
   'social recovery': '#/social-recovery',
   'spatial canvas': '#/spatial-canvas',
+  'skills': '#/skills',
+  'skill system': '#/skills',
+  'wasm skills': '#/skills',
 };
 
 function findPageRoute(text) {
