@@ -24,6 +24,7 @@ mod tauri_state;
 #[cfg(feature = "web-browse")]
 mod web;
 mod browser;
+mod browser_pii;
 
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -492,6 +493,11 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pii::create_vault_entry,
             // PII dashboard (7b) — sharing ledger.
             tauri_commands::pii::list_share_records_for_entity,
+            // Browser-PII (8b) — form extraction + autofill + password gen.
+            tauri_commands::pii::extract_form_fields,
+            tauri_commands::pii::__browser_form_extracted,
+            tauri_commands::pii::autofill_pii_record,
+            tauri_commands::pii::generate_password,
         ])
         .setup(move |app| {
             // Auto-open DevTools in debug builds
