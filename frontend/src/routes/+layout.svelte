@@ -17,6 +17,7 @@
 	import ContactPanel from '$lib/components/ContactPanel.svelte';
 	import PiiDashboardPanel from '$lib/components/PiiDashboardPanel.svelte';
 	import SignupCapturePrompt from '$lib/components/SignupCapturePrompt.svelte';
+	import AutofillPrompt from '$lib/components/AutofillPrompt.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import { piiState } from '$lib/stores/pii.svelte';
 	import { listen } from '@tauri-apps/api/event';
@@ -111,13 +112,20 @@
 		};
 		window.addEventListener('keydown', handleKeydown);
 
-		// Listen for the browser-form-extracted event triggered by the
-		// "Save credentials" button in BrowserPanel — opens the
-		// SignupCapturePrompt with the captured fields.
+		// Listen for the browser-form-extracted event triggered by
+		// the BrowserPanel's "Save credentials" / "Fill from vault"
+		// buttons. The dispatch is by the autofillRequested flag —
+		// both buttons share the same Tauri command + event but the
+		// flag tells us which dialog to open.
 		const unlistenSignup = await listen<BrowserFormExtraction>(
 			'browser-form-extracted',
 			(event) => {
-				piiState.signupCapture = event.payload;
+				if (piiState.autofillRequested) {
+					piiState.autofillExtraction = event.payload;
+					piiState.autofillRequested = false;
+				} else {
+					piiState.signupCapture = event.payload;
+				}
 			}
 		);
 
@@ -158,6 +166,11 @@
 			open={piiState.signupCapture !== null}
 			extraction={piiState.signupCapture}
 			onClose={() => (piiState.signupCapture = null)}
+		/>
+		<AutofillPrompt
+			open={piiState.autofillExtraction !== null}
+			extraction={piiState.autofillExtraction}
+			onClose={() => (piiState.autofillExtraction = null)}
 		/>
 		<ContextMenu />
 		<SettingsPanel />
