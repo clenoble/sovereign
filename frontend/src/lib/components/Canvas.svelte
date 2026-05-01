@@ -118,19 +118,41 @@
 		// -- Timeline date markers along X-axis --
 		if (timelineScale) {
 			const { minDate, maxDate, pxPerMs, originX } = timelineScale;
-			const MS_PER_DAY = 86_400_000;
+			const MS_PER_MIN  = 60_000;
+			const MS_PER_HOUR = 3_600_000;
+			const MS_PER_DAY  = 86_400_000;
 			const pxPerDay = pxPerMs * MS_PER_DAY;
+			// effectivePxPerDay: how many screen pixels one day occupies at current zoom
 			const effectivePxPerDay = pxPerDay * camera.zoom;
 			const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+			const DAYS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
-			// Choose tick interval based on effective pixel density
+			// Choose tick interval based on screen pixel density per day
 			let intervalMs: number;
 			let formatTick: (d: Date) => string;
 			let alignToMonth = false;
-			let alignToYear = false;
+			let alignToYear  = false;
+			let alignToHour  = false;  // also used for minute-level intervals
 
-			if (effectivePxPerDay > 80) {
-				// Daily: "3 Mar"
+			if (effectivePxPerDay > 2000) {
+				// Every 10 minutes: "14:30"
+				intervalMs = MS_PER_MIN * 10;
+				alignToHour = true;
+				formatTick = (d) =>
+					`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+			} else if (effectivePxPerDay > 600) {
+				// Every hour: "14:00"
+				intervalMs = MS_PER_HOUR;
+				alignToHour = true;
+				formatTick = (d) => `${String(d.getHours()).padStart(2, '0')}:00`;
+			} else if (effectivePxPerDay > 200) {
+				// Every 6 hours: "Mon 14:00"
+				intervalMs = MS_PER_HOUR * 6;
+				alignToHour = true;
+				formatTick = (d) =>
+					`${DAYS[d.getDay()]} ${String(d.getHours()).padStart(2, '0')}:00`;
+			} else if (effectivePxPerDay > 80) {
+				// Daily (default at zoom=1): "3 Mar"
 				intervalMs = MS_PER_DAY;
 				formatTick = (d) => `${d.getDate()} ${MONTHS[d.getMonth()]}`;
 			} else if (effectivePxPerDay > 20) {
@@ -154,38 +176,67 @@
 				formatTick = (d) => `${d.getFullYear()}`;
 			}
 
+			// Scale font and positions inversely with zoom so they stay at a fixed
+			// screen size regardless of zoom level.
+			const tickFontPx = 10;  // target screen pixels
+			const labelY = -20 / camera.zoom;  // fixed 20px above world y=0
 			ctx.fillStyle = textMuted;
-			ctx.font = '10px -apple-system, sans-serif';
+			ctx.font = `${tickFontPx / camera.zoom}px -apple-system, sans-serif`;
 			ctx.textAlign = 'center';
 
-			// Start from aligned boundary
-			const startD = new Date(minDate);
+			// Start from an aligned boundary just before the visible viewport.
+			// We fast-forward to the viewport to avoid iterating over thousands of
+			// off-screen ticks when zoomed in on a narrow time window.
+			const visMinX = -camera.panX / camera.zoom;
+			const visMaxX = (w - camera.panX) / camera.zoom;
+			const visMinTime = minDate + (visMinX - originX) / pxPerMs;
+			const visMaxTime = minDate + (visMaxX - originX) / pxPerMs;
+
+			const startD = new Date(Math.max(minDate, visMinTime - intervalMs));
 			if (alignToYear) {
 				startD.setMonth(0, 1);
 				startD.setHours(0, 0, 0, 0);
 			} else if (alignToMonth) {
 				startD.setDate(1);
 				startD.setHours(0, 0, 0, 0);
+			} else if (alignToHour) {
+				if (intervalMs <= MS_PER_MIN * 10) {
+					const m = startD.getMinutes();
+					startD.setMinutes(Math.floor(m / 10) * 10, 0, 0);
+				} else if (intervalMs <= MS_PER_HOUR) {
+					startD.setMinutes(0, 0, 0);
+				} else {
+					// 6-hour: snap to nearest 6h boundary (0, 6, 12, 18)
+					const h = startD.getHours();
+					startD.setHours(Math.floor(h / 6) * 6, 0, 0, 0);
+				}
 			} else {
 				startD.setHours(0, 0, 0, 0);
 			}
+
+			// For fixed-interval ticks: fast-forward to just before visible range
 			let tick = startD.getTime();
+			if (!alignToMonth && !alignToYear && tick < visMinTime - intervalMs) {
+				const n = Math.floor((visMinTime - tick) / intervalMs);
+				tick += n * intervalMs;
+			}
 
-			while (tick <= maxDate) {
+			const tickEnd = Math.min(maxDate, visMaxTime + intervalMs);
+			while (tick <= tickEnd) {
 				const x = originX + (tick - minDate) * pxPerMs;
-				ctx.fillText(formatTick(new Date(tick)), x, -20);
+				ctx.fillText(formatTick(new Date(tick)), x, labelY);
 
-				// Subtle vertical grid line
+				// Vertical grid line — 1px in screen space regardless of zoom
 				ctx.strokeStyle = borderColor;
 				ctx.globalAlpha = 0.15;
-				ctx.lineWidth = 1;
+				ctx.lineWidth = 1 / camera.zoom;
 				ctx.beginPath();
-				ctx.moveTo(x, -10);
+				ctx.moveTo(x, labelY + tickFontPx / camera.zoom + 2 / camera.zoom);
 				ctx.lineTo(x, totalHeight);
 				ctx.stroke();
 				ctx.globalAlpha = 1.0;
 
-				// Advance tick: for month/year alignment, use calendar math
+				// Advance tick
 				if (alignToYear) {
 					const dt = new Date(tick);
 					dt.setFullYear(dt.getFullYear() + (intervalMs > MS_PER_DAY * 365 * 2 ? 5 : 1));
@@ -221,21 +272,21 @@
 		if (timelineScale && threads.length > 0) {
 			const nowX = timelineScale.nowX;
 			ctx.save();
-			ctx.setLineDash([6, 4]);
+			ctx.setLineDash([6 / camera.zoom, 4 / camera.zoom]);
 			ctx.strokeStyle = accentColor;
-			ctx.lineWidth = 2;
+			ctx.lineWidth = 2 / camera.zoom;
 			ctx.globalAlpha = 0.7;
 			ctx.beginPath();
-			ctx.moveTo(nowX, -30);
+			ctx.moveTo(nowX, -30 / camera.zoom);
 			ctx.lineTo(nowX, totalHeight + 10);
 			ctx.stroke();
 			ctx.setLineDash([]);
 
-			// "Now" label
+			// "Now" label — fixed screen size
 			ctx.fillStyle = accentColor;
-			ctx.font = 'bold 11px -apple-system, sans-serif';
+			ctx.font = `bold ${11 / camera.zoom}px -apple-system, sans-serif`;
 			ctx.textAlign = 'center';
-			ctx.fillText('Now', nowX, -35);
+			ctx.fillText('Now', nowX, -35 / camera.zoom);
 			ctx.textAlign = 'start';
 			ctx.restore();
 		}

@@ -188,46 +188,10 @@ impl GraphDB for EncryptedGraphDB {
         score: Option<f32>,
         assessment_json: Option<&str>,
     ) -> DbResult<Document> {
-        let doc = self
-            .inner
-            .update_document_reliability(id, source_url, classification, score, assessment_json)
-            .await?;
+        let doc = self.inner.update_document_reliability(
+            id, source_url, classification, score, assessment_json,
+        ).await?;
         self.decrypt_document(doc).await
-    }
-
-    // Suggested links: metadata only — no encrypted content fields, pass through.
-    async fn create_suggested_link(
-        &self,
-        from_id: &str,
-        to_id: &str,
-        relation_type: RelationType,
-        strength: f32,
-        rationale: &str,
-        source: SuggestionSource,
-    ) -> DbResult<SuggestedLink> {
-        self.inner
-            .create_suggested_link(from_id, to_id, relation_type, strength, rationale, source)
-            .await
-    }
-
-    async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> {
-        self.inner.list_pending_suggestions().await
-    }
-
-    async fn list_suggestions_for_document(&self, doc_id: &str) -> DbResult<Vec<SuggestedLink>> {
-        self.inner.list_suggestions_for_document(doc_id).await
-    }
-
-    async fn resolve_suggestion(
-        &self,
-        id: &str,
-        status: SuggestionStatus,
-    ) -> DbResult<SuggestedLink> {
-        self.inner.resolve_suggestion(id, status).await
-    }
-
-    async fn suggestion_exists(&self, from_id: &str, to_id: &str) -> DbResult<bool> {
-        self.inner.suggestion_exists(from_id, to_id).await
     }
 
     // Thread operations pass through unchanged
@@ -291,6 +255,39 @@ impl GraphDB for EncryptedGraphDB {
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>> {
         let docs = self.inner.traverse(doc_id, depth, limit).await?;
         self.decrypt_documents(docs).await
+    }
+
+    // Suggested links: not encrypted (rationale text is AI-generated, not user content)
+    async fn create_suggested_link(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        relation_type: RelationType,
+        strength: f32,
+        rationale: &str,
+        source: SuggestionSource,
+    ) -> DbResult<SuggestedLink> {
+        self.inner.create_suggested_link(from_id, to_id, relation_type, strength, rationale, source).await
+    }
+
+    async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> {
+        self.inner.list_pending_suggestions().await
+    }
+
+    async fn list_suggestions_for_document(&self, doc_id: &str) -> DbResult<Vec<SuggestedLink>> {
+        self.inner.list_suggestions_for_document(doc_id).await
+    }
+
+    async fn resolve_suggestion(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+    ) -> DbResult<SuggestedLink> {
+        self.inner.resolve_suggestion(id, status).await
+    }
+
+    async fn suggestion_exists(&self, from_id: &str, to_id: &str) -> DbResult<bool> {
+        self.inner.suggestion_exists(from_id, to_id).await
     }
 
     async fn adopt_document(&self, id: &str) -> DbResult<Document> {
@@ -545,16 +542,11 @@ impl GraphDB for EncryptedGraphDB {
         before: chrono::DateTime<chrono::Utc>,
         limit: u32,
     ) -> DbResult<Vec<Message>> {
-        let msgs = self
-            .inner
-            .list_messages_in_time_range(after, before, limit)
-            .await?;
+        let msgs = self.inner.list_messages_in_time_range(after, before, limit).await?;
         let mut result = Vec::with_capacity(msgs.len());
         for mut m in msgs {
             if let Some(nonce) = &m.encryption_nonce {
-                let id = m
-                    .id
-                    .as_ref()
+                let id = m.id.as_ref()
                     .map(|t| crate::schema::thing_to_raw(t))
                     .unwrap_or_default();
                 m.body = self.decrypt_content(&id, &m.body, nonce).await?;
