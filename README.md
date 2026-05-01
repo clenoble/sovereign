@@ -128,7 +128,7 @@ cd frontend && npm test
 
 ## Status
 
-This is an experimental prototype. Try it, break it, contribute. See [open issues](https://github.com/clenoble/sovereign/issues) for good starting points.
+This is an experimental prototype. Try it, break it, contribute. The most approachable contribution path is writing a new skill — see [doc/writing-skills.md](doc/writing-skills.md) for the WASM Component Model guide, sandbox model, and a worked example.
 
 **Latest release:** [v0.0.3](RELEASE_NOTES_v0.0.3.md) — skills system, embedded browser with Qwen-driven reliability assessment, Qwen 3.5 support, AI-suggested document links, full-feature CUDA release build, and the Iced UI retirement.
 
