@@ -441,7 +441,7 @@ pub async fn seed_pii_if_empty(db: &SurrealGraphDB, device_key: &Arc<DeviceKey>)
     use chrono::{Duration, Utc};
     use sovereign_crypto::vault::EncryptedBlob;
     use sovereign_db::schema::{
-        Entity, EntityKind, PiiKind, PiiRecord, ReviewState, ShareChannel, ShareRecord,
+        Entity, EntityKind, PiiKind, PiiRecord, ReviewState, ShareChannel, ShareRecord, SourceRef,
     };
 
     let entities = db.list_entities().await?;
@@ -570,12 +570,118 @@ pub async fn seed_pii_if_empty(db: &SurrealGraphDB, device_key: &Arc<DeviceKey>)
         db.create_share_record(record).await?;
     }
 
+    // ── PII-bearing documents ────────────────────────────────────────────
+    // For the dashboard's mask/reveal flow on document content: the canonical
+    // body (`Document.content`) carries `[pii:<record_id>]` tokens, while the
+    // original PII-inline text is encrypted into `body_raw_encrypted`. Each
+    // referenced record gets a SourceRef pointing back at the token's byte
+    // span in the canonical body.
+    use sovereign_db::schema::SourceKind;
+    use std::collections::HashMap;
+
+    let threads = db.list_threads().await?;
+    let host_thread_id = threads
+        .iter()
+        .find(|t| t.name == "Admin")
+        .or_else(|| threads.first())
+        .and_then(|t| t.id_string());
+
+    let mut pii_docs_count = 0usize;
+    if let Some(thread_id) = host_thread_id {
+        // (title, [(text-prefix, record_idx into `discovered`)])
+        // Each segment writes prefix + the record's plaintext value (raw)
+        // or prefix + `[pii:<id>]` token (canonical).
+        let pii_docs: Vec<(&str, Vec<(&str, usize)>)> = vec![
+            (
+                "Personal contact card",
+                vec![
+                    ("Email: ", 0),         // alex@personal.example
+                    ("\nMobile: ", 1),      // +1-555-0100
+                    ("\nIBAN (Acme): ", 4), // CH93 0076 2011 6238 5295 7
+                ],
+            ),
+            (
+                "Insurance application draft",
+                vec![
+                    ("Date of birth: ", 2), // 1990-04-12
+                    ("\nSSN: ", 3),         // 123-45-6789
+                    ("\nHome: ", 6),        // 742 Evergreen Terrace
+                ],
+            ),
+        ];
+
+        // Records can be referenced from multiple documents — accumulate
+        // sources per record then write them all in one update at the end.
+        let mut record_sources: HashMap<usize, Vec<SourceRef>> = HashMap::new();
+
+        for (title, segments) in &pii_docs {
+            let mut raw = String::new();
+            let mut canonical = String::new();
+            let mut spans: Vec<(usize, usize, usize)> = Vec::new();
+
+            for (prefix, rec_idx) in segments {
+                raw.push_str(prefix);
+                canonical.push_str(prefix);
+
+                let value = discovered[*rec_idx].2;
+                raw.push_str(value);
+
+                let token = format!("[pii:{}]", discovered_ids[*rec_idx]);
+                let span_start = canonical.len();
+                canonical.push_str(&token);
+                let span_end = canonical.len();
+                spans.push((*rec_idx, span_start, span_end));
+            }
+
+            let mut doc = Document::new(title.to_string(), thread_id.clone(), true);
+            let content = ContentFields {
+                body: canonical,
+                ..Default::default()
+            };
+            doc.content = content.serialize();
+            let created = db.create_document(doc).await?;
+            let doc_id = created
+                .id_string()
+                .ok_or_else(|| anyhow::anyhow!("PII doc missing ID"))?;
+
+            // Encrypt the raw (PII-inline) body so reveal can decrypt it later.
+            let raw_blob = EncryptedBlob::encrypt_str(&raw, device_key)
+                .map_err(|e| anyhow::anyhow!("seed raw-body encrypt failed: {e}"))?;
+            db.update_document_pii_fields(
+                &doc_id,
+                Some(&raw_blob.ciphertext_b64),
+                Some(&raw_blob.nonce_b64),
+                Some(now),
+            )
+            .await?;
+
+            for (rec_idx, span_start, span_end) in spans {
+                record_sources.entry(rec_idx).or_default().push(SourceRef {
+                    source_kind: SourceKind::Document,
+                    source_id: doc_id.clone(),
+                    span_start,
+                    span_end,
+                });
+            }
+            pii_docs_count += 1;
+        }
+
+        // Replace each referenced record's sources with the accumulated list.
+        for (rec_idx, sources) in record_sources {
+            db.update_pii_record_sources(&discovered_ids[rec_idx], sources)
+                .await?;
+        }
+    } else {
+        tracing::warn!("No threads available for PII document seed; skipping");
+    }
+
     tracing::info!(
-        "Seeded {} PII entities, {} discovered records, {} vault entries, {} share records",
+        "Seeded {} PII entities, {} discovered records, {} vault entries, {} share records, {} PII-bearing docs",
         entity_defs.len(),
         discovered.len(),
         vault.len(),
         shares.len(),
+        pii_docs_count,
     );
     Ok(())
 }
@@ -634,12 +740,15 @@ mod tests {
     #[cfg(feature = "encryption")]
     #[tokio::test]
     async fn seed_pii_populates_empty_db() {
+        use sovereign_core::content::ContentFields;
         use sovereign_crypto::device_key::DeviceKey;
         use sovereign_crypto::master_key::MasterKey;
         use sovereign_crypto::vault::EncryptedBlob;
         use sovereign_db::schema::ReviewState;
 
         let db = test_db().await;
+        // Threads are needed for the PII-bearing doc seed to land.
+        seed_if_empty(&db).await.unwrap();
         let mk = MasterKey::generate();
         let dk = Arc::new(DeviceKey::derive(&mk, "seed-test").unwrap());
 
@@ -679,6 +788,39 @@ mod tests {
         };
         let plaintext = blob.decrypt(&dk).expect("decrypt with seed key");
         assert!(!plaintext.is_empty(), "Decrypted value should be non-empty");
+
+        // ── PII-bearing documents ───────────────────────────────────────
+        let docs = db.list_documents(None).await.unwrap();
+        let pii_docs: Vec<_> = docs
+            .iter()
+            .filter(|d| d.body_raw_encrypted.is_some())
+            .collect();
+        assert_eq!(pii_docs.len(), 2, "Should create 2 PII-bearing docs");
+
+        for doc in &pii_docs {
+            // Canonical body must contain at least one [pii:...] token.
+            let cf = ContentFields::parse(&doc.content);
+            assert!(
+                cf.body.contains("[pii:"),
+                "Canonical body should carry [pii:<id>] tokens, got: {}",
+                cf.body
+            );
+            // pii_scanned_at marks the doc as scanned.
+            assert!(doc.pii_scanned_at.is_some());
+
+            // body_raw_encrypted decrypts back to the inline (PII-visible) text.
+            let raw_blob = EncryptedBlob {
+                ciphertext_b64: doc.body_raw_encrypted.clone().unwrap(),
+                nonce_b64: doc.body_raw_nonce.clone().unwrap(),
+            };
+            let raw = String::from_utf8(raw_blob.decrypt(&dk).unwrap()).unwrap();
+            assert!(!raw.contains("[pii:"), "Raw body should NOT contain tokens");
+            assert!(raw.len() > cf.body.len() / 2, "Raw body should be substantial");
+        }
+
+        // At least one referenced record gained non-empty sources.
+        let with_sources = discovered.iter().filter(|r| !r.sources.is_empty()).count();
+        assert!(with_sources >= 6, "≥6 records should have sources, got {with_sources}");
     }
 
     #[cfg(feature = "encryption")]
@@ -688,6 +830,7 @@ mod tests {
         use sovereign_crypto::master_key::MasterKey;
 
         let db = test_db().await;
+        seed_if_empty(&db).await.unwrap();
         let mk = MasterKey::generate();
         let dk = Arc::new(DeviceKey::derive(&mk, "seed-test").unwrap());
 
