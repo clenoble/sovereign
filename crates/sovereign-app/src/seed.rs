@@ -11,6 +11,11 @@ use sovereign_db::schema::{
 use sovereign_db::surreal::SurrealGraphDB;
 use sovereign_db::GraphDB;
 
+#[cfg(feature = "encryption")]
+use std::sync::Arc;
+#[cfg(feature = "encryption")]
+use sovereign_crypto::device_key::DeviceKey;
+
 /// Populate the database with sample data when it's empty.
 /// Provides a visual baseline for testing the canvas.
 pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
@@ -420,6 +425,161 @@ pub fn seed_profile_and_history(profile_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Populate the database with sample PII data when no entities exist yet.
+///
+/// Provides a visual baseline for testing the PII management dashboard:
+/// 5 entities across all `EntityKind` variants, ~10 PiiRecords spanning
+/// discovered findings (`stored_secret = false`, mixed review states) and
+/// vault entries (`stored_secret = true`, encrypted under the DeviceKey),
+/// plus 3 ShareRecords on the disclosure ledger.
+///
+/// Skipped if any entity already exists, so it's idempotent across restarts.
+/// Requires the `encryption` feature because vault entries need a real
+/// DeviceKey for the encrypt → reveal round-trip to work in the dashboard.
+#[cfg(feature = "encryption")]
+pub async fn seed_pii_if_empty(db: &SurrealGraphDB, device_key: &Arc<DeviceKey>) -> Result<()> {
+    use chrono::{Duration, Utc};
+    use sovereign_crypto::vault::EncryptedBlob;
+    use sovereign_db::schema::{
+        Entity, EntityKind, PiiKind, PiiRecord, ReviewState, ShareChannel, ShareRecord,
+    };
+
+    let entities = db.list_entities().await?;
+    if !entities.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!("Seeding sample PII data (entities, records, share ledger)");
+
+    // ── Entities ─────────────────────────────────────────────────────────
+    // (name, kind, domains, is_owned, notes)
+    let entity_defs: Vec<(&str, EntityKind, Vec<&str>, bool, &str)> = vec![
+        ("You",                EntityKind::SelfEntity, vec![],                                  true,  "Self entity — own PII anchor"),
+        ("Acme Bank",          EntityKind::Org,        vec!["acmebank.example", "acmebank.ch"], false, "Primary checking + savings"),
+        ("GitHub",             EntityKind::Service,    vec!["github.com"],                      false, "Code hosting + CI"),
+        ("Dr. Sarah Kim",      EntityKind::Person,     vec![],                                  false, "Family doctor"),
+        ("Sunlife Insurance",  EntityKind::Org,        vec!["sunlife.example"],                 false, "Health + life policies"),
+    ];
+
+    let now = Utc::now();
+    let mut entity_ids = Vec::new();
+    for (name, kind, domains, is_owned, notes) in &entity_defs {
+        let mut ent = Entity::new(name.to_string(), kind.clone());
+        ent.domains = domains.iter().map(|s| s.to_string()).collect();
+        ent.is_owned = *is_owned;
+        ent.notes = notes.to_string();
+        let created = db.create_entity(ent).await?;
+        entity_ids.push(
+            created.id_string().ok_or_else(|| anyhow::anyhow!("Entity missing ID"))?,
+        );
+    }
+    // Index: 0=Self, 1=Acme Bank, 2=GitHub, 3=Doctor, 4=Sunlife
+
+    // ── Discovered PII (stored_secret = false) ────────────────────────────
+    // (kind, label, value, entity_idx, confidence, review_state, days_ago)
+    let discovered: Vec<(PiiKind, &str, &str, usize, f32, ReviewState, i64)> = vec![
+        (PiiKind::Email,       "personal email",       "alex@personal.example",       0, 0.95, ReviewState::Confirmed,  30),
+        (PiiKind::Phone,       "mobile",               "+1-555-0100",                 0, 0.92, ReviewState::Confirmed,  28),
+        (PiiKind::Dob,         "date of birth",        "1990-04-12",                  0, 0.88, ReviewState::Unreviewed, 14),
+        (PiiKind::Ssn,         "SSN (US)",             "123-45-6789",                 0, 0.97, ReviewState::Unreviewed, 10),
+        (PiiKind::Iban,        "Acme checking IBAN",   "CH93 0076 2011 6238 5295 7",  1, 0.99, ReviewState::Confirmed,   7),
+        (PiiKind::Email,       "Alice's address",      "alice.chen@example.com",      1, 0.65, ReviewState::Dismissed,   6),
+        (PiiKind::Address,     "home address",         "742 Evergreen Terrace",       0, 0.80, ReviewState::Unreviewed,  3),
+    ];
+
+    let mut discovered_ids = Vec::new();
+    for (kind, label, value, ent_idx, confidence, state, days_ago) in &discovered {
+        let blob = EncryptedBlob::encrypt_str(value, device_key)
+            .map_err(|e| anyhow::anyhow!("seed PII encrypt failed: {e}"))?;
+        let discovered_at = now - Duration::days(*days_ago);
+        let record = PiiRecord {
+            id: None,
+            kind: kind.clone(),
+            value_encrypted: blob.ciphertext_b64,
+            value_nonce: blob.nonce_b64,
+            label: Some(label.to_string()),
+            entity_id: Some(entity_ids[*ent_idx].clone()),
+            stored_secret: false,
+            confidence: *confidence,
+            sources: vec![],
+            discovered_at,
+            last_revealed_at: None,
+            use_count: 0,
+            review_state: state.clone(),
+            deleted_at: None,
+        };
+        let created = db.create_pii_record(record).await?;
+        discovered_ids.push(
+            created.id_string().ok_or_else(|| anyhow::anyhow!("PiiRecord missing ID"))?,
+        );
+    }
+
+    // ── Vault entries (stored_secret = true, always Confirmed) ────────────
+    // (kind, label, value, entity_idx, days_ago)
+    let vault: Vec<(PiiKind, &str, &str, usize, i64)> = vec![
+        (PiiKind::Password,     "main password",        "Tr0ub4dor&3-correct-horse",      2, 21),
+        (PiiKind::ApiToken,     "personal access token","ghp_seedFakeToken1234567890ABCD", 2, 18),
+        (PiiKind::BankAccount,  "checking #",           "1234-5678-9012",                 1, 12),
+        (PiiKind::DocumentId,   "passport",             "X1234567",                       0,  9),
+        (PiiKind::Note,         "office wifi",          "WaitingRoom-Wifi-2026",          3,  4),
+    ];
+
+    for (kind, label, value, ent_idx, days_ago) in &vault {
+        let blob = EncryptedBlob::encrypt_str(value, device_key)
+            .map_err(|e| anyhow::anyhow!("seed vault encrypt failed: {e}"))?;
+        let discovered_at = now - Duration::days(*days_ago);
+        let record = PiiRecord {
+            id: None,
+            kind: kind.clone(),
+            value_encrypted: blob.ciphertext_b64,
+            value_nonce: blob.nonce_b64,
+            label: Some(label.to_string()),
+            entity_id: Some(entity_ids[*ent_idx].clone()),
+            stored_secret: true,
+            confidence: 1.0,
+            sources: vec![],
+            discovered_at,
+            last_revealed_at: None,
+            use_count: 0,
+            review_state: ReviewState::Confirmed,
+            deleted_at: None,
+        };
+        db.create_pii_record(record).await?;
+    }
+
+    // ── Share ledger ─────────────────────────────────────────────────────
+    // Disclosure events that show up under each recipient's "Shared" tab.
+    // (pii_record_idx into discovered_ids, recipient entity_idx, channel, days_ago, via_url)
+    let shares: Vec<(usize, usize, ShareChannel, i64, Option<&str>)> = vec![
+        (0, 1, ShareChannel::Web,   29, Some("https://acmebank.example/signup")),    // email → Acme Bank
+        (1, 2, ShareChannel::Web,   25, Some("https://github.com/join")),            // phone → GitHub
+        (2, 4, ShareChannel::Web,   12, Some("https://sunlife.example/onboarding")), // DOB → Sunlife
+    ];
+
+    for (pii_idx, ent_idx, channel, days_ago, via_url) in &shares {
+        let shared_at = now - Duration::days(*days_ago);
+        let record = ShareRecord {
+            id: None,
+            pii_record_id: discovered_ids[*pii_idx].clone(),
+            to_entity_id: entity_ids[*ent_idx].clone(),
+            via_message_id: None,
+            via_url: via_url.map(|s| s.to_string()),
+            shared_at,
+            channel: channel.clone(),
+        };
+        db.create_share_record(record).await?;
+    }
+
+    tracing::info!(
+        "Seeded {} PII entities, {} discovered records, {} vault entries, {} share records",
+        entity_defs.len(),
+        discovered.len(),
+        vault.len(),
+        shares.len(),
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,5 +629,72 @@ mod tests {
 
         let threads = db.list_threads().await.unwrap();
         assert_eq!(threads.len(), 4, "Should still be 4 threads after double seed");
+    }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn seed_pii_populates_empty_db() {
+        use sovereign_crypto::device_key::DeviceKey;
+        use sovereign_crypto::master_key::MasterKey;
+        use sovereign_crypto::vault::EncryptedBlob;
+        use sovereign_db::schema::ReviewState;
+
+        let db = test_db().await;
+        let mk = MasterKey::generate();
+        let dk = Arc::new(DeviceKey::derive(&mk, "seed-test").unwrap());
+
+        seed_pii_if_empty(&db, &dk).await.unwrap();
+
+        let entities = db.list_entities().await.unwrap();
+        assert_eq!(entities.len(), 5, "Should create 5 PII entities");
+        assert_eq!(
+            entities.iter().filter(|e| e.is_owned).count(),
+            1,
+            "1 owned entity (You)"
+        );
+
+        let records = db.list_pii_records(None, None, None).await.unwrap();
+        assert_eq!(records.len(), 12, "7 discovered + 5 vault entries");
+
+        let vault = db.list_pii_records(None, None, Some(true)).await.unwrap();
+        assert_eq!(vault.len(), 5);
+        let discovered = db.list_pii_records(None, None, Some(false)).await.unwrap();
+        assert_eq!(discovered.len(), 7);
+
+        // Each review state has at least one record so the dashboard renders all tabs.
+        for state in [ReviewState::Unreviewed, ReviewState::Confirmed, ReviewState::Dismissed] {
+            let n = db
+                .list_pii_records(None, Some(state.clone()), None)
+                .await
+                .unwrap()
+                .len();
+            assert!(n > 0, "Should have at least one {state:?} record");
+        }
+
+        // Reveal round-trip: encrypted values must decrypt with the same DeviceKey.
+        let one = &records[0];
+        let blob = EncryptedBlob {
+            ciphertext_b64: one.value_encrypted.clone(),
+            nonce_b64: one.value_nonce.clone(),
+        };
+        let plaintext = blob.decrypt(&dk).expect("decrypt with seed key");
+        assert!(!plaintext.is_empty(), "Decrypted value should be non-empty");
+    }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn seed_pii_is_idempotent() {
+        use sovereign_crypto::device_key::DeviceKey;
+        use sovereign_crypto::master_key::MasterKey;
+
+        let db = test_db().await;
+        let mk = MasterKey::generate();
+        let dk = Arc::new(DeviceKey::derive(&mk, "seed-test").unwrap());
+
+        seed_pii_if_empty(&db, &dk).await.unwrap();
+        seed_pii_if_empty(&db, &dk).await.unwrap(); // no-op
+
+        let entities = db.list_entities().await.unwrap();
+        assert_eq!(entities.len(), 5, "Still 5 entities after double seed");
     }
 }
