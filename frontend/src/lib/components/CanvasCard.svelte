@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { CanvasDocDto } from '$lib/api/commands';
-	import { canvas, selectCard, setDragging, moveCard, snapToLane, hoverCard } from '$lib/stores/canvas.svelte';
+	import { canvas, selectCard, setDragging, moveCard, snapToLane, hoverCard, MAX_VISUAL_ZOOM } from '$lib/stores/canvas.svelte';
 	import { openById } from '$lib/stores/documents.svelte';
 	import { app } from '$lib/stores/app.svelte';
 
@@ -12,6 +12,14 @@
 	}
 
 	let { doc, isHovered, isSelected, zoom = 1 }: Props = $props();
+
+	// Counter-scale once zoom exceeds MAX_VISUAL_ZOOM so the card stops
+	// growing visually. Parent layer is scaled by `zoom`; we apply
+	// `MAX_VISUAL_ZOOM / zoom` here to clamp effective size at zoom = 1.5.
+	const cardScale = $derived(zoom > MAX_VISUAL_ZOOM ? MAX_VISUAL_ZOOM / zoom : 1);
+	const cardTransform = $derived(
+		cardScale === 1 ? '' : `transform: scale(${cardScale}); transform-origin: top left;`
+	);
 
 	let dragging = false;
 	let dragStart = { x: 0, y: 0 };
@@ -88,7 +96,7 @@
 		class="canvas-dot"
 		class:owned={doc.is_owned}
 		class:external={!doc.is_owned}
-		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px; z-index: {isSelected ? 100 : isHovered ? 50 : 1};"
+		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px; z-index: {isSelected ? 100 : isHovered ? 50 : 1}; {cardTransform}"
 		onpointerdown={handlePointerDown}
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}
@@ -104,7 +112,7 @@
 		class:external={!doc.is_owned}
 		class:hovered={isHovered}
 		class:selected={isSelected}
-		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px; z-index: {isSelected ? 100 : isHovered ? 50 : 1};"
+		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px; z-index: {isSelected ? 100 : isHovered ? 50 : 1}; {cardTransform}"
 		onpointerdown={handlePointerDown}
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}
@@ -131,7 +139,7 @@
 		class:external={!doc.is_owned}
 		class:hovered={isHovered}
 		class:selected={isSelected}
-		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px; z-index: {isSelected ? 100 : isHovered ? 50 : 1};"
+		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px; z-index: {isSelected ? 100 : isHovered ? 50 : 1}; {cardTransform}"
 		onpointerdown={handlePointerDown}
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}

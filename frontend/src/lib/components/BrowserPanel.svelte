@@ -36,7 +36,7 @@
 	}
 	import { refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
 
-	let urlInput = $state(browser.url || 'https://www.google.com');
+	let urlInput = $state(browser.url || 'https://duckduckgo.com');
 	let webviewRegion: HTMLDivElement | undefined = $state();
 	let resizeObserver: ResizeObserver | undefined;
 
@@ -82,9 +82,9 @@
 		if (!url) return;
 		// Auto-add protocol if missing
 		if (!/^https?:\/\//.test(url)) {
-			// If it looks like a search query, use Google
+			// If it looks like a search query, use DuckDuckGo
 			if (!url.includes('.') || url.includes(' ')) {
-				url = `https://www.google.com/search?q=${encodeURIComponent(url)}`;
+				url = `https://duckduckgo.com/?q=${encodeURIComponent(url)}`;
 			} else {
 				url = `https://${url}`;
 			}

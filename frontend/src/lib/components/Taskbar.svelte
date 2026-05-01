@@ -16,7 +16,7 @@
 			closeBrowserStore();
 			try { await closeBrowserCmd(); } catch { /* ignore */ }
 		} else {
-			openBrowserStore('https://www.google.com');
+			openBrowserStore('https://duckduckgo.com');
 		}
 	}
 
