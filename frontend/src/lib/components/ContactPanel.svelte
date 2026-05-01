@@ -80,6 +80,8 @@
 	// Drag handlers
 	function handleToolbarPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
+		// Don't start a drag if the user clicked an interactive element.
+		if ((e.target as HTMLElement).closest('button, input, select, textarea, a')) return;
 		dragging = true;
 		dragStart = { x: e.clientX, y: e.clientY };
 		dragOriginal = { x: position.x, y: position.y };

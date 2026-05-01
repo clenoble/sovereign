@@ -1328,6 +1328,27 @@ impl Orchestrator {
                     }
                 }
             }
+            "open_pii_dashboard" | "open_models" | "open_inbox" | "browse" | "open_settings" => {
+                // Map orchestrator action → frontend panel name. The frontend
+                // listener flips the corresponding visibility flag.
+                let panel = match action {
+                    "open_pii_dashboard" => "pii_dashboard",
+                    "open_models" => "models",
+                    "open_inbox" => "inbox",
+                    "browse" => "browser",
+                    "open_settings" => "settings",
+                    _ => unreachable!(),
+                };
+                tracing::info!("Toggle panel: {}", panel);
+                self.log_action(action, panel);
+                let _ = self.event_tx.send(OrchestratorEvent::OpenPanel {
+                    name: panel.to_string(),
+                });
+                let _ = self.event_tx.send(OrchestratorEvent::ActionExecuted {
+                    action: action.to_string(),
+                    success: true,
+                });
+            }
             "chat" | "unknown" => {
                 // Delegate to the agent loop which handles context, tools, and history
                 self.run_chat_agent_loop(query).await?;
