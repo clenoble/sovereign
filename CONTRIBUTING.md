@@ -29,8 +29,8 @@ cd frontend && npm install && cd ..
 # Build frontend
 cd frontend && npm run build && cd ..
 
-# Build with Tauri UI (recommended)
-cargo build -p sovereign-app --no-default-features --features tauri-ui,encrypted-log -j 4
+# Build the app (Tauri 2 + Svelte 5 is the only UI as of v0.0.3)
+cargo build -p sovereign-app --features encrypted-log -j 4
 
 # Run
 ./target/debug/sovereign run
@@ -38,47 +38,48 @@ cargo build -p sovereign-app --no-default-features --features tauri-ui,encrypted
 # Run tests
 cargo test -j 4                                          # all crates except sovereign-ai
 cargo test -p sovereign-ai --no-default-features -j 4    # sovereign-ai (skip CUDA)
+cd frontend && npm test && cd ..                         # Vitest store + component tests
 ```
 
-On Windows from Git Bash, see [CLAUDE.md](CLAUDE.md) for the full MSVC environment setup.
+On Windows the `_build.bat`, `_check.bat`, and `_release_build.bat` wrappers in the repo root configure the MSVC + LLVM + CUDA environment for you. From Git Bash, see [CLAUDE.md](CLAUDE.md) for the full env setup.
 
 ---
 
 ## Architecture Overview
 
-Sovereign GE is a 10-crate Rust workspace plus a Svelte frontend. Here's how the pieces relate:
+Sovereign GE is an 8-crate Rust workspace plus a Svelte frontend. Here's how the pieces relate:
 
 ```
     ┌─────────────────┐
-    │  frontend/      │  Svelte 5 + SvelteKit 2 + Tauri 2.0
-    │  (web UI)       │  Canvas, chat, onboarding, settings
+    │  frontend/      │  Svelte 5 + SvelteKit 2.50 + Tauri 2.10
+    │  (web UI)       │  Canvas, chat, onboarding, settings, panels
     └────────┬────────┘
              │ Tauri IPC (invoke / events)
     ┌────────▼────────┐
     │ sovereign-app   │  Binary: CLI + Tauri host + GUI bootstrap
     └────────┬────────┘
              │ depends on all crates below
+             │
+        ┌────▼─────────┐
+        │ sovereign-ai │  Orchestrator: LLM router + reasoning,
+        │              │  intent classification, tools, trust,
+        │              │  reliability assessment, consolidation
+        └────┬─────────┘
+             │
    ┌─────────┼─────────────┐
    │         │             │
-   │  ┌──────▼──────┐ ┌───▼──────────┐
-   │  │sovereign-ai │ │sovereign-ui  │  (legacy Iced GUI)
-   │  │ Orchestrator│ │sovereign-    │  (legacy Iced canvas)
-   │  │ LLM, intent │ │  canvas      │
-   │  │ tools, trust│ └──────────────┘
-   │  └──────┬──────┘
-   │         │
-   ├─────────┼─────────────┐
-   │         │             │
-   ┌▼────────▼──┐ ┌───────▼─────┐
-   │sovereign-db│ │sovereign-   │
-   │  SurrealDB │ │  crypto     │  Also: sovereign-skills,
-   │  graph     │ │  XChaCha20  │  sovereign-p2p, sovereign-comms
-   └──────┬─────┘ └──────┬──────┘
-          └───────┬──────┘
-           ┌──────▼──────┐
-           │sovereign-   │  Shared types, config,
-           │  core       │  interfaces, events
-           └─────────────┘
+   ▼         ▼             ▼
+┌────────┐ ┌─────────┐ ┌──────────────┐
+│sovereign│ │sovereign│ │sovereign-    │
+│  -db   │ │ -crypto │ │  skills /    │  Also: sovereign-p2p,
+│ Surreal│ │ XChaCha │ │  -comms      │  sovereign-comms
+│  graph │ │  20     │ │              │
+└────┬───┘ └────┬────┘ └──────┬───────┘
+     └──────────┼─────────────┘
+            ┌───▼─────────┐
+            │sovereign-   │  Shared types, config,
+            │  core       │  interfaces, events
+            └─────────────┘
 ```
 
 ### Key Data Flow
@@ -93,7 +94,7 @@ Sovereign GE is a 10-crate Rust workspace plus a Svelte frontend. Here's how the
 
 ### Tauri Frontend Architecture
 
-The active UI is a Svelte 5 + SvelteKit 2 app bundled via Tauri 2.0:
+The sole UI is a Svelte 5 + SvelteKit 2.50 app bundled via Tauri 2.10. The previous Iced-based `sovereign-ui` and `sovereign-canvas` crates were retired in v0.0.3.
 
 - **Stores** (`lib/stores/*.svelte.ts`): Svelte 5 rune modules using `$state()`, `$derived()`, `$effect()`. Must use `.svelte.ts` extension — Svelte 4 `writable` stores don't propagate reactivity when updated from async Tauri IPC.
 - **Commands** (`lib/api/commands.ts`): Typed wrappers around `@tauri-apps/api/core.invoke()` for all backend operations (chat, documents, threads, contacts, settings, auth).
@@ -171,17 +172,6 @@ crates/
 │   ├── injection.rs      # Prompt injection detection
 │   ├── session_log.rs    # Append-only JSONL session history
 │   └── autocommit.rs     # Auto-commit engine for document versioning
-├── sovereign-ui/src/
-│   ├── app.rs            # Main Iced app: Message enum, update(), view()
-│   ├── chat.rs           # Chat widget
-│   ├── search.rs         # Search overlay
-│   ├── taskbar.rs        # Bottom taskbar
-│   ├── theme.rs          # Dark/light theme, palette functions
-│   └── panels/           # Document, model, inbox, contact, camera panels
-├── sovereign-canvas/src/
-│   ├── state.rs          # CanvasState (camera, cards, layout)
-│   ├── renderer.rs       # Iced shader program
-│   └── layout.rs         # Thread lanes, card positioning
 ├── sovereign-crypto/src/
 │   ├── aead.rs           # XChaCha20-Poly1305 encrypt/decrypt
 │   ├── master_key.rs     # Passphrase → master key (Argon2)
@@ -214,25 +204,25 @@ Most heavy dependencies are opt-in:
 
 | Flag | Default | What it gates |
 |------|---------|---------------|
-| `iced-ui` | ON | Legacy Iced 0.14 native GUI |
-| `tauri-ui` | off | Tauri 2.0 + Svelte 5 web UI (active frontend) |
 | `cuda` | ON (sovereign-ai only) | GPU-accelerated LLM inference |
-| `voice-stt` | off | Whisper speech-to-text |
-| `wake-word` | off | Wake word detection (requires voice-stt) |
-| `encryption` | off | Document encryption, key management |
-| `p2p` | off | Device pairing and sync |
+| `voice-stt` | off | Wake word detection + Whisper speech-to-text |
+| `encryption` | off | Document encryption, key management, vault |
+| `p2p` | off | Device pairing and sync (implies `encryption`) |
 | `comms-email` | off | Email (IMAP/SMTP) |
-| `comms-signal` | off | Signal messenger |
+| `comms-signal` | off | Signal messenger (excluded from v0.0.3 release build — known build issue) |
 | `comms-whatsapp` | off | WhatsApp (stub) |
 | `web-browse` | off | Embedded browser with LLM reliability assessment |
 | `encrypted-log` | ON | Per-entry encrypted session log with hash chain |
+| `wasm-plugins` | off | Third-party WASM skill plugins via the Component Model |
 
-To build with the Tauri UI (most common for contributors):
+To build with the full feature set most contributors use:
 ```bash
 cd frontend && npm install && npm run build && cd ..
-cargo build -p sovereign-app --no-default-features --features tauri-ui,encrypted-log
+cargo build -p sovereign-app --features encrypted-log
 cargo test -p sovereign-ai --no-default-features
 ```
+
+For a Windows release build with CUDA + encryption + p2p + comms-email + web-browse, run [`_release_build.bat`](_release_build.bat) — it sets `CUDA_PATH_V13_2`, `CudaToolkitDir`, `LIBCLANG_PATH`, and the MSVC paths automatically.
 
 ---
 
@@ -248,20 +238,23 @@ The project follows 8 UX principles (see `doc/spec/sovereign_os_ux_principles.md
 
 ---
 
-## How to Pick an Issue
+## Where to Start
 
-Check [GitHub Issues](https://github.com/clenoble/sovereign/issues) for `good first issue` and `help wanted` labels.
+The most concrete onboarding path right now is **writing a new skill**. The skill surface is well-defined, sandboxed (WASM Component Model), and lets you contribute end-to-end without touching the orchestrator or DB internals.
 
-**Best starting points:**
-- Issues touching a single crate (e.g., just `sovereign-ai` or just `sovereign-db`)
-- Issues with clear acceptance criteria and file paths listed
-- Issues tagged `good first issue` are scoped to be completable in a few hours
+- **[doc/writing-skills.md](doc/writing-skills.md)** — third-party skill developer guide: contract, sandbox model, build instructions, and a worked example.
+- **[doc/plans/skills-roadmap.md](doc/plans/skills-roadmap.md)** — current skill roadmap with phase status and concrete ideas for new skills.
+- **[doc/plans/todolist.md](doc/plans/todolist.md)** — open issues and feature roadmap beyond skills.
+
+Other approachable starting points:
+- Adding tests to under-covered modules (especially `sovereign-app/src/tauri_commands/`).
+- Improving frontend test coverage (look at `frontend/src/lib/stores/*.svelte.test.ts` for the pattern).
+- Tightening up a single crate at a time — each one has its own focused responsibility.
 
 **Before starting:**
-1. Comment on the issue to claim it
-2. Read the files listed in the issue description
-3. Run the existing tests to make sure your setup works
-4. Create a branch from `main`
+1. Read the relevant guide above.
+2. Run the existing tests to make sure your setup works.
+3. Create a branch from `main` (or from the relevant feature branch if one exists, e.g. `pii-management-dashboard`).
 
 ---
 
@@ -293,10 +286,10 @@ cargo test -p sovereign-app --test cli_integration -j 4
 
 ### Pull Requests
 
-- Keep PRs focused on a single issue
-- Include tests for new functionality
-- Make sure `cargo test` passes before submitting
-- Reference the issue number in the PR description
+- Keep PRs focused on a single concern (one feature, one bug, one refactor)
+- Include tests for new functionality (`cargo test` for backend, `npm test` for frontend)
+- Make sure `cargo test` and `npm test` both pass before submitting
+- Describe **why** in the PR description, not just **what** — the diff already tells us what changed
 
 ---
 
@@ -318,4 +311,4 @@ cargo test -p sovereign-app --test cli_integration -j 4
 
 ## Questions?
 
-Open an issue on [GitHub](https://github.com/clenoble/sovereign/issues) or comment on an existing one.
+Start a discussion on [GitHub Discussions](https://github.com/clenoble/sovereign/discussions) or open a PR to propose a change directly.
