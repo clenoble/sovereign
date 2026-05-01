@@ -47,11 +47,15 @@ export interface CanvasState {
 }
 
 const ZOOM_MIN = 0.02;
-const ZOOM_MAX = 5.0;
+const ZOOM_MAX = 20.0;
 export const CARD_W = 200;
 export const CARD_H = 80;
 export const LANE_HEIGHT = 120;
 export const MSG_RADIUS = 30;
+/** Past this zoom factor, cards and message circles stop growing visually
+ *  so they don't take over the viewport. The time axis continues to
+ *  compress beyond this so users can still reach hour / minute intervals. */
+export const MAX_VISUAL_ZOOM = 1.5;
 
 /** Left margin reserved for thread labels. */
 const LABEL_MARGIN = 200;

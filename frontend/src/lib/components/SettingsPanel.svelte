@@ -3,6 +3,7 @@
 	import { getProfile, saveProfile, getConfig, getTrustEntries, resetTrustAction, resetTrustAll, getCommsConfig, saveCommsConfig } from '$lib/api/commands';
 	import type { UserProfileDto, AppConfigDto, SaveProfileDto, TrustEntryDto, CommsConfigDto, SaveCommsConfigDto } from '$lib/api/commands';
 	import BubblePreview from './BubblePreview.svelte';
+	import { focusTrap } from '$lib/actions/focusTrap';
 
 	type Tab = 'profile' | 'ai' | 'security' | 'trust' | 'comms';
 
@@ -205,7 +206,17 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 {#if app.settingsVisible}
 	<div class="settings-backdrop" onclick={close} onkeydown={handleKeydown}></div>
-	<div class="settings-panel" onkeydown={handleKeydown}>
+	<div
+		class="settings-panel"
+		role="dialog"
+		aria-modal="true"
+		aria-label="Settings"
+		onkeydown={handleKeydown}
+		use:focusTrap={{
+			active: app.settingsVisible,
+			onEscape: close
+		}}
+	>
 		<!-- Header -->
 		<div class="panel-header">
 			<span class="panel-title">Settings</span>

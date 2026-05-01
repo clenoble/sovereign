@@ -2,6 +2,7 @@
 	import { app } from '$lib/stores/app.svelte';
 	import { scanModels, assignModelRole, deleteModel } from '$lib/api/commands';
 	import type { ModelEntry } from '$lib/api/commands';
+	import { focusTrap } from '$lib/actions/focusTrap';
 	import { onMount } from 'svelte';
 
 	let models = $state<ModelEntry[]>([]);
@@ -49,7 +50,16 @@
 </script>
 
 {#if app.modelPanelVisible}
-	<div class="model-panel">
+	<div
+		class="model-panel"
+		role="dialog"
+		aria-modal="false"
+		aria-label="Models"
+		use:focusTrap={{
+			active: app.modelPanelVisible,
+			onEscape: () => (app.modelPanelVisible = false)
+		}}
+	>
 		<div class="panel-header">
 			<span class="panel-title">Models</span>
 			<button class="close-btn" onclick={() => app.modelPanelVisible = false}>&#x2715;</button>

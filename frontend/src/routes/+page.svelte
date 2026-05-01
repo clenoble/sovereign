@@ -53,7 +53,7 @@
 			closeBrowser();
 			try { await closeBrowserCmd(); } catch { /* ignore */ }
 		} else {
-			openBrowser('https://www.google.com');
+			openBrowser('https://duckduckgo.com');
 		}
 	}
 

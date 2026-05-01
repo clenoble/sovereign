@@ -9,11 +9,23 @@ mod setup;
 
 mod tauri_commands;
 mod tauri_events;
+#[cfg(feature = "encryption")]
+mod pii_ingest;
+#[cfg(all(feature = "comms", feature = "encryption"))]
+mod pii_contact_hook;
+#[cfg(all(feature = "comms", feature = "encryption"))]
+mod pii_message_hook;
+#[cfg(feature = "comms")]
+mod pii_share_hook;
+#[cfg(all(feature = "comms", feature = "encryption"))]
+mod pii_sweep;
 mod tauri_state;
 
 #[cfg(feature = "web-browse")]
 mod web;
 mod browser;
+mod browser_pii;
+mod cookie_api;
 
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -141,11 +153,16 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     // Compute profile directory (~/.sovereign)
     let profile_dir = sovereign_core::home_dir().join(".sovereign");
 
-    // Initialize crypto subsystem if enabled
+    // Initialize crypto subsystem if enabled. The DeviceKey is wrapped
+    // in Arc so it can be shared with the Tauri AppState for the PII
+    // ingest path (see pii_ingest.rs); without DeviceKey the pipeline
+    // runs in pass-through mode (no records written).
     #[cfg(feature = "encryption")]
     let _crypto_state = if config.crypto.enabled {
         match setup::init_crypto() {
-            Ok((device_key, key_db, kek)) => Some((device_key, key_db, kek)),
+            Ok((device_key, key_db, kek)) => {
+                Some((Arc::new(device_key), key_db, kek))
+            }
             Err(e) => {
                 tracing::warn!("Crypto init failed (continuing without encryption): {e}");
                 None
@@ -160,6 +177,15 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         rt.block_on(async {
             let db = create_db(config).await?;
             seed::seed_if_empty(&db).await?;
+
+            // PII seed needs the DeviceKey (encryption feature) to encrypt
+            // vault values. Skip silently when crypto is disabled or init failed.
+            #[cfg(feature = "encryption")]
+            if let Some((ref device_key, _, _)) = _crypto_state {
+                if let Err(e) = seed::seed_pii_if_empty(&db, device_key).await {
+                    tracing::warn!("PII seed failed: {e}");
+                }
+            }
 
             // Seed user profile and session log history
             let profile_dir = sovereign_core::home_dir()
@@ -277,6 +303,14 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                         o.set_session_log_key(session_key);
                     }
 
+                    // Wire device key into the orchestrator so session log
+                    // entries (user input + chat responses) get PII-tokenized
+                    // at write time.
+                    #[cfg(feature = "encryption")]
+                    if let Some((ref device_key, _, _)) = _crypto_state {
+                        o.set_pii_device_key(device_key.clone());
+                    }
+
                     tracing::info!("AI orchestrator initialized (Tauri mode)");
                     Some(Arc::new(o))
                 }
@@ -312,6 +346,16 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
 
     // Clone orchestrator for consolidation idle-watcher
     let consolidation_orch = orchestrator.clone();
+
+    // Clones for the PII sweep idle-watcher (4e4). The sweep cycle
+    // takes db + device_key directly so it can run independently of
+    // the orchestrator's model — useful because the sweep is regex-only
+    // and shouldn't wait for an idle LLM.
+    #[cfg(all(feature = "comms", feature = "encryption"))]
+    let pii_sweep_db: std::sync::Arc<dyn sovereign_db::GraphDB> = db.clone();
+    #[cfg(all(feature = "comms", feature = "encryption"))]
+    let pii_sweep_device_key: Option<Arc<sovereign_crypto::device_key::DeviceKey>> =
+        _crypto_state.as_ref().map(|(dk, _, _)| dk.clone());
 
     // Bridge orchestrator into SkillLlmAccess for skills that need inference.
     let skill_llm: Option<Arc<dyn sovereign_skills::SkillLlmAccess>> =
@@ -362,6 +406,10 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             autocommit: autocommit.clone(),
             model_assignments: std::sync::Mutex::new(model_assignments),
             profile_dir,
+            #[cfg(feature = "encryption")]
+            device_key: _crypto_state
+                .as_ref()
+                .map(|(dk, _, _)| dk.clone()),
         })
         .invoke_handler(tauri::generate_handler![
             // AI: status, chat, search, action gate, models, trust
@@ -440,6 +488,32 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::suggestions::accept_link_suggestion,
             tauri_commands::suggestions::dismiss_link_suggestion,
             tauri_commands::suggestions::trigger_consolidation,
+            // PII resolution (5c). Stubs out to a clear error string
+            // when the `encryption` feature isn't enabled.
+            tauri_commands::pii::resolve_pii_tokens,
+            // PII dashboard (6) — read paths and review/redact write paths.
+            tauri_commands::pii::list_pii_entities,
+            tauri_commands::pii::get_pii_entity,
+            tauri_commands::pii::list_pii_records,
+            tauri_commands::pii::confirm_pii_record,
+            tauri_commands::pii::dismiss_pii_record,
+            tauri_commands::pii::redact_pii_record,
+            // PII dashboard (6c) — per-record reveal + vault add.
+            tauri_commands::pii::reveal_pii_record,
+            tauri_commands::pii::create_vault_entry,
+            // PII dashboard (7b) — sharing ledger.
+            tauri_commands::pii::list_share_records_for_entity,
+            // Browser-PII (8b) — form extraction + autofill + password gen.
+            tauri_commands::pii::extract_form_fields,
+            tauri_commands::pii::__browser_form_extracted,
+            tauri_commands::pii::autofill_pii_record,
+            tauri_commands::pii::generate_password,
+            // Cookie API (8c) — Cookies tab.
+            tauri_commands::pii::list_cookies_for_entity,
+            tauri_commands::pii::delete_cookie,
+            tauri_commands::pii::clear_entity_cookies,
+            // Signup capture (8d) — high-level multi-write commit.
+            tauri_commands::pii::commit_signup_capture,
         ])
         .setup(move |app| {
             // Auto-open DevTools in debug builds
@@ -513,6 +587,27 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                             }
                         }
                         last_run = Instant::now();
+                    }
+                });
+            }
+
+            // PII sweep idle-watcher — rescans documents, messages, and
+            // contacts that lack a `pii_scanned_at` marker. Runs every
+            // 5 minutes; each cycle scans up to BATCH_SIZE items per
+            // kind. Doesn't depend on model idle since it's regex-only.
+            #[cfg(all(feature = "comms", feature = "encryption"))]
+            if let Some(device_key) = pii_sweep_device_key {
+                let db = pii_sweep_db.clone();
+                tauri::async_runtime::spawn(async move {
+                    use std::time::Duration;
+                    let interval = Duration::from_secs(300);
+                    // First run after a short delay, so app startup
+                    // tasks (seeding, schema init) have settled.
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    loop {
+                        let _stats =
+                            pii_sweep::run_sweep_cycle(db.clone(), device_key.clone()).await;
+                        tokio::time::sleep(interval).await;
                     }
                 });
             }

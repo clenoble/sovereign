@@ -6,8 +6,17 @@ import { app, type BubbleState } from '$lib/stores/app.svelte';
 import { openById } from '$lib/stores/documents.svelte';
 import { refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
 import { refreshContacts } from '$lib/stores/contacts.svelte';
-import { setBrowserNavigated, setBrowserContentExtracted, setBrowserReliability } from '$lib/stores/browser.svelte';
+import {
+	browser,
+	setBrowserNavigated,
+	setBrowserContentExtracted,
+	setBrowserReliability,
+	openBrowser as openBrowserStore,
+	closeBrowser as closeBrowserStore
+} from '$lib/stores/browser.svelte';
+import { closeBrowserCmd } from '$lib/api/commands';
 import { addSuggestion, removeSuggestion, type LinkSuggestion } from '$lib/stores/suggestions.svelte';
+import { piiState, loadPii } from '$lib/stores/pii.svelte';
 import type { ReliabilityResultDto } from '$lib/api/commands';
 
 // Payload types matching the Rust-side structs
@@ -110,6 +119,10 @@ interface LinkSuggestedPayload {
 interface LinkSuggestionResolvedPayload {
 	suggestion_id: string;
 	accepted: boolean;
+}
+interface OpenPanelPayload {
+	/** "pii_dashboard" | "models" | "inbox" | "browser" | "settings" */
+	name: string;
 }
 
 /** Subscribe to all backend events. Returns an unlisten function. */
@@ -283,6 +296,37 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	unlisteners.push(
 		await listen<LinkSuggestionResolvedPayload>('link-suggestion-resolved', (e) => {
 			removeSuggestion(e.payload.suggestion_id);
+		})
+	);
+
+	unlisteners.push(
+		await listen<OpenPanelPayload>('open-panel', (e) => {
+			// Mirror the toggle behaviour of the corresponding taskbar button.
+			switch (e.payload.name) {
+				case 'pii_dashboard':
+					app.piiDashboardVisible = !app.piiDashboardVisible;
+					if (app.piiDashboardVisible && !piiState.loaded) loadPii();
+					break;
+				case 'models':
+					app.modelPanelVisible = !app.modelPanelVisible;
+					break;
+				case 'inbox':
+					app.inboxVisible = !app.inboxVisible;
+					break;
+				case 'browser':
+					if (browser.isOpen) {
+						closeBrowserStore();
+						closeBrowserCmd().catch(() => {});
+					} else {
+						openBrowserStore('https://duckduckgo.com');
+					}
+					break;
+				case 'settings':
+					app.settingsVisible = !app.settingsVisible;
+					break;
+				default:
+					console.warn('open-panel: unknown panel name', e.payload.name);
+			}
 		})
 	);
 

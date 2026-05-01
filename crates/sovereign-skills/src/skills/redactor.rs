@@ -1,6 +1,6 @@
 use crate::content_util::replace_body;
 use crate::manifest::Capability;
-use crate::skills::pii_detector::detect;
+use crate::skills::pii_detector::{detect_extended, Locale};
 use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
 pub struct RedactorSkill;
@@ -50,12 +50,16 @@ impl CoreSkill for RedactorSkill {
 }
 
 fn redact(text: &str) -> String {
-    let mut findings = detect(text);
+    // Locale::Swiss is the right default for this product: the Sovereign user
+    // is Swiss-based, so AVS / Swiss-postal-address patterns should be
+    // redacted alongside the universal kinds. detect_extended is a superset
+    // of the original detect(), so existing redaction behaviour is preserved.
+    let mut findings = detect_extended(text, Locale::Swiss);
     if findings.is_empty() {
         return text.to_string();
     }
-    // detect() already returns non-overlapping findings sorted by start.
-    // Walk back-to-front so earlier offsets stay valid as we splice.
+    // detect_extended() already returns non-overlapping findings sorted by
+    // start. Walk back-to-front so earlier offsets stay valid as we splice.
     findings.sort_by_key(|f| f.start);
     let mut out = text.to_string();
     for f in findings.iter().rev() {
@@ -120,5 +124,16 @@ mod tests {
         let body = "x@y.com 192.168.1.1 555-123-4567";
         let out = run(body);
         assert_eq!(out.matches(REDACTED_TOKEN).count(), 3);
+    }
+
+    #[test]
+    fn redacts_swiss_iban_and_avs() {
+        // Confirms the Swiss-locale extended kinds are redacted alongside
+        // the original generic ones.
+        let body = "IBAN CH93 0076 2011 6238 5295 7 — AVS 756.1234.5678.97";
+        let out = run(body);
+        assert!(!out.contains("CH93"));
+        assert!(!out.contains("756.1234"));
+        assert_eq!(out.matches(REDACTED_TOKEN).count(), 2);
     }
 }
