@@ -178,6 +178,15 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             let db = create_db(config).await?;
             seed::seed_if_empty(&db).await?;
 
+            // PII seed needs the DeviceKey (encryption feature) to encrypt
+            // vault values. Skip silently when crypto is disabled or init failed.
+            #[cfg(feature = "encryption")]
+            if let Some((ref device_key, _, _)) = _crypto_state {
+                if let Err(e) = seed::seed_pii_if_empty(&db, device_key).await {
+                    tracing::warn!("PII seed failed: {e}");
+                }
+            }
+
             // Seed user profile and session log history
             let profile_dir = sovereign_core::home_dir()
                 .join(".sovereign")

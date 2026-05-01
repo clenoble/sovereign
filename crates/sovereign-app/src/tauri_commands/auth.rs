@@ -170,6 +170,16 @@ pub async fn complete_onboarding(
         crate::seed::seed_if_empty(&state.db)
             .await
             .str_err()?;
+
+        // PII seed needs the DeviceKey to encrypt vault values, so it
+        // can only run on builds with the encryption feature and once
+        // crypto is initialized.
+        #[cfg(feature = "encryption")]
+        if let Some(ref dk) = state.device_key {
+            crate::seed::seed_pii_if_empty(&state.db, dk)
+                .await
+                .str_err()?;
+        }
     }
 
     // Write onboarding_done marker
