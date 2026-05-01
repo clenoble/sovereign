@@ -16,7 +16,8 @@ use tokio::sync::RwLock;
 use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, Message, Milestone,
-    ReadStatus, RelatedTo, RelationType, Thread,
+    ReadStatus, RelatedTo, RelationType, SuggestedLink, SuggestionSource,
+    SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -179,6 +180,20 @@ impl GraphDB for EncryptedGraphDB {
         self.decrypt_documents(docs).await
     }
 
+    async fn update_document_reliability(
+        &self,
+        id: &str,
+        source_url: Option<&str>,
+        classification: Option<&str>,
+        score: Option<f32>,
+        assessment_json: Option<&str>,
+    ) -> DbResult<Document> {
+        let doc = self.inner.update_document_reliability(
+            id, source_url, classification, score, assessment_json,
+        ).await?;
+        self.decrypt_document(doc).await
+    }
+
     // Thread operations pass through unchanged
     async fn create_thread(&self, thread: Thread) -> DbResult<Thread> {
         self.inner.create_thread(thread).await
@@ -240,6 +255,39 @@ impl GraphDB for EncryptedGraphDB {
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>> {
         let docs = self.inner.traverse(doc_id, depth, limit).await?;
         self.decrypt_documents(docs).await
+    }
+
+    // Suggested links: not encrypted (rationale text is AI-generated, not user content)
+    async fn create_suggested_link(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        relation_type: RelationType,
+        strength: f32,
+        rationale: &str,
+        source: SuggestionSource,
+    ) -> DbResult<SuggestedLink> {
+        self.inner.create_suggested_link(from_id, to_id, relation_type, strength, rationale, source).await
+    }
+
+    async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> {
+        self.inner.list_pending_suggestions().await
+    }
+
+    async fn list_suggestions_for_document(&self, doc_id: &str) -> DbResult<Vec<SuggestedLink>> {
+        self.inner.list_suggestions_for_document(doc_id).await
+    }
+
+    async fn resolve_suggestion(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+    ) -> DbResult<SuggestedLink> {
+        self.inner.resolve_suggestion(id, status).await
+    }
+
+    async fn suggestion_exists(&self, from_id: &str, to_id: &str) -> DbResult<bool> {
+        self.inner.suggestion_exists(from_id, to_id).await
     }
 
     async fn adopt_document(&self, id: &str) -> DbResult<Document> {
@@ -306,6 +354,10 @@ impl GraphDB for EncryptedGraphDB {
 
     async fn list_milestones(&self, thread_id: &str) -> DbResult<Vec<Milestone>> {
         self.inner.list_milestones(thread_id).await
+    }
+
+    async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>> {
+        self.inner.list_all_milestones().await
     }
 
     async fn delete_milestone(&self, id: &str) -> DbResult<()> {
@@ -467,6 +519,30 @@ impl GraphDB for EncryptedGraphDB {
 
     async fn list_all_messages(&self) -> DbResult<Vec<Message>> {
         let msgs = self.inner.list_all_messages().await?;
+        let mut result = Vec::with_capacity(msgs.len());
+        for mut m in msgs {
+            if let Some(nonce) = &m.encryption_nonce {
+                let id = m.id.as_ref()
+                    .map(|t| crate::schema::thing_to_raw(t))
+                    .unwrap_or_default();
+                m.body = self.decrypt_content(&id, &m.body, nonce).await?;
+                if let Some(ref html) = m.body_html {
+                    m.body_html = Some(self.decrypt_content(&id, html, nonce).await?);
+                }
+                m.encryption_nonce = None;
+            }
+            result.push(m);
+        }
+        Ok(result)
+    }
+
+    async fn list_messages_in_time_range(
+        &self,
+        after: chrono::DateTime<chrono::Utc>,
+        before: chrono::DateTime<chrono::Utc>,
+        limit: u32,
+    ) -> DbResult<Vec<Message>> {
+        let msgs = self.inner.list_messages_in_time_range(after, before, limit).await?;
         let mut result = Vec::with_capacity(msgs.len());
         for mut m in msgs {
             if let Some(nonce) = &m.encryption_nonce {
