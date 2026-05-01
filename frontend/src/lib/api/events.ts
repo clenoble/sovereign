@@ -318,7 +318,7 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 						closeBrowserStore();
 						closeBrowserCmd().catch(() => {});
 					} else {
-						openBrowserStore('https://www.google.com');
+						openBrowserStore('https://duckduckgo.com');
 					}
 					break;
 				case 'settings':

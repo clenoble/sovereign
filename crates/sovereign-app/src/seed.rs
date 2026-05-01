@@ -291,7 +291,9 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
     ];
 
     let msg_base = Utc::now() - Duration::days(2) + Duration::hours(9);
-    for (conv_idx, from_idx, to_idxs, body, direction, is_read, minutes) in &msg_defs {
+    for (idx, (conv_idx, from_idx, to_idxs, body, direction, is_read, minutes)) in
+        msg_defs.iter().enumerate()
+    {
         let to_ids: Vec<String> = to_idxs.iter().map(|&i| contact_ids[i].clone()).collect();
         let channel = conv_defs[*conv_idx].1.clone();
         let mut msg = Message::new(
@@ -302,7 +304,15 @@ pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
             to_ids,
             body.to_string(),
         );
-        msg.sent_at = msg_base + Duration::minutes(*minutes);
+        // Stagger conversations by ~73 minutes so their first messages don't
+        // collide at msg_base (which would visually stack message circles on
+        // the canvas timeline when zoomed out at the hour level). Per-message
+        // seconds jitter spreads them further at the minute level.
+        let conv_offset_minutes = (*conv_idx as i64) * 73;
+        let jitter_seconds = ((idx as i64) * 17) % 59;
+        msg.sent_at = msg_base
+            + Duration::minutes(conv_offset_minutes + *minutes)
+            + Duration::seconds(jitter_seconds);
         msg.created_at = msg.sent_at;
         if *is_read {
             msg.read_status = ReadStatus::Read;
