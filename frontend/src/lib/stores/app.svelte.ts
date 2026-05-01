@@ -70,5 +70,6 @@ export const app = $state({
 	settingsVisible: false,
 	contextMenu: null as ContextMenuState | null,
 	skillsPanelVisible: false,
-	bubbleStyle: 'icon' as string
+	bubbleStyle: 'icon' as string,
+	piiDashboardVisible: false
 });

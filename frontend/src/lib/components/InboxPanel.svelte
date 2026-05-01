@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { app } from '$lib/stores/app.svelte';
 	import { contactsState, loadContacts } from '$lib/stores/contacts.svelte';
+	import { focusTrap } from '$lib/actions/focusTrap';
 
 	// Drag state
 	let position = $state({ x: 120, y: 200 });
@@ -20,6 +21,10 @@
 	// Drag handlers
 	function handleHeaderPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
+		// Don't start a drag if the user clicked an interactive element
+		// (close button, etc.) — setPointerCapture would otherwise steal
+		// the click event before it reaches the button.
+		if ((e.target as HTMLElement).closest('button, input, select, textarea, a')) return;
 		dragging = true;
 		dragStart = { x: e.clientX, y: e.clientY };
 		dragOriginal = { x: position.x, y: position.y };
@@ -41,7 +46,17 @@
 </script>
 
 {#if app.inboxVisible}
-	<div class="inbox-panel" style="left: {position.x}px; top: {position.y}px;">
+	<div
+		class="inbox-panel"
+		role="dialog"
+		aria-modal="false"
+		aria-label="Inbox"
+		style="left: {position.x}px; top: {position.y}px;"
+		use:focusTrap={{
+			active: app.inboxVisible,
+			onEscape: () => (app.inboxVisible = false)
+		}}
+	>
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="inbox-header"

@@ -9,8 +9,11 @@
 		home,
 		getVisibleDocuments,
 		requestMessagesForViewport,
+		CARD_W,
+		CARD_H,
 		LANE_HEIGHT,
 		MSG_RADIUS,
+		MAX_VISUAL_ZOOM,
 		type CanvasState
 	} from '$lib/stores/canvas.svelte';
 	import { createThread as apiCreateThread, importFile } from '$lib/api/commands';
@@ -115,6 +118,12 @@
 
 		const totalHeight = threads.length * laneHeight;
 
+		// Collected during the world-space pass; rendered as sticky-top labels
+		// in screen space after ctx.restore() so they stay visible regardless
+		// of pan/zoom in Y.
+		const tickLabels: Array<{ worldX: number; text: string }> = [];
+		let nowWorldX: number | null = null;
+
 		// -- Timeline date markers along X-axis --
 		if (timelineScale) {
 			const { minDate, maxDate, pxPerMs, originX } = timelineScale;
@@ -176,13 +185,10 @@
 				formatTick = (d) => `${d.getFullYear()}`;
 			}
 
-			// Scale font and positions inversely with zoom so they stay at a fixed
-			// screen size regardless of zoom level.
-			const tickFontPx = 10;  // target screen pixels
-			const labelY = -20 / camera.zoom;  // fixed 20px above world y=0
-			ctx.fillStyle = textMuted;
-			ctx.font = `${tickFontPx / camera.zoom}px -apple-system, sans-serif`;
-			ctx.textAlign = 'center';
+			// Labels are rendered in screen space after ctx.restore() so they
+			// stick to the top of the viewport regardless of pan/zoom in Y.
+			// Here we just compute tick positions, push label text into the
+			// collector, and draw the vertical grid lines in world space.
 
 			// Start from an aligned boundary just before the visible viewport.
 			// We fast-forward to the viewport to avoid iterating over thousands of
@@ -224,14 +230,16 @@
 			const tickEnd = Math.min(maxDate, visMaxTime + intervalMs);
 			while (tick <= tickEnd) {
 				const x = originX + (tick - minDate) * pxPerMs;
-				ctx.fillText(formatTick(new Date(tick)), x, labelY);
+				// Defer label rendering to the screen-space pass so the labels
+				// stay sticky at the top of the viewport.
+				tickLabels.push({ worldX: x, text: formatTick(new Date(tick)) });
 
 				// Vertical grid line — 1px in screen space regardless of zoom
 				ctx.strokeStyle = borderColor;
 				ctx.globalAlpha = 0.15;
 				ctx.lineWidth = 1 / camera.zoom;
 				ctx.beginPath();
-				ctx.moveTo(x, labelY + tickFontPx / camera.zoom + 2 / camera.zoom);
+				ctx.moveTo(x, 0);
 				ctx.lineTo(x, totalHeight);
 				ctx.stroke();
 				ctx.globalAlpha = 1.0;
@@ -249,7 +257,6 @@
 					tick += intervalMs;
 				}
 			}
-			ctx.textAlign = 'start';
 		}
 
 		// -- Thread lanes --
@@ -271,24 +278,19 @@
 		// -- "Now" dotted vertical line --
 		if (timelineScale && threads.length > 0) {
 			const nowX = timelineScale.nowX;
+			nowWorldX = nowX;
 			ctx.save();
 			ctx.setLineDash([6 / camera.zoom, 4 / camera.zoom]);
 			ctx.strokeStyle = accentColor;
 			ctx.lineWidth = 2 / camera.zoom;
 			ctx.globalAlpha = 0.7;
 			ctx.beginPath();
-			ctx.moveTo(nowX, -30 / camera.zoom);
+			ctx.moveTo(nowX, 0);
 			ctx.lineTo(nowX, totalHeight + 10);
 			ctx.stroke();
 			ctx.setLineDash([]);
-
-			// "Now" label — fixed screen size
-			ctx.fillStyle = accentColor;
-			ctx.font = `bold ${11 / camera.zoom}px -apple-system, sans-serif`;
-			ctx.textAlign = 'center';
-			ctx.fillText('Now', nowX, -35 / camera.zoom);
-			ctx.textAlign = 'start';
 			ctx.restore();
+			// "Now" label is drawn in screen space below (sticky at top).
 		}
 
 		// -- Heatmap density bands (extreme zoom-out) --
@@ -345,15 +347,24 @@
 		}
 
 		// -- Relationship edges --
+		// Cards apply an inverse scale once zoom > MAX_VISUAL_ZOOM, so their
+		// visual centers are no longer at (spatial_x + CARD_W/2). We anchor
+		// the relationship line to the same scaled center and shrink the
+		// curve "lift" + line width by the same factor so they keep matching
+		// the visual card sizes at extreme zoom.
+		const relCardScale =
+			camera.zoom > MAX_VISUAL_ZOOM ? MAX_VISUAL_ZOOM / camera.zoom : 1;
+		const cardCenterOffsetX = (CARD_W / 2) * relCardScale;
+		const cardCenterOffsetY = (CARD_H / 2) * relCardScale;
 		for (const rel of relationships) {
 			const fromDoc = documents.find((d) => d.id === rel.from_doc_id);
 			const toDoc = documents.find((d) => d.id === rel.to_doc_id);
 			if (!fromDoc || !toDoc) continue;
 
-			const fromX = fromDoc.spatial_x + 100;
-			const fromY = fromDoc.spatial_y + 40;
-			const toX = toDoc.spatial_x + 100;
-			const toY = toDoc.spatial_y + 40;
+			const fromX = fromDoc.spatial_x + cardCenterOffsetX;
+			const fromY = fromDoc.spatial_y + cardCenterOffsetY;
+			const toX = toDoc.spatial_x + cardCenterOffsetX;
+			const toY = toDoc.spatial_y + cardCenterOffsetY;
 
 			let color = 'rgba(100,180,255,0.65)';
 			if (rel.relation_type === 'DerivedFrom') color = 'rgba(255,200,100,0.65)';
@@ -361,10 +372,10 @@
 			else if (rel.relation_type === 'Supports') color = 'rgba(100,255,100,0.65)';
 
 			ctx.strokeStyle = color;
-			ctx.lineWidth = 1 + rel.strength * 2;
+			ctx.lineWidth = (1 + rel.strength * 2) * relCardScale;
 			ctx.beginPath();
 			const midX = (fromX + toX) / 2;
-			const midY = (fromY + toY) / 2 - 30;
+			const midY = (fromY + toY) / 2 - 30 * relCardScale;
 			ctx.moveTo(fromX, fromY);
 			ctx.quadraticCurveTo(midX, midY, toX, toY);
 			ctx.stroke();
@@ -397,12 +408,16 @@
 			ctx.globalAlpha = 1.0;
 
 			ctx.fillStyle = warningColor;
-			ctx.font = '10px -apple-system, sans-serif';
-			ctx.fillText(ms.title, x + 8, y + 14);
+			// Inverse-zoom font so milestone labels stay 10px on screen.
+			ctx.font = `${10 / camera.zoom}px -apple-system, sans-serif`;
+			ctx.fillText(ms.title, x + 8 / camera.zoom, y + 14);
 		}
 
 		// -- Message circles --
-		const r = MSG_RADIUS;
+		// Cap the on-screen radius once zoom exceeds MAX_VISUAL_ZOOM so circles
+		// don't grow past their natural size — same approach as CanvasCard.
+		const radiusFactor = camera.zoom > MAX_VISUAL_ZOOM ? MAX_VISUAL_ZOOM / camera.zoom : 1;
+		const r = MSG_RADIUS * radiusFactor;
 		for (const msg of messages) {
 			const fillColor = msg.is_outbound ? '#263a1e' : '#2e2433';
 			const msgBorderColor = msg.is_outbound ? '#72bf80' : '#a473cc';
@@ -414,29 +429,31 @@
 				ctx.arc(msg.x, msg.y, 4, 0, Math.PI * 2);
 				ctx.fill();
 			} else {
-				// Filled circle with border
+				// Filled circle with border. Border width tracks the radius
+				// cap so it stops growing past zoom = MAX_VISUAL_ZOOM in the
+				// same way the bubble does.
 				ctx.fillStyle = fillColor;
 				ctx.beginPath();
 				ctx.arc(msg.x, msg.y, r, 0, Math.PI * 2);
 				ctx.fill();
 				ctx.strokeStyle = msgBorderColor;
-				ctx.lineWidth = 2;
+				ctx.lineWidth = 2 * radiusFactor;
 				ctx.stroke();
 
-				// Subject text (truncated)
+				// Subject text (truncated). Inverse-zoom so it stays 9px on screen.
 				ctx.fillStyle = textPrimary;
-				ctx.font = '9px -apple-system, sans-serif';
+				ctx.font = `${9 / camera.zoom}px -apple-system, sans-serif`;
 				ctx.textAlign = 'center';
 				ctx.textBaseline = 'middle';
 				const label = msg.subject.length > 12 ? msg.subject.slice(0, 11) + '\u2026' : msg.subject;
 				ctx.fillText(label, msg.x, msg.y);
 
 				if (camera.zoom >= 0.6) {
-					// "in" / "out" badge below circle
+					// "in" / "out" badge below circle \u2014 same inverse-zoom treatment.
 					const badge = msg.is_outbound ? 'out' : 'in';
 					ctx.fillStyle = msgBorderColor;
-					ctx.font = 'bold 8px -apple-system, sans-serif';
-					ctx.fillText(badge, msg.x, msg.y + r + 10);
+					ctx.font = `bold ${8 / camera.zoom}px -apple-system, sans-serif`;
+					ctx.fillText(badge, msg.x, msg.y + r + 10 / camera.zoom);
 				}
 
 				ctx.textAlign = 'start';
@@ -444,6 +461,41 @@
 		}
 
 		ctx.restore();
+
+		// -- Sticky date ticks (screen-space, fixed at top of canvas) --
+		// A semi-transparent strip behind the ticks keeps them legible when
+		// content scrolls underneath. Drawn after ctx.restore() so the strip
+		// and labels stay glued to the viewport regardless of pan/zoom.
+		if (timelineScale && tickLabels.length > 0) {
+			const stripH = 24;
+			const bgPanel = getCSS('--bg-panel') || '#1a1a24';
+			ctx.fillStyle = bgPanel;
+			ctx.globalAlpha = 0.85;
+			ctx.fillRect(0, 0, w, stripH);
+			ctx.globalAlpha = 1.0;
+
+			ctx.fillStyle = textMuted;
+			ctx.font = '10px -apple-system, sans-serif';
+			ctx.textAlign = 'center';
+			ctx.textBaseline = 'middle';
+			for (const t of tickLabels) {
+				const screenX = camera.panX + t.worldX * camera.zoom;
+				if (screenX < -40 || screenX > w + 40) continue;
+				ctx.fillText(t.text, screenX, stripH / 2);
+			}
+
+			// "Now" marker — same strip, accent color, just below the date.
+			if (nowWorldX !== null) {
+				const nowScreenX = camera.panX + nowWorldX * camera.zoom;
+				if (nowScreenX >= -30 && nowScreenX <= w + 30) {
+					ctx.fillStyle = accentColor;
+					ctx.font = 'bold 11px -apple-system, sans-serif';
+					ctx.fillText('Now', nowScreenX, stripH + 8);
+				}
+			}
+			ctx.textAlign = 'start';
+			ctx.textBaseline = 'alphabetic';
+		}
 
 		// -- Sticky thread labels (screen-space, fixed at left edge) --
 		for (let i = 0; i < threads.length; i++) {
@@ -474,7 +526,12 @@
 	// Pan handlers
 	function handleCanvasPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
-		if ((e.target as HTMLElement).closest('.canvas-card')) return;
+		const target = e.target as HTMLElement;
+		// Don't start a pan if the user clicked a card or any interactive
+		// element in the toolbar / new-thread popup. setPointerCapture would
+		// otherwise steal the click event before it reached the button.
+		if (target.closest('.canvas-card')) return;
+		if (target.closest('.canvas-toolbar, .new-thread-popup, button, input, select, textarea, a')) return;
 		panning = true;
 		panStart = { x: e.clientX, y: e.clientY };
 		panCameraStart = { x: canvas.camera.panX, y: canvas.camera.panY };
@@ -510,7 +567,9 @@
 		const { panX, panY, zoom } = canvas.camera;
 		const worldX = (screenX - panX) / zoom;
 		const worldY = (screenY - panY) / zoom;
-		const r = MSG_RADIUS;
+		// Match the capped on-screen radius used in drawBackground.
+		const radiusFactor = zoom > MAX_VISUAL_ZOOM ? MAX_VISUAL_ZOOM / zoom : 1;
+		const r = MSG_RADIUS * radiusFactor;
 
 		for (const msg of canvas.messages) {
 			const dx = worldX - msg.x;
@@ -528,7 +587,18 @@
 
 	function handleWheel(e: WheelEvent) {
 		e.preventDefault();
-		zoomAt(e.clientX, e.clientY, e.deltaY);
+		// Conventions:
+		//   Ctrl/Meta/Alt + wheel → zoom (Ctrl is the standard canvas pinch-to-zoom emulation)
+		//   Shift + wheel        → horizontal pan
+		//   plain wheel          → vertical pan
+		if (e.ctrlKey || e.metaKey || e.altKey) {
+			zoomAt(e.clientX, e.clientY, e.deltaY);
+			return;
+		}
+		// Trackpads emit deltaX on horizontal scrolls; honor that even without modifier.
+		const dx = e.shiftKey ? e.deltaY : e.deltaX;
+		const dy = e.shiftKey ? 0 : e.deltaY;
+		panBy(-dx, -dy);
 	}
 
 	function handleKeydown(e: KeyboardEvent) {

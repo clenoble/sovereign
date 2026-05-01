@@ -18,6 +18,12 @@ pub struct ChatResponsePayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct OpenPanelPayload {
+    /// One of: "pii_dashboard", "models", "inbox", "browser", "settings".
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct BubbleStatePayload {
     pub state: String,
 }
@@ -371,6 +377,10 @@ pub fn spawn_event_forwarder(
                         "link-suggestion-resolved",
                         LinkSuggestionResolvedPayload { suggestion_id, accepted },
                     );
+                }
+
+                OrchestratorEvent::OpenPanel { name } => {
+                    let _ = app_handle.emit("open-panel", OpenPanelPayload { name });
                 }
 
                 // All other events: log but don't emit

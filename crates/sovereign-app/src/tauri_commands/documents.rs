@@ -137,6 +137,12 @@ pub async fn save_document(
     images: Vec<ContentImageDto>,
     videos: Vec<ContentVideoDto>,
 ) -> Result<(), String> {
+    // PII ingest on the body before persisting. The helper short-circuits
+    // when crypto isn't initialized or the document was already scanned —
+    // see `pii_ingest::maybe_ingest_document_body` for the policy.
+    #[cfg(feature = "encryption")]
+    let body = crate::pii_ingest::maybe_ingest_document_body(&state, &id, &body).await?;
+
     let fields = ContentFields {
         body,
         images: images
@@ -451,6 +457,12 @@ pub async fn import_file(
         .as_ref()
         .map(sovereign_db::schema::thing_to_raw)
         .unwrap_or_default();
+
+    // PII ingest on the imported content. With crypto disabled this is a
+    // pass-through; with crypto enabled the body is rewritten with
+    // `[pii:<record_id>]` tokens and the original is preserved encrypted.
+    #[cfg(feature = "encryption")]
+    let content = crate::pii_ingest::maybe_ingest_document_body(&state, &id, &content).await?;
 
     // Save the content
     state

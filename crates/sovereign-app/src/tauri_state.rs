@@ -38,4 +38,9 @@ pub struct AppState {
     pub model_assignments: Mutex<ModelAssignments>,
     /// User profile directory path (~/.sovereign).
     pub profile_dir: std::path::PathBuf,
+    /// Device key for PII vault encryption. None when crypto is disabled
+    /// or initialization failed. Required for PII ingest on document
+    /// create / import / save.
+    #[cfg(feature = "encryption")]
+    pub device_key: Option<Arc<sovereign_crypto::device_key::DeviceKey>>,
 }

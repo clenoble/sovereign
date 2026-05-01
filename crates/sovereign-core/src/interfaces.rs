@@ -77,6 +77,9 @@ pub enum OrchestratorEvent {
         rationale: String,
     },
     LinkSuggestionResolved { suggestion_id: String, accepted: bool },
+    /// Toggle a frontend UI panel. `name` is one of:
+    /// "pii_dashboard", "models", "inbox", "browser", "settings".
+    OpenPanel { name: String },
 }
 
 /// Lightweight milestone summary for milestone events.

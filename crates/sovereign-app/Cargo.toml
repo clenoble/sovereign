@@ -14,6 +14,7 @@ sovereign-db = { workspace = true }
 sovereign-skills = { workspace = true }
 sovereign-ai = { workspace = true, default-features = false }
 tokio = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -26,6 +27,10 @@ url = { workspace = true }
 
 # Tauri (Svelte 5 web UI — the only supported frontend)
 tauri = { workspace = true }
+
+# Cookie type used by tauri::Webview::cookies() / delete_cookie().
+# Tauri 2.10 depends on this crate but doesn't re-export it.
+cookie = "0.18"
 
 # Optional crypto / P2P deps
 sovereign-crypto = { workspace = true, optional = true }

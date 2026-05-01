@@ -12,6 +12,7 @@ use zeroize::Zeroizing;
 use crate::channel::{ChannelStatus, CommunicationChannel, OutgoingMessage, SyncResult};
 use crate::config::EmailAccountConfig;
 use crate::error::CommsError;
+use crate::pii_hook::{ContactIngestHook, MessageIngestHook, ShareIngestHook};
 
 /// Email channel implementation using IMAP (fetch) and SMTP (send).
 pub struct EmailChannel {
@@ -20,6 +21,9 @@ pub struct EmailChannel {
     password: Zeroizing<String>,
     status: ChannelStatus,
     last_sync: Option<DateTime<Utc>>,
+    pii_hook: Option<Arc<dyn MessageIngestHook>>,
+    pii_contact_hook: Option<Arc<dyn ContactIngestHook>>,
+    pii_share_hook: Option<Arc<dyn ShareIngestHook>>,
 }
 
 impl EmailChannel {
@@ -34,6 +38,52 @@ impl EmailChannel {
             password: Zeroizing::new(password),
             status: ChannelStatus::Disconnected,
             last_sync: None,
+            pii_hook: None,
+            pii_contact_hook: None,
+            pii_share_hook: None,
+        }
+    }
+
+    /// Attach a PII ingest hook that will be invoked after every
+    /// `create_message` on this channel. Without a hook, message bodies
+    /// land in the DB raw and an idle sweep handles tokenization later.
+    pub fn with_pii_hook(mut self, hook: Arc<dyn MessageIngestHook>) -> Self {
+        self.pii_hook = Some(hook);
+        self
+    }
+
+    /// Attach a PII contact-ingest hook, invoked once per freshly-created
+    /// contact (whether via `resolve_contact_id` during message ingest
+    /// or via the channel's own `resolve_contact` trait method).
+    pub fn with_pii_contact_hook(mut self, hook: Arc<dyn ContactIngestHook>) -> Self {
+        self.pii_contact_hook = Some(hook);
+        self
+    }
+
+    async fn run_pii_hook(&self, message: &sovereign_db::schema::Message) {
+        if let Some(hook) = &self.pii_hook {
+            hook.after_message_created(message).await;
+        }
+    }
+
+    async fn run_pii_contact_hook(&self, contact: &sovereign_db::schema::Contact) {
+        if let Some(hook) = &self.pii_contact_hook {
+            hook.after_contact_created(contact).await;
+        }
+    }
+
+    /// Attach a sharing-ledger hook, invoked after every outbound
+    /// message is persisted (and after the per-message PII hook has
+    /// tokenized its body — so the share hook scans the canonical
+    /// form for `[pii:<id>]` tokens).
+    pub fn with_pii_share_hook(mut self, hook: Arc<dyn ShareIngestHook>) -> Self {
+        self.pii_share_hook = Some(hook);
+        self
+    }
+
+    async fn run_pii_share_hook(&self, message: &sovereign_db::schema::Message) {
+        if let Some(hook) = &self.pii_share_hook {
+            hook.after_outbound_message(message).await;
         }
     }
 
@@ -50,7 +100,11 @@ impl EmailChannel {
 
     async fn resolve_contact_id(&self, address: &str, display_name: Option<&str>) -> Result<String, CommsError> {
         super::helpers::resolve_contact_id(
-            self.db.as_ref(), ChannelType::Email, address, display_name,
+            self.db.as_ref(),
+            ChannelType::Email,
+            address,
+            display_name,
+            self.pii_contact_hook.as_ref(),
         ).await
     }
 
@@ -335,8 +389,16 @@ impl CommunicationChannel for EmailChannel {
                 db_msg.subject = msg.subject.clone();
                 db_msg.sent_at = Utc::now();
 
-                if let Err(e) = self.db.create_message(db_msg).await {
-                    tracing::warn!("Failed to persist outbound message: {e}");
+                match self.db.create_message(db_msg).await {
+                    Ok(persisted) => {
+                        // Order matters: PII hook tokenizes the body
+                        // FIRST (writing canonical `[pii:<id>]` tokens
+                        // to the DB); then the share hook re-fetches
+                        // and parses those tokens to build the ledger.
+                        self.run_pii_hook(&persisted).await;
+                        self.run_pii_share_hook(&persisted).await;
+                    }
+                    Err(e) => tracing::warn!("Failed to persist outbound message: {e}"),
                 }
 
                 // Update conversation last_message_at
@@ -371,7 +433,8 @@ impl CommunicationChannel for EmailChannel {
                 }
             }
 
-            self.db.create_message(msg.clone()).await?;
+            let persisted = self.db.create_message(msg.clone()).await?;
+            self.run_pii_hook(&persisted).await;
             new_messages += 1;
 
             // Update conversation unread count and last_message_at
@@ -412,7 +475,9 @@ impl CommunicationChannel for EmailChannel {
             display_name: None,
             is_primary: true,
         });
-        self.db.create_contact(contact).await.map_err(CommsError::from)
+        let created = self.db.create_contact(contact).await.map_err(CommsError::from)?;
+        self.run_pii_contact_hook(&created).await;
+        Ok(created)
     }
 }
 
