@@ -23,11 +23,16 @@
 		canvas,
 		mobileCanvas,
 		setLaneIndex,
-		setMobilePxPerMs
+		setMobilePxPerMs,
+		LOD_THRESHOLD_PX_PER_MS,
+		MOBILE_PX_PER_DAY
 	} from '$lib/stores/canvas.svelte';
 	import { openById } from '$lib/stores/documents.svelte';
 	import { app } from '$lib/stores/app.svelte';
 	import { longPress } from '$lib/actions/longPress';
+
+	const MS_PER_DAY = 86_400_000;
+	const NOW_TICK_INTERVAL_MS = 15 * 60_000; // 15 minutes
 
 	let containerEl = $state<HTMLElement>();
 	let viewportWidth = $state(390);
@@ -69,6 +74,20 @@
 		window.addEventListener('resize', sync);
 		return () => window.removeEventListener('resize', sync);
 	});
+
+	/** Periodic tick to force time-dependent layouts to re-derive. Cards
+	 *  drift down as time passes and the density-bucket grid re-aligns; a
+	 *  15-minute interval is plenty of resolution and avoids thrashing. */
+	let nowTick = $state(0);
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const id = window.setInterval(() => {
+			nowTick++;
+		}, NOW_TICK_INTERVAL_MS);
+		return () => clearInterval(id);
+	});
+
+	let isLowDetail = $derived(mobileCanvas.pxPerMs < LOD_THRESHOLD_PX_PER_MS);
 
 	/** Group docs by thread id, sorted newest-first within each lane. */
 	let docsByThread = $derived.by(() => {
@@ -118,8 +137,9 @@
 
 	/** Lay out each lane: cards positioned absolutely by time, with cascade
 	 *  push-down to prevent overlap. Re-runs whenever docs, threads,
-	 *  relationships, or pxPerMs change. */
+	 *  relationships, pxPerMs, or the 15-min nowTick changes. */
 	let placedLanes = $derived.by<PlacedLane[]>(() => {
+		void nowTick; // dependency: drift cards as time passes
 		const now = Date.now();
 		const px = mobileCanvas.pxPerMs;
 		return canvas.threads.map((thread) => {
@@ -137,6 +157,47 @@
 				cards,
 				trackHeight: lastBottom + TRACK_BOTTOM_PADDING
 			};
+		});
+	});
+
+	interface DensityLane {
+		thread: (typeof canvas.threads)[number];
+		counts: number[]; // doc count per day-bucket, newest first
+		total: number;
+		maxCount: number;
+	}
+
+	const DENSITY_BUCKET_MS = MS_PER_DAY;
+	const DENSITY_MAX_BUCKETS = 365; // cap a year of data so cells stay legible
+
+	/** Per-lane day-bucket activity counts for the deep-zoom density strip. */
+	let densityLanes = $derived.by<DensityLane[]>(() => {
+		void nowTick;
+		const now = Date.now();
+		// Find the oldest doc across all threads to size the time range.
+		let oldestMs = now;
+		for (const d of canvas.documents) {
+			const t = new Date(d.modified_at).getTime();
+			if (t < oldestMs) oldestMs = t;
+		}
+		const span = now - oldestMs;
+		const buckets = Math.min(
+			DENSITY_MAX_BUCKETS,
+			Math.max(1, Math.ceil(span / DENSITY_BUCKET_MS) + 1)
+		);
+		return canvas.threads.map((thread) => {
+			const docs = docsByThread.get(thread.id) ?? [];
+			const counts = new Array(buckets).fill(0) as number[];
+			let max = 0;
+			for (const d of docs) {
+				const t = new Date(d.modified_at).getTime();
+				const i = Math.floor((now - t) / DENSITY_BUCKET_MS);
+				if (i >= 0 && i < buckets) {
+					counts[i]++;
+					if (counts[i] > max) max = counts[i];
+				}
+			}
+			return { thread, counts, total: docs.length, maxCount: max };
 		});
 	});
 
@@ -162,29 +223,28 @@
 		const dy = Math.abs(p1.y - p2.y);
 		if (dy < PINCH_VERTICAL_THRESHOLD_PX) return; // fingers side-by-side, not a vertical pinch
 
-		const laneScrollEl = activeLaneScrollEl();
-		if (!laneScrollEl) return;
-
+		const laneScrollEl = isLowDetail ? null : activeLaneScrollEl();
 		const midY = (p1.y + p2.y) / 2;
-		const containerTop = laneScrollEl.getBoundingClientRect().top;
-		const midRelToScroll = midY - containerTop; // pixel inside the scroller (visible)
-		// time (ms before "now") at the midpoint: scrollTop + visibleY = pixels
-		// from track origin; subtract TRACK_TOP_PADDING to get pixels from the
-		// "now" line; divide by pxPerMs.
-		const anchorPx =
-			laneScrollEl.scrollTop + midRelToScroll - TRACK_TOP_PADDING;
-		const anchorTimeMs = anchorPx / mobileCanvas.pxPerMs;
+
+		let anchorTimeMs = 0;
+		let containerTop = 0;
+		if (laneScrollEl) {
+			containerTop = laneScrollEl.getBoundingClientRect().top;
+			const midRelToScroll = midY - containerTop;
+			const anchorPx =
+				laneScrollEl.scrollTop + midRelToScroll - TRACK_TOP_PADDING;
+			anchorTimeMs = anchorPx / mobileCanvas.pxPerMs;
+		}
 
 		pinch = {
 			initialDist: dy,
 			initialPxPerMs: mobileCanvas.pxPerMs,
 			midpointY: midY,
 			anchorTimeMs,
-			laneScrollEl,
+			laneScrollEl: laneScrollEl as HTMLElement,
 			containerTop
 		};
 		dragMode = 'pinch';
-		// Cancel any in-progress horizontal swipe
 		dragOffsetX = 0;
 	}
 
@@ -199,6 +259,10 @@
 
 		const scale = currentDist / pinch.initialDist;
 		setMobilePxPerMs(pinch.initialPxPerMs * scale);
+
+		// In density (LOD) mode there's no per-lane scroller to anchor; the
+		// pxPerMs change alone drives the LOD switch when the threshold crosses.
+		if (!pinch.laneScrollEl) return;
 
 		// Re-anchor: place anchorTimeMs at the original midpoint Y.
 		const anchorPx = pinch.anchorTimeMs * mobileCanvas.pxPerMs;
@@ -332,12 +396,29 @@
 		openById(id);
 	}
 
+	/** Tap on a density-strip column → drill into that lane and reset the
+	 *  zoom to the default per-day pixel scale so the user lands in the
+	 *  normal per-lane card view. */
+	function pickLaneFromDensity(i: number) {
+		setLaneIndex(i);
+		setMobilePxPerMs(MOBILE_PX_PER_DAY / MS_PER_DAY);
+	}
+
+	/** Map a doc count to a heatmap-cell opacity. */
+	function densityOpacity(count: number, max: number): number {
+		if (count <= 0) return 0;
+		if (max <= 1) return 0.65;
+		// Logarithmic-ish ramp so a single doc still registers visibly.
+		return Math.min(1, 0.25 + 0.75 * (Math.log(count + 1) / Math.log(max + 1)));
+	}
+
 	/** Zoom button handler (mouse + accessibility fallback for pinch).
 	 *  factor > 1 zooms in (more pixels per ms), factor < 1 zooms out.
-	 *  Anchors at the vertical center of the visible viewport so the user's
-	 *  view doesn't jump. */
+	 *  In per-lane mode anchors at the vertical center of the visible
+	 *  viewport so the user's view doesn't jump. In density mode (LOD)
+	 *  there's no scroll anchor; just adjust pxPerMs. */
 	function zoomBy(factor: number) {
-		const laneScrollEl = activeLaneScrollEl();
+		const laneScrollEl = isLowDetail ? null : activeLaneScrollEl();
 		if (!laneScrollEl) {
 			setMobilePxPerMs(mobileCanvas.pxPerMs * factor);
 			return;
@@ -401,12 +482,48 @@
 		aria-label="Timeline lanes"
 	>
 		<!-- Zoom controls — overlay in upper-right of viewport. Mouse + a11y
-		     fallback for two-finger pinch. -->
-		<div class="zoom-controls" aria-label="Zoom time scale">
-			<button class="zoom-btn" onclick={() => zoomBy(1.5)} aria-label="Zoom in">+</button>
-			<button class="zoom-btn" onclick={() => zoomBy(1 / 1.5)} aria-label="Zoom out">−</button>
-		</div>
+		     fallback for two-finger pinch. Hidden in density mode where the
+		     buttons would suggest the same per-lane scroll model. -->
+		{#if !isLowDetail}
+			<div class="zoom-controls" aria-label="Zoom time scale">
+				<button class="zoom-btn" onclick={() => zoomBy(1.5)} aria-label="Zoom in">+</button>
+				<button class="zoom-btn" onclick={() => zoomBy(1 / 1.5)} aria-label="Zoom out">−</button>
+			</div>
+		{/if}
 
+		{#if isLowDetail}
+			<!-- All-lanes density strip (deep zoom-out LOD). One column per
+			     thread, day-bucket activity heatmap. Tap a column to drill
+			     in (resets pxPerMs to default and switches to that lane). -->
+			<div class="density-strip" role="list" aria-label="All lanes overview">
+				{#each densityLanes as lane, i (lane.thread.id)}
+					<button
+						class="density-column"
+						class:active={i === activeLaneIndex}
+						onclick={() => pickLaneFromDensity(i)}
+						style:flex="1 1 0"
+						aria-label="{lane.thread.name}, {lane.total} document{lane.total === 1
+							? ''
+							: 's'}"
+					>
+						<div class="density-name">{lane.thread.name}</div>
+						<div class="density-count">{lane.total}</div>
+						<div class="density-cells">
+							{#each lane.counts as count, di}
+								<div
+									class="density-cell"
+									class:empty={count === 0}
+									style:opacity={densityOpacity(count, lane.maxCount)}
+									title={count > 0
+										? `${count} doc${count === 1 ? '' : 's'} · ${di}d ago`
+										: ''}
+								></div>
+							{/each}
+						</div>
+					</button>
+				{/each}
+			</div>
+		{:else}
 		<div
 			class="lanes"
 			class:dragging={dragMode === 'horizontal'}
@@ -465,6 +582,7 @@
 				</section>
 			{/each}
 		</div>
+		{/if}
 	</div>
 {/if}
 
@@ -679,5 +797,76 @@
 
 	.zoom-btn:active {
 		background: var(--bg-hover, #2a2a32);
+	}
+
+	/* ----- Density strip (deep zoom-out LOD) ----- */
+
+	.density-strip {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: row;
+		padding: 8px 4px;
+		gap: 2px;
+		background: var(--bg-primary, #1a1a20);
+	}
+
+	.density-column {
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+		min-width: 0;
+		padding: 6px 4px 4px;
+		background: var(--bg-panel, #22222a);
+		border: 1px solid var(--border, #333);
+		border-radius: 8px;
+		cursor: pointer;
+		color: var(--text-primary, #e0e0e0);
+		font: inherit;
+		text-align: center;
+		overflow: hidden;
+	}
+
+	.density-column.active {
+		border-color: var(--accent, #f59e0b);
+	}
+
+	.density-column:active {
+		background: var(--bg-hover, #2a2a32);
+	}
+
+	.density-name {
+		font-size: 0.7rem;
+		font-weight: 600;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		margin-bottom: 2px;
+	}
+
+	.density-count {
+		font-size: 0.65rem;
+		color: var(--text-muted, #888);
+		margin-bottom: 4px;
+	}
+
+	.density-cells {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		overflow: hidden;
+		min-height: 0;
+	}
+
+	.density-cell {
+		flex: 1 1 0;
+		min-height: 1px;
+		background: var(--accent, #f59e0b);
+		border-radius: 1px;
+	}
+
+	.density-cell.empty {
+		background: transparent;
 	}
 </style>
