@@ -171,10 +171,11 @@
 			<Taskbar />
 		{/if}
 
-		<!-- Shared overlays — toggled via app state, mounted in both modes.
-		     Phase 3 will move Chat into the BottomSheet on mobile; until then
-		     it overlays as on desktop. -->
-		<Chat />
+		<!-- Chat is rendered inside MobileChatSheet on mobile (bottom sheet).
+		     On desktop it stays as the floating panel. -->
+		{#if !device.isMobile}
+			<Chat />
+		{/if}
 		<Search />
 		<ConfirmAction />
 		<ModelPanel />

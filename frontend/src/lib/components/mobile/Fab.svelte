@@ -1,32 +1,47 @@
 <script lang="ts">
 	/** Floating "+" action button for the mobile shell.
 	 *
-	 *  Tap → toggles a menu fan with five options: lane, doc, message,
-	 *  capture, secret. Doc and lane wire to existing creation commands;
-	 *  message/capture/secret are stubs awaiting later phases.
-	 *
-	 *  Future (Phase 3):
-	 *    - short-tap = primary action for current context (in a lane → new doc)
-	 *    - long-press = full menu (current behavior)
+	 *  Short tap  → context-aware primary action:
+	 *               · at least one lane exists → new doc in the current lane
+	 *               · no lanes → new lane
+	 *  Long press → open the full five-option fan menu (lane / doc / message /
+	 *               capture / secret)
 	 */
 	import { createDocument, createThread } from '$lib/api/commands';
-	import { canvas, load as canvasLoad } from '$lib/stores/canvas.svelte';
+	import { canvas, mobileCanvas, load as canvasLoad } from '$lib/stores/canvas.svelte';
+	import { longPress } from '$lib/actions/longPress';
 
 	let menuOpen = $state(false);
+	let longPressWasFired = false; // suppress the click that follows a long-press release
 
-	function toggle() {
-		menuOpen = !menuOpen;
+	function openMenu() {
+		longPressWasFired = true;
+		menuOpen = true;
 	}
 
 	function close() {
 		menuOpen = false;
 	}
 
+	function handleFabTap() {
+		if (longPressWasFired) {
+			longPressWasFired = false;
+			return;
+		}
+		// Short tap: primary action for the current context
+		if (canvas.threads.length > 0) {
+			handleNewDoc();
+		} else {
+			handleNewLane();
+		}
+	}
+
 	async function handleNewDoc() {
 		close();
 		const title = window.prompt('New document title');
 		if (!title || !title.trim()) return;
-		const threadId = canvas.threads[0]?.id;
+		// Use the currently active lane rather than always thread[0]
+		const threadId = canvas.threads[mobileCanvas.currentLaneIndex]?.id ?? canvas.threads[0]?.id;
 		if (!threadId) {
 			alert('Create a lane first.');
 			return;
@@ -55,8 +70,8 @@
 
 	function handleNewMessage() {
 		close();
-		// Phase 3: opens contact picker → message composer
-		alert('Message composer arrives in Phase 3.');
+		// Phase 4: opens contact picker → message composer
+		alert('Message composer arrives in Phase 4.');
 	}
 
 	function handleCapture() {
@@ -67,12 +82,12 @@
 
 	function handleSecret() {
 		close();
-		// Phase 4-5: biometric-gated secret entry
-		alert('Secrets arrive in Phase 4 (biometric gating).');
+		// Phase 5: biometric-gated secret entry
+		alert('Biometric secrets arrive in Phase 5.');
 	}
 </script>
 
-<!-- Backdrop intercepts taps when menu is open so tapping outside dismisses -->
+<!-- Backdrop intercepts taps when menu is open -->
 {#if menuOpen}
 	<button class="backdrop" onclick={close} aria-label="Close menu"></button>
 {/if}
@@ -81,24 +96,29 @@
 	{#if menuOpen}
 		<div class="menu" role="menu">
 			<button class="menu-item" role="menuitem" onclick={handleNewLane}>
-				<span class="menu-icon">↕</span><span>New lane</span>
+				<span class="menu-icon">&#8597;</span><span>New lane</span>
 			</button>
 			<button class="menu-item" role="menuitem" onclick={handleNewDoc}>
-				<span class="menu-icon">📄</span><span>New doc</span>
+				<span class="menu-icon">&#128196;</span><span>New doc</span>
 			</button>
 			<button class="menu-item" role="menuitem" onclick={handleNewMessage}>
-				<span class="menu-icon">💬</span><span>New message</span>
+				<span class="menu-icon">&#128172;</span><span>New message</span>
 			</button>
 			<button class="menu-item" role="menuitem" onclick={handleCapture}>
-				<span class="menu-icon">📷</span><span>Capture</span>
+				<span class="menu-icon">&#128247;</span><span>Capture</span>
 			</button>
 			<button class="menu-item" role="menuitem" onclick={handleSecret}>
-				<span class="menu-icon">🔐</span><span>Secret</span>
+				<span class="menu-icon">&#128272;</span><span>Secret</span>
 			</button>
 		</div>
 	{/if}
 
-	<button class="fab" onclick={toggle} aria-label={menuOpen ? 'Close create menu' : 'Open create menu'}>
+	<button
+		class="fab"
+		onclick={handleFabTap}
+		use:longPress={{ onLongPress: openMenu, duration: 500 }}
+		aria-label={menuOpen ? 'Close create menu' : 'Open create menu'}
+	>
 		<span class="plus" class:rotated={menuOpen}>+</span>
 	</button>
 </div>
@@ -117,7 +137,7 @@
 	.fab-stack {
 		position: fixed;
 		left: 50%;
-		bottom: calc(env(safe-area-inset-bottom) + 56px);
+		bottom: calc(env(safe-area-inset-bottom, 0px) + 56px + 12px);
 		transform: translateX(-50%);
 		z-index: 110;
 		display: flex;
@@ -134,7 +154,7 @@
 	.menu {
 		display: flex;
 		flex-direction: column;
-		gap: 8px;
+		gap: 4px;
 		align-items: stretch;
 		min-width: 180px;
 		background: var(--bg-panel, #22222a);
@@ -153,11 +173,11 @@
 		border: none;
 		color: var(--text-primary, #e0e0e0);
 		font-size: 0.9rem;
+		font-family: inherit;
 		text-align: left;
 		border-radius: 8px;
 		cursor: pointer;
 	}
-
 	.menu-item:active {
 		background: var(--bg-hover, #2a2a32);
 	}
@@ -181,6 +201,10 @@
 		justify-content: center;
 		cursor: pointer;
 		box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+		touch-action: none; /* let longPress own the pointer events */
+	}
+	.fab:active {
+		filter: brightness(0.9);
 	}
 
 	.plus {
