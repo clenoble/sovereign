@@ -416,3 +416,40 @@ export function requestMessagesForViewport() {
 		}
 	}, 200);
 }
+
+// ---------------------------------------------------------------------------
+// Mobile canvas state
+//
+// Separate from the desktop `canvas` store because mobile re-orients the
+// world (Y = time, X = lane) and renders a single lane per screen with
+// horizontal swipe to change lanes. The desktop pan/zoom model doesn't apply.
+// ---------------------------------------------------------------------------
+
+/** Pixels per day at zoom = 1 in mobile mode. Bigger than desktop because
+ *  mobile typically scrolls slower per finger movement. */
+export const MOBILE_PX_PER_DAY = 100;
+
+export interface MobileCanvasState {
+	/** Index into canvas.threads for the centered lane. */
+	currentLaneIndex: number;
+	/** Pixels per millisecond on the time (Y) axis. Adjusted by pinch zoom. */
+	pxPerMs: number;
+}
+
+export const mobileCanvas: MobileCanvasState = $state({
+	currentLaneIndex: 0,
+	pxPerMs: MOBILE_PX_PER_DAY / MS_PER_DAY
+});
+
+export function setLaneIndex(i: number) {
+	const max = Math.max(0, canvas.threads.length - 1);
+	mobileCanvas.currentLaneIndex = Math.min(max, Math.max(0, i));
+}
+
+export function nextLane() {
+	setLaneIndex(mobileCanvas.currentLaneIndex + 1);
+}
+
+export function prevLane() {
+	setLaneIndex(mobileCanvas.currentLaneIndex - 1);
+}

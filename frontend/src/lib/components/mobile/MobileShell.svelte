@@ -19,8 +19,8 @@
 	import { load as canvasLoad } from '$lib/stores/canvas.svelte';
 	import { listPendingSuggestions, getStatus } from '$lib/api/commands';
 	import { setSuggestions, type LinkSuggestion } from '$lib/stores/suggestions.svelte';
-	import Canvas from '$lib/components/Canvas.svelte';
 	import LaneHeader from './LaneHeader.svelte';
+	import MobileCanvas from './MobileCanvas.svelte';
 	import MobileTaskbar from './MobileTaskbar.svelte';
 	import Fab from './Fab.svelte';
 	import BottomSheet from './BottomSheet.svelte';
@@ -59,7 +59,7 @@
 	<LaneHeader />
 
 	<main class="canvas-area" aria-label="Canvas">
-		<Canvas />
+		<MobileCanvas />
 	</main>
 
 	{#if error}
