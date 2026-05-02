@@ -57,9 +57,7 @@ impl Orchestrator {
         classifier.load_router().await?;
 
         // Initialize session log + profile directory
-        let profile_dir = sovereign_core::home_dir()
-            .join(".sovereign")
-            .join("orchestrator");
+        let profile_dir = sovereign_core::sovereign_dir().join("orchestrator");
         let session_log = match SessionLog::open(&profile_dir) {
             Ok(log) => Some(Mutex::new(log)),
             Err(e) => {

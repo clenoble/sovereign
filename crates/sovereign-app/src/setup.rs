@@ -16,7 +16,7 @@ pub async fn create_db(config: &AppConfig) -> Result<SurrealGraphDB> {
 
 #[cfg(feature = "encryption")]
 pub fn crypto_dir() -> std::path::PathBuf {
-    sovereign_core::home_dir().join(".sovereign").join("crypto")
+    sovereign_core::sovereign_dir().join("crypto")
 }
 
 /// Load or create a stable device ID for this machine.

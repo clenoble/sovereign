@@ -28,6 +28,12 @@
     "icon": [
       "icons/icon.ico",
       "icons/icon.png"
-    ]
+    ],
+    "iOS": {
+      "minimumSystemVersion": "14.0"
+    },
+    "android": {
+      "minSdkVersion": 26
+    }
   }
 }
