@@ -1008,4 +1008,27 @@
 		color: var(--text-secondary);
 		font-size: 0.85rem;
 	}
+
+	@media (max-width: 768px) {
+		/* Override drag-position inline style and collapse the 3-column
+		   grid into a single column on phone-sized viewports. The user
+		   navigates via in-panel state (selectedEntity / selectedRecord)
+		   rather than seeing all three columns at once. */
+		.pii-panel {
+			left: 0 !important;
+			top: max(env(safe-area-inset-top), 56px) !important;
+			width: 100vw;
+			max-height: calc(100vh - 56px - max(env(safe-area-inset-top), 56px));
+			border-radius: 0;
+			border-left: none;
+			border-right: none;
+		}
+		.pii-body {
+			grid-template-columns: 1fr;
+		}
+		.entity-column {
+			border-right: none;
+			border-bottom: 1px solid var(--border);
+		}
+	}
 </style>

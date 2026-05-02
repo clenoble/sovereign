@@ -275,4 +275,14 @@
 		border-color: var(--accent);
 		color: var(--accent);
 	}
+
+	@media (max-width: 768px) {
+		.model-panel {
+			top: max(env(safe-area-inset-top), 60px);
+			right: 8px;
+			left: 8px;
+			width: auto;
+			max-height: calc(100vh - 180px);
+		}
+	}
 </style>

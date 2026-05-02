@@ -377,4 +377,16 @@
 		font-size: 0.85rem;
 		text-align: center;
 	}
+
+	@media (max-width: 768px) {
+		.contact-panel {
+			left: 0 !important;
+			top: max(env(safe-area-inset-top), 56px) !important;
+			width: 100vw;
+			height: calc(100vh - 56px - max(env(safe-area-inset-top), 56px));
+			border-radius: 0;
+			border-left: none;
+			border-right: none;
+		}
+	}
 </style>
