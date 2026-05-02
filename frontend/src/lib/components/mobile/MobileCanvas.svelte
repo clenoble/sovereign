@@ -21,6 +21,8 @@
 	 */
 	import { canvas, mobileCanvas, setLaneIndex } from '$lib/stores/canvas.svelte';
 	import { openById } from '$lib/stores/documents.svelte';
+	import { app } from '$lib/stores/app.svelte';
+	import { longPress } from '$lib/actions/longPress';
 
 	let containerEl: HTMLElement;
 	let viewportWidth = $state(390);
@@ -62,6 +64,25 @@
 			);
 		}
 		return map;
+	});
+
+	/** docId → number of relationships that connect to a doc in a *different*
+	 *  thread. Drives the ↔N badge on cards so users can see, in single-lane
+	 *  mode, that a doc has off-lane connections. */
+	let crossLaneCount = $derived.by(() => {
+		const docToThread = new Map<string, string>();
+		for (const d of canvas.documents) docToThread.set(d.id, d.thread_id);
+
+		const counts = new Map<string, number>();
+		for (const r of canvas.relationships) {
+			const fromThread = docToThread.get(r.from_doc_id);
+			const toThread = docToThread.get(r.to_doc_id);
+			if (!fromThread || !toThread) continue;
+			if (fromThread === toThread) continue;
+			counts.set(r.from_doc_id, (counts.get(r.from_doc_id) ?? 0) + 1);
+			counts.set(r.to_doc_id, (counts.get(r.to_doc_id) ?? 0) + 1);
+		}
+		return counts;
 	});
 
 	let activeLaneIndex = $derived(mobileCanvas.currentLaneIndex);
@@ -155,6 +176,21 @@
 		openById(id);
 	}
 
+	function showCardMenu(e: PointerEvent, doc: { id: string; thread_id: string }) {
+		// Position the menu near the touch point but clamp to viewport so it
+		// doesn't render off-screen on the right or bottom.
+		const menuW = 180;
+		const menuH = 180;
+		const x = Math.min(e.clientX, window.innerWidth - menuW - 8);
+		const y = Math.min(e.clientY, window.innerHeight - menuH - 8);
+		app.contextMenu = {
+			x: Math.max(8, x),
+			y: Math.max(8, y),
+			docId: doc.id,
+			threadId: doc.thread_id
+		};
+	}
+
 	function formatRelative(iso: string): string {
 		const ms = Date.now() - new Date(iso).getTime();
 		const day = 86_400_000;
@@ -206,7 +242,16 @@
 							<div class="lane-empty">No documents in this lane yet.</div>
 						{:else}
 							{#each docs as doc (doc.id)}
-								<button class="card" onclick={() => openDoc(doc.id)}>
+								{@const xLane = crossLaneCount.get(doc.id) ?? 0}
+								<button
+									class="card"
+									onclick={() => openDoc(doc.id)}
+									use:longPress={{ onLongPress: (e) => showCardMenu(e, doc) }}
+									oncontextmenu={(e) => {
+										e.preventDefault();
+										showCardMenu(e, doc);
+									}}
+								>
 									<span
 										class="provenance"
 										class:owned={doc.is_owned}
@@ -217,6 +262,15 @@
 										<div class="card-title">{doc.title || '(untitled)'}</div>
 										<div class="card-time">{formatRelative(doc.modified_at)}</div>
 									</div>
+									{#if xLane > 0}
+										<span
+											class="cross-lane-badge"
+											title="{xLane} link{xLane === 1 ? '' : 's'} to other lanes"
+											aria-label="{xLane} cross-lane link{xLane === 1 ? '' : 's'}"
+										>
+											↔{xLane}
+										</span>
+									{/if}
 								</button>
 							{/each}
 						{/if}
@@ -354,6 +408,20 @@
 	.card-time {
 		font-size: 0.72rem;
 		color: var(--text-muted, #888);
+	}
+
+	.cross-lane-badge {
+		flex-shrink: 0;
+		align-self: flex-start;
+		font-size: 0.7rem;
+		font-weight: 600;
+		padding: 2px 6px;
+		border-radius: 8px;
+		background: var(--bg-hover, #2a2a32);
+		color: var(--accent, #f59e0b);
+		border: 1px solid var(--accent, #f59e0b);
+		line-height: 1;
+		letter-spacing: 0.02em;
 	}
 
 	.lane-empty {

@@ -1,15 +1,15 @@
 <script lang="ts">
 	/** Sticky top bar for the mobile shell.
 	 *
-	 *  Shows the active lane name and a position indicator. In Phase 1 it
-	 *  reads the first thread from the canvas store as a placeholder; Phase 2
-	 *  wires this to a `currentLaneIndex` field driven by horizontal swipe.
+	 *  Tap on the lane name → opens the LaneSwitcherSheet (instant).
+	 *  Long-press → also opens the switcher (mobile convention; same target).
+	 *  Lane-position dots show progress through the thread list.
 	 *
-	 *  Future interactions (Phase 2):
-	 *    - long-press lane name → thread switcher sheet
-	 *    - pull-down on header → global search
+	 *  Future (Phase 3): pull-down on this header → global search.
 	 */
-	import { canvas, mobileCanvas, setLaneIndex } from '$lib/stores/canvas.svelte';
+	import { canvas, mobileCanvas } from '$lib/stores/canvas.svelte';
+	import { longPress } from '$lib/actions/longPress';
+	import LaneSwitcherSheet from './LaneSwitcherSheet.svelte';
 
 	let activeIndex = $derived(mobileCanvas.currentLaneIndex);
 	let activeName = $derived(
@@ -17,17 +17,22 @@
 	);
 	let totalLanes = $derived(canvas.threads.length);
 
-	function handleNameClick() {
-		// Phase 2.2: open thread switcher sheet on long-press; for now a tap
-		// cycles through lanes so the user can swap from the keyboard-less header.
-		if (totalLanes <= 1) return;
-		const next = (activeIndex + 1) % totalLanes;
-		setLaneIndex(next);
+	let switcherOpen = $state(false);
+
+	function openSwitcher() {
+		if (totalLanes === 0) return;
+		switcherOpen = true;
 	}
 </script>
 
 <header class="lane-header">
-	<button class="name" onclick={handleNameClick} aria-label="Switch thread">
+	<button
+		class="name"
+		onclick={openSwitcher}
+		use:longPress={{ onLongPress: openSwitcher }}
+		aria-label="Switch lane"
+		aria-haspopup="dialog"
+	>
 		<span class="name-text">{activeName}</span>
 		<span class="caret" aria-hidden="true">▾</span>
 	</button>
@@ -40,6 +45,8 @@
 		</div>
 	{/if}
 </header>
+
+<LaneSwitcherSheet bind:open={switcherOpen} />
 
 <style>
 	.lane-header {
