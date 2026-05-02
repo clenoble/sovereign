@@ -9,17 +9,20 @@
 	 *    - long-press lane name → thread switcher sheet
 	 *    - pull-down on header → global search
 	 */
-	import { canvas } from '$lib/stores/canvas.svelte';
+	import { canvas, mobileCanvas, setLaneIndex } from '$lib/stores/canvas.svelte';
 
-	let activeIndex = $state(0);
+	let activeIndex = $derived(mobileCanvas.currentLaneIndex);
 	let activeName = $derived(
 		canvas.threads.length > 0 ? canvas.threads[activeIndex]?.name ?? '—' : '(no threads)'
 	);
 	let totalLanes = $derived(canvas.threads.length);
 
 	function handleNameClick() {
-		// Phase 2: open thread switcher sheet
-		console.log('TODO: open thread switcher (long-press)');
+		// Phase 2.2: open thread switcher sheet on long-press; for now a tap
+		// cycles through lanes so the user can swap from the keyboard-less header.
+		if (totalLanes <= 1) return;
+		const next = (activeIndex + 1) % totalLanes;
+		setLaneIndex(next);
 	}
 </script>
 
