@@ -1,45 +1,66 @@
 <script lang="ts">
 	/** Mobile canvas: vertical = time (Now at top), horizontal = lanes.
 	 *
-	 *  One lane fills the viewport at a time. Horizontal swipe pages between
-	 *  lanes with snap on release (velocity-based fling, distance-based commit).
-	 *  Vertical scroll within a lane pans through time (newest at top).
+	 *  One lane fills the viewport. Horizontal swipe pages between lanes with
+	 *  snap on release. Cards inside a lane are absolutely positioned by their
+	 *  modified_at timestamp scaled by mobileCanvas.pxPerMs (with anti-collision
+	 *  push-down so same-time cards stack instead of overlapping). Two-finger
+	 *  vertical pinch adjusts pxPerMs (= time interval), anchored at the
+	 *  midpoint so the time under your fingers stays put.
 	 *
-	 *  Phase 2.1 scope:
-	 *    ✓ Vertical-time, horizontal-lane layout
-	 *    ✓ Horizontal swipe to change lanes (with snap + fling)
-	 *    ✓ Vertical native scroll for time pan
-	 *    ✓ Tap card → open doc
-	 *    ✓ iOS edge-back margin honored
+	 *  Phase 2.3 scope (this file):
+	 *    ✓ Cards positioned by time (Y = (now - modified_at) * pxPerMs)
+	 *    ✓ Anti-collision: cards never overlap (cascade push-down)
+	 *    ✓ Two-finger vertical pinch → adjust pxPerMs with midpoint anchor
+	 *    ✓ Lane swipe + native scroll + long-press menu + cross-lane badges
+	 *      from 2.1/2.2 still work
 	 *
-	 *  Deferred (Phase 2.2+):
-	 *    - Pinch-vertical zoom for time scale
-	 *    - LOD adaptation (heatmap → all-lanes density strip at deep zoom-out)
-	 *    - Cross-lane relationship badges
-	 *    - Long-press card → action menu
-	 *    - Long-press lane header → thread switcher (LaneHeader integration)
+	 *  Deferred (Phase 2.4):
+	 *    - LOD adaptation: at very low pxPerMs, pivot to all-lanes density strip
+	 *    - Periodic Now-tick re-layout (cards drift as time passes)
 	 */
-	import { canvas, mobileCanvas, setLaneIndex } from '$lib/stores/canvas.svelte';
+	import {
+		canvas,
+		mobileCanvas,
+		setLaneIndex,
+		setMobilePxPerMs
+	} from '$lib/stores/canvas.svelte';
 	import { openById } from '$lib/stores/documents.svelte';
 	import { app } from '$lib/stores/app.svelte';
 	import { longPress } from '$lib/actions/longPress';
 
-	let containerEl: HTMLElement;
+	let containerEl = $state<HTMLElement>();
 	let viewportWidth = $state(390);
 
-	type DragMode = 'none' | 'horizontal' | 'vertical';
+	type DragMode = 'none' | 'horizontal' | 'vertical' | 'pinch';
 	let dragMode = $state<DragMode>('none');
 	let dragOffsetX = $state(0);
-	let pointerActive = $state(false);
 
+	type PointerInfo = { x: number; y: number };
+	const pointers = new Map<number, PointerInfo>();
+	let primaryPointerId: number | null = null;
 	let pointerStart = { x: 0, y: 0, t: 0 };
 	let lastPointer = { x: 0, y: 0, t: 0 };
-	let activePointerId: number | null = null;
+
+	interface PinchState {
+		initialDist: number; // |p1.y - p2.y| at start
+		initialPxPerMs: number;
+		midpointY: number; // (p1.y + p2.y) / 2 at start (screen coord)
+		anchorTimeMs: number; // time at midpoint (ms before "now")
+		laneScrollEl: HTMLElement;
+		containerTop: number; // bounding-rect top of laneScrollEl at start
+	}
+	let pinch: PinchState | null = null;
 
 	const EDGE_MARGIN_PX = 20; // ignore swipes that originate in iOS edge-back zone
 	const LOCK_THRESHOLD_PX = 8; // min movement before locking direction
 	const COMMIT_RATIO = 0.25; // distance fraction of viewport that commits a lane change
 	const FLING_VELOCITY = 0.5; // px/ms for fling-based commit
+	const PINCH_VERTICAL_THRESHOLD_PX = 30; // |p1.y - p2.y| above this is a vertical pinch
+	const CARD_HEIGHT_PX = 56; // matches .card min-height in CSS
+	const CARD_GAP_PX = 8;
+	const TRACK_TOP_PADDING = 36; // space below the Now marker
+	const TRACK_BOTTOM_PADDING = 80; // breathing room at the oldest end
 
 	$effect(() => {
 		if (typeof window === 'undefined') return;
@@ -66,13 +87,11 @@
 		return map;
 	});
 
-	/** docId → number of relationships that connect to a doc in a *different*
-	 *  thread. Drives the ↔N badge on cards so users can see, in single-lane
-	 *  mode, that a doc has off-lane connections. */
+	/** docId → number of relationships connecting to a doc in a *different*
+	 *  thread. Drives the ↔N badge on cards. */
 	let crossLaneCount = $derived.by(() => {
 		const docToThread = new Map<string, string>();
 		for (const d of canvas.documents) docToThread.set(d.id, d.thread_id);
-
 		const counts = new Map<string, number>();
 		for (const r of canvas.relationships) {
 			const fromThread = docToThread.get(r.from_doc_id);
@@ -85,6 +104,42 @@
 		return counts;
 	});
 
+	interface PlacedCard {
+		doc: (typeof canvas.documents)[number];
+		y: number;
+		xLane: number;
+	}
+
+	interface PlacedLane {
+		thread: (typeof canvas.threads)[number];
+		cards: PlacedCard[];
+		trackHeight: number;
+	}
+
+	/** Lay out each lane: cards positioned absolutely by time, with cascade
+	 *  push-down to prevent overlap. Re-runs whenever docs, threads,
+	 *  relationships, or pxPerMs change. */
+	let placedLanes = $derived.by<PlacedLane[]>(() => {
+		const now = Date.now();
+		const px = mobileCanvas.pxPerMs;
+		return canvas.threads.map((thread) => {
+			const docs = docsByThread.get(thread.id) ?? [];
+			let lastBottom = TRACK_TOP_PADDING;
+			const cards: PlacedCard[] = docs.map((doc) => {
+				const target =
+					(now - new Date(doc.modified_at).getTime()) * px + TRACK_TOP_PADDING;
+				const y = Math.max(target, lastBottom);
+				lastBottom = y + CARD_HEIGHT_PX + CARD_GAP_PX;
+				return { doc, y, xLane: crossLaneCount.get(doc.id) ?? 0 };
+			});
+			return {
+				thread,
+				cards,
+				trackHeight: lastBottom + TRACK_BOTTOM_PADDING
+			};
+		});
+	});
+
 	let activeLaneIndex = $derived(mobileCanvas.currentLaneIndex);
 	let totalLanes = $derived(canvas.threads.length);
 
@@ -92,43 +147,133 @@
 		`translateX(${-activeLaneIndex * viewportWidth + dragOffsetX}px)`
 	);
 
+	function activeLaneScrollEl(): HTMLElement | null {
+		if (!containerEl) return null;
+		const lanes = containerEl.querySelectorAll('.lane');
+		const el = lanes[activeLaneIndex] as HTMLElement | undefined;
+		return (el?.querySelector('.lane-scroll') as HTMLElement | null) ?? null;
+	}
+
+	function startPinch() {
+		const ids = [...pointers.keys()];
+		if (ids.length < 2) return;
+		const p1 = pointers.get(ids[0])!;
+		const p2 = pointers.get(ids[1])!;
+		const dy = Math.abs(p1.y - p2.y);
+		if (dy < PINCH_VERTICAL_THRESHOLD_PX) return; // fingers side-by-side, not a vertical pinch
+
+		const laneScrollEl = activeLaneScrollEl();
+		if (!laneScrollEl) return;
+
+		const midY = (p1.y + p2.y) / 2;
+		const containerTop = laneScrollEl.getBoundingClientRect().top;
+		const midRelToScroll = midY - containerTop; // pixel inside the scroller (visible)
+		// time (ms before "now") at the midpoint: scrollTop + visibleY = pixels
+		// from track origin; subtract TRACK_TOP_PADDING to get pixels from the
+		// "now" line; divide by pxPerMs.
+		const anchorPx =
+			laneScrollEl.scrollTop + midRelToScroll - TRACK_TOP_PADDING;
+		const anchorTimeMs = anchorPx / mobileCanvas.pxPerMs;
+
+		pinch = {
+			initialDist: dy,
+			initialPxPerMs: mobileCanvas.pxPerMs,
+			midpointY: midY,
+			anchorTimeMs,
+			laneScrollEl,
+			containerTop
+		};
+		dragMode = 'pinch';
+		// Cancel any in-progress horizontal swipe
+		dragOffsetX = 0;
+	}
+
+	function updatePinch() {
+		if (!pinch) return;
+		const ids = [...pointers.keys()];
+		if (ids.length < 2) return;
+		const p1 = pointers.get(ids[0])!;
+		const p2 = pointers.get(ids[1])!;
+		const currentDist = Math.abs(p1.y - p2.y);
+		if (currentDist < 1) return;
+
+		const scale = currentDist / pinch.initialDist;
+		setMobilePxPerMs(pinch.initialPxPerMs * scale);
+
+		// Re-anchor: place anchorTimeMs at the original midpoint Y.
+		const anchorPx = pinch.anchorTimeMs * mobileCanvas.pxPerMs;
+		const midRelToScroll = pinch.midpointY - pinch.containerTop;
+		pinch.laneScrollEl.scrollTop =
+			anchorPx + TRACK_TOP_PADDING - midRelToScroll;
+	}
+
+	function endPinch() {
+		pinch = null;
+		dragMode = 'none';
+	}
+
 	function handlePointerDown(e: PointerEvent) {
-		if (e.clientX < EDGE_MARGIN_PX) return; // iOS edge-back
-		if (activePointerId !== null) return; // single-touch only for now
+		// Track every pointer for multi-touch pinch detection.
+		pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+		// If we now have ≥2 pointers, try to start a pinch.
+		if (pointers.size >= 2) {
+			startPinch();
+			return;
+		}
+
+		// First (single) pointer: start swipe-detection state machine, but
+		// honor the iOS edge-back margin.
+		if (e.clientX < EDGE_MARGIN_PX) {
+			pointers.delete(e.pointerId); // disengage so we don't track it
+			return;
+		}
+		primaryPointerId = e.pointerId;
 		pointerStart = { x: e.clientX, y: e.clientY, t: performance.now() };
 		lastPointer = { ...pointerStart };
 		dragMode = 'none';
-		pointerActive = true;
-		activePointerId = e.pointerId;
 	}
 
 	function handlePointerMove(e: PointerEvent) {
-		if (!pointerActive || e.pointerId !== activePointerId) return;
+		if (!pointers.has(e.pointerId)) return;
+		pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+		// Active pinch: update zoom regardless of direction-lock.
+		if (dragMode === 'pinch') {
+			updatePinch();
+			e.preventDefault();
+			return;
+		}
+
+		// If a second pointer just arrived, attempt pinch.
+		if (pointers.size >= 2) {
+			startPinch();
+			return;
+		}
+
+		// Single-pointer swipe path — only the primary pointer drives lane swipe.
+		if (e.pointerId !== primaryPointerId) return;
 		const dx = e.clientX - pointerStart.x;
 		const dy = e.clientY - pointerStart.y;
 
 		if (dragMode === 'none') {
 			if (Math.abs(dx) > LOCK_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
 				dragMode = 'horizontal';
-				// Capture the pointer so it keeps tracking even if it leaves the
-				// container (and so native scroll can't steal it mid-swipe).
 				try {
-					containerEl.setPointerCapture(e.pointerId);
+					containerEl?.setPointerCapture(e.pointerId);
 				} catch {
 					/* ignore */
 				}
 			} else if (Math.abs(dy) > LOCK_THRESHOLD_PX) {
 				dragMode = 'vertical';
-				// Vertical = native scroll. Release the pointer; the lane scroller
-				// handles it.
-				pointerActive = false;
-				activePointerId = null;
+				// Native vertical scroll handles it from here; stop tracking the
+				// primary pointer so subsequent moves don't re-engage.
+				primaryPointerId = null;
 			}
 		}
 
 		if (dragMode === 'horizontal') {
 			let offset = dx;
-			// Rubber-band at edges
 			if (activeLaneIndex === 0 && offset > 0) offset *= 0.3;
 			if (activeLaneIndex === totalLanes - 1 && offset < 0) offset *= 0.3;
 			dragOffsetX = offset;
@@ -138,7 +283,9 @@
 	}
 
 	function handlePointerUp(e: PointerEvent) {
-		if (e.pointerId !== activePointerId && dragMode !== 'horizontal') return;
+		const wasTracked = pointers.has(e.pointerId);
+		pointers.delete(e.pointerId);
+
 		if (containerEl?.hasPointerCapture(e.pointerId)) {
 			try {
 				containerEl.releasePointerCapture(e.pointerId);
@@ -147,7 +294,15 @@
 			}
 		}
 
-		if (dragMode === 'horizontal') {
+		// End pinch when we drop below 2 pointers.
+		if (dragMode === 'pinch') {
+			if (pointers.size < 2) endPinch();
+			return;
+		}
+
+		if (!wasTracked) return;
+
+		if (dragMode === 'horizontal' && e.pointerId === primaryPointerId) {
 			const dt = lastPointer.t - pointerStart.t;
 			const dx = lastPointer.x - pointerStart.x;
 			const velocity = dt > 0 ? dx / dt : 0; // px/ms; +ve = swipe right (prev lane)
@@ -165,22 +320,46 @@
 			setLaneIndex(target);
 		}
 
+		if (e.pointerId === primaryPointerId) {
+			primaryPointerId = null;
+			pointerStart = { x: 0, y: 0, t: 0 };
+		}
 		dragOffsetX = 0;
 		dragMode = 'none';
-		pointerActive = false;
-		activePointerId = null;
-		pointerStart = { x: 0, y: 0, t: 0 };
 	}
 
 	function openDoc(id: string) {
 		openById(id);
 	}
 
-	function showCardMenu(e: PointerEvent, doc: { id: string; thread_id: string }) {
-		// Position the menu near the touch point but clamp to viewport so it
-		// doesn't render off-screen on the right or bottom.
-		const menuW = 180;
-		const menuH = 180;
+	/** Zoom button handler (mouse + accessibility fallback for pinch).
+	 *  factor > 1 zooms in (more pixels per ms), factor < 1 zooms out.
+	 *  Anchors at the vertical center of the visible viewport so the user's
+	 *  view doesn't jump. */
+	function zoomBy(factor: number) {
+		const laneScrollEl = activeLaneScrollEl();
+		if (!laneScrollEl) {
+			setMobilePxPerMs(mobileCanvas.pxPerMs * factor);
+			return;
+		}
+		const rect = laneScrollEl.getBoundingClientRect();
+		const visibleH = rect.height;
+		const anchorScreenY = visibleH / 2; // center of visible scroller
+		const oldPx = mobileCanvas.pxPerMs;
+		const anchorTimeMs =
+			(laneScrollEl.scrollTop + anchorScreenY - TRACK_TOP_PADDING) / oldPx;
+		setMobilePxPerMs(oldPx * factor);
+		const newPx = mobileCanvas.pxPerMs;
+		laneScrollEl.scrollTop =
+			anchorTimeMs * newPx + TRACK_TOP_PADDING - anchorScreenY;
+	}
+
+	function showCardMenu(
+		e: PointerEvent | MouseEvent,
+		doc: { id: string; thread_id: string }
+	) {
+		const menuW = 200;
+		const menuH = 220;
 		const x = Math.min(e.clientX, window.innerWidth - menuW - 8);
 		const y = Math.min(e.clientY, window.innerHeight - menuH - 8);
 		app.contextMenu = {
@@ -221,13 +400,19 @@
 		role="region"
 		aria-label="Timeline lanes"
 	>
+		<!-- Zoom controls — overlay in upper-right of viewport. Mouse + a11y
+		     fallback for two-finger pinch. -->
+		<div class="zoom-controls" aria-label="Zoom time scale">
+			<button class="zoom-btn" onclick={() => zoomBy(1.5)} aria-label="Zoom in">+</button>
+			<button class="zoom-btn" onclick={() => zoomBy(1 / 1.5)} aria-label="Zoom out">−</button>
+		</div>
+
 		<div
 			class="lanes"
 			class:dragging={dragMode === 'horizontal'}
 			style:transform={lanesTransform}
 		>
-			{#each canvas.threads as thread, i (thread.id)}
-				{@const docs = docsByThread.get(thread.id) ?? []}
+			{#each placedLanes as lane, i (lane.thread.id)}
 				<section
 					class="lane"
 					class:active={i === activeLaneIndex}
@@ -235,45 +420,47 @@
 					aria-hidden={i !== activeLaneIndex}
 				>
 					<div class="lane-scroll">
-						<div class="now-marker" aria-label="Now">
-							<span>Now</span>
-						</div>
-						{#if docs.length === 0}
-							<div class="lane-empty">No documents in this lane yet.</div>
-						{:else}
-							{#each docs as doc (doc.id)}
-								{@const xLane = crossLaneCount.get(doc.id) ?? 0}
-								<button
-									class="card"
-									onclick={() => openDoc(doc.id)}
-									use:longPress={{ onLongPress: (e) => showCardMenu(e, doc) }}
-									oncontextmenu={(e) => {
-										e.preventDefault();
-										showCardMenu(e, doc);
-									}}
-								>
-									<span
-										class="provenance"
-										class:owned={doc.is_owned}
-										class:external={!doc.is_owned}
-										aria-label={doc.is_owned ? 'Owned' : 'External'}
-									></span>
-									<div class="card-body">
-										<div class="card-title">{doc.title || '(untitled)'}</div>
-										<div class="card-time">{formatRelative(doc.modified_at)}</div>
-									</div>
-									{#if xLane > 0}
+						<div class="lane-track" style:height="{lane.trackHeight}px">
+							<div class="now-marker" aria-label="Now">
+								<span>Now</span>
+							</div>
+							{#if lane.cards.length === 0}
+								<div class="lane-empty">No documents in this lane yet.</div>
+							{:else}
+								{#each lane.cards as { doc, y, xLane } (doc.id)}
+									<button
+										class="card"
+										style:top="{y}px"
+										onclick={() => openDoc(doc.id)}
+										use:longPress={{ onLongPress: (e) => showCardMenu(e, doc) }}
+										oncontextmenu={(e) => {
+											e.preventDefault();
+											showCardMenu(e, doc);
+										}}
+									>
 										<span
-											class="cross-lane-badge"
-											title="{xLane} link{xLane === 1 ? '' : 's'} to other lanes"
-											aria-label="{xLane} cross-lane link{xLane === 1 ? '' : 's'}"
-										>
-											↔{xLane}
-										</span>
-									{/if}
-								</button>
-							{/each}
-						{/if}
+											class="provenance"
+											class:owned={doc.is_owned}
+											class:external={!doc.is_owned}
+											aria-label={doc.is_owned ? 'Owned' : 'External'}
+										></span>
+										<div class="card-body">
+											<div class="card-title">{doc.title || '(untitled)'}</div>
+											<div class="card-time">{formatRelative(doc.modified_at)}</div>
+										</div>
+										{#if xLane > 0}
+											<span
+												class="cross-lane-badge"
+												title="{xLane} link{xLane === 1 ? '' : 's'} to other lanes"
+												aria-label="{xLane} cross-lane link{xLane === 1 ? '' : 's'}"
+											>
+												↔{xLane}
+											</span>
+										{/if}
+									</button>
+								{/each}
+							{/if}
+						</div>
 					</div>
 				</section>
 			{/each}
@@ -287,8 +474,9 @@
 		height: 100%;
 		overflow: hidden;
 		position: relative;
-		/* allow native vertical scroll (delegated to .lane-scroll); block native
-		   horizontal so our pointer handlers own swipe-between-lanes */
+		/* Allow native vertical scroll inside .lane-scroll; block native
+		   horizontal so our pointer handlers own swipe-between-lanes.
+		   pinch-zoom is handled manually so disable browser pinch. */
 		touch-action: pan-y;
 		background: var(--bg-primary, #1a1a20);
 	}
@@ -321,10 +509,14 @@
 		flex: 1;
 		overflow-y: auto;
 		-webkit-overflow-scrolling: touch;
-		padding: 12px;
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
+		position: relative;
+	}
+
+	.lane-track {
+		position: relative;
+		width: 100%;
+		padding: 0 12px;
+		box-sizing: border-box;
 	}
 
 	.now-marker {
@@ -334,7 +526,7 @@
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		padding: 4px 0 8px;
+		padding: 8px 0 8px;
 		font-size: 0.65rem;
 		font-weight: 700;
 		text-transform: uppercase;
@@ -357,6 +549,9 @@
 	}
 
 	.card {
+		position: absolute;
+		left: 12px;
+		right: 12px;
 		display: flex;
 		align-items: stretch;
 		gap: 10px;
@@ -368,6 +563,8 @@
 		cursor: pointer;
 		color: var(--text-primary, #e0e0e0);
 		min-height: 56px;
+		height: 56px;
+		box-sizing: border-box;
 		font: inherit;
 	}
 
@@ -395,6 +592,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
+		justify-content: center;
 	}
 
 	.card-title {
@@ -412,7 +610,7 @@
 
 	.cross-lane-badge {
 		flex-shrink: 0;
-		align-self: flex-start;
+		align-self: center;
 		font-size: 0.7rem;
 		font-weight: 600;
 		padding: 2px 6px;
@@ -425,10 +623,14 @@
 	}
 
 	.lane-empty {
-		padding: 24px 12px;
+		position: absolute;
+		left: 0;
+		right: 0;
+		top: 60px;
 		text-align: center;
 		color: var(--text-muted, #888);
 		font-size: 0.85rem;
+		padding: 24px 12px;
 	}
 
 	.status {
@@ -445,5 +647,37 @@
 	.status .dim {
 		opacity: 0.7;
 		font-size: 0.8rem;
+	}
+
+	.zoom-controls {
+		position: absolute;
+		top: 8px;
+		right: 8px;
+		z-index: 20;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		opacity: 0.85;
+	}
+
+	.zoom-btn {
+		width: 32px;
+		height: 32px;
+		border-radius: 50%;
+		background: var(--bg-panel, #22222a);
+		color: var(--text-primary, #e0e0e0);
+		border: 1px solid var(--border, #333);
+		font-size: 1rem;
+		font-weight: 600;
+		line-height: 1;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+	}
+
+	.zoom-btn:active {
+		background: var(--bg-hover, #2a2a32);
 	}
 </style>

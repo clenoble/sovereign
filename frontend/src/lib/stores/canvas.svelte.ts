@@ -429,6 +429,11 @@ export function requestMessagesForViewport() {
  *  mobile typically scrolls slower per finger movement. */
 export const MOBILE_PX_PER_DAY = 100;
 
+/** Pinch-zoom bounds expressed as px-per-millisecond. The default value is
+ *  MOBILE_PX_PER_DAY / MS_PER_DAY ≈ 1.16e-6. */
+export const MIN_MOBILE_PX_PER_MS = 10 / MS_PER_DAY; // 10 px/day — far zoomed out
+export const MAX_MOBILE_PX_PER_MS = 2000 / MS_PER_DAY; // 2000 px/day — minute-scale
+
 export interface MobileCanvasState {
 	/** Index into canvas.threads for the centered lane. */
 	currentLaneIndex: number;
@@ -452,4 +457,11 @@ export function nextLane() {
 
 export function prevLane() {
 	setLaneIndex(mobileCanvas.currentLaneIndex - 1);
+}
+
+export function setMobilePxPerMs(v: number) {
+	mobileCanvas.pxPerMs = Math.min(
+		MAX_MOBILE_PX_PER_MS,
+		Math.max(MIN_MOBILE_PX_PER_MS, v)
+	);
 }
