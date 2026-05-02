@@ -150,8 +150,8 @@ fn main() -> Result<()> {
 
 /// Launch the Tauri web UI: initialize backend subsystems, then start Tauri.
 fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
-    // Compute profile directory (~/.sovereign)
-    let profile_dir = sovereign_core::home_dir().join(".sovereign");
+    // Compute profile directory (~/.sovereign on desktop; app_data_dir on mobile via env override)
+    let profile_dir = sovereign_core::sovereign_dir();
 
     // Initialize crypto subsystem if enabled. The DeviceKey is wrapped
     // in Arc so it can be shared with the Tauri AppState for the PII
@@ -188,9 +188,7 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             }
 
             // Seed user profile and session log history
-            let profile_dir = sovereign_core::home_dir()
-                .join(".sovereign")
-                .join("orchestrator");
+            let profile_dir = sovereign_core::sovereign_dir().join("orchestrator");
             if let Err(e) = seed::seed_profile_and_history(&profile_dir) {
                 tracing::warn!("Profile/history seed failed: {e}");
             }
@@ -516,8 +514,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pii::commit_signup_capture,
         ])
         .setup(move |app| {
-            // Auto-open DevTools in debug builds
-            #[cfg(debug_assertions)]
+            // Auto-open DevTools in debug builds (desktop only — mobile webviews don't support it)
+            #[cfg(all(debug_assertions, not(any(target_os = "ios", target_os = "android"))))]
             {
                 use tauri::Manager;
                 if let Some(window) = app.get_webview_window("main") {

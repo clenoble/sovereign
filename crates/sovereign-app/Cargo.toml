@@ -64,3 +64,10 @@ comms-signal = ["comms", "sovereign-comms/signal"]
 comms-whatsapp = ["comms", "sovereign-comms/whatsapp"]
 wasm-plugins = ["sovereign-skills/wasm-plugins"]
 web-browse = ["reqwest", "readability"]
+
+# Mobile (iOS / Android) feature set.
+# Excludes desktop-only deps: voice (cpal-based), email (native-tls),
+# P2P (libp2p mDNS restrictions), embedded browser (pixel-bounded child webview).
+# Signal is included via comms-signal — pure Rust (presage), works on mobile,
+# though keys still need OS keychain integration in Phase 5.
+mobile = ["encrypted-log", "encryption", "comms-signal"]
