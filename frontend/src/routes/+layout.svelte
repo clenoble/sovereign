@@ -6,6 +6,7 @@
 	import { subscribeToEvents } from '$lib/api/events';
 	import { getTheme, checkAuthState, getProfile } from '$lib/api/commands';
 	import { stopNowTimer } from '$lib/stores/canvas.svelte';
+	import { device, initDevice, destroyDevice } from '$lib/stores/device.svelte';
 
 	import Taskbar from '$lib/components/Taskbar.svelte';
 	import Bubble from '$lib/components/Bubble.svelte';
@@ -25,10 +26,16 @@
 	import LoginScreen from '$lib/components/LoginScreen.svelte';
 	import OnboardingWizard from '$lib/components/OnboardingWizard.svelte';
 	import SettingsPanel from '$lib/components/SettingsPanel.svelte';
+	import MobileShell from '$lib/components/mobile/MobileShell.svelte';
 
 	let { children } = $props();
 
 	onMount(async () => {
+		// Initialize device detection (viewport + platform). Subscribes
+		// to resize so toggling Chrome devtools' device emulation flips
+		// the layout live.
+		initDevice();
+
 		// Check auth state first
 		try {
 			const auth = await checkAuthState();
@@ -61,8 +68,10 @@
 		// Subscribe to backend events
 		const unlisten = await subscribeToEvents();
 
-		// Global keyboard shortcuts
+		// Global keyboard shortcuts (desktop only — mobile has no
+		// physical keyboard and these would compete with platform IME).
 		const handleKeydown = (e: KeyboardEvent) => {
+			if (device.isMobile) return;
 			const tag = (e.target as HTMLElement)?.tagName;
 			const editable = (e.target as HTMLElement)?.isContentEditable;
 			const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || editable;
@@ -133,6 +142,7 @@
 			unlisten();
 			unlistenSignup();
 			stopNowTimer();
+			destroyDevice();
 			window.removeEventListener('keydown', handleKeydown);
 		};
 	});
@@ -153,8 +163,17 @@
 	<LoginScreen />
 {:else}
 	<div class="app">
-		{@render children()}
-		<Bubble />
+		{#if device.isMobile}
+			<MobileShell />
+		{:else}
+			{@render children()}
+			<Bubble />
+			<Taskbar />
+		{/if}
+
+		<!-- Shared overlays — toggled via app state, mounted in both modes.
+		     Phase 3 will move Chat into the BottomSheet on mobile; until then
+		     it overlays as on desktop. -->
 		<Chat />
 		<Search />
 		<ConfirmAction />
@@ -174,7 +193,6 @@
 		/>
 		<ContextMenu />
 		<SettingsPanel />
-		<Taskbar />
 	</div>
 {/if}
 
