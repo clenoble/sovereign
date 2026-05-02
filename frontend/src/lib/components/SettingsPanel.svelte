@@ -967,4 +967,12 @@
 		text-align: center;
 		margin: 8px 0 0 0;
 	}
+
+	@media (max-width: 768px) {
+		.settings-panel {
+			width: 100vw;
+			border-left: none;
+			box-shadow: none;
+		}
+	}
 </style>

@@ -213,4 +213,16 @@
 		font-size: 0.85rem;
 		text-align: center;
 	}
+
+	@media (max-width: 768px) {
+		/* Override the drag-position inline style to anchor the panel
+		   below the LaneHeader and above the BottomSheet on mobile. */
+		.inbox-panel {
+			left: 8px !important;
+			right: 8px !important;
+			top: max(env(safe-area-inset-top), 60px) !important;
+			width: auto;
+			max-height: calc(100vh - 200px);
+		}
+	}
 </style>

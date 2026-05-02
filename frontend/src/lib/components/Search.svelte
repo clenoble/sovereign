@@ -219,4 +219,18 @@
 		font-size: 0.75rem;
 		text-align: center;
 	}
+
+	@media (max-width: 768px) {
+		.search-overlay {
+			padding-top: 8vh;
+		}
+		.search-modal {
+			width: calc(100vw - 16px);
+			max-width: 100vw;
+			max-height: 80vh;
+		}
+		.search-input {
+			font-size: 16px; /* prevent iOS zoom on focus */
+		}
+	}
 </style>

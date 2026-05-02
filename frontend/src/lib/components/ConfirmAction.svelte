@@ -118,4 +118,15 @@
 	.reject:hover {
 		filter: brightness(1.15);
 	}
+
+	@media (max-width: 768px) {
+		.confirm-dialog {
+			width: calc(100vw - 16px);
+			max-width: 100vw;
+		}
+		.btn {
+			padding: 12px 20px; /* larger touch target */
+			font-size: 0.95rem;
+		}
+	}
 </style>
