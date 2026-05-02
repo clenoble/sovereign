@@ -2,28 +2,30 @@
 	/** Top-level mobile chrome.
 	 *
 	 *  Compose order (top to bottom):
-	 *    1. LaneHeader  (sticky)
-	 *    2. Canvas area (existing Canvas.svelte for now — Phase 2 swaps in MobileCanvas)
-	 *    3. BottomSheet (chat AI; chassis-only in Phase 1)
-	 *    4. Fab         (floating + above the taskbar)
-	 *    5. MobileTaskbar
+	 *    1. LaneHeader      (sticky)
+	 *    2. MobileCanvas    (fills remaining space)
+	 *    3. MobileChatSheet (bottom sheet — AI chat + pending actions)
+	 *    4. MobileDocReader (full-screen overlay when a doc is open)
+	 *    5. Fab             (floating + above the taskbar)
+	 *    6. MobileTaskbar   (anchored to bottom of the flex flow)
 	 *
 	 *  Existing desktop overlay panels (Search, ConfirmAction, ModelPanel,
 	 *  InboxPanel, ContactPanel, PiiDashboardPanel, SettingsPanel,
 	 *  SignupCapturePrompt, AutofillPrompt, ContextMenu) are still mounted
-	 *  by the root +layout.svelte — this component just provides the mobile
-	 *  body chrome.
+	 *  by the root +layout.svelte and overlay on top of this shell.
 	 */
 	import { onMount } from 'svelte';
 	import { app } from '$lib/stores/app.svelte';
 	import { load as canvasLoad } from '$lib/stores/canvas.svelte';
+	import { panels } from '$lib/stores/documents.svelte';
 	import { listPendingSuggestions, getStatus } from '$lib/api/commands';
 	import { setSuggestions, type LinkSuggestion } from '$lib/stores/suggestions.svelte';
 	import LaneHeader from './LaneHeader.svelte';
 	import MobileCanvas from './MobileCanvas.svelte';
 	import MobileTaskbar from './MobileTaskbar.svelte';
 	import Fab from './Fab.svelte';
-	import BottomSheet from './BottomSheet.svelte';
+	import MobileChatSheet from './MobileChatSheet.svelte';
+	import MobileDocReader from './MobileDocReader.svelte';
 
 	let error = $state('');
 
@@ -66,7 +68,17 @@
 		<p class="error">{error}</p>
 	{/if}
 
-	<BottomSheet />
+	<!-- Chat bottom sheet — sits above taskbar, below doc reader -->
+	<MobileChatSheet />
+
+	<!-- Full-screen doc reader — shown whenever a panel is opened.
+	     Shows the topmost panel (last in array). Desktop panels array is
+	     the same store; on mobile we intercept the render here instead of
+	     in +page.svelte. -->
+	{#if panels.length > 0}
+		<MobileDocReader panel={panels[panels.length - 1]} />
+	{/if}
+
 	<Fab />
 	<MobileTaskbar />
 </div>
@@ -92,7 +104,7 @@
 	.error {
 		position: absolute;
 		left: 50%;
-		bottom: 110px;
+		bottom: 120px;
 		transform: translateX(-50%);
 		color: var(--error, #ef4444);
 		background: var(--bg-panel, #22222a);
@@ -101,5 +113,6 @@
 		border: 1px solid var(--border, #333);
 		font-size: 0.8rem;
 		z-index: 80;
+		pointer-events: none;
 	}
 </style>

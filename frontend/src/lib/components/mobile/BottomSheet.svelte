@@ -5,26 +5,30 @@
 	 *  sheet; release snaps to the nearest detent, with a velocity threshold
 	 *  for "fling" gestures.
 	 *
-	 *  In Phase 3 the AI chat is rendered inside via the {#snippet} children.
-	 *  Phase 1: chassis only — children are placeholder content.
+	 *  The sheet sits above the mobile taskbar (56 px). Pass a `footer`
+	 *  snippet for a pinned input row; it is hidden in peek mode.
 	 */
 
 	type Detent = 'peek' | 'partial' | 'full';
 
+	const TASKBAR_H = 56; // keep in sync with MobileTaskbar height
+
 	let {
 		detent = $bindable<Detent>('peek'),
-		peekHeight = 80,
+		peekHeight = 100,
 		header,
-		children
+		children,
+		footer
 	}: {
 		detent?: Detent;
 		peekHeight?: number;
 		header?: import('svelte').Snippet;
 		children?: import('svelte').Snippet;
+		footer?: import('svelte').Snippet;
 	} = $props();
 
 	let viewportHeight = $state(800);
-	let dragOffset = $state(0); // px relative to current detent (negative = dragging up)
+	let dragOffset = $state(0); // px relative to current detent (positive = dragging down = shrinking)
 	let isDragging = $state(false);
 
 	let pointerStart = { y: 0, t: 0 };
@@ -39,9 +43,10 @@
 	});
 
 	function detentHeight(d: Detent): number {
+		const usable = viewportHeight - TASKBAR_H;
 		if (d === 'peek') return peekHeight;
-		if (d === 'partial') return Math.round(viewportHeight * 0.5);
-		return Math.round(viewportHeight * 0.9);
+		if (d === 'partial') return Math.round(usable * 0.5);
+		return Math.round(usable * 0.88);
 	}
 
 	let currentHeight = $derived(detentHeight(detent) - dragOffset);
@@ -72,13 +77,11 @@
 		const dy = lastPointer.y - pointerStart.y;
 		const velocity = dt > 0 ? dy / dt : 0; // px/ms; positive = moved down
 
-		// Velocity-based fling: > 0.6 px/ms commits to next detent in that direction
 		if (velocity > 0.6) {
 			detent = detent === 'full' ? 'partial' : 'peek';
 		} else if (velocity < -0.6) {
 			detent = detent === 'peek' ? 'partial' : 'full';
 		} else {
-			// Snap to nearest detent based on resting height
 			const target = clampedHeight;
 			const candidates: Detent[] = ['peek', 'partial', 'full'];
 			let best: Detent = detent;
@@ -96,7 +99,6 @@
 	}
 
 	function cycleDetent() {
-		// Tap on handle = cycle peek → partial → full → peek
 		if (detent === 'peek') detent = 'partial';
 		else if (detent === 'partial') detent = 'full';
 		else detent = 'peek';
@@ -122,20 +124,21 @@
 	>
 		<span class="handle-bar"></span>
 		{#if header}
-			<div class="header">{@render header()}</div>
+			<div class="sheet-header">{@render header()}</div>
 		{/if}
 	</div>
 
 	<div class="content">
 		{#if children}
 			{@render children()}
-		{:else}
-			<div class="placeholder">
-				<p>Chat sheet · detent: <strong>{detent}</strong></p>
-				<p class="dim">Phase 3 wires the AI chat panel into this slot.</p>
-			</div>
 		{/if}
 	</div>
+
+	{#if footer && detent !== 'peek'}
+		<div class="footer-slot">
+			{@render footer()}
+		</div>
+	{/if}
 </aside>
 
 <style>
@@ -143,7 +146,8 @@
 		position: fixed;
 		left: 0;
 		right: 0;
-		bottom: 0;
+		/* Sit above the taskbar, not overlapping it */
+		bottom: calc(env(safe-area-inset-bottom, 0px) + 56px);
 		background: var(--bg-panel, #22222a);
 		border-top: 1px solid var(--border, #333);
 		border-radius: 16px 16px 0 0;
@@ -153,8 +157,6 @@
 		overflow: hidden;
 		transition: height 0.18s ease;
 		z-index: 90;
-		/* Sit above the taskbar */
-		padding-bottom: 56px;
 	}
 
 	.sheet.dragging {
@@ -185,26 +187,22 @@
 		opacity: 0.5;
 	}
 
-	.header {
+	.sheet-header {
 		width: 100%;
 	}
 
 	.content {
 		flex: 1;
-		overflow-y: auto;
-		padding: 8px 12px 12px;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		padding: 6px 12px 8px;
 	}
 
-	.placeholder {
-		color: var(--text-muted, #888);
-		font-size: 0.85rem;
-		padding: 12px;
-		text-align: center;
-	}
-
-	.placeholder .dim {
-		opacity: 0.6;
-		font-size: 0.8rem;
-		margin-top: 8px;
+	.footer-slot {
+		flex-shrink: 0;
+		padding: 8px 12px max(env(safe-area-inset-bottom, 0px), 8px);
+		border-top: 1px solid var(--border, #333);
 	}
 </style>
