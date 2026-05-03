@@ -17,6 +17,7 @@ import {
 import { closeBrowserCmd } from '$lib/api/commands';
 import { addSuggestion, removeSuggestion, type LinkSuggestion } from '$lib/stores/suggestions.svelte';
 import { piiState, loadPii } from '$lib/stores/pii.svelte';
+import type { PendingShare } from '$lib/stores/app.svelte';
 import type { ReliabilityResultDto } from '$lib/api/commands';
 
 // Payload types matching the Rust-side structs
@@ -123,6 +124,12 @@ interface LinkSuggestionResolvedPayload {
 interface OpenPanelPayload {
 	/** "pii_dashboard" | "models" | "inbox" | "browser" | "settings" */
 	name: string;
+}
+interface ShareReceivedPayload {
+	content_type: 'text' | 'url';
+	text?: string;
+	url?: string;
+	title?: string;
 }
 
 /** Subscribe to all backend events. Returns an unlisten function. */
@@ -327,6 +334,19 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 				default:
 					console.warn('open-panel: unknown panel name', e.payload.name);
 			}
+		})
+	);
+
+	// Mobile: OS share sheet delivers content here; SharePickerSheet handles it
+	unlisteners.push(
+		await listen<ShareReceivedPayload>('share-received', (e) => {
+			const p = e.payload;
+			app.pendingShare = {
+				contentType: p.content_type,
+				text: p.text,
+				url: p.url,
+				title: p.title
+			} as PendingShare;
 		})
 	);
 

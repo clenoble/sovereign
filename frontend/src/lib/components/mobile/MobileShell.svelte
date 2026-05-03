@@ -26,6 +26,7 @@
 	import Fab from './Fab.svelte';
 	import MobileChatSheet from './MobileChatSheet.svelte';
 	import MobileDocReader from './MobileDocReader.svelte';
+	import SharePickerSheet from './SharePickerSheet.svelte';
 
 	let error = $state('');
 
@@ -81,6 +82,9 @@
 
 	<Fab />
 	<MobileTaskbar />
+
+	<!-- Share picker — full-screen sheet when OS share sheet delivers content -->
+	<SharePickerSheet />
 </div>
 
 <style>

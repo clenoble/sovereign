@@ -23,6 +23,13 @@ export interface Suggestion {
 
 export type AuthState = 'checking' | 'onboarding' | 'login' | 'ready';
 
+export interface PendingShare {
+	contentType: 'text' | 'url';
+	text?: string;
+	url?: string;
+	title?: string;
+}
+
 export interface ContextMenuState {
 	x: number;
 	y: number;
@@ -71,5 +78,7 @@ export const app = $state({
 	contextMenu: null as ContextMenuState | null,
 	skillsPanelVisible: false,
 	bubbleStyle: 'icon' as string,
-	piiDashboardVisible: false
+	piiDashboardVisible: false,
+	/** Content received from the OS share sheet, waiting for thread selection. */
+	pendingShare: null as PendingShare | null
 });

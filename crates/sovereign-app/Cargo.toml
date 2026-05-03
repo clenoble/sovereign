@@ -48,6 +48,9 @@ sha2 = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 readability = { workspace = true, optional = true }
 
+# Haptics (iOS UIImpactFeedbackGenerator / Android VibratorService)
+tauri-plugin-haptics = { version = "2.3.2", optional = true }
+
 [build-dependencies]
 tauri-build = { workspace = true }
 
@@ -64,10 +67,11 @@ comms-signal = ["comms", "sovereign-comms/signal"]
 comms-whatsapp = ["comms", "sovereign-comms/whatsapp"]
 wasm-plugins = ["sovereign-skills/wasm-plugins"]
 web-browse = ["reqwest", "readability"]
+haptics = ["tauri-plugin-haptics"]
 
 # Mobile (iOS / Android) feature set.
 # Excludes desktop-only deps: voice (cpal-based), email (native-tls),
 # P2P (libp2p mDNS restrictions), embedded browser (pixel-bounded child webview).
 # Signal is included via comms-signal — pure Rust (presage), works on mobile,
 # though keys still need OS keychain integration in Phase 5.
-mobile = ["encrypted-log", "encryption", "comms-signal"]
+mobile = ["encrypted-log", "encryption", "comms-signal", "haptics"]
