@@ -768,6 +768,14 @@ impl GraphDB for MockGraphDB {
         Ok(out)
     }
 
+    async fn get_share_record(&self, id: &str) -> DbResult<ShareRecord> {
+        let records = self.share_records.read().unwrap();
+        records
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
     async fn update_pii_record_sources(
         &self,
         id: &str,

@@ -1187,6 +1187,12 @@ impl GraphDB for SurrealGraphDB {
         Ok(records)
     }
 
+    async fn get_share_record(&self, id: &str) -> DbResult<ShareRecord> {
+        let (table, key) = parse_and_validate(id, "share_record")?;
+        let record: Option<ShareRecord> = self.db.select((table, key)).await?;
+        record.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
     async fn list_share_records_for_entity(
         &self,
         entity_id: &str,

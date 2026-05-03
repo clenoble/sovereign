@@ -386,6 +386,10 @@ pub trait GraphDB: Send + Sync {
     /// share records are append-only so the full list isn't pruned.
     async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>>;
 
+    /// Fetch a single share record by ID. Used by the sync engine when
+    /// a remote peer requests specific share records via `GetRows`.
+    async fn get_share_record(&self, id: &str) -> DbResult<ShareRecord>;
+
     /// Replace a record's `sources` list. Used by the ingest hook after
     /// canonical-body substitution to update spans from indexed
     /// placeholders to the post-substitution placeholder spans.
