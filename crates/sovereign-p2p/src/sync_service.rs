@@ -1,12 +1,17 @@
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
-use sovereign_db::schema::{Commit, Document};
+use sovereign_db::schema::{
+    Commit, Document, Entity, PiiRecord, ShareRecord, Thread,
+};
 use sovereign_db::GraphDB;
 
 use crate::error::{P2pError, P2pResult};
-use crate::protocol::manifest::{DocumentManifestEntry, SyncManifest};
-use crate::protocol::sync::EncryptedCommit;
+use crate::protocol::manifest::{
+    DocumentManifestEntry, EntityManifestEntry, PiiRecordManifestEntry,
+    ShareRecordManifestEntry, SyncManifest, ThreadManifestEntry,
+};
+use crate::protocol::sync::{EncryptedCommit, EncryptedRow, SyncTable};
 
 /// Middleware between the P2P networking layer and the database.
 ///
@@ -22,34 +27,110 @@ impl SyncService {
         Self { db, device_id }
     }
 
-    /// Build a SyncManifest from all documents in the database.
+    /// Build a SyncManifest from all syncable tables in the database.
+    /// Documents track via commit chain; threads/entities/pii_records/
+    /// share_records use the row-level last-writer-wins protocol.
     pub async fn build_manifest(&self) -> P2pResult<SyncManifest> {
+        let mut manifest = SyncManifest::new(self.device_id.clone());
+
+        // --- Documents (commit-chain tracked) ---
         let docs = self
             .db
             .list_documents(None)
             .await
             .map_err(|e| P2pError::SyncError(format!("failed to list documents: {e}")))?;
-
-        let mut manifest = SyncManifest::new(self.device_id.clone());
-
         for doc in &docs {
             let doc_id = match doc.id_string() {
                 Some(id) => id,
                 None => continue,
             };
-
             let commits = self
                 .db
                 .list_document_commits(&doc_id)
                 .await
                 .unwrap_or_default();
-
-            manifest.entries.push(DocumentManifestEntry {
+            manifest.documents.push(DocumentManifestEntry {
                 doc_id,
                 head_commit: doc.head_commit.clone(),
                 commit_count: commits.len() as u32,
                 content_hash: content_hash(&doc.content),
                 modified_at: doc.modified_at.to_rfc3339(),
+                deleted_at: doc.deleted_at.clone(),
+            });
+        }
+
+        // --- Threads ---
+        let threads = self
+            .db
+            .list_threads()
+            .await
+            .map_err(|e| P2pError::SyncError(format!("failed to list threads: {e}")))?;
+        for t in &threads {
+            let id = match t.id_string() {
+                Some(id) => id,
+                None => continue,
+            };
+            manifest.threads.push(ThreadManifestEntry {
+                thread_id: id,
+                modified_at: t.modified_at.to_rfc3339(),
+                content_hash: hash_thread(t),
+                deleted_at: t.deleted_at.clone(),
+            });
+        }
+
+        // --- Entities ---
+        let entities = self
+            .db
+            .list_entities()
+            .await
+            .map_err(|e| P2pError::SyncError(format!("failed to list entities: {e}")))?;
+        for e in &entities {
+            let id = match e.id_string() {
+                Some(id) => id,
+                None => continue,
+            };
+            manifest.entities.push(EntityManifestEntry {
+                entity_id: id,
+                modified_at: e.modified_at.to_rfc3339(),
+                content_hash: hash_entity(e),
+                deleted_at: e.deleted_at.clone(),
+            });
+        }
+
+        // --- PII records ---
+        let pii_records = self
+            .db
+            .list_pii_records(None, None, None)
+            .await
+            .map_err(|e| P2pError::SyncError(format!("failed to list pii_records: {e}")))?;
+        for r in &pii_records {
+            let id = match r.id_string() {
+                Some(id) => id,
+                None => continue,
+            };
+            manifest.pii_records.push(PiiRecordManifestEntry {
+                record_id: id,
+                discovered_at: r.discovered_at.to_rfc3339(),
+                content_hash: hash_pii_record(r),
+                deleted_at: r.deleted_at.clone(),
+            });
+        }
+
+        // --- Share records (append-only) ---
+        let share_records = self
+            .db
+            .list_all_share_records()
+            .await
+            .map_err(|e| P2pError::SyncError(format!("failed to list share_records: {e}")))?;
+        for s in &share_records {
+            let id = match s.id_string() {
+                Some(id) => id,
+                None => continue,
+            };
+            manifest.share_records.push(ShareRecordManifestEntry {
+                record_id: id,
+                shared_at: s.shared_at.to_rfc3339(),
+                content_hash: hash_share_record(s),
             });
         }
 
@@ -227,6 +308,70 @@ pub fn content_hash(content: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// SHA-256 of a row's syncable fields. Excludes timestamps used for
+/// LWW so two devices that converged on the same value via different
+/// histories produce the same hash and short-circuit the diff to
+/// "in sync".
+fn hash_thread(t: &Thread) -> String {
+    let mut h = Sha256::new();
+    h.update(t.name.as_bytes());
+    h.update(t.description.as_bytes());
+    if let Some(ref d) = t.deleted_at {
+        h.update(b"|deleted:");
+        h.update(d.as_bytes());
+    }
+    format!("{:x}", h.finalize())
+}
+
+fn hash_entity(e: &Entity) -> String {
+    let mut h = Sha256::new();
+    h.update(e.name.as_bytes());
+    // Stable serialization for collections — sort first.
+    let mut domains = e.domains.clone();
+    domains.sort();
+    for d in &domains {
+        h.update(b"|d:");
+        h.update(d.as_bytes());
+    }
+    h.update(b"|kind:");
+    h.update(format!("{:?}", e.kind).as_bytes());
+    h.update(b"|owned:");
+    h.update(if e.is_owned { b"1" as &[u8] } else { b"0" });
+    if let Some(ref d) = e.deleted_at {
+        h.update(b"|deleted:");
+        h.update(d.as_bytes());
+    }
+    format!("{:x}", h.finalize())
+}
+
+fn hash_pii_record(r: &PiiRecord) -> String {
+    let mut h = Sha256::new();
+    h.update(format!("{:?}", r.kind).as_bytes());
+    h.update(b"|enc:");
+    h.update(r.value_encrypted.as_bytes());
+    h.update(b"|nonce:");
+    h.update(r.value_nonce.as_bytes());
+    h.update(b"|entity:");
+    h.update(r.entity_id.as_deref().unwrap_or("").as_bytes());
+    h.update(b"|review:");
+    h.update(format!("{:?}", r.review_state).as_bytes());
+    if let Some(ref d) = r.deleted_at {
+        h.update(b"|deleted:");
+        h.update(d.as_bytes());
+    }
+    format!("{:x}", h.finalize())
+}
+
+fn hash_share_record(s: &ShareRecord) -> String {
+    let mut h = Sha256::new();
+    h.update(s.pii_record_id.as_bytes());
+    h.update(b"|to:");
+    h.update(s.to_entity_id.as_bytes());
+    h.update(b"|chan:");
+    h.update(format!("{:?}", s.channel).as_bytes());
+    format!("{:x}", h.finalize())
+}
+
 /// Convert a DB Commit to the transport format.
 fn commit_to_transport(commit: &Commit) -> EncryptedCommit {
     // For Phase 1: snapshot is plaintext base64, no encryption
@@ -282,14 +427,18 @@ mod tests {
 
         let manifest = svc.build_manifest().await.unwrap();
         assert_eq!(manifest.device_id, "device-1");
-        assert_eq!(manifest.entries.len(), 2);
+        assert_eq!(manifest.documents.len(), 2);
     }
 
     #[tokio::test]
     async fn build_manifest_empty_db() {
         let (_db, svc) = mock_sync_service();
         let manifest = svc.build_manifest().await.unwrap();
-        assert!(manifest.entries.is_empty());
+        assert!(manifest.documents.is_empty());
+        assert!(manifest.threads.is_empty());
+        assert!(manifest.entities.is_empty());
+        assert!(manifest.pii_records.is_empty());
+        assert!(manifest.share_records.is_empty());
     }
 
     #[tokio::test]

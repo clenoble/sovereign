@@ -15,6 +15,16 @@ pub enum SovereignRequest {
     GetCommits { commit_ids: Vec<String> },
     /// Push encrypted commits to a peer.
     PushCommits { commits: Vec<sync::EncryptedCommit> },
+    /// Request specific rows from a non-document table.
+    GetRows {
+        table: sync::SyncTable,
+        ids: Vec<String>,
+    },
+    /// Push encrypted rows to a peer (LWW resolution server-side).
+    PushRows {
+        table: sync::SyncTable,
+        rows: Vec<sync::EncryptedRow>,
+    },
     /// Guardian shard delivery.
     DeliverShard(guardian::ShardDeliveryRequest),
     /// Request a shard for recovery.
@@ -34,6 +44,13 @@ pub enum SovereignResponse {
     Ok,
     /// Commits in response to GetCommits.
     Commits { commits: Vec<sync::EncryptedCommit> },
+    /// Rows in response to GetRows.
+    Rows {
+        table: sync::SyncTable,
+        rows: Vec<sync::EncryptedRow>,
+    },
+    /// Acknowledgement of a PushRows with per-row write/skip counts.
+    PushAck { written: u32, skipped: u32 },
     /// Shard delivery acknowledgement.
     ShardAck { accepted: bool },
     /// Shard for recovery.
