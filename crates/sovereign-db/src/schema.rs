@@ -82,6 +82,12 @@ pub struct Thread {
     pub name: String,
     pub description: String,
     pub created_at: DateTime<Utc>,
+    /// Last-modified timestamp, used for last-writer-wins conflict
+    /// resolution during cross-device sync. Defaults to `Utc::now()`
+    /// for v0.0.4 rows that pre-date sync — first sync round will
+    /// then bump it on the latest writer.
+    #[serde(default = "Utc::now")]
+    pub modified_at: DateTime<Utc>,
     /// Soft-delete timestamp (ISO 8601). None means the thread is active.
     #[serde(default)]
     pub deleted_at: Option<String>,
@@ -279,11 +285,13 @@ impl Milestone {
 
 impl Thread {
     pub fn new(name: String, description: String) -> Self {
+        let now = Utc::now();
         Self {
             id: None,
             name,
             description,
-            created_at: Utc::now(),
+            created_at: now,
+            modified_at: now,
             deleted_at: None,
         }
     }

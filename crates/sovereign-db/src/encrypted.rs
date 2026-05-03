@@ -682,6 +682,10 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.list_share_records_for_entity(entity_id).await
     }
 
+    async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>> {
+        self.inner.list_all_share_records().await
+    }
+
     async fn update_pii_record_sources(
         &self,
         id: &str,
@@ -930,6 +934,7 @@ mod tests {
         async fn get_entity(&self, _id: &str) -> DbResult<Entity> { Err(DbError::NotFound("mock".into())) }
         async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> { Ok(record) }
         async fn list_share_records_for_entity(&self, _entity_id: &str) -> DbResult<Vec<ShareRecord>> { Ok(vec![]) }
+        async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>> { Ok(vec![]) }
         async fn update_pii_record_sources(&self, _id: &str, _sources: Vec<SourceRef>) -> DbResult<()> { Ok(()) }
         async fn update_pii_record_revealed_at(&self, _id: &str, _last_revealed_at: chrono::DateTime<chrono::Utc>) -> DbResult<()> { Ok(()) }
         async fn update_document_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }

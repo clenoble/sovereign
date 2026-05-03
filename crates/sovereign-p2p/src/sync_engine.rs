@@ -6,13 +6,13 @@ use crate::protocol::sync::{SyncConflict, SyncDiff};
 /// Computes the diff between a local and remote manifest.
 pub fn compute_diff(local: &SyncManifest, remote: &SyncManifest) -> SyncDiff {
     let local_map: HashMap<&str, &DocumentManifestEntry> = local
-        .entries
+        .documents
         .iter()
         .map(|e| (e.doc_id.as_str(), e))
         .collect();
 
     let remote_map: HashMap<&str, &DocumentManifestEntry> = remote
-        .entries
+        .documents
         .iter()
         .map(|e| (e.doc_id.as_str(), e))
         .collect();
@@ -106,21 +106,26 @@ mod tests {
             commit_count: count,
             content_hash: hash.into(),
             modified_at: "2026-01-01T00:00:00Z".into(),
+            deleted_at: None,
+        }
+    }
+
+    fn manifest_with(device: &str, docs: Vec<DocumentManifestEntry>) -> SyncManifest {
+        SyncManifest {
+            device_id: device.into(),
+            generated_at: "now".into(),
+            documents: docs,
+            threads: vec![],
+            entities: vec![],
+            pii_records: vec![],
+            share_records: vec![],
         }
     }
 
     #[test]
     fn identical_manifests() {
-        let local = SyncManifest {
-            device_id: "dev-1".into(),
-            generated_at: "now".into(),
-            entries: vec![entry("doc:1", Some("c:1"), 1, "hash1")],
-        };
-        let remote = SyncManifest {
-            device_id: "dev-2".into(),
-            generated_at: "now".into(),
-            entries: vec![entry("doc:1", Some("c:1"), 1, "hash1")],
-        };
+        let local = manifest_with("dev-1", vec![entry("doc:1", Some("c:1"), 1, "hash1")]);
+        let remote = manifest_with("dev-2", vec![entry("doc:1", Some("c:1"), 1, "hash1")]);
         let diff = compute_diff(&local, &remote);
         assert!(!diff.has_work());
         assert_eq!(diff.in_sync.len(), 1);
@@ -128,48 +133,24 @@ mod tests {
 
     #[test]
     fn remote_has_new_doc() {
-        let local = SyncManifest {
-            device_id: "dev-1".into(),
-            generated_at: "now".into(),
-            entries: vec![],
-        };
-        let remote = SyncManifest {
-            device_id: "dev-2".into(),
-            generated_at: "now".into(),
-            entries: vec![entry("doc:1", Some("c:1"), 1, "hash1")],
-        };
+        let local = manifest_with("dev-1", vec![]);
+        let remote = manifest_with("dev-2", vec![entry("doc:1", Some("c:1"), 1, "hash1")]);
         let diff = compute_diff(&local, &remote);
         assert_eq!(diff.need_from_remote, vec!["doc:1"]);
     }
 
     #[test]
     fn local_has_new_doc() {
-        let local = SyncManifest {
-            device_id: "dev-1".into(),
-            generated_at: "now".into(),
-            entries: vec![entry("doc:1", Some("c:1"), 1, "hash1")],
-        };
-        let remote = SyncManifest {
-            device_id: "dev-2".into(),
-            generated_at: "now".into(),
-            entries: vec![],
-        };
+        let local = manifest_with("dev-1", vec![entry("doc:1", Some("c:1"), 1, "hash1")]);
+        let remote = manifest_with("dev-2", vec![]);
         let diff = compute_diff(&local, &remote);
         assert_eq!(diff.push_to_remote, vec!["doc:1"]);
     }
 
     #[test]
     fn diverged_docs_are_conflicts() {
-        let local = SyncManifest {
-            device_id: "dev-1".into(),
-            generated_at: "now".into(),
-            entries: vec![entry("doc:1", Some("c:local"), 3, "hash-local")],
-        };
-        let remote = SyncManifest {
-            device_id: "dev-2".into(),
-            generated_at: "now".into(),
-            entries: vec![entry("doc:1", Some("c:remote"), 4, "hash-remote")],
-        };
+        let local = manifest_with("dev-1", vec![entry("doc:1", Some("c:local"), 3, "hash-local")]);
+        let remote = manifest_with("dev-2", vec![entry("doc:1", Some("c:remote"), 4, "hash-remote")]);
         let diff = compute_diff(&local, &remote);
         assert_eq!(diff.conflicts.len(), 1);
         assert_eq!(diff.conflicts[0].doc_id, "doc:1");
@@ -177,17 +158,8 @@ mod tests {
 
     #[test]
     fn remote_ahead_from_scratch() {
-        // Remote has commits, local has none (new doc pulled from remote)
-        let local = SyncManifest {
-            device_id: "dev-1".into(),
-            generated_at: "now".into(),
-            entries: vec![entry("doc:1", None, 0, "empty")],
-        };
-        let remote = SyncManifest {
-            device_id: "dev-2".into(),
-            generated_at: "now".into(),
-            entries: vec![entry("doc:1", Some("c:5"), 5, "hash5")],
-        };
+        let local = manifest_with("dev-1", vec![entry("doc:1", None, 0, "empty")]);
+        let remote = manifest_with("dev-2", vec![entry("doc:1", Some("c:5"), 5, "hash5")]);
         let diff = compute_diff(&local, &remote);
         // local head is None, is_ancestor returns true for None, so need_from_remote
         assert_eq!(diff.need_from_remote, vec!["doc:1"]);
@@ -195,24 +167,22 @@ mod tests {
 
     #[test]
     fn mixed_scenario() {
-        let local = SyncManifest {
-            device_id: "dev-1".into(),
-            generated_at: "now".into(),
-            entries: vec![
-                entry("doc:1", Some("c:1"), 1, "hash1"), // in sync
-                entry("doc:2", Some("c:2"), 2, "hash2"), // only local
+        let local = manifest_with(
+            "dev-1",
+            vec![
+                entry("doc:1", Some("c:1"), 1, "hash1"),  // in sync
+                entry("doc:2", Some("c:2"), 2, "hash2"),  // only local
                 entry("doc:3", Some("c:3a"), 3, "hashA"), // conflict
             ],
-        };
-        let remote = SyncManifest {
-            device_id: "dev-2".into(),
-            generated_at: "now".into(),
-            entries: vec![
-                entry("doc:1", Some("c:1"), 1, "hash1"), // in sync
+        );
+        let remote = manifest_with(
+            "dev-2",
+            vec![
+                entry("doc:1", Some("c:1"), 1, "hash1"),  // in sync
                 entry("doc:3", Some("c:3b"), 4, "hashB"), // conflict
-                entry("doc:4", Some("c:4"), 1, "hash4"), // only remote
+                entry("doc:4", Some("c:4"), 1, "hash4"),  // only remote
             ],
-        };
+        );
         let diff = compute_diff(&local, &remote);
         assert_eq!(diff.in_sync, vec!["doc:1"]);
         assert!(diff.push_to_remote.contains(&"doc:2".to_string()));

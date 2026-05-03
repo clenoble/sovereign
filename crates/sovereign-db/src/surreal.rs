@@ -298,6 +298,7 @@ impl GraphDB for SurrealGraphDB {
         if let Some(d) = description {
             thread.description = d.to_string();
         }
+        thread.modified_at = Utc::now();
 
         let updated: Option<Thread> = self.db.update((table, key)).content(thread).await?;
         updated.ok_or_else(|| DbError::Query("Failed to update thread".into()))
@@ -1175,6 +1176,15 @@ impl GraphDB for SurrealGraphDB {
             .content(record)
             .await?;
         created.ok_or_else(|| DbError::Query("Failed to create share_record".into()))
+    }
+
+    async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM share_record ORDER BY shared_at DESC")
+            .await?;
+        let records: Vec<ShareRecord> = result.take(0)?;
+        Ok(records)
     }
 
     async fn list_share_records_for_entity(

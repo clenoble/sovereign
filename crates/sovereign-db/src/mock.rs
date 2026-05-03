@@ -171,6 +171,7 @@ impl GraphDB for MockGraphDB {
         let thread = threads.get_mut(id).ok_or_else(|| DbError::NotFound(id.to_string()))?;
         if let Some(n) = name { thread.name = n.to_string(); }
         if let Some(d) = description { thread.description = d.to_string(); }
+        thread.modified_at = Utc::now();
         Ok(thread.clone())
     }
 
@@ -756,6 +757,13 @@ impl GraphDB for MockGraphDB {
             .filter(|r| r.to_entity_id == entity_id)
             .cloned()
             .collect();
+        out.sort_by(|a, b| b.shared_at.cmp(&a.shared_at));
+        Ok(out)
+    }
+
+    async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>> {
+        let records = self.share_records.read().unwrap();
+        let mut out: Vec<ShareRecord> = records.values().cloned().collect();
         out.sort_by(|a, b| b.shared_at.cmp(&a.shared_at));
         Ok(out)
     }

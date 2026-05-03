@@ -381,6 +381,11 @@ pub trait GraphDB: Send + Sync {
         entity_id: &str,
     ) -> DbResult<Vec<ShareRecord>>;
 
+    /// Return every share record (across all entities). Used by the
+    /// cross-device sync engine to build the share-ledger manifest;
+    /// share records are append-only so the full list isn't pruned.
+    async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>>;
+
     /// Replace a record's `sources` list. Used by the ingest hook after
     /// canonical-body substitution to update spans from indexed
     /// placeholders to the post-substitution placeholder spans.
