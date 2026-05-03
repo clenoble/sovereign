@@ -28,7 +28,7 @@ use crate::tauri_state::AppState;
 ///
 /// Preconditions checked in order (each returns the body unchanged on
 /// short-circuit):
-///   1. `state.device_key` is `Some` (encryption initialized).
+///   1. `state.account_key` is `Some` (encryption initialized post-login).
 ///   2. Document doesn't already have a `pii_scanned_at` timestamp
 ///      (idempotent — re-saves pass through; the idle sweep will
 ///      rescan if the taxonomy changes).
@@ -41,10 +41,10 @@ pub async fn maybe_ingest_document_body(
     doc_id: &str,
     body: &str,
 ) -> Result<String, String> {
-    let device_key = match state.device_key().await {
-        Some(dk) => dk,
+    let account_key = match state.account_key().await {
+        Some(ak) => ak,
         None => {
-            tracing::debug!("PII ingest skipped: device_key unavailable");
+            tracing::debug!("PII ingest skipped: account_key unavailable");
             return Ok(body.to_string());
         }
     };
@@ -92,7 +92,7 @@ pub async fn maybe_ingest_document_body(
         &entities,
         &contacts,
         &sink,
-        device_key.as_ref(),
+        account_key.as_ref(),
     )
     .await
     .map_err(|e| format!("ingest_text: {e}"))?;

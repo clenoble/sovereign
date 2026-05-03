@@ -345,6 +345,17 @@ pub trait GraphDB: Send + Sync {
         review_state: ReviewState,
     ) -> DbResult<()>;
 
+    /// Replace a PiiRecord's encrypted value + nonce in place. Used by
+    /// the v0.0.4 → v0.0.5 migration to re-encrypt vault entries from
+    /// the per-device DeviceKey to the user-scoped AccountKey, and by
+    /// any future re-key flow. Other fields are untouched.
+    async fn update_pii_record_value(
+        &self,
+        id: &str,
+        value_encrypted: &str,
+        value_nonce: &str,
+    ) -> DbResult<()>;
+
     /// Soft-delete a PiiRecord. Sets `deleted_at` so the record falls
     /// out of `list_pii_records` but remains in the DB for audit / undo.
     /// Used by the dashboard's redact (L5) action.

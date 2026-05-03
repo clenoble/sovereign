@@ -704,6 +704,21 @@ impl GraphDB for MockGraphDB {
         Ok(())
     }
 
+    async fn update_pii_record_value(
+        &self,
+        id: &str,
+        value_encrypted: &str,
+        value_nonce: &str,
+    ) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.value_encrypted = value_encrypted.to_string();
+        record.value_nonce = value_nonce.to_string();
+        Ok(())
+    }
+
     async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
         let mut records = self.pii_records.write().unwrap();
         let record = records

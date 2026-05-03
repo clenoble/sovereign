@@ -1,3 +1,4 @@
+pub mod account_key;
 pub mod aead;
 pub mod auth;
 pub mod canary;

@@ -17,7 +17,7 @@ use chrono::Utc;
 use sovereign_ai::pii::ingest::{ingest_text, GraphDbPiiSink};
 use sovereign_ai::pii::pipeline::PipelineConfig;
 use sovereign_comms::pii_hook::ContactIngestHook;
-use sovereign_crypto::device_key::DeviceKey;
+use sovereign_crypto::account_key::AccountKey;
 use sovereign_crypto::vault::EncryptedBlob;
 use sovereign_db::schema::{
     thing_to_raw, ChannelType, Contact, PiiKind, PiiRecord, ReviewState, SourceKind,
@@ -27,12 +27,12 @@ use sovereign_db::traits::GraphDB;
 
 pub struct PiiContactHook {
     db: Arc<dyn GraphDB>,
-    device_key: Arc<DeviceKey>,
+    account_key: Arc<AccountKey>,
 }
 
 impl PiiContactHook {
-    pub fn new(db: Arc<dyn GraphDB>, device_key: Arc<DeviceKey>) -> Self {
-        Self { db, device_key }
+    pub fn new(db: Arc<dyn GraphDB>, account_key: Arc<AccountKey>) -> Self {
+        Self { db, account_key }
     }
 
     async fn run_ingest(&self, contact_id: &str, contact: &Contact) -> anyhow::Result<()> {
@@ -45,7 +45,7 @@ impl PiiContactHook {
                 | ChannelType::WhatsApp => PiiKind::Phone,
                 ChannelType::Matrix | ChannelType::Custom(_) => PiiKind::Other,
             };
-            let blob = EncryptedBlob::encrypt_str(&addr.address, self.device_key.as_ref())
+            let blob = EncryptedBlob::encrypt_str(&addr.address, self.account_key.as_ref())
                 .map_err(|e| anyhow::anyhow!("vault encrypt addr: {e}"))?;
             let record = PiiRecord {
                 id: None,
@@ -94,7 +94,7 @@ impl PiiContactHook {
                 &entities,
                 &contacts,
                 &sink,
-                self.device_key.as_ref(),
+                self.account_key.as_ref(),
             )
             .await?;
             self.db
