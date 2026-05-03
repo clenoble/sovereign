@@ -5,11 +5,19 @@
 		checkAuthState,
 		validatePasswordPolicy,
 		completeOnboarding,
+		completeOnboardingPaired,
+		consumePairQrPreview,
 		toggleTheme
 	} from '$lib/api/commands';
-	import type { KeystrokeSampleDto, OnboardingData } from '$lib/api/commands';
+	import type {
+		KeystrokeSampleDto,
+		OnboardingData,
+		PairPayloadPreview
+	} from '$lib/api/commands';
 	import BubblePreview from './BubblePreview.svelte';
 	import { applyTheme, theme } from '$lib/stores/theme.svelte';
+
+	type FlowMode = 'first' | 'paired';
 
 	// ---------------------------------------------------------------------------
 	// Designation generator
@@ -71,6 +79,18 @@
 	let step = $state(0);
 	let designation = $state(generateDesignation());
 
+	// Phase 5: paired-device flow.
+	// `flowMode` is set by the welcome step.
+	//   - 'first': default — full onboarding wizard.
+	//   - 'paired': skip the personality steps; collect the QR + PIN +
+	//     new local password; submit `complete_onboarding_paired`.
+	let flowMode = $state<FlowMode>('first');
+	let qrPayload = $state('');
+	let qrPin = $state('');
+	let qrPreview = $state<PairPayloadPreview | null>(null);
+	let qrPreviewError = $state('');
+	let qrPreviewLoading = $state(false);
+
 	// Step 2 — Nickname
 	let nickname = $state('');
 
@@ -103,11 +123,26 @@
 	let currentKeyTimings = new Map<string, number>();
 	let currentKeystrokes: KeystrokeSampleDto[] = [];
 
-	// Computed step count depends on whether crypto is enabled
-	let totalSteps = $derived(cryptoEnabled ? 9 : 5);
+	// Step layouts:
+	//   first + crypto:    [Welcome, Nickname, Bubble, Theme, Sample, Pw, Duress, Canary, Keystroke] = 9
+	//   first + no-crypto: [Welcome, Nickname, Bubble, Theme, Sample]                                 = 5
+	//   paired:            [Welcome, QR+PIN, Pw]                                                       = 3
+	let totalSteps = $derived(
+		flowMode === 'paired' ? 3 : cryptoEnabled ? 9 : 5
+	);
 
-	// Whether the Next button should be enabled for the current step
+	// Whether the Next button should be enabled for the current step.
 	let canAdvance = $derived.by(() => {
+		if (flowMode === 'paired') {
+			switch (step) {
+				case 0: return true; // Welcome
+				case 1: return qrPreview !== null; // QR validated
+				case 2: return passwordPolicyValid
+					&& password === passwordConfirm
+					&& password.length > 0;
+				default: return true;
+			}
+		}
 		switch (step) {
 			case 0: return true; // Welcome
 			case 1: return true; // Nickname (optional)
@@ -175,7 +210,14 @@
 	// Handlers
 	// ---------------------------------------------------------------------------
 	function handleBack() {
-		if (step > 0) step--;
+		if (step > 0) {
+			step--;
+			// Returning to welcome resets the choice so the user can pick
+			// the other flow.
+			if (step === 0) {
+				flowMode = 'first';
+			}
+		}
 	}
 
 	function handleNext() {
@@ -186,11 +228,43 @@
 			return;
 		}
 
+		// Welcome step: the choice cards normally drive the transition.
+		// If the user clicks Next without picking, default to the first-
+		// device flow (matches v0.0.4 behaviour).
+		if (step === 0 && flowMode === 'first') {
+			step = 1;
+			return;
+		}
+
 		step++;
 	}
 
 	function canSkipCurrentStep(): boolean {
+		// Paired flow: nothing is skippable (welcome / QR / pw all required).
+		if (flowMode === 'paired') return false;
 		return step === 6 || step === 7 || step === 8;
+	}
+
+	async function handlePreviewQr() {
+		qrPreviewError = '';
+		qrPreviewLoading = true;
+		qrPreview = null;
+		try {
+			qrPreview = await consumePairQrPreview(qrPayload.trim(), qrPin.trim());
+		} catch (e) {
+			qrPreviewError = String(e);
+		}
+		qrPreviewLoading = false;
+	}
+
+	function selectFirstDevice() {
+		flowMode = 'first';
+		step = 1;
+	}
+
+	function selectPairedDevice() {
+		flowMode = 'paired';
+		step = 1;
 	}
 
 	function handleSkip() {
@@ -202,6 +276,27 @@
 	}
 
 	async function handleComplete() {
+		// Paired flow: skip the personality steps, just submit the
+		// imported AccountKey + new local passphrase.
+		if (flowMode === 'paired') {
+			try {
+				await completeOnboardingPaired({
+					qr_payload_b64: qrPayload.trim(),
+					pin: qrPin.trim(),
+					password,
+					duress_password: null,
+					nickname: null,
+					bubble_style: null,
+					canary_phrase: null,
+					seed_sample_data: false
+				});
+				app.authState = 'login'; // user must now log in with the new local password
+			} catch (e) {
+				console.error('Paired onboarding failed:', e);
+			}
+			return;
+		}
+
 		const data: OnboardingData = {
 			nickname: nickname.trim() || null,
 			bubble_style: bubbleStyle,
@@ -298,9 +393,133 @@
 						Sovereign GE is your personal, sovereign computing environment.
 						Everything runs locally on your machine — your data, your AI, your rules.
 					</p>
-					<p class="description muted">
-						This wizard will help you personalize your experience in a few quick steps.
+					<div class="flow-choice">
+						<button class="flow-card" onclick={selectFirstDevice}>
+							<span class="flow-card-title">First device</span>
+							<span class="flow-card-desc">
+								Set up a fresh workspace from scratch.
+							</span>
+						</button>
+						{#if cryptoEnabled}
+							<button class="flow-card" onclick={selectPairedDevice}>
+								<span class="flow-card-title">Pair with existing device</span>
+								<span class="flow-card-desc">
+									Link this device to one you already use, so documents,
+									threads, and the PII vault stay in sync.
+								</span>
+							</button>
+						{/if}
+					</div>
+				</div>
+
+			<!-- Paired flow: Step 2 = QR + PIN -->
+			{:else if flowMode === 'paired' && step === 1}
+				<div class="step-paired-qr">
+					<h2 class="step-title">Pair with your existing device</h2>
+					<p class="description">
+						On the existing device, open <strong>Settings &rarr; Devices &rarr;
+						Pair a new device</strong>. Paste the payload + PIN here.
 					</p>
+					<div class="field-group">
+						<label class="field-label" for="pair-payload">Pairing payload</label>
+						<textarea
+							id="pair-payload"
+							class="text-input"
+							rows="4"
+							placeholder="paste base64url payload from existing device"
+							bind:value={qrPayload}
+						></textarea>
+					</div>
+					<div class="field-group">
+						<label class="field-label" for="pair-pin">PIN</label>
+						<input
+							id="pair-pin"
+							class="text-input"
+							type="text"
+							inputmode="numeric"
+							maxlength="6"
+							placeholder="6-digit PIN"
+							bind:value={qrPin}
+						/>
+					</div>
+					<button
+						class="primary-action"
+						onclick={handlePreviewQr}
+						disabled={qrPreviewLoading || !qrPayload || !qrPin}
+					>
+						{qrPreviewLoading ? 'Verifying...' : 'Verify pairing'}
+					</button>
+					{#if qrPreviewError}
+						<p class="error-text">{qrPreviewError}</p>
+					{/if}
+					{#if qrPreview}
+						<div class="preview-box">
+							<span class="preview-label">Verified</span>
+							<span class="preview-value">
+								Pairing with <strong>{qrPreview.source_device_name}</strong>
+							</span>
+						</div>
+					{/if}
+				</div>
+
+			<!-- Paired flow: Step 3 = local password -->
+			{:else if flowMode === 'paired' && step === 2}
+				<div class="step-password">
+					<h2 class="step-title">Set this device's password</h2>
+					<p class="description">
+						This password locks the imported keys on this device only.
+						It can differ from your existing device's password.
+					</p>
+					<div class="field-group">
+						<label class="field-label" for="paired-pw-main">Password</label>
+						<input
+							id="paired-pw-main"
+							type="password"
+							class="text-input"
+							placeholder="Enter password"
+							bind:value={password}
+						/>
+					</div>
+					<div class="field-group">
+						<label class="field-label" for="paired-pw-confirm">Confirm password</label>
+						<input
+							id="paired-pw-confirm"
+							type="password"
+							class="text-input"
+							placeholder="Confirm password"
+							bind:value={passwordConfirm}
+						/>
+					</div>
+
+					{#if password.length > 0}
+						<div class="strength-section">
+							<div class="strength-bar">
+								{#each Array(5) as _, i}
+									<div
+										class="strength-segment"
+										style="background: {i < passwordStrength
+											? strengthColor(passwordStrength)
+											: 'var(--bg-input, #1e1e26)'}"
+									></div>
+								{/each}
+							</div>
+							<span class="strength-label" style="color: {strengthColor(passwordStrength)}">
+								{strengthLabel(passwordStrength)}
+							</span>
+						</div>
+					{/if}
+
+					{#if passwordPolicyErrors.length > 0}
+						<ul class="validation-errors">
+							{#each passwordPolicyErrors as err}
+								<li>{err}</li>
+							{/each}
+						</ul>
+					{/if}
+
+					{#if passwordConfirm && password !== passwordConfirm}
+						<p class="error-text">Passwords do not match</p>
+					{/if}
 				</div>
 
 			<!-- Step 2: Nickname -->
@@ -763,6 +982,87 @@
 		color: var(--text-primary, #e0e0e0);
 		font-family: 'Consolas', 'Fira Code', monospace;
 		letter-spacing: 0.04em;
+	}
+
+	/* ===================================================================
+	   Welcome flow choice (Phase 5: paired-device branch)
+	   =================================================================== */
+	.flow-choice {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		margin-top: 8px;
+	}
+
+	.flow-card {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 16px 20px;
+		background: var(--bg-input, #1e1e26);
+		border: 1px solid var(--border, #333340);
+		border-radius: 10px;
+		text-align: left;
+		cursor: pointer;
+		color: inherit;
+		transition: border-color 0.15s, background 0.15s;
+	}
+
+	.flow-card:hover {
+		border-color: var(--accent, #F59E0B);
+		background: var(--bg-hover);
+	}
+
+	.flow-card-title {
+		font-size: 1rem;
+		font-weight: 600;
+		color: var(--text-primary, #e0e0e0);
+	}
+
+	.flow-card-desc {
+		font-size: 0.85rem;
+		color: var(--text-muted, #666);
+		line-height: 1.4;
+	}
+
+	.primary-action {
+		background: var(--accent, #F59E0B);
+		border: none;
+		color: var(--bg-primary, #1a1a20);
+		padding: 10px 16px;
+		font-size: 0.9rem;
+		font-weight: 600;
+		border-radius: 6px;
+		cursor: pointer;
+		margin-top: 4px;
+	}
+
+	.primary-action:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.preview-box {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 12px 14px;
+		background: var(--bg-input, #1e1e26);
+		border-left: 3px solid var(--success, #10b981);
+		border-radius: 4px;
+		margin-top: 12px;
+	}
+
+	.preview-label {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--success, #10b981);
+	}
+
+	.preview-value {
+		font-size: 0.9rem;
+		color: var(--text-primary);
 	}
 
 	/* ===================================================================
