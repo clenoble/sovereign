@@ -3,6 +3,7 @@
 ///   - receive_shared_content   Save content arriving from OS share sheet
 
 use serde::Deserialize;
+use sovereign_db::GraphDB;
 use tauri::State;
 
 use crate::err::ToStringErr;

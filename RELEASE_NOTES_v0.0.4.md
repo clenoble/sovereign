@@ -1,6 +1,6 @@
-# v0.0.4 — PII management dashboard, canvas usability pass
+# v0.0.4 — PII management dashboard, canvas usability pass, encryption by default
 
-This release ships the PII management dashboard — a native PII vault, sharing ledger, and entity-centric organization on top of Sovereign's encrypted graph — together with substantial canvas improvements (sticky date ticks, zoom up to 10-minute intervals, visual size cap on cards and message bubbles, redesigned scroll/zoom controls) and a set of orchestrator commands that toggle UI panels by voice or chat.
+This release ships the PII management dashboard — a native PII vault, sharing ledger, and entity-centric organization on top of Sovereign's encrypted graph — together with substantial canvas improvements (sticky date ticks, zoom up to 10-minute intervals, visual size cap on cards and message bubbles, redesigned scroll/zoom controls) and a set of orchestrator commands that toggle UI panels by voice or chat. Encryption is now a default Cargo feature, and the post-onboarding crypto wiring that the PII features depend on is properly wired through the GUI auth flow.
 
 ## Highlights
 
@@ -10,6 +10,8 @@ This release ships the PII management dashboard — a native PII vault, sharing 
 - **Zoom to minute intervals.** `ZOOM_MAX` raised from 5 to 20 so the timeline can compress to 10-minute ticks. Past zoom 1.5× (`MAX_VISUAL_ZOOM`), card and message-bubble visual sizes cap so the time axis can keep compressing without elements taking over the viewport.
 - **Wheel remap.** Plain wheel pans vertically; `Shift+wheel` pans horizontally; `Ctrl/Meta/Alt+wheel` zooms (Ctrl is the standard canvas pinch-to-zoom emulation). Trackpad horizontal scroll is honored without a modifier.
 - **Orchestrator panel commands.** Five new actions wired through the LLM router: `open the PII dashboard`, `open the model panel`, `open inbox`, `open the browser` / `browse`, `open settings`. A post-classification override catches the common case where the router maps these phrases to action="open" — the panel-toggle vocabulary doesn't need to be in the prompt yet.
+- **Encryption is now a default feature.** `default = ["encrypted-log", "encryption"]` in `sovereign-app/Cargo.toml`. New users no longer have to opt into `--features encryption` to get the vault, PII pipeline, or encrypted session log. The non-encryption build still compiles (`--no-default-features --features encrypted-log`) for ergonomic / minimal-binary use cases.
+- **Onboarding now leaves the user in a fully-unlocked session.** Previously, the GUI startup tried to call a CLI-only `init_crypto()` that uses `rpassword::prompt_password()` — which silently fails with no console attached, leaving `AppState.device_key` permanently `None`. The vault, PII reveal, encrypted session log, and orchestrator inline PII tokenization all need that key. The auth flow now uses the two-phase `prepare_auth` / `complete_auth` pattern: startup just prepares the salt + device-id; the device key is derived from the password and installed across `AppState` and the orchestrator post-authentication, by both the onboarding wizard's `complete_onboarding` command and the login screen's `validate_password` command.
 
 ## PII pipeline (under the hood)
 
@@ -46,6 +48,15 @@ This release ships the PII management dashboard — a native PII vault, sharing 
 
 - **DuckDuckGo as homepage.** Replaces `google.com` everywhere it was referenced (`events.ts`, `BrowserPanel.svelte` URL bar default + search-query URL, `Taskbar.svelte`, `+page.svelte`).
 
+## Polish & bug fixes (post-onboarding test pass)
+
+- **Database path anchored to `~/.sovereign/`.** Previously the relative `data/sovereign.db` resolved against the current working directory, so launching the binary from a different folder (e.g. double-clicking `sovereign.exe` vs. `cargo run` from the project root) silently created a fresh DB and "lost" all prior data. `setup::create_db` now anchors any relative DB path to `sovereign_core::home_dir().join(".sovereign")`, matching where the auth store, profile, and session log already live.
+- **Eye icon on the new-secret value field** in `VaultAddDialog.svelte`. A `type="password"` ↔ `type="text"` toggle button (👁 / 🙈) lets the user verify what they're typing before saving. Resets to hidden every time the dialog opens. ARIA-labeled and `aria-pressed` for screen readers.
+- **PII dashboard overflow fixed.** The panel now uses `height: min(600px, calc(100vh - 80px))` + `overflow: hidden` so long lists scroll inside the middle column instead of stretching the panel past the viewport. `min-height: 0` on the flex columns allows them to shrink below their content height.
+- **UI theme now persisted.** `UserProfile` gained a `theme: String` field. `toggle_theme` writes through to the profile, `get_theme` reads from `state.theme` which is initialized from the profile at app start. Onboarding's wizard-time theme choice is captured in `complete_onboarding` since the profile may not exist when the wizard's `toggle_theme` first fires.
+- **Orchestrator setters now `&self`.** `set_pii_device_key` and `set_session_log_key` previously took `&mut self`, which was unreachable through the `Arc<Orchestrator>` held by `AppState`. The fields (`pii_device_key`, `session_log`, `session_log_key`) moved to `Mutex<Option<…>>` interior mutability so the post-login installer can call them.
+- **`AppState.device_key` behind `tokio::sync::RwLock`.** Required to install the device key after AppState is constructed. Six `state.device_key.as_ref()` call sites in `pii.rs` and `pii_ingest.rs` migrated to the new `state.device_key().await` accessor.
+
 ## Documentation
 
 - `RELEASE_NOTES_v0.0.3.md` brought into the repo root (was created during the v0.0.3 release pass).
@@ -63,9 +74,18 @@ No changes to the release-build path. `_release_build.bat` and the same feature 
 - **`comms-signal`** still excluded from the release build (known build issue carried over from v0.0.3).
 - **User-configurable canvas density / wheel bindings.** Hardcoded for now — settings panel surface is a follow-up.
 - **`PiiDashboardPanel.svelte` component test.** The dashboard panel itself isn't unit-tested (its drag/select/tab interactions are complex enough to push to E2E). Store + sub-dialogs cover the bulk of the logic.
+- **Separate persistent duress workspace.** The duress password currently authenticates correctly and produces its own DeviceKey, but both personas share a single GraphDB at `~/.sovereign/data/sovereign.db`, so the duress login shows the primary user's documents and PII. Proper separation requires deferring DB and orchestrator initialization until post-authentication — a substantial refactor — and is targeted for v0.0.5.
+- **P2P startup wiring.** Building with `--features p2p` no longer auto-starts the P2P node at launch (previously it tried to use the broken `init_crypto()` device key). The startup block logs a warning and defers; v0.0.5 will move P2P bring-up into the post-login hook alongside the encrypted session log and orchestrator PII installation.
+- **PII sweep idle-watcher.** The background scanner that rescans documents/messages/contacts that lack a `pii_scanned_at` marker is inert in v0.0.4 — it captured `device_key` by value at spawn time, which is no longer available at startup. v0.0.5 will rework the watcher to read `state.device_key().await` each cycle. On-save and on-import PII ingest still works (those run inside Tauri commands that have access to the live AppState).
 
 ## Upgrading from v0.0.3
 
-- **Onboarding required for the PII features.** The vault and the PII pipeline both need a loaded `DeviceKey`, which is set up during onboarding. If you skipped onboarding on a v0.0.3 install, run it again. The dashboard renders fine without a device key (you can review entities and see seeded discoveries) but vault writes and reveal will fail with a clear error.
-- **Existing DB is preserved.** `seed_pii_if_empty` only seeds PII data on a database with no entities. If you've already created entities (or seeded on a v0.0.4-pre build), the seed is a no-op.
+- **Onboarding loads the device key for you now.** The previous behavior — a broken CLI password prompt at startup — has been replaced. Completing the wizard or logging in via the GUI installs the DeviceKey across `AppState` and the orchestrator, so vault writes, PII reveal, and encrypted session-log entries work in the same session. No manual passphrase prompt at launch.
+- **Database moved to `~/.sovereign/data/sovereign.db`.** Existing v0.0.3 (or earlier v0.0.4-pre) DBs at `<project_root>/data/sovereign.db` or `<binary_dir>/data/sovereign.db` are not auto-migrated. To keep your data, copy the directory manually:
+  ```
+  mv <old-location>/data/sovereign.db ~/.sovereign/data/sovereign.db
+  ```
+  Otherwise launching v0.0.4 will create a fresh DB.
+- **Encryption is on by default.** If you were building with `--features encryption` before, you can drop that flag. If you specifically need a non-encryption build (no vault, no PII pipeline, no encrypted session log), use `--no-default-features --features encrypted-log`.
+- **Existing DB is preserved (within v0.0.4).** `seed_pii_if_empty` only seeds PII data on a database with no entities. If you've already created entities (or seeded on a v0.0.4-pre build), the seed is a no-op.
 - The `EncryptedGraphDB` decorator now has 8 additional PII-related methods. No data migration; the new methods only fire when the encryption feature is on and the calling code targets PII tables.

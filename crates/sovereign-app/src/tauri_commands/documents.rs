@@ -55,14 +55,24 @@ pub async fn list_threads(state: State<'_, AppState>) -> Result<Vec<ThreadSummar
 // Theme
 // ---------------------------------------------------------------------------
 
-/// Toggle the UI theme and return the new theme name.
+/// Toggle the UI theme and persist to the user profile.
 #[tauri::command]
 pub async fn toggle_theme(state: State<'_, AppState>) -> Result<String, String> {
-    let current = state.theme.lock().str_err()?;
-    let next = if *current == "dark" { "light" } else { "dark" };
-    drop(current);
-    let mut theme = state.theme.lock().str_err()?;
-    *theme = next.to_string();
+    let next = {
+        let current = state.theme.lock().str_err()?;
+        if *current == "dark" { "light" } else { "dark" }
+    };
+    {
+        let mut theme = state.theme.lock().str_err()?;
+        *theme = next.to_string();
+    }
+    // Persist to profile so the choice survives a restart.
+    if let Ok(mut profile) = sovereign_core::profile::UserProfile::load(&state.profile_dir) {
+        profile.theme = next.to_string();
+        if let Err(e) = profile.save(&state.profile_dir) {
+            tracing::warn!("Failed to persist theme to profile: {e}");
+        }
+    }
     Ok(next.to_string())
 }
 
