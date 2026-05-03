@@ -276,8 +276,227 @@ pub async fn migrate_to_account_key(
     Ok(report)
 }
 
-// Tests for this module live alongside the e2e sync test in Phase 6
-// (see plan §6.3). They need a tempfile dev-dep and a MockGraphDB
-// instance preloaded with v0.0.4-style ciphertext, both of which are
-// added when the test crate `crates/sovereign-app/tests/migration_test.rs`
-// is wired up.
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+//
+// `sovereign-app` is a binary-only crate, so we can't host the test in
+// `tests/migration_test.rs` (no library target to link against). The
+// in-module tests below cover the same surface as the plan's §6.3:
+//   - encrypt-under-DeviceKey -> migrate -> decrypt-under-AccountKey
+//     round trip for PiiRecord, Document body_raw, and Message body_raw.
+//   - Marker idempotency (second migrate call returns early).
+//   - Skipped-row counter when a row's ciphertext can't be decrypted
+//     under the supplied DeviceKey.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sovereign_crypto::aead;
+    use sovereign_crypto::master_key::MasterKey;
+    use sovereign_db::mock::MockGraphDB;
+    use sovereign_db::schema::{
+        ChannelType, Document, Message, MessageDirection, PiiKind, PiiRecord, ReviewState,
+        Thread,
+    };
+
+    fn keys() -> (DeviceKey, AccountKey) {
+        let mk = MasterKey::from_passphrase(b"migration-test-pass", b"shared-salt-32B!")
+            .unwrap();
+        let dk = DeviceKey::derive(&mk, "device-001").unwrap();
+        let ak = AccountKey::derive(&mk).unwrap();
+        (dk, ak)
+    }
+
+    /// Encrypt `plaintext` under raw 32-byte key bytes, returning the
+    /// (ciphertext_b64, nonce_b64) pair the v0.0.4 schema stored.
+    fn encrypt_under_bytes(plaintext: &[u8], key_bytes: &[u8; 32]) -> (String, String) {
+        use base64::Engine;
+        let (ct, nonce) = aead::encrypt(plaintext, key_bytes).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&ct);
+        let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
+        (b64, nonce_b64)
+    }
+
+    fn make_pii_record(value_encrypted: String, value_nonce: String) -> PiiRecord {
+        PiiRecord {
+            id: None,
+            kind: PiiKind::Note,
+            value_encrypted,
+            value_nonce,
+            label: Some("test note".into()),
+            entity_id: None,
+            stored_secret: true,
+            confidence: 1.0,
+            sources: vec![],
+            discovered_at: chrono::Utc::now(),
+            last_revealed_at: None,
+            use_count: 0,
+            review_state: ReviewState::Confirmed,
+            deleted_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn migrates_pii_record_from_device_key_to_account_key() {
+        let (old_dk, new_ak) = keys();
+        let db: Arc<dyn GraphDB> = Arc::new(MockGraphDB::new());
+
+        // v0.0.4 row: ciphertext under DeviceKey.
+        let plaintext = b"my-secret-vault-value";
+        let (ct, nonce) = encrypt_under_bytes(plaintext, old_dk.as_bytes());
+        db.create_pii_record(make_pii_record(ct, nonce)).await.unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let report = migrate_to_account_key(db.clone(), &old_dk, &new_ak, tmp.path())
+            .await
+            .unwrap();
+        assert!(!report.already_done);
+        assert_eq!(report.pii_records, 1);
+        assert_eq!(report.skipped_rows, 0);
+
+        // Verify the stored ciphertext now decrypts cleanly under AccountKey.
+        let listed = db.list_pii_records(None, None, None).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        let row = &listed[0];
+        let blob = EncryptedBlob::from_pair(
+            row.value_encrypted.clone(),
+            row.value_nonce.clone(),
+        );
+        let recovered = blob.decrypt(&new_ak).unwrap();
+        assert_eq!(recovered, plaintext);
+
+        // Marker file written.
+        assert!(tmp.path().join("crypto").join(MARKER_NAME).exists());
+    }
+
+    #[tokio::test]
+    async fn marker_makes_second_call_no_op() {
+        let (old_dk, new_ak) = keys();
+        let db: Arc<dyn GraphDB> = Arc::new(MockGraphDB::new());
+
+        let plaintext = b"value";
+        let (ct, nonce) = encrypt_under_bytes(plaintext, old_dk.as_bytes());
+        db.create_pii_record(make_pii_record(ct, nonce)).await.unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let first = migrate_to_account_key(db.clone(), &old_dk, &new_ak, tmp.path())
+            .await
+            .unwrap();
+        assert!(!first.already_done);
+        assert_eq!(first.pii_records, 1);
+
+        // Add a second row that *would* be migrated if we ran again.
+        let (ct2, nonce2) = encrypt_under_bytes(b"second", old_dk.as_bytes());
+        db.create_pii_record(make_pii_record(ct2, nonce2)).await.unwrap();
+
+        // Second call returns early — marker present.
+        let second = migrate_to_account_key(db.clone(), &old_dk, &new_ak, tmp.path())
+            .await
+            .unwrap();
+        assert!(second.already_done);
+        assert_eq!(second.pii_records, 0);
+
+        // The newly-added second row was NOT migrated (still encrypted
+        // under DeviceKey). This is intentional: the marker says "v0.0.4
+        // data has been re-keyed once"; new rows written by post-v0.0.5
+        // code paths are already AccountKey-encrypted.
+    }
+
+    #[tokio::test]
+    async fn migrates_document_body_raw() {
+        let (old_dk, new_ak) = keys();
+        let db: Arc<dyn GraphDB> = Arc::new(MockGraphDB::new());
+
+        // Documents need a thread to live in.
+        let thread = db
+            .create_thread(Thread::new("T".into(), String::new()))
+            .await
+            .unwrap();
+        let tid = thread.id_string().unwrap();
+
+        let mut doc = Document::new("Doc".into(), tid, true);
+        let plaintext = b"the document body contains a secret";
+        let (ct, nonce) = encrypt_under_bytes(plaintext, old_dk.as_bytes());
+        doc.body_raw_encrypted = Some(ct);
+        doc.body_raw_nonce = Some(nonce);
+        db.create_document(doc).await.unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let report = migrate_to_account_key(db.clone(), &old_dk, &new_ak, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(report.documents, 1);
+        assert_eq!(report.skipped_rows, 0);
+
+        let docs = db.list_documents(None).await.unwrap();
+        let body = EncryptedBlob::from_pair(
+            docs[0].body_raw_encrypted.clone().unwrap(),
+            docs[0].body_raw_nonce.clone().unwrap(),
+        );
+        assert_eq!(body.decrypt(&new_ak).unwrap(), plaintext);
+    }
+
+    #[tokio::test]
+    async fn migrates_message_body_raw() {
+        let (old_dk, new_ak) = keys();
+        let db: Arc<dyn GraphDB> = Arc::new(MockGraphDB::new());
+
+        // A minimal Message with body_raw_encrypted populated.
+        let mut msg = Message::new(
+            "conv:123".into(),
+            ChannelType::Email,
+            MessageDirection::Inbound,
+            "contact:alice".into(),
+            vec!["contact:me".into()],
+            "plaintext body".into(),
+        );
+        let plaintext = b"the message body contains a secret too";
+        let (ct, nonce) = encrypt_under_bytes(plaintext, old_dk.as_bytes());
+        msg.body_raw_encrypted = Some(ct);
+        msg.body_raw_nonce = Some(nonce);
+        db.create_message(msg).await.unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let report = migrate_to_account_key(db.clone(), &old_dk, &new_ak, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(report.messages, 1);
+
+        let msgs = db.list_all_messages().await.unwrap();
+        let body = EncryptedBlob::from_pair(
+            msgs[0].body_raw_encrypted.clone().unwrap(),
+            msgs[0].body_raw_nonce.clone().unwrap(),
+        );
+        assert_eq!(body.decrypt(&new_ak).unwrap(), plaintext);
+    }
+
+    #[tokio::test]
+    async fn rows_with_unrelated_ciphertext_are_skipped_not_failed() {
+        // A row encrypted under a *different* DeviceKey can't be
+        // decrypted by the migration; it must be skipped (counted) and
+        // the migration must still complete + write the marker.
+        let (_old_dk, new_ak) = keys();
+        let db: Arc<dyn GraphDB> = Arc::new(MockGraphDB::new());
+
+        // Use a key the migration won't see.
+        let other_mk =
+            MasterKey::from_passphrase(b"unrelated-pass", b"unrelated-salt!!").unwrap();
+        let other_dk = DeviceKey::derive(&other_mk, "device-XYZ").unwrap();
+        let (ct, nonce) = encrypt_under_bytes(b"unreadable", other_dk.as_bytes());
+        db.create_pii_record(make_pii_record(ct, nonce)).await.unwrap();
+
+        // Run migration with the *expected* old DeviceKey, which
+        // cannot decrypt the row above.
+        let (expected_old_dk, _) = keys();
+        let tmp = tempfile::tempdir().unwrap();
+        let report =
+            migrate_to_account_key(db.clone(), &expected_old_dk, &new_ak, tmp.path())
+                .await
+                .unwrap();
+        assert_eq!(report.pii_records, 0);
+        assert_eq!(report.skipped_rows, 1);
+        // Marker still written so we don't loop forever on bad data.
+        assert!(tmp.path().join("crypto").join(MARKER_NAME).exists());
+    }
+}

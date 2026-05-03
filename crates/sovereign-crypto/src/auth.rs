@@ -521,6 +521,44 @@ mod tests {
     }
 
     #[test]
+    fn account_key_stable_across_device_ids() {
+        // The v0.0.5 sync invariant at the AuthStore layer: two devices
+        // that share a passphrase + salt produce the same AccountKey on
+        // authenticate, even though their per-device DeviceKeys differ.
+        // Verifies both the wrapped path (post-v0.0.5 stores) and the
+        // legacy MasterKey-derived path (v0.0.4 stores).
+        const SHARED_SALT: &[u8] = b"shared-salt-for-cross-device-test";
+        let pw: &[u8] = b"SharedPass123!";
+        let duress: &[u8] = b"DuressPass456@";
+
+        // Two AuthStores with different device_ids but identical
+        // passphrase + salt — what we'd see if the user runs onboarding
+        // independently on two laptops sharing the same secrets (the
+        // pre-pairing legacy path).
+        let store_a =
+            AuthStore::create(pw, duress, SHARED_SALT, "device-AAA").unwrap();
+        let store_b =
+            AuthStore::create(pw, duress, SHARED_SALT, "device-BBB").unwrap();
+
+        let auth_a = store_a.authenticate(pw).unwrap();
+        let auth_b = store_b.authenticate(pw).unwrap();
+
+        // The DeviceKeys differ (per-device identity).
+        assert_ne!(
+            auth_a.device_key.as_bytes(),
+            auth_b.device_key.as_bytes(),
+            "DeviceKey must differ across device_ids"
+        );
+
+        // The AccountKeys match (user-scoped identity).
+        assert_eq!(
+            auth_a.account_key.as_bytes(),
+            auth_b.account_key.as_bytes(),
+            "AccountKey must be stable across device_id changes — this is the v0.0.5 sync invariant"
+        );
+    }
+
+    #[test]
     fn different_personas_have_different_keks() {
         let store = AuthStore::create(
             b"Primary!Pass1234",

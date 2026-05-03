@@ -35,3 +35,4 @@ base64 = { workspace = true }
 
 [dev-dependencies]
 sovereign-db = { workspace = true, features = ["test-utils"] }
+tracing-subscriber = { workspace = true }
