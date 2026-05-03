@@ -425,6 +425,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
             <a href="#/communications" role="menuitem">Communications</a>
             <a href="#/browser-reliability" role="menuitem">Browser & Reliability</a>
             <a href="#/memory-consolidation" role="menuitem">Memory Consolidation</a>
+            <a href="#/mobile" role="menuitem">Mobile</a>
           </div>
         </div>
       </div>
@@ -3455,6 +3456,292 @@ impl CanvasRenderer {
 </main>
 </template>
 
+<template id="page-mobile">
+<main id="main" role="main">
+<div class="content-inner">
+
+<div class="page-header">
+  <h1>Mobile</h1>
+  <p class="subtitle">
+    A bottom-up redesign of the interaction model for touch — not a responsive wrapper.
+    Vertical time axis, swipe-between-lanes, voice input, haptics, and OS share-sheet integration.
+    Targets iOS 14+ and Android SDK 26+.
+  </p>
+  <p style="margin-top:16px; display:inline-flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--c-gold); background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); border-radius: var(--radius); padding: 8px 14px;">
+    <span aria-hidden="true">◐</span> Phases 1–4 complete · Phase 5 (persistent storage + biometrics) in development
+  </p>
+</div>
+
+<!-- TIER 1 -->
+<section class="tier-section tier-1">
+  <div class="tier-header">
+    <span class="tier-badge">1</span>
+    <div>
+      <div class="tier-label">Tier 1: The Elevator Pitch</div>
+      <div class="tier-subtext">10-second read</div>
+    </div>
+  </div>
+  <div class="tier-1-content">
+    <p>
+      The desktop canvas runs time left-to-right with thread lanes top-to-bottom. On mobile, that's inverted:
+      time runs top-to-bottom (scroll to go back), lanes run left-to-right (swipe to switch).
+      The AI chat lives in a bottom sheet with three snap positions — a peek showing your last
+      message, a partial view for reading, a full screen for composing. Pinch zooms through
+      time; the canvas collapses to a density heatmap at deep zoom. Everything is local,
+      encrypted, and syncs back to your desktop over P2P.
+    </p>
+  </div>
+</section>
+
+<!-- TIER 2 -->
+<section class="tier-section tier-2">
+  <div class="tier-header">
+    <span class="tier-badge">2</span>
+    <div>
+      <div class="tier-label">Tier 2: How It Works</div>
+      <div class="tier-subtext">1–3 minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-2-content">
+
+    <details open>
+      <summary>Vertical Time, Horizontal Lanes</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>The Desktop Canvas — Rotated 90°</h3>
+          <p>
+            On desktop, time is the horizontal axis and you scroll left/right. On mobile, time runs
+            vertically — recent documents appear near the top, older ones scroll down. Lanes (threads)
+            are accessed by swiping left and right with a velocity-based fling and magnetic snap.
+          </p>
+          <ul class="concept-list">
+            <li><strong>Now marker:</strong> A fixed line near the top of the screen. Documents are
+              positioned below it relative to how long ago they were modified.</li>
+            <li><strong>Pinch zoom:</strong> Two-finger vertical pinch adjusts the time scale
+              (<code>pxPerMs</code>). The point under your fingers stays anchored — zooming in
+              on a specific day keeps that day in place.</li>
+            <li><strong>Anti-collision stacking:</strong> When multiple documents share a timestamp,
+              cards stack automatically rather than overlapping.</li>
+            <li><strong>Lane switcher:</strong> A sticky header shows the current lane name and a dot
+              indicator row. Tap or long-press to open the lane list.</li>
+            <li><strong>Cross-lane badges:</strong> Cards with relationships to documents in other lanes
+              show a "↔N" badge so you know connections exist without leaving the current lane.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Bottom Sheet Chat — Three Detents</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Always There, Never in the Way</h3>
+          <p>
+            The chat panel doesn't open in a separate screen. It's a bottom sheet that snaps to
+            three heights depending on context:
+          </p>
+          <ul class="concept-list">
+            <li><strong>Peek (~15% screen):</strong> The pulsing state orb + last message snippet +
+              suggestion badge. Quick Approve/Reject buttons are visible without opening the sheet.
+              The canvas remains fully usable.</li>
+            <li><strong>Partial (50% screen):</strong> Scrollable message history. Auto-expands from
+              peek when you receive the first AI message in a session.</li>
+            <li><strong>Full (88% screen):</strong> Composer, voice input, full history. Auto-expands
+              on high-gravity actions (Modify or Destruct) so the confirmation context is prominent.</li>
+          </ul>
+          <p style="margin-top:12px;">
+            <strong>Haptic feedback</strong> is tied to action gravity levels: no haptic for
+            Observe, light for Suggest, medium for Compose, heavy for Modify, error double-buzz for
+            Destruct. You feel what's about to happen before you read it.
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Voice Input</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Hold to Record — Whisper STT On-Device</h3>
+          <p>
+            The chat composer has a hold-to-record button. While held, the app captures PCM audio
+            via the Web Audio API (16kHz, mono), then passes it to the Whisper speech-to-text
+            model running locally. The transcribed text drops into the composer for review before
+            sending — you always see what was heard before committing.
+          </p>
+          <ul class="concept-list">
+            <li><strong>No cloud STT:</strong> Whisper runs on-device. Audio never leaves the phone.</li>
+            <li><strong>Web Audio API:</strong> Used instead of <code>cpal</code> (the desktop audio
+              library) for Tauri mobile compatibility.</li>
+            <li><strong>Feature-gated:</strong> Requires the <code>voice-stt</code> feature and a
+              downloaded Whisper GGUF model. Gracefully hidden if the model is absent.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>FAB + Long-Press Menu</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Context-Aware Creation</h3>
+          <p>
+            A floating "+" button sits at the centre-bottom above the taskbar.
+          </p>
+          <ul class="concept-list">
+            <li><strong>Short tap:</strong> Creates a new document in the active lane — or a new lane
+              if none exist yet.</li>
+            <li><strong>Long press (500ms):</strong> Opens a five-option fan menu: New lane, New doc,
+              New message, Capture (photo/OCR, Phase 5), Secret (biometric vault entry, Phase 5).</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>LOD — Density Heatmap at Deep Zoom</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Thousands of Documents, One Screen</h3>
+          <p>
+            As you pinch to zoom out past a threshold (~0.012 px/ms, roughly one day per screen
+            height), individual cards are replaced by a density heatmap: each lane becomes a strip
+            of colour-coded day-buckets, darker where more documents were modified. Tap any column
+            to drill back into that lane at that day.
+          </p>
+          <ul class="concept-list">
+            <li>Same LOD principle as the desktop canvas, adapted for a vertical scroll axis.</li>
+            <li>Zoom controls are hidden in heatmap mode to reduce clutter.</li>
+            <li>The Now marker remains visible as a reference point across all zoom levels.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>OS Share-Sheet Integration</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Accept Text or URLs from Any App</h3>
+          <p>
+            On Android, a share intent listener catches <code>ACTION_SEND</code> with
+            <code>text/plain</code> or <code>text/uri-list</code> MIME types and passes the content
+            to Sovereign. On iOS, the same flow is wired via the Tauri share plugin. A bottom sheet
+            shows the content preview and lets you pick which thread to save it to.
+          </p>
+          <ul class="concept-list">
+            <li>Documents created via share are marked <code>is_owned: false</code> (external provenance).</li>
+            <li>The <code>receive_shared_content</code> Tauri command creates the document and returns
+              the new doc ID.</li>
+            <li><strong>Android:</strong> Wired. <strong>iOS:</strong> Scaffolded, integration pending.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+  </div>
+</section>
+
+<!-- TIER 3 -->
+<section class="tier-section tier-3">
+  <div class="tier-header">
+    <span class="tier-badge">3</span>
+    <div>
+      <div class="tier-label">Tier 3: Deep Dive</div>
+      <div class="tier-subtext">5+ minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-3-content">
+
+    <div class="deep-section">
+      <h3>Platform Targets</h3>
+      <table class="const-table">
+        <tr><th>Platform</th><th>Min version</th><th>Notes</th></tr>
+        <tr><td>iOS</td><td>14.0</td><td>Safe-area insets, <code>UIImpactFeedbackGenerator</code> haptics, share-sheet scaffolded</td></tr>
+        <tr><td>Android</td><td>SDK 26 (Android 8.0)</td><td><code>VibratorService</code> haptics, <code>AndroidSharePlugin.kt</code> wired</td></tr>
+      </table>
+    </div>
+
+    <div class="deep-section">
+      <h3>Mobile Feature Flags</h3>
+      <p>The <code>mobile</code> Cargo feature enables a specific subset of Sovereign's capabilities, excluding anything that requires desktop-only system libraries:</p>
+      <div class="code-block"><code>mobile = ["encrypted-log", "encryption", "comms-signal", "haptics"]
+
+# Excluded from mobile:
+# - rocksdb (in-memory kv only; Phase 5 will add SQLite-backed SurrealDB)
+# - voice  (cpal-based desktop audio; replaced by Web Audio API)
+# - comms-email (native-tls not supported on mobile)
+# - p2p (mDNS port restrictions on iOS/Android; Phase 5)
+# - web-browse (pixel-bounded child webview unsupported on mobile)</code></div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Canvas Constants</h3>
+      <table class="const-table">
+        <tr><th>Constant</th><th>Value</th><th>What it controls</th></tr>
+        <tr><td><code>CARD_HEIGHT_PX</code></td><td>56 px</td><td>Fixed height for all document cards</td></tr>
+        <tr><td><code>CARD_GAP_PX</code></td><td>8 px</td><td>Minimum gap before anti-collision stacking kicks in</td></tr>
+        <tr><td><code>MOBILE_PX_PER_DAY</code></td><td>86.4 px</td><td>Default time scale — one day spans roughly the screen height</td></tr>
+        <tr><td><code>LOD_THRESHOLD_PX_PER_MS</code></td><td>0.012</td><td>Below this, canvas switches to density heatmap mode</td></tr>
+        <tr><td><code>TRACK_TOP_PADDING</code></td><td>36 px</td><td>Space below the Now marker before the first card</td></tr>
+      </table>
+    </div>
+
+    <div class="deep-section">
+      <h3>Screen Layout</h3>
+      <div class="flow-diagram">
+┌─────────────────────────────────────┐
+│  LaneHeader (sticky, ~40px)         │  Lane name · dot indicators · switcher
+├─────────────────────────────────────┤
+│                                     │
+│  MobileCanvas (flex: 1)             │  Time-positioned cards
+│                                     │  Pinch zoom (vertical)
+│    ↕ scroll = navigate time         │  Swipe left/right = change lane
+│    ○ ○ ○  (cards)                   │
+│    ─────  Now marker                │  At deep zoom → density heatmap strips
+│    ○ ○                              │
+│                                     │
+├─────────────────────────────────────┤
+│  MobileChatSheet (bottom sheet)     │
+│  ┌ peek ──────────────────────────┐ │  Orb + last msg + approve/reject
+│  │ partial ───────────────────── │ │  Message history
+│  │ full ──────────────────────── │ │  Composer + voice input
+│  └────────────────────────────────┘ │
+├──────────────────────────────────── ┤
+│  MobileTaskbar (56px + safe-area)   │  Search · Inbox · [FAB] · People · PII · Settings
+└─────────────────────────────────────┘</div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Implementation Status</h3>
+      <table class="const-table">
+        <tr><th>Feature</th><th>Status</th></tr>
+        <tr><td>Canvas — time-positioned cards, pinch zoom, lane swipe, anti-collision</td><td style="color: var(--c-owned);">✓ Phase 2</td></tr>
+        <tr><td>Density heatmap LOD (all-lanes view at deep zoom)</td><td style="color: var(--c-owned);">✓ Phase 2</td></tr>
+        <tr><td>Bottom sheet chat — 3 detents, markdown, approve/reject</td><td style="color: var(--c-owned);">✓ Phase 3</td></tr>
+        <tr><td>Full-screen doc reader — swipe-close, edit/preview, auto-save</td><td style="color: var(--c-owned);">✓ Phase 3</td></tr>
+        <tr><td>Haptics — action gravity → feedback intensity</td><td style="color: var(--c-owned);">✓ Phase 4</td></tr>
+        <tr><td>Voice input — hold-to-record, Whisper STT on-device</td><td style="color: var(--c-owned);">✓ Phase 4</td></tr>
+        <tr><td>OS share-sheet — Android (wired), iOS (scaffolded)</td><td style="color: var(--c-owned);">✓ Phase 4</td></tr>
+        <tr><td>PII dashboard, Settings, Search, People, Inbox panels</td><td style="color: var(--c-owned);">✓ (desktop panels, mobile-safe layout)</td></tr>
+        <tr><td>Persistent storage (SQLite-backed SurrealDB)</td><td style="color: var(--c-gold);">Phase 5</td></tr>
+        <tr><td>P2P sync (mDNS restrictions lifted)</td><td style="color: var(--c-gold);">Phase 5</td></tr>
+        <tr><td>Camera capture + OCR</td><td style="color: var(--c-gold);">Phase 5</td></tr>
+        <tr><td>Biometric vault (Face ID / fingerprint)</td><td style="color: var(--c-gold);">Phase 5</td></tr>
+        <tr><td>iOS share-sheet full integration</td><td style="color: var(--c-gold);">Phase 5</td></tr>
+        <tr><td>Embedded browser</td><td style="color: var(--c-text-dim);">Not planned — pixel-bounded webview unsupported on mobile</td></tr>
+      </table>
+    </div>
+
+  </div>
+</section>
+
+</div>
+</main>
+</template>
+
 <template id="page-pii-dashboard">
 <main id="main" role="main">
 <div class="content-inner">
@@ -5628,6 +5915,7 @@ const ROUTES = {
   '/communications': { template: 'page-communications', title: 'Unified Communications — Sovereign GE', description: 'One inbox for Email, Signal, and WhatsApp.' },
   '/content-skills': { template: 'page-content-skills', title: 'Content + Skills Architecture — Sovereign GE', description: 'Data ownership through composable tools and graph database.' },
   '/skills': { template: 'page-skills', title: 'Skill System — Sovereign GE', description: 'Composable, sandboxed tools with a WASM plugin runtime and capability-based permissions enforced in code.' },
+  '/mobile': { template: 'page-mobile', title: 'Mobile — Sovereign GE', description: 'A touch-first redesign: vertical time axis, swipe-between-lanes, voice input, haptics, and OS share-sheet. iOS 14+ and Android SDK 26+.' },
   '/pii-dashboard': { template: 'page-pii-dashboard', title: 'PII Management Dashboard — Sovereign GE', description: 'Know what personal data lives in your workspace, who you\'ve shared it with, and where your credentials are — entirely on-device.' },
   '/ethics': { template: 'page-ethics', title: 'Ethics & Design Constraints — Sovereign GE', description: 'How Sovereign narrows the misuse surface.' },
   '/legal-notice': { template: 'page-legal-notice', title: 'Legal Notice — Sovereign GE', description: 'Terms, disclaimers, and regulatory information.' },
@@ -5787,6 +6075,9 @@ const PAGE_LINKS = {
   'pii dashboard': '#/pii-dashboard',
   'personal data': '#/pii-dashboard',
   'vault': '#/pii-dashboard',
+  'mobile': '#/mobile',
+  'mobile ui': '#/mobile',
+  'mobile companion': '#/mobile',
 };
 
 function findPageRoute(text) {
