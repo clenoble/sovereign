@@ -40,6 +40,11 @@ pub enum P2pCommand {
     PairDevice { peer_id: String },
     DistributeShard { peer_id: String, shard_data: String, shard_id: String },
     SendRequest { peer_id: PeerId, request: SovereignRequest },
+    /// Dial a peer's multiaddr directly (bypassing mDNS discovery).
+    /// Used for tests and for explicit "connect to address" UI flows.
+    /// `address` should be a full Multiaddr including the `/p2p/<peer_id>`
+    /// suffix.
+    Dial { address: String },
     Shutdown,
 }
 
@@ -577,6 +582,18 @@ impl SovereignNode {
             }
             P2pCommand::PairDevice { peer_id } => {
                 info!("Pairing with device: {}", peer_id);
+            }
+            P2pCommand::Dial { address } => {
+                match address.parse::<Multiaddr>() {
+                    Ok(addr) => {
+                        if let Err(e) = self.swarm.dial(addr.clone()) {
+                            warn!("Dial {address} failed: {e}");
+                        } else {
+                            info!("Dialing {addr}");
+                        }
+                    }
+                    Err(e) => warn!("Invalid Multiaddr {address}: {e}"),
+                }
             }
             P2pCommand::Shutdown => unreachable!("handled in run()"),
         }
