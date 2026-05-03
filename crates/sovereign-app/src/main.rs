@@ -159,6 +159,7 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     let config_for_setup = config.clone();
     let rt_handle = rt.handle().clone();
 
+    // Build Tauri app
     let mut builder = tauri::Builder::default();
 
     // Haptics plugin — iOS UIImpactFeedbackGenerator / Android VibratorService.
@@ -328,7 +329,13 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             #[cfg(not(feature = "voice-stt"))]
             tracing::info!("Voice pipeline omitted (voice-stt feature disabled)");
 
-            // Register state with Tauri.
+            // Register state with Tauri. The device_key is loaded post-login
+            // by install_session() in tauri_commands::auth.rs; not at startup.
+            // The theme is read from the persisted UserProfile so it survives
+            // restarts (toggle_theme writes back through to the profile).
+            let theme_initial = sovereign_core::profile::UserProfile::load(&backend.profile_dir)
+                .map(|p| p.theme)
+                .unwrap_or_else(|_| "dark".to_string());
             app.manage(tauri_state::AppState {
                 db: backend.db.clone(),
                 orchestrator: backend.orchestrator.clone(),
@@ -339,12 +346,12 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 decision_tx: backend.decision_tx,
                 feedback_tx: backend.feedback_tx,
                 orch_tx: backend.orch_tx,
-                theme: std::sync::Mutex::new("dark".to_string()),
+                theme: std::sync::Mutex::new(theme_initial),
                 autocommit: backend.autocommit.clone(),
                 model_assignments: std::sync::Mutex::new(backend.model_assignments),
                 profile_dir: backend.profile_dir,
                 #[cfg(feature = "encryption")]
-                device_key: backend.device_key.clone(),
+                device_key: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "voice-stt")]
                 stt_engine: backend.stt_engine,
             });
@@ -410,21 +417,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 });
             }
 
-            // PII sweep idle-watcher
-            #[cfg(all(feature = "comms", feature = "encryption"))]
-            if let Some(device_key) = backend.device_key.clone() {
-                let db: Arc<dyn sovereign_db::GraphDB> = backend.db.clone();
-                tauri::async_runtime::spawn(async move {
-                    use std::time::Duration;
-                    let interval = Duration::from_secs(300);
-                    tokio::time::sleep(Duration::from_secs(60)).await;
-                    loop {
-                        let _stats =
-                            pii_sweep::run_sweep_cycle(db.clone(), device_key.clone()).await;
-                        tokio::time::sleep(interval).await;
-                    }
-                });
-            }
+            // PII sweep idle-watcher (4e4): deferred to v0.0.5 — see
+            // comment earlier in run_tauri() for the rationale.
 
             Ok(())
         })
@@ -450,8 +444,6 @@ struct BackendInit {
     orch_rx: mpsc::Receiver<OrchestratorEvent>,
     autocommit: Arc<tokio::sync::Mutex<sovereign_ai::AutoCommitEngine>>,
     model_assignments: tauri_state::ModelAssignments,
-    #[cfg(feature = "encryption")]
-    device_key: Option<Arc<sovereign_crypto::device_key::DeviceKey>>,
     #[cfg(feature = "voice-stt")]
     stt_engine: Option<Arc<tokio::sync::Mutex<sovereign_ai::voice::stt::SttEngine>>>,
 }
@@ -462,28 +454,23 @@ async fn init_backend(
     config: &AppConfig,
     profile_dir: std::path::PathBuf,
 ) -> anyhow::Result<BackendInit> {
+    // Crypto subsystem: prepare the auth dir / salt / device-id but do
+    // NOT prompt for a password here. The actual DeviceKey is loaded
+    // post-authentication via install_session() in tauri_commands::auth
+    // and stored in AppState's RwLock-backed device_key field.
     #[cfg(feature = "encryption")]
-    let crypto_state = if config.crypto.enabled {
-        match setup::init_crypto() {
-            Ok((device_key, key_db, kek)) => Some((Arc::new(device_key), key_db, kek)),
-            Err(e) => {
-                tracing::warn!("Crypto init failed (continuing without encryption): {e}");
-                None
-            }
+    if config.crypto.enabled {
+        if let Err(e) = setup::prepare_auth() {
+            tracing::warn!("prepare_auth failed: {e}");
         }
-    } else {
-        None
-    };
+    }
 
     let db = create_db(config).await?;
     seed::seed_if_empty(&db).await?;
 
-    #[cfg(feature = "encryption")]
-    if let Some((ref device_key, _, _)) = crypto_state {
-        if let Err(e) = seed::seed_pii_if_empty(&db, device_key).await {
-            tracing::warn!("PII seed failed: {e}");
-        }
-    }
+    // PII seed runs in complete_onboarding (auth.rs) once the device_key
+    // is installed. Skipped at startup because the device_key isn't
+    // available until login completes.
 
     let orchestrator_profile_dir = profile_dir.join("orchestrator");
     if let Err(e) = seed::seed_profile_and_history(&orchestrator_profile_dir) {
@@ -540,64 +527,19 @@ async fn init_backend(
             o.set_decision_rx(decision_rx);
             o.set_feedback_rx(feedback_rx);
 
+            // P2P startup is deferred to post-login wiring (v0.0.5);
+            // requires the device key to derive identity, which is
+            // not available until the user authenticates.
             #[cfg(feature = "p2p")]
             if config.p2p.enabled {
-                if let Some((ref device_key, _, _)) = crypto_state {
-                    match sovereign_p2p::identity::derive_keypair(device_key) {
-                        Ok(keypair) => {
-                            let p2p_config = sovereign_p2p::config::P2pConfig {
-                                enabled: true,
-                                listen_port: config.p2p.listen_port,
-                                rendezvous_server: config.p2p.rendezvous_server.clone(),
-                                device_name: config.p2p.device_name.clone(),
-                            };
-                            let (p2p_event_tx, p2p_event_rx) =
-                                tokio::sync::mpsc::channel(256);
-                            let (p2p_cmd_tx, p2p_cmd_rx) =
-                                tokio::sync::mpsc::channel(64);
-
-                            let sync_service = Arc::new(
-                                sovereign_p2p::SyncService::new(
-                                    db_arc.clone(),
-                                    p2p_config.device_name.clone(),
-                                ),
-                            );
-                            match sovereign_p2p::node::SovereignNode::new(
-                                &p2p_config,
-                                keypair,
-                                p2p_event_tx,
-                                p2p_cmd_rx,
-                                sync_service,
-                            ) {
-                                Ok(node) => {
-                                    tokio::spawn(node.run());
-                                    o.set_p2p_channels(p2p_cmd_tx, p2p_event_rx);
-                                    tracing::info!("P2P node spawned");
-                                }
-                                Err(e) => {
-                                    tracing::warn!("P2P node failed to start: {e}");
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("P2P identity derivation failed: {e}");
-                        }
-                    }
-                } else {
-                    tracing::warn!("P2P enabled but crypto not initialized — skipping P2P");
-                }
+                tracing::warn!(
+                    "P2P startup deferred until login wiring is complete (v0.0.5)"
+                );
             }
 
-            #[cfg(all(feature = "encryption", feature = "encrypted-log"))]
-            if let Some((ref device_key, _, _)) = crypto_state {
-                let session_key = setup::derive_session_log_key(device_key);
-                o.set_session_log_key(session_key);
-            }
-
-            #[cfg(feature = "encryption")]
-            if let Some((ref device_key, _, _)) = crypto_state {
-                o.set_pii_device_key(device_key.clone());
-            }
+            // Session-log encryption + PII tokenization for the
+            // orchestrator are installed after login by
+            // install_session() in tauri_commands::auth.rs.
 
             tracing::info!("AI orchestrator initialized (Tauri mode)");
             Some(Arc::new(o))
@@ -656,8 +598,6 @@ async fn init_backend(
         orch_rx,
         autocommit,
         model_assignments,
-        #[cfg(feature = "encryption")]
-        device_key: crypto_state.as_ref().map(|(dk, _, _)| dk.clone()),
         #[cfg(feature = "voice-stt")]
         stt_engine,
     })

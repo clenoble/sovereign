@@ -58,7 +58,7 @@ tauri-build = { workspace = true }
 # rocksdb is included in desktop defaults; excluded from mobile feature so
 # Android builds use kv-mem (in-memory, survives process lifetime only).
 # Persistent mobile storage is planned for Phase 5 (SQLite-backed SurrealDB).
-default = ["encrypted-log", "rocksdb"]
+default = ["encrypted-log", "encryption", "rocksdb"]
 rocksdb = ["sovereign-db/rocksdb"]
 cuda = ["sovereign-ai/cuda"]
 encrypted-log = ["sovereign-ai/encrypted-log", "hkdf", "sha2"]
