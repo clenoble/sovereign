@@ -1,0 +1,113 @@
+/// Mobile-specific Tauri commands:
+///   - voice_transcribe_buffer  Web Audio API PCM → Whisper STT
+///   - receive_shared_content   Save content arriving from OS share sheet
+
+use serde::Deserialize;
+use tauri::State;
+
+use crate::err::ToStringErr;
+use crate::tauri_state::AppState;
+
+// ---------------------------------------------------------------------------
+// Voice transcription (Web Audio API PCM → Whisper)
+// ---------------------------------------------------------------------------
+
+/// Transcribe mono f32 PCM samples captured by the Web Audio API.
+/// Samples must be at 16 kHz, normalised to [-1, 1] — the same format
+/// the cpal pipeline produces on desktop.
+///
+/// Returns the transcribed text, or an error string if the STT engine
+/// is not available (voice-stt feature disabled or no whisper model).
+#[tauri::command]
+pub async fn voice_transcribe_buffer(
+    state: State<'_, AppState>,
+    samples: Vec<f32>,
+) -> Result<String, String> {
+    #[cfg(feature = "voice-stt")]
+    {
+        let engine = state
+            .stt_engine
+            .as_ref()
+            .ok_or_else(|| "Voice transcription unavailable (no whisper model configured)".to_string())?;
+        let engine = engine.lock().await;
+        engine.transcribe(&samples).str_err()
+    }
+    #[cfg(not(feature = "voice-stt"))]
+    {
+        let _ = (state, samples);
+        Err("voice-stt feature not compiled in".to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Share-sheet receiver (OS share → doc in a chosen thread)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct SharedContent {
+    pub content_type: String, // "text" | "url"
+    pub text: Option<String>,
+    pub url: Option<String>,
+    pub title: Option<String>,
+}
+
+/// Save content received from the OS share sheet as a new document.
+/// The frontend emits this after the user picks a target thread in
+/// SharePickerSheet. Returns the new document ID.
+#[tauri::command]
+pub async fn receive_shared_content(
+    state: State<'_, AppState>,
+    content: SharedContent,
+    thread_id: String,
+) -> Result<String, String> {
+    use sovereign_core::content::ContentFields;
+    use sovereign_db::schema::Document;
+    use sovereign_db::schema::thing_to_raw;
+
+    let title = content.title.unwrap_or_else(|| {
+        content
+            .url
+            .as_deref()
+            .and_then(|u| u.split('/').filter(|s| !s.is_empty()).last())
+            .unwrap_or("Shared content")
+            .to_string()
+    });
+
+    let body = match content.content_type.as_str() {
+        "url" => {
+            let url = content.url.as_deref().unwrap_or("");
+            let extra = content.text.as_deref().unwrap_or("");
+            if extra.is_empty() {
+                url.to_string()
+            } else {
+                format!("{url}\n\n{extra}")
+            }
+        }
+        _ => content.text.unwrap_or_default(),
+    };
+
+    // Create the document (not is_owned — it's incoming external content)
+    let doc = Document::new(title.clone(), thread_id, false);
+    let created = state.db.create_document(doc).await.str_err()?;
+    let doc_id = created
+        .id
+        .as_ref()
+        .map(thing_to_raw)
+        .unwrap_or_default();
+
+    // Save body if non-empty
+    if !body.is_empty() {
+        let fields = ContentFields {
+            body,
+            images: vec![],
+            videos: vec![],
+        };
+        state
+            .db
+            .update_document(&doc_id, Some(&title), Some(&fields.serialize()))
+            .await
+            .str_err()?;
+    }
+
+    Ok(doc_id)
+}

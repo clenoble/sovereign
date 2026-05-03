@@ -20,13 +20,23 @@
 	import { app, confirmPendingAction, rejectPendingAction } from '$lib/stores/app.svelte';
 	import { suggestions, toggleSuggestions } from '$lib/stores/suggestions.svelte';
 	import { chatMessage } from '$lib/api/commands';
+	import { invoke } from '@tauri-apps/api/core';
 	import { renderMarkdown } from '$lib/utils/markdown';
+	import { hapticForLevel, hapticSuccess, hapticLight } from '$lib/api/haptics';
 	import BottomSheet from './BottomSheet.svelte';
 
 	let detent: 'peek' | 'partial' | 'full' = $state('peek');
 	let inputValue = $state('');
 	let messagesEl: HTMLDivElement | undefined = $state();
 	let copiedIdx = $state<number | null>(null);
+
+	// Voice capture (hold-to-record → Whisper STT)
+	let recording = $state(false);
+	let audioCtx: AudioContext | null = null;
+	let audioSamples: number[] = [];
+	let audioSource: MediaStreamAudioSourceNode | null = null;
+	let audioProcessor: ScriptProcessorNode | null = null;
+	let audioStream: MediaStream | null = null;
 
 	let messages = $derived(recentMessages());
 	let isActive = $derived(app.bubbleState !== 'Idle');
@@ -74,6 +84,65 @@
 			detent = 'full';
 		}
 	});
+
+	// Haptic feedback when a pending action is proposed
+	$effect(() => {
+		if (app.pendingAction) {
+			hapticForLevel(app.pendingAction.level).catch(() => {});
+		}
+	});
+
+	// ── Voice capture ────────────────────────────────────────────────────────
+
+	async function startVoiceCapture() {
+		if (recording) return;
+		recording = true;
+		audioSamples = [];
+		try {
+			audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			// ScriptProcessor is deprecated but has universal WebView support.
+			// AudioWorklet requires a separate JS file and stricter CSP — later.
+			audioCtx = new AudioContext({ sampleRate: 16000 });
+			audioSource = audioCtx.createMediaStreamSource(audioStream);
+			// @ts-ignore — ScriptProcessor still works despite deprecation
+			audioProcessor = audioCtx.createScriptProcessor(4096, 1, 1);
+			audioProcessor!.onaudioprocess = (e: AudioProcessingEvent) => {
+				if (!recording) return;
+				const data = e.inputBuffer.getChannelData(0);
+				for (let i = 0; i < data.length; i++) audioSamples.push(data[i]);
+			};
+			audioSource.connect(audioProcessor!);
+			audioProcessor!.connect(audioCtx.destination);
+		} catch {
+			recording = false;
+		}
+	}
+
+	async function stopVoiceCapture() {
+		if (!recording) return;
+		recording = false;
+		audioSource?.disconnect();
+		audioProcessor?.disconnect();
+		audioStream?.getTracks().forEach((t) => t.stop());
+		if (audioCtx) await audioCtx.close();
+
+		const samples = audioSamples;
+		audioSamples = [];
+		audioCtx = null;
+		audioSource = null;
+		audioProcessor = null;
+		audioStream = null;
+
+		if (samples.length === 0) return;
+		try {
+			const text = await invoke<string>('voice_transcribe_buffer', { samples });
+			if (text.trim()) inputValue = text.trim();
+		} catch {
+			/* no model or feature not enabled — silently ignore */
+		}
+	}
+
+	// ── Send / submit ─────────────────────────────────────────────────────────
 
 	async function handleSubmit() {
 		const text = inputValue.trim();
@@ -193,12 +262,16 @@
 				{/if}
 
 				{#if app.pendingAction}
-					<button class="peek-approve" onclick={() => confirmPendingAction()} aria-label="Approve">
+					<button
+						class="peek-approve"
+						onclick={async () => { await hapticSuccess(); await confirmPendingAction(); }}
+						aria-label="Approve"
+					>
 						&#10003;
 					</button>
 					<button
 						class="peek-reject"
-						onclick={() => rejectPendingAction('User rejected via button')}
+						onclick={async () => { await hapticLight(); await rejectPendingAction('User rejected via button'); }}
 						aria-label="Reject"
 					>
 						&#10005;
@@ -236,10 +309,14 @@
 					<div class="action-card">
 						<p class="action-desc">{app.pendingAction.description}</p>
 						<div class="action-btns">
-							<button class="qr-approve" onclick={() => confirmPendingAction()}>Approve</button>
-							<button class="qr-reject" onclick={() => rejectPendingAction('User rejected via button')}
-								>Reject</button
-							>
+							<button
+								class="qr-approve"
+								onclick={async () => { await hapticSuccess(); await confirmPendingAction(); }}
+							>Approve</button>
+							<button
+								class="qr-reject"
+								onclick={async () => { await hapticLight(); await rejectPendingAction('User rejected via button'); }}
+							>Reject</button>
 						</div>
 					</div>
 				{/if}
@@ -256,13 +333,25 @@
 
 	{#snippet footer()}
 		<div class="input-row">
+			<button
+				class="mic-btn"
+				class:recording
+				onpointerdown={startVoiceCapture}
+				onpointerup={stopVoiceCapture}
+				onpointercancel={stopVoiceCapture}
+				aria-label={recording ? 'Recording… release to transcribe' : 'Hold to speak'}
+				style="touch-action: none"
+			>
+				{recording ? '⏹' : '🎤'}
+			</button>
 			<input
 				type="text"
-				placeholder="Type a message…"
+				placeholder={recording ? 'Recording…' : 'Type a message…'}
 				bind:value={inputValue}
 				onkeydown={handleKeydown}
+				readonly={recording}
 			/>
-			<button class="send-btn" onclick={handleSubmit}>Send</button>
+			<button class="send-btn" onclick={handleSubmit} disabled={recording}>Send</button>
 		</div>
 	{/snippet}
 </BottomSheet>
@@ -479,6 +568,33 @@
 	.input-row {
 		display: flex;
 		gap: 8px;
+		align-items: center;
+	}
+
+	.mic-btn {
+		flex-shrink: 0;
+		width: 40px;
+		height: 40px;
+		border-radius: 50%;
+		border: 1px solid var(--border, #333);
+		background: none;
+		cursor: pointer;
+		font-size: 1rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		transition: background 0.15s;
+		user-select: none;
+	}
+	.mic-btn.recording {
+		background: color-mix(in srgb, var(--error, #ef4444) 20%, transparent);
+		border-color: var(--error, #ef4444);
+		animation: pulse-mic 1s ease-in-out infinite;
+	}
+	@keyframes pulse-mic {
+		0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--error, #ef4444) 30%, transparent); }
+		50%       { box-shadow: 0 0 0 6px transparent; }
 	}
 
 	.input-row input {

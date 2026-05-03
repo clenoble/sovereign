@@ -159,7 +159,17 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     let config_for_setup = config.clone();
     let rt_handle = rt.handle().clone();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Haptics plugin — iOS UIImpactFeedbackGenerator / Android VibratorService.
+    // No-op on desktop but safe to register; gated so the dep isn't pulled in
+    // on desktop builds.
+    #[cfg(feature = "haptics")]
+    {
+        builder = builder.plugin(tauri_plugin_haptics::init());
+    }
+
+    builder
         .invoke_handler(tauri::generate_handler![
             // AI: status, chat, search, action gate, models, trust
             tauri_commands::ai::greet,
@@ -256,6 +266,9 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pii::delete_cookie,
             tauri_commands::pii::clear_entity_cookies,
             tauri_commands::pii::commit_signup_capture,
+            // Mobile: voice transcription + share-sheet receiver
+            tauri_commands::mobile::voice_transcribe_buffer,
+            tauri_commands::mobile::receive_shared_content,
         ])
         .setup(move |app| -> std::result::Result<(), Box<dyn std::error::Error>> {
             use tauri::Manager;
@@ -332,6 +345,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 profile_dir: backend.profile_dir,
                 #[cfg(feature = "encryption")]
                 device_key: backend.device_key.clone(),
+                #[cfg(feature = "voice-stt")]
+                stt_engine: backend.stt_engine,
             });
 
             // Auto-open DevTools (desktop debug only)
@@ -437,6 +452,8 @@ struct BackendInit {
     model_assignments: tauri_state::ModelAssignments,
     #[cfg(feature = "encryption")]
     device_key: Option<Arc<sovereign_crypto::device_key::DeviceKey>>,
+    #[cfg(feature = "voice-stt")]
+    stt_engine: Option<Arc<tokio::sync::Mutex<sovereign_ai::voice::stt::SttEngine>>>,
 }
 
 /// Backend init: crypto, DB, seeding, skills, orchestrator, channels.
@@ -603,6 +620,28 @@ async fn init_backend(
     let skill_llm: Option<Arc<dyn sovereign_skills::SkillLlmAccess>> =
         orchestrator.as_ref().map(|o| llm_bridge::wrap_orchestrator(o.clone()));
 
+    // Mobile STT engine: shared Whisper instance for voice_transcribe_buffer
+    // command. On desktop the cpal pipeline owns the SttEngine; here we
+    // initialise one independently so Web Audio API audio can be transcribed.
+    #[cfg(feature = "voice-stt")]
+    let stt_engine = {
+        use sovereign_ai::voice::stt::SttEngine;
+        if config.voice.enabled {
+            match SttEngine::new(&config.voice.whisper_model) {
+                Ok(engine) => {
+                    tracing::info!("STT engine ready for mobile transcription");
+                    Some(Arc::new(tokio::sync::Mutex::new(engine)))
+                }
+                Err(e) => {
+                    tracing::warn!("STT engine init failed, mobile voice unavailable: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
     Ok(BackendInit {
         config: config.clone(),
         profile_dir,
@@ -619,5 +658,7 @@ async fn init_backend(
         model_assignments,
         #[cfg(feature = "encryption")]
         device_key: crypto_state.as_ref().map(|(dk, _, _)| dk.clone()),
+        #[cfg(feature = "voice-stt")]
+        stt_engine,
     })
 }

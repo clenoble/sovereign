@@ -43,4 +43,9 @@ pub struct AppState {
     /// create / import / save.
     #[cfg(feature = "encryption")]
     pub device_key: Option<Arc<sovereign_crypto::device_key::DeviceKey>>,
+    /// Whisper STT engine for mobile voice-to-text (Web Audio API → Whisper).
+    /// Populated when voice-stt feature is enabled and whisper model exists.
+    /// Desktop uses the cpal-based VoicePipeline instead.
+    #[cfg(feature = "voice-stt")]
+    pub stt_engine: Option<Arc<tokio::sync::Mutex<sovereign_ai::voice::stt::SttEngine>>>,
 }
