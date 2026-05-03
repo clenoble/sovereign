@@ -72,6 +72,18 @@ async fn install_session(
         }
     }
 
+    // 6. P2P startup (Phase 3c): bring up the libp2p node, install the
+    //    command channel on AppState + orchestrator, load paired
+    //    devices, and spawn the event translator. Idempotent — re-login
+    //    is a no-op on the second pass. Best-effort: a P2P bring-up
+    //    failure must not fail the login.
+    #[cfg(feature = "p2p")]
+    {
+        if let Err(e) = crate::sync_startup::start_p2p_node(state).await {
+            tracing::warn!("P2P startup failed (continuing without sync): {e}");
+        }
+    }
+
     Ok(persona)
 }
 

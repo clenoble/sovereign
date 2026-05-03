@@ -11,6 +11,8 @@ mod setup;
 
 mod tauri_commands;
 mod tauri_events;
+#[cfg(feature = "p2p")]
+mod sync_startup;
 #[cfg(feature = "encryption")]
 mod pii_ingest;
 #[cfg(all(feature = "comms", feature = "encryption"))]
@@ -285,6 +287,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pairing::forget_paired_device,
             #[cfg(feature = "encryption")]
             tauri_commands::pairing::get_local_peer_id,
+            #[cfg(feature = "encryption")]
+            tauri_commands::pairing::trigger_sync_now,
             // Mobile: voice transcription + share-sheet receiver
             tauri_commands::mobile::voice_transcribe_buffer,
             tauri_commands::mobile::receive_shared_content,
@@ -374,6 +378,10 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 p2p_identity_key: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "encryption")]
                 pending_pairing: tokio::sync::RwLock::new(None),
+                #[cfg(feature = "p2p")]
+                p2p_command_tx: tokio::sync::RwLock::new(None),
+                #[cfg(feature = "p2p")]
+                pairing_manager: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "voice-stt")]
                 stt_engine: backend.stt_engine,
             });
@@ -441,6 +449,32 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
 
             // PII sweep idle-watcher (4e4): deferred to v0.0.5 — see
             // comment earlier in run_tauri() for the rationale.
+
+            // Phase 3c: periodic 5-minute sync poll. Belt-and-suspenders
+            // alongside the mDNS-discovery auto-trigger and the
+            // foreground `trigger_sync_now` Tauri command. No-op until
+            // the post-login P2P startup runs.
+            #[cfg(feature = "p2p")]
+            {
+                let app_handle_for_poll = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Manager as _;
+                    let mut interval =
+                        tokio::time::interval(std::time::Duration::from_secs(300));
+                    // Skip the immediate tick — a freshly logged-in user
+                    // already gets a sync via the mDNS auto-trigger.
+                    interval.tick().await;
+                    loop {
+                        interval.tick().await;
+                        if let Some(state) = app_handle_for_poll.try_state::<tauri_state::AppState>() {
+                            let fired = crate::sync_startup::trigger_sync_for_all_paired(&state).await;
+                            if fired > 0 {
+                                tracing::debug!("periodic sync poll: fired StartSync for {fired} paired peers");
+                            }
+                        }
+                    }
+                });
+            }
 
             Ok(())
         })
@@ -549,19 +583,11 @@ async fn init_backend(
             o.set_decision_rx(decision_rx);
             o.set_feedback_rx(feedback_rx);
 
-            // P2P startup is deferred to post-login wiring (v0.0.5);
-            // requires the device key to derive identity, which is
-            // not available until the user authenticates.
-            #[cfg(feature = "p2p")]
-            if config.p2p.enabled {
-                tracing::warn!(
-                    "P2P startup deferred until login wiring is complete (v0.0.5)"
-                );
-            }
-
             // Session-log encryption + PII tokenization for the
             // orchestrator are installed after login by
-            // install_session() in tauri_commands::auth.rs.
+            // install_session() in tauri_commands::auth.rs. The P2P
+            // node startup also runs there once the per-device identity
+            // key is loaded (Phase 3c).
 
             tracing::info!("AI orchestrator initialized (Tauri mode)");
             Some(Arc::new(o))

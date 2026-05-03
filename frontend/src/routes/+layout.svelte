@@ -4,7 +4,7 @@
 	import { app } from '$lib/stores/app.svelte';
 	import { toggleChat } from '$lib/stores/chat.svelte';
 	import { subscribeToEvents } from '$lib/api/events';
-	import { getTheme, checkAuthState, getProfile } from '$lib/api/commands';
+	import { getTheme, checkAuthState, getProfile, triggerSyncNow } from '$lib/api/commands';
 	import { stopNowTimer } from '$lib/stores/canvas.svelte';
 	import { device, initDevice, destroyDevice } from '$lib/stores/device.svelte';
 
@@ -138,12 +138,29 @@
 			}
 		);
 
+		// Phase 3c: foreground sync trigger. When the document becomes
+		// visible (window refocus, mobile resume from background), kick
+		// off a sync with every paired peer. The backend dedupes against
+		// in-flight sessions per peer, so a quick toggle won't pile up
+		// duplicate syncs.
+		let lastVisibilitySync = 0;
+		const handleVisibilityChange = () => {
+			if (document.visibilityState !== 'visible') return;
+			// 60s cooldown per the v0.0.5 plan §4.5 (foreground budget).
+			const now = Date.now();
+			if (now - lastVisibilitySync < 60_000) return;
+			lastVisibilitySync = now;
+			triggerSyncNow().catch((e) => console.warn('triggerSyncNow failed:', e));
+		};
+		document.addEventListener('visibilitychange', handleVisibilityChange);
+
 		return () => {
 			unlisten();
 			unlistenSignup();
 			stopNowTimer();
 			destroyDevice();
 			window.removeEventListener('keydown', handleKeydown);
+			document.removeEventListener('visibilitychange', handleVisibilityChange);
 		};
 	});
 </script>

@@ -43,10 +43,12 @@ pub struct Orchestrator {
     pii_account_key: Mutex<Option<Arc<sovereign_crypto::account_key::AccountKey>>>,
     #[cfg(feature = "encrypted-log")]
     session_log_key: Mutex<Option<[u8; 32]>>,
+    /// Channel for queueing P2P commands (e.g. `StartSync`, `PairDevice`)
+    /// from intent handlers. `None` until `set_p2p_command_tx` is called
+    /// post-login. Wrapped in a Mutex so the setter can be `&self`
+    /// (orchestrator lives behind Arc).
     #[cfg(feature = "p2p")]
-    p2p_command_tx: Option<tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>>,
-    #[cfg(feature = "p2p")]
-    p2p_event_rx: Option<Mutex<tokio::sync::mpsc::Receiver<sovereign_p2p::P2pEvent>>>,
+    p2p_command_tx: Mutex<Option<tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>>>,
 }
 
 impl Orchestrator {
@@ -111,9 +113,7 @@ impl Orchestrator {
             #[cfg(feature = "encrypted-log")]
             session_log_key: Mutex::new(None),
             #[cfg(feature = "p2p")]
-            p2p_command_tx: None,
-            #[cfg(feature = "p2p")]
-            p2p_event_rx: None,
+            p2p_command_tx: Mutex::new(None),
         })
     }
 
@@ -195,68 +195,30 @@ impl Orchestrator {
         }
     }
 
-    /// Attach P2P command/event channels for device sync and guardian transport.
+    /// Install the P2P command channel post-login. Intent handlers
+    /// (sync_device, pair_device) read it through `p2p_command_tx_clone`.
+    /// P2P event consumption + auto-trigger logic lives in the app
+    /// binary (main.rs spawns a dedicated task with the corresponding
+    /// receiver), not in the orchestrator — events flow back to the UI
+    /// through the OrchestratorEvent channel via a translator task.
     #[cfg(feature = "p2p")]
-    pub fn set_p2p_channels(
-        &mut self,
+    pub fn set_p2p_command_tx(
+        &self,
         command_tx: tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>,
-        event_rx: tokio::sync::mpsc::Receiver<sovereign_p2p::P2pEvent>,
     ) {
-        self.p2p_command_tx = Some(command_tx);
-        self.p2p_event_rx = Some(Mutex::new(event_rx));
+        if let Ok(mut guard) = self.p2p_command_tx.lock() {
+            *guard = Some(command_tx);
+        }
     }
 
-    /// Drain pending P2P events and forward them as OrchestratorEvents.
+    /// Snapshot the P2P command channel for one-shot dispatch from
+    /// intent handlers. Returns None if the post-login P2P startup
+    /// hasn't run yet.
     #[cfg(feature = "p2p")]
-    pub fn poll_p2p_events(&self) {
-        if let Some(ref rx_mutex) = self.p2p_event_rx {
-            if let Ok(mut rx) = rx_mutex.lock() {
-                while let Ok(event) = rx.try_recv() {
-                    use sovereign_p2p::P2pEvent;
-                    let orch_event = match event {
-                        P2pEvent::PeerDiscovered { peer_id, device_name } => {
-                            OrchestratorEvent::DeviceDiscovered {
-                                device_id: peer_id,
-                                device_name: device_name.unwrap_or_else(|| "Unknown".into()),
-                            }
-                        }
-                        P2pEvent::SyncStarted { peer_id } => {
-                            OrchestratorEvent::SyncStatus {
-                                peer_id,
-                                status: "started".into(),
-                            }
-                        }
-                        P2pEvent::SyncCompleted { peer_id, docs_synced } => {
-                            OrchestratorEvent::SyncStatus {
-                                peer_id,
-                                status: format!("completed ({} docs)", docs_synced),
-                            }
-                        }
-                        P2pEvent::SyncConflict { doc_id, description } => {
-                            OrchestratorEvent::SyncConflict { doc_id, description }
-                        }
-                        P2pEvent::ShardReceived { shard_id, .. } => {
-                            tracing::info!("Shard received: {}", shard_id);
-                            continue;
-                        }
-                        P2pEvent::PairingCompleted { peer_id, device_name: _ } => {
-                            OrchestratorEvent::DevicePaired { device_id: peer_id }
-                        }
-                        P2pEvent::PeerLost { peer_id } => {
-                            OrchestratorEvent::SyncStatus {
-                                peer_id,
-                                status: "disconnected".into(),
-                            }
-                        }
-                        P2pEvent::PairingRequested { peer_id, device_name } => {
-                            tracing::info!("Pairing requested from {} ({})", peer_id, device_name);
-                            continue;
-                        }
-                    };
-                    let _ = self.event_tx.send(orch_event);
-                }
-            }
-        }
+    fn p2p_command_tx_clone(
+        &self,
+    ) -> Option<tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>> {
+        self.p2p_command_tx.lock().ok()?.clone()
     }
 
     /// Handle a user query: classify intent, gate check, execute or await confirmation.
@@ -1219,7 +1181,7 @@ impl Orchestrator {
             | "initiate_recovery" | "sync_status" | "encrypt_data" => {
                 #[cfg(feature = "p2p")]
                 {
-                    if let Some(ref tx) = self.p2p_command_tx {
+                    if let Some(tx) = self.p2p_command_tx_clone() {
                         match action {
                             "sync_device" => {
                                 if let Some(peer_id) = target {
