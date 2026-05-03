@@ -444,6 +444,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
           <div class="nav-dropdown-inner">
             <a href="#/encryption" role="menuitem">Encryption</a>
             <a href="#/social-recovery" role="menuitem">Social Recovery</a>
+            <a href="#/pii-dashboard" role="menuitem">PII Dashboard</a>
             <a href="#/ethics" role="menuitem">Ethics</a>
           </div>
         </div>
@@ -873,9 +874,10 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       </div>
       <div class="roadmap-card">
         <h3>PII Dashboard</h3>
-        <p>A single view showing what personal data exists across your documents, messages,
-          and contacts — and where it's been shared. A personal data map
-          that helps you understand your own exposure.</p>
+        <p>Detection layer is built. Dashboard UI, browser integration, and LLM-NER are in
+          active development. A single view of all personal data across your workspace,
+          with an encrypted vault and an outbound disclosure ledger.</p>
+        <a href="#/pii-dashboard" class="learn-more" style="margin-top:16px;">Architecture &amp; status</a>
       </div>
     </div>
   </div>
@@ -3453,6 +3455,310 @@ impl CanvasRenderer {
 </main>
 </template>
 
+<template id="page-pii-dashboard">
+<main id="main" role="main">
+<div class="content-inner">
+
+<div class="page-header">
+  <h1>PII Management Dashboard</h1>
+  <p class="subtitle">
+    Know what personal data lives in your workspace, who you've shared it with, and where your
+    credentials are — entirely on-device, without sending anything to a server.
+  </p>
+  <p style="margin-top:16px; display:inline-flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--c-gold); background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); border-radius: var(--radius); padding: 8px 14px;">
+    <span aria-hidden="true">◐</span> Detection layer built · Dashboard UI in active development
+  </p>
+</div>
+
+<!-- TIER 1 -->
+<section class="tier-section tier-1">
+  <div class="tier-header">
+    <span class="tier-badge">1</span>
+    <div>
+      <div class="tier-label">Tier 1: The Elevator Pitch</div>
+      <div class="tier-subtext">10-second read</div>
+    </div>
+  </div>
+  <div class="tier-1-content">
+    <p>
+      Your documents contain email addresses, phone numbers, bank accounts, and passwords.
+      Traditional apps leave this exposed or scan it to a cloud. Sovereign detects personal data
+      on-device, encrypts the values into a vault, and replaces them in documents with
+      <code>[pii:token]</code> references. The AI only ever sees tokens — never raw values.
+      Revealing a value requires a deliberate, gated confirmation. Deleting one is irreversible
+      and flagged as such.
+    </p>
+  </div>
+</section>
+
+<!-- TIER 2 -->
+<section class="tier-section tier-2">
+  <div class="tier-header">
+    <span class="tier-badge">2</span>
+    <div>
+      <div class="tier-label">Tier 2: How It Works</div>
+      <div class="tier-subtext">1–3 minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-2-content">
+
+    <details open>
+      <summary>Three Pillars: Inventory · Vault · Ledger</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>One Schema, Three Views</h3>
+          <p>
+            The dashboard is not three separate features — it's three filtered views over two core tables:
+            <code>PiiRecord</code> and <code>ShareRecord</code>.
+          </p>
+          <ul class="concept-list">
+            <li><strong>Inventory:</strong> All detected PII across your documents, messages, and contacts.
+              Grouped by entity (person, org, service). Each finding shows kind, masked sample, source
+              document, and review state (Unreviewed / Confirmed / Dismissed).</li>
+            <li><strong>Vault:</strong> The same <code>PiiRecord</code> table filtered to
+              <code>stored_secret = true</code> — entries you explicitly saved: passwords, API keys, IBAN
+              numbers, passport details. Encrypted with per-record keys. Reveal is Level 3 (user
+              confirmation + 30-second clipboard auto-clear).</li>
+            <li><strong>Ledger:</strong> <code>ShareRecord</code> rows — one entry every time a piece of
+              PII leaves your device. Email send, web form submit, API call. An append-only log of
+              outbound disclosures. Shows channel, timestamp, and what was shared.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Detection — What Gets Found</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Regex Layer (Built) + LLM-NER Layer (Planned)</h3>
+          <p>
+            Detection runs in two passes. The first is instant; the second is async and confidence-scored.
+          </p>
+          <ul class="concept-list">
+            <li><strong>Regex (6 types, implemented):</strong> Email, phone, SSN, credit card, IPv4 address.
+              Patterns compiled once via <code>OnceLock</code>. Returns byte offsets, kind label, and
+              matched sample.</li>
+            <li><strong>Extended regex (planned, Swiss/EU locale):</strong> AVS number
+              (<code>756.XXXX.XXXX.XX</code>), IBAN (ISO 13616 + CH prefix), passport numbers,
+              date of birth in proximity to keywords, Swiss postal addresses.</li>
+            <li><strong>LLM-NER (planned):</strong> Zero-shot prompt to the local model for person names,
+              organisation names, and free-form addresses. Returns findings with confidence scores.
+              Below 0.7 → marked Unreviewed, surfaced in the review queue.</li>
+            <li><strong>Entity disambiguation (planned):</strong> Email domain → match against Entity
+              <code>domains[]</code>. Phone → match Contact. Name → fuzzy match. No match → propose
+              new Entity for one-click confirmation.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>PII-by-Reference Architecture</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Tokens in Documents, Encrypted Values in the Vault</h3>
+          <p>
+            When detection confirms a finding, the source document is rewritten in two steps — neither is irreversible until you explicitly purge:
+          </p>
+          <ul class="concept-list">
+            <li><strong><code>body_canonical</code>:</strong> The version the app, AI, and search index
+              see — PII spans replaced with <code>[pii:&lt;record_id&gt;]</code> tokens. This is what
+              gets synced, indexed, and passed as AI context.</li>
+            <li><strong><code>body_raw_encrypted</code>:</strong> The original text, encrypted with the
+              document's per-record key. Accessible at Level 3 (user confirmation). Useful for
+              editing the original or emergency recovery without irreversible loss.</li>
+            <li><strong>Low-confidence findings stay readable:</strong> If the LLM-NER confidence is
+              below threshold, the source remains fully readable until you confirm in the review queue.
+              No silent rewrites.</li>
+            <li><strong>Redaction is Level 5 (Destruct):</strong> Permanently replacing the token with
+              <code>[REDACTED]</code> and deleting the vault record is treated as an irreversible
+              operation and requires explicit confirmation.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Action Gravity Mapping</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Friction Scales with What You're About to Do</h3>
+          <ul class="concept-list">
+            <li><strong>Level 1 — Observe (instant):</strong> View dashboard, list entities, list findings (masked), run manual rescan, browse ledger.</li>
+            <li><strong>Level 2 — Annotate (instant):</strong> Tag or categorise a finding, confirm or merge entities, dismiss a finding from the review queue.</li>
+            <li><strong>Level 3 — Modify (confirm):</strong> Reveal a PII value (unmask), add or edit a vault entry, copy to clipboard (+ 30-second auto-clear), autofill a form from the vault.</li>
+            <li><strong>Level 4 — Transmit (confirm):</strong> Export the dashboard audit log.</li>
+            <li><strong>Level 5 — Destruct (confirm, irreversible):</strong> Redact a finding, purge a vault entry, delete a cookie.</li>
+          </ul>
+          <p style="margin-top:12px;">
+            <strong>Data-plane block:</strong> Any PII operation requested from document content — for
+            example, an AI prompt derived from an email that says "reveal my password" — is blocked
+            at Level 3+ regardless of the prompt. The gate is in code, not in the system prompt.
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Browser Integration — Vault, Signup Capture &amp; Cookies</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>Three Browser-Side Flows (Planned)</h3>
+          <ul class="concept-list">
+            <li><strong>Signup capture + password generation:</strong> When you fill a registration form,
+              Sovereign can generate a strong password (24 chars, alphanumeric + symbols, OsRng-backed),
+              let you review it, and on submit automatically save it as a vault entry and create a
+              <code>ShareRecord</code> (channel = Web).</li>
+            <li><strong>Autofill from vault:</strong> On domains matching a known Entity, a prompt offers
+              to fill the form from the vault. Decrypt is Level 3 — you confirm before the value is
+              injected into the page.</li>
+            <li><strong>Cookie management:</strong> The dashboard's Cookies tab reads the embedded
+              webview's native cookie store via Tauri's webview API. Per-row: reveal (L3), copy (L3),
+              delete (L5), or promote to vault. Bulk: clear all for entity (L5).</li>
+          </ul>
+          <p style="margin-top:12px;">
+            Cookies are never mirrored to <code>sovereign-db</code> — the webview owns them. The
+            dashboard is a read-on-demand view, not a sync layer.
+          </p>
+        </div>
+      </div>
+    </details>
+
+  </div>
+</section>
+
+<!-- TIER 3 -->
+<section class="tier-section tier-3">
+  <div class="tier-header">
+    <span class="tier-badge">3</span>
+    <div>
+      <div class="tier-label">Tier 3: Deep Dive</div>
+      <div class="tier-subtext">5+ minute read</div>
+    </div>
+  </div>
+
+  <div class="tier-3-content">
+
+    <div class="deep-section">
+      <h3>PII Kind Enum — 13 Types</h3>
+      <p>Every <code>PiiRecord</code> is tagged with one of these. Regex detection covers the first six; LLM-NER adds the rest.</p>
+      <div class="code-block"><code>pub enum PiiKind {
+    // Regex-detected (implemented)
+    Email, Phone, Ssn, CreditCard, Ipv4,
+    // Extended regex (planned — Swiss/EU locale)
+    Avs,       // Swiss social security 756.XXXX.XXXX.XX
+    Iban,      // ISO 13616 incl. CH-prefix
+    Passport,  // 9 alphanumeric + country prefix
+    Dob,       // date near keywords: "DOB", "né(e)", "birth"
+    Address,   // Swiss postal: street + 4-digit postcode + city
+    // LLM-NER (planned)
+    PersonName, OrgName,
+    Other,
+}</code></div>
+    </div>
+
+    <div class="deep-section">
+      <h3>PiiRecord Schema (Planned)</h3>
+      <table class="const-table">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td><code>id</code></td><td>Thing</td><td>SurrealDB record ID</td></tr>
+        <tr><td><code>kind</code></td><td>PiiKind</td><td>Detected or manually set</td></tr>
+        <tr><td><code>value_encrypted</code></td><td>Bytes</td><td>nonce + XChaCha20-Poly1305 ciphertext</td></tr>
+        <tr><td><code>entity_id</code></td><td>Thing (nullable)</td><td>Link to owning Entity</td></tr>
+        <tr><td><code>stored_secret</code></td><td>Bool</td><td>true = vault entry; false = discovered PII</td></tr>
+        <tr><td><code>confidence</code></td><td>f32 (0–1)</td><td>1.0 for regex; LLM-NER score otherwise</td></tr>
+        <tr><td><code>sources</code></td><td>Vec&lt;SourceRef&gt;</td><td>Back-links to Document / Message / Contact + byte span</td></tr>
+        <tr><td><code>review_state</code></td><td>Enum</td><td>Unreviewed / Confirmed / Dismissed</td></tr>
+        <tr><td><code>last_revealed_at</code></td><td>DateTime (nullable)</td><td>Set on L3 reveal; shown in audit view</td></tr>
+        <tr><td><code>created_at</code></td><td>DateTime</td><td>Auto-set on insert</td></tr>
+      </table>
+    </div>
+
+    <div class="deep-section">
+      <h3>Tauri Command Interface (Planned — 11 commands)</h3>
+      <div class="code-block"><code>// Inventory
+list_entities() -> Vec&lt;EntityDto&gt;
+list_pii_records(entity_id: Option&lt;String&gt;) -> Vec&lt;PiiRecordDto&gt;
+
+// Resolution — returns body with tokens substituted per access level
+resolve_pii_tokens(
+    doc_id: String,
+    access_level: Preview | MaskedSample | Reveal | RawOriginal
+) -> ResolvedBody
+
+// Vault ops (L3 gate)
+create_vault_entry(entity_id, kind, label, value, tags)
+reveal_pii(record_id) -> DecryptedValue   // sets last_revealed_at
+redact_pii(record_id)                     // L5 — irreversible
+purge_vault_entry(record_id)              // L5 — irreversible
+
+// Review queue
+list_review_queue() -> Vec&lt;UnreviewedFinding&gt;
+confirm_entity(auto_proposed_entity_id)   // L2
+
+// Cookies (browser integration)
+list_cookies_for_entity(entity_id) -> Vec&lt;CookieDto&gt;
+delete_cookie(domain, name)               // L5
+clear_entity_cookies(entity_id)           // L5</code></div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Detection Pipeline (Planned)</h3>
+      <div class="flow-diagram">
+Document / Message created or updated
+        │
+        ▼
+① Regex detector  ──────────────────────────── fast, synchronous
+        │ findings (confidence = 1.0)
+        ▼
+② Extended regex (Swiss/EU locale)  ────────── fast, synchronous
+        │ merged findings
+        ▼
+③ LLM-NER  ──────────────────────────────────  async, confidence-scored
+        │ findings (confidence 0.0–1.0)
+        ▼
+④ Entity disambiguation  ─────────────────────  domain / phone / fuzzy-name match
+        │ findings with entity_id (or proposed new Entity)
+        ▼
+⑤ Commit pass  ───────────────────────────────  confidence ≥ threshold?
+        │                                       ├─ yes → rewrite body_canonical
+        │                                       │        encrypt body_raw_encrypted
+        │                                       │        create PiiRecord(s)
+        │                                       └─ no  → create PiiRecord (review_state=Unreviewed)
+        │                                                source stays readable
+        ▼
+Review queue (low-confidence) ────────────────  surfaced in dashboard for user confirmation</div>
+    </div>
+
+    <div class="deep-section">
+      <h3>Implementation Status</h3>
+      <table class="const-table">
+        <tr><th>Component</th><th>Status</th></tr>
+        <tr><td>Regex detection — 6 types (email, phone, SSN, credit card, IPv4)</td><td style="color: var(--c-owned);">✓ Built</td></tr>
+        <tr><td>Redactor skill — replaces spans with [REDACTED]</td><td style="color: var(--c-owned);">✓ Built</td></tr>
+        <tr><td>Architectural plan &amp; data model design</td><td style="color: var(--c-owned);">✓ Complete</td></tr>
+        <tr><td>Extended regex — Swiss/EU locale (AVS, IBAN, passport, DOB, address)</td><td style="color: var(--c-gold);">In development</td></tr>
+        <tr><td>LLM-NER detection layer</td><td style="color: var(--c-gold);">In development</td></tr>
+        <tr><td>Entity disambiguation</td><td style="color: var(--c-gold);">In development</td></tr>
+        <tr><td>Crypto vault primitive (dual-encrypt blob storage)</td><td style="color: var(--c-gold);">In development</td></tr>
+        <tr><td>PiiRecord / ShareRecord / Entity DB schemas</td><td style="color: var(--c-gold);">In development</td></tr>
+        <tr><td>Tauri command layer (11 commands)</td><td style="color: var(--c-gold);">In development</td></tr>
+        <tr><td>Dashboard UI (panel, entity list, PII rows, vault form, review queue)</td><td style="color: var(--c-gold);">In development</td></tr>
+        <tr><td>Browser integration (signup capture, autofill, cookie management)</td><td style="color: var(--c-gold);">In development</td></tr>
+        <tr><td>Ingest hooks (documents, messages, contacts, session log)</td><td style="color: var(--c-gold);">In development</td></tr>
+        <tr><td>Outbound ledger (ShareRecord on every PII disclosure)</td><td style="color: var(--c-gold);">In development</td></tr>
+      </table>
+    </div>
+
+  </div>
+</section>
+
+</div>
+</main>
+</template>
+
 <template id="page-skills">
 <main id="main" role="main">
 <div class="content-inner">
@@ -5322,6 +5628,7 @@ const ROUTES = {
   '/communications': { template: 'page-communications', title: 'Unified Communications — Sovereign GE', description: 'One inbox for Email, Signal, and WhatsApp.' },
   '/content-skills': { template: 'page-content-skills', title: 'Content + Skills Architecture — Sovereign GE', description: 'Data ownership through composable tools and graph database.' },
   '/skills': { template: 'page-skills', title: 'Skill System — Sovereign GE', description: 'Composable, sandboxed tools with a WASM plugin runtime and capability-based permissions enforced in code.' },
+  '/pii-dashboard': { template: 'page-pii-dashboard', title: 'PII Management Dashboard — Sovereign GE', description: 'Know what personal data lives in your workspace, who you\'ve shared it with, and where your credentials are — entirely on-device.' },
   '/ethics': { template: 'page-ethics', title: 'Ethics & Design Constraints — Sovereign GE', description: 'How Sovereign narrows the misuse surface.' },
   '/legal-notice': { template: 'page-legal-notice', title: 'Legal Notice — Sovereign GE', description: 'Terms, disclaimers, and regulatory information.' },
   '/privacy-policy': { template: 'page-privacy-policy', title: 'Privacy Policy — Sovereign GE', description: 'We don\'t collect your data.' },
@@ -5476,6 +5783,10 @@ const PAGE_LINKS = {
   'skills': '#/skills',
   'skill system': '#/skills',
   'wasm skills': '#/skills',
+  'pii': '#/pii-dashboard',
+  'pii dashboard': '#/pii-dashboard',
+  'personal data': '#/pii-dashboard',
+  'vault': '#/pii-dashboard',
 };
 
 function findPageRoute(text) {
