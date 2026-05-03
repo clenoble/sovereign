@@ -64,9 +64,13 @@
 		}
 	});
 
-	// Auto-expand to full for pending actions (high-gravity confirmation)
+	// Auto-expand to full only for high-gravity actions (Modify / Destruct)
+	// that require explicit confirmation with full context visible.
+	// Lower-gravity actions (Compose, Suggest, Observe) show quick buttons
+	// in the peek row so the user can approve without opening the sheet.
 	$effect(() => {
-		if (app.pendingAction && detent === 'peek') {
+		const level = app.pendingAction?.level;
+		if ((level === 'Modify' || level === 'Destruct') && detent === 'peek') {
 			detent = 'full';
 		}
 	});
