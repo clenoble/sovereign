@@ -93,6 +93,11 @@ pub fn generate_designation() -> String {
     format!("Ikshal-{latin}-{suffix}")
 }
 
+/// Default theme for new profiles.
+fn default_theme() -> String {
+    "dark".to_string()
+}
+
 /// Top-level persistent user profile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserProfile {
@@ -109,6 +114,9 @@ pub struct UserProfile {
     /// The user's own display name.
     #[serde(default)]
     pub display_name: Option<String>,
+    /// UI theme: "dark" or "light". Persisted across sessions.
+    #[serde(default = "default_theme")]
+    pub theme: String,
     pub created: String,
     pub last_updated: String,
     pub interaction_patterns: InteractionPatterns,
@@ -215,6 +223,7 @@ impl UserProfile {
             nickname: None,
             bubble_style: BubbleStyle::default(),
             display_name: None,
+            theme: default_theme(),
             created: now.clone(),
             last_updated: now,
             interaction_patterns: InteractionPatterns {

@@ -4,6 +4,47 @@ use super::*;
 // Phase 4: Auth, Onboarding, Settings, Document deletion
 // ---------------------------------------------------------------------------
 
+/// Authenticate a password against the AuthStore and install the
+/// resulting DeviceKey across AppState + the orchestrator. Used by
+/// both `validate_password` (login flow) and `complete_onboarding`
+/// (first-run flow). Returns the persona that authenticated.
+#[cfg(feature = "encryption")]
+async fn install_session(
+    state: &AppState,
+    auth_store: &sovereign_crypto::auth::AuthStore,
+    password: &[u8],
+) -> Result<sovereign_crypto::auth::PersonaKind, String> {
+    let auth_result = auth_store
+        .authenticate(password)
+        .map_err(|_| "Invalid password".to_string())?;
+    let persona = auth_result.persona;
+    let device_key_arc = std::sync::Arc::new(auth_result.device_key);
+
+    // 1. Install device_key into AppState (vault, PII reveal, ingest).
+    state.set_device_key(device_key_arc.clone()).await;
+
+    // 2. Call complete_auth and discard the returned key_db / kek —
+    //    side effect: keys.duress.db is created on first duress login,
+    //    even though no AppState consumer reads it today.
+    if let Err(e) = crate::setup::complete_auth(persona, &device_key_arc, &auth_result.kek) {
+        tracing::warn!("complete_auth side-effect failed: {e}");
+    }
+
+    // 3. Wire orchestrator: inline PII tokenization in chat I/O.
+    if let Some(ref orch) = state.orchestrator {
+        orch.set_pii_device_key(device_key_arc.clone());
+    }
+
+    // 4. Enable encrypted session log if the feature is on.
+    #[cfg(feature = "encrypted-log")]
+    if let Some(ref orch) = state.orchestrator {
+        let session_key = crate::setup::derive_session_log_key(&device_key_arc);
+        orch.set_session_log_key(session_key);
+    }
+
+    Ok(persona)
+}
+
 /// Check whether the user needs onboarding or login.
 #[tauri::command]
 pub async fn check_auth_state(state: State<'_, AppState>) -> Result<AuthCheckResult, String> {
@@ -24,7 +65,10 @@ pub async fn check_auth_state(state: State<'_, AppState>) -> Result<AuthCheckRes
     })
 }
 
-/// Validate a password against the auth store. Returns persona ("primary" or "duress").
+/// Validate a password against the auth store and install the session.
+/// Returns persona ("primary" or "duress"). After this call returns Ok,
+/// AppState.device_key is populated and the orchestrator has its PII /
+/// session-log keys installed (vault, PII reveal, encrypted log work).
 #[tauri::command]
 pub async fn validate_password(
     state: State<'_, AppState>,
@@ -37,10 +81,8 @@ pub async fn validate_password(
         let auth_path = state.profile_dir.join("crypto/auth.store");
         let store = sovereign_crypto::auth::AuthStore::load(&auth_path)
             .str_err()?;
-        let result = store
-            .authenticate(password.as_bytes())
-            .map_err(|_| "Invalid password".to_string())?;
-        match result.persona {
+        let persona = install_session(&state, &store, password.as_bytes()).await?;
+        match persona {
             sovereign_crypto::auth::PersonaKind::Primary => Ok("primary".into()),
             sovereign_crypto::auth::PersonaKind::Duress => Ok("duress".into()),
         }
@@ -96,6 +138,12 @@ pub async fn complete_onboarding(
         profile.bubble_style =
             serde_json::from_str(&format!("\"{style}\"")).unwrap_or_default();
     }
+    // Persist the theme picked during the wizard (the wizard toggles
+    // state.theme via the toggle_theme command, but at that point the
+    // profile may not exist yet, so we capture the current value here).
+    if let Ok(theme_guard) = state.theme.lock() {
+        profile.theme = theme_guard.clone();
+    }
     profile.save(profile_dir).str_err()?;
 
     // Create crypto stores if encryption enabled and password provided
@@ -121,6 +169,10 @@ pub async fn complete_onboarding(
         auth_store
             .save(&crypto_dir.join("auth.store"))
             .str_err()?;
+
+        // Install the session immediately so the user lands in a fully
+        // unlocked state (vault, PII pipeline, encrypted session log).
+        install_session(&state, &auth_store, password.as_bytes()).await?;
 
         // Save canary phrase if provided
         if let Some(ref phrase) = data.canary_phrase {
@@ -173,10 +225,10 @@ pub async fn complete_onboarding(
 
         // PII seed needs the DeviceKey to encrypt vault values, so it
         // can only run on builds with the encryption feature and once
-        // crypto is initialized.
+        // install_session has populated AppState.device_key.
         #[cfg(feature = "encryption")]
-        if let Some(ref dk) = state.device_key {
-            crate::seed::seed_pii_if_empty(&state.db, dk)
+        if let Some(dk) = state.device_key().await {
+            crate::seed::seed_pii_if_empty(&state.db, &dk)
                 .await
                 .str_err()?;
         }
