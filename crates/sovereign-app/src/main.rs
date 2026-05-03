@@ -269,6 +269,22 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pii::delete_cookie,
             tauri_commands::pii::clear_entity_cookies,
             tauri_commands::pii::commit_signup_capture,
+            // Pairing (v0.0.5) — only registered when encryption is on.
+            // Tauri's generate_handler doesn't support inline cfg, so the
+            // module is always present; functions stub out PeerId derivation
+            // when the p2p feature is off.
+            #[cfg(feature = "encryption")]
+            tauri_commands::pairing::generate_pair_qr,
+            #[cfg(feature = "encryption")]
+            tauri_commands::pairing::consume_pair_qr_preview,
+            #[cfg(feature = "encryption")]
+            tauri_commands::pairing::complete_onboarding_paired,
+            #[cfg(feature = "encryption")]
+            tauri_commands::pairing::list_paired_devices,
+            #[cfg(feature = "encryption")]
+            tauri_commands::pairing::forget_paired_device,
+            #[cfg(feature = "encryption")]
+            tauri_commands::pairing::get_local_peer_id,
             // Mobile: voice transcription + share-sheet receiver
             tauri_commands::mobile::voice_transcribe_buffer,
             tauri_commands::mobile::receive_shared_content,
@@ -356,6 +372,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 account_key: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "encryption")]
                 p2p_identity_key: tokio::sync::RwLock::new(None),
+                #[cfg(feature = "encryption")]
+                pending_pairing: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "voice-stt")]
                 stt_engine: backend.stt_engine,
             });

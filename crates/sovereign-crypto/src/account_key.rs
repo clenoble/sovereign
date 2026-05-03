@@ -16,7 +16,8 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::aead::KEY_SIZE;
+use crate::aead::{self, KEY_SIZE, NONCE_SIZE};
+use crate::device_key::DeviceKey;
 use crate::error::{CryptoError, CryptoResult};
 use crate::master_key::MasterKey;
 
@@ -50,6 +51,36 @@ impl AccountKey {
     pub fn as_bytes(&self) -> &[u8; KEY_SIZE] {
         &self.bytes
     }
+
+    /// Wrap this AccountKey with a per-device DeviceKey for storage in
+    /// the auth.store. Used by the pairing flow: a paired device imports
+    /// the AccountKey out-of-band (QR + PIN), then wraps it under its
+    /// own freshly-derived DeviceKey so subsequent logins reproduce it
+    /// without needing the master passphrase that derived it elsewhere.
+    pub fn wrap(&self, device_key: &DeviceKey) -> CryptoResult<WrappedAccountKey> {
+        let (ciphertext, nonce) = aead::encrypt(&self.bytes, device_key.as_bytes())?;
+        Ok(WrappedAccountKey { ciphertext, nonce })
+    }
+
+    /// Unwrap a stored AccountKey using a DeviceKey.
+    pub fn unwrap_with(
+        wrapped: &WrappedAccountKey,
+        device_key: &DeviceKey,
+    ) -> CryptoResult<Self> {
+        let bytes_vec =
+            aead::decrypt(&wrapped.ciphertext, &wrapped.nonce, device_key.as_bytes())?;
+        let mut bytes = [0u8; KEY_SIZE];
+        bytes.copy_from_slice(&bytes_vec);
+        Ok(Self { bytes })
+    }
+}
+
+/// An AccountKey encrypted (wrapped) by a per-device DeviceKey, suitable
+/// for storage in the auth.store. Symmetric with [`WrappedKek`](crate::kek::WrappedKek).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WrappedAccountKey {
+    pub ciphertext: Vec<u8>,
+    pub nonce: [u8; NONCE_SIZE],
 }
 
 impl std::fmt::Debug for AccountKey {
