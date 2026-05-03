@@ -8,6 +8,14 @@ description = "Sovereign GE binary — CLI and GUI entry point"
 name = "sovereign"
 path = "src/main.rs"
 
+# Android requires a cdylib for the JNI entry point. Desktop links the
+# rlib from main.rs. The lib re-exports `run()` (mobile entrypoint) and
+# `run_cli()` (desktop entrypoint that parses argv). Lib name defaults
+# to the package name with hyphens → underscores (`sovereign_app`).
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+path = "src/lib.rs"
+
 [dependencies]
 sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
