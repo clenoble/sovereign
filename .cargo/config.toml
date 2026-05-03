@@ -3,3 +3,20 @@ rustflags = ["-L", "/usr/lib/x86_64-linux-gnu", "-Clink-arg=-Wl,--allow-multiple
 
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-Clink-arg=/FORCE:MULTIPLE"]
+
+# ── Android NDK targets ──────────────────────────────────────────────────────
+# The Tauri CLI sets the linker from ANDROID_NDK_HOME automatically.
+# FORCE:MULTIPLE is not needed on Android (clang ld.lld handles duplicate
+# symbols). llama-cpp-2 and whisper-rs embed ggml — allow-multiple-definition
+# is the clang equivalent.
+[target.aarch64-linux-android]
+rustflags = ["-Clink-arg=-Wl,--allow-multiple-definition"]
+
+[target.armv7-linux-androideabi]
+rustflags = ["-Clink-arg=-Wl,--allow-multiple-definition"]
+
+[target.x86_64-linux-android]
+rustflags = ["-Clink-arg=-Wl,--allow-multiple-definition"]
+
+[target.i686-linux-android]
+rustflags = ["-Clink-arg=-Wl,--allow-multiple-definition"]
