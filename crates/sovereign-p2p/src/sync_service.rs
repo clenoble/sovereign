@@ -295,10 +295,229 @@ impl SyncService {
         Ok(docs_updated.len() as u32)
     }
 
+    // ----- Row-level sync (non-document tables, Phase 3 v0.0.5) -----
+
+    /// Fetch rows from the local DB and package them as `EncryptedRow`s
+    /// for transport. Phase 3 ships with plaintext-marker rows (empty
+    /// nonce) like the existing `EncryptedCommit` track; pair-key
+    /// envelope encryption is wired in alongside the orchestrator's
+    /// post-login p2p start (Phase 3.6 / v0.0.5.x).
+    pub async fn get_rows(
+        &self,
+        table: SyncTable,
+        ids: &[String],
+    ) -> P2pResult<Vec<EncryptedRow>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let row = match table {
+                SyncTable::Thread => match self.db.get_thread(id).await {
+                    Ok(t) => row_from_thread(&t),
+                    Err(_) => continue,
+                },
+                SyncTable::Entity => match self.db.get_entity(id).await {
+                    Ok(e) => row_from_entity(&e),
+                    Err(_) => continue,
+                },
+                SyncTable::PiiRecord => match self.db.get_pii_record(id).await {
+                    Ok(r) => row_from_pii_record(&r),
+                    Err(_) => continue,
+                },
+                SyncTable::ShareRecord => match self.db.get_share_record(id).await {
+                    Ok(s) => row_from_share_record(&s),
+                    Err(_) => continue,
+                },
+            };
+            out.push(row);
+        }
+        Ok(out)
+    }
+
+    /// Apply rows received from a peer using last-writer-wins. For tables
+    /// without an `update_*` method (entity, pii_record), v0.0.5 only
+    /// creates rows that don't yet exist locally; updates from remote
+    /// are dropped with a tracing::debug. Returns (written, skipped).
+    pub async fn apply_rows(
+        &self,
+        table: SyncTable,
+        rows: Vec<EncryptedRow>,
+    ) -> P2pResult<(u32, u32)> {
+        let mut written = 0u32;
+        let mut skipped = 0u32;
+        for row in rows {
+            let result = match table {
+                SyncTable::Thread => self.apply_thread_row(&row).await,
+                SyncTable::Entity => self.apply_entity_row(&row).await,
+                SyncTable::PiiRecord => self.apply_pii_record_row(&row).await,
+                SyncTable::ShareRecord => self.apply_share_record_row(&row).await,
+            };
+            match result {
+                Ok(true) => written += 1,
+                Ok(false) => skipped += 1,
+                Err(e) => {
+                    tracing::warn!(
+                        "apply_rows({:?}) row {} failed: {}",
+                        table,
+                        row.id,
+                        e
+                    );
+                    skipped += 1;
+                }
+            }
+        }
+        Ok((written, skipped))
+    }
+
+    async fn apply_thread_row(&self, row: &EncryptedRow) -> P2pResult<bool> {
+        let remote: Thread = decode_row_inner(row)?;
+        match self.db.get_thread(&row.id).await {
+            Ok(local) => {
+                if remote.modified_at > local.modified_at {
+                    self.db
+                        .update_thread(
+                            &row.id,
+                            Some(&remote.name),
+                            Some(&remote.description),
+                        )
+                        .await
+                        .map_err(|e| P2pError::SyncError(format!("update_thread: {e}")))?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            Err(_) => {
+                // Thread missing locally — create it. The mock + surreal
+                // path expect to mint an ID, so we recreate the record
+                // and rely on a future reconciliation pass to align
+                // auto-minted IDs with the remote ID for non-document
+                // tables. Documented limitation for v0.0.5.
+                let _ = self
+                    .db
+                    .create_thread(remote)
+                    .await
+                    .map_err(|e| P2pError::SyncError(format!("create_thread: {e}")))?;
+                Ok(true)
+            }
+        }
+    }
+
+    async fn apply_entity_row(&self, row: &EncryptedRow) -> P2pResult<bool> {
+        let remote: Entity = decode_row_inner(row)?;
+        match self.db.get_entity(&row.id).await {
+            Ok(_local) => {
+                // No update_entity in v0.0.5; LWW updates dropped.
+                tracing::debug!(
+                    "apply_entity_row: skip update for {} (entity LWW updates land in v0.0.6)",
+                    row.id
+                );
+                Ok(false)
+            }
+            Err(_) => {
+                let _ = self
+                    .db
+                    .create_entity(remote)
+                    .await
+                    .map_err(|e| P2pError::SyncError(format!("create_entity: {e}")))?;
+                Ok(true)
+            }
+        }
+    }
+
+    async fn apply_pii_record_row(&self, row: &EncryptedRow) -> P2pResult<bool> {
+        let remote: PiiRecord = decode_row_inner(row)?;
+        match self.db.get_pii_record(&row.id).await {
+            Ok(local) => {
+                // LWW on discovered_at: if remote is newer, refresh the
+                // encrypted value (the only field we have an update
+                // method for). Other field changes ride along in v0.0.6.
+                if remote.discovered_at > local.discovered_at {
+                    self.db
+                        .update_pii_record_value(
+                            &row.id,
+                            &remote.value_encrypted,
+                            &remote.value_nonce,
+                        )
+                        .await
+                        .map_err(|e| {
+                            P2pError::SyncError(format!("update_pii_record_value: {e}"))
+                        })?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            Err(_) => {
+                let _ = self
+                    .db
+                    .create_pii_record(remote)
+                    .await
+                    .map_err(|e| P2pError::SyncError(format!("create_pii_record: {e}")))?;
+                Ok(true)
+            }
+        }
+    }
+
+    async fn apply_share_record_row(&self, row: &EncryptedRow) -> P2pResult<bool> {
+        let remote: ShareRecord = decode_row_inner(row)?;
+        // Append-only: skip if already present, otherwise create.
+        if self.db.get_share_record(&row.id).await.is_ok() {
+            return Ok(false);
+        }
+        let _ = self
+            .db
+            .create_share_record(remote)
+            .await
+            .map_err(|e| P2pError::SyncError(format!("create_share_record: {e}")))?;
+        Ok(true)
+    }
+
     /// Get the device ID for this sync service.
     pub fn device_id(&self) -> &str {
         &self.device_id
     }
+}
+
+// --- Row encode/decode helpers (Phase 3 plaintext-marker shape) ---
+
+fn row_from_thread(t: &Thread) -> EncryptedRow {
+    encode_row_plain(t.id_string().unwrap_or_default(), t, t.modified_at.to_rfc3339(), t.deleted_at.clone())
+}
+
+fn row_from_entity(e: &Entity) -> EncryptedRow {
+    encode_row_plain(e.id_string().unwrap_or_default(), e, e.modified_at.to_rfc3339(), e.deleted_at.clone())
+}
+
+fn row_from_pii_record(r: &PiiRecord) -> EncryptedRow {
+    encode_row_plain(r.id_string().unwrap_or_default(), r, r.discovered_at.to_rfc3339(), r.deleted_at.clone())
+}
+
+fn row_from_share_record(s: &ShareRecord) -> EncryptedRow {
+    encode_row_plain(s.id_string().unwrap_or_default(), s, s.shared_at.to_rfc3339(), None)
+}
+
+fn encode_row_plain<T: serde::Serialize>(
+    id: String,
+    row: &T,
+    modified_at: String,
+    deleted_at: Option<String>,
+) -> EncryptedRow {
+    let json = serde_json::to_vec(row).unwrap_or_default();
+    EncryptedRow {
+        id,
+        ciphertext: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &json),
+        nonce: String::new(),
+        modified_at,
+        deleted_at,
+    }
+}
+
+fn decode_row_inner<T: serde::de::DeserializeOwned>(row: &EncryptedRow) -> P2pResult<T> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&row.ciphertext)
+        .map_err(|e| P2pError::SyncError(format!("row base64: {e}")))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| P2pError::SyncError(format!("row decode: {e}")))
 }
 
 /// Compute a SHA-256 hash of document content.
