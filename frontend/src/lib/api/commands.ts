@@ -747,6 +747,64 @@ export interface PairedDevice {
 export const listPairedDevices = () =>
 	invoke<PairedDevice[]>('list_paired_devices');
 
+/** Drop a paired device record. The device may re-appear via mDNS
+ *  on the same network; "forget" removes the persistent record so it
+ *  no longer shows in Settings, but doesn't ban future re-pairing. */
+export const forgetPairedDevice = (peerId: string) =>
+	invoke<void>('forget_paired_device', { peerId });
+
 /** Trigger a sync with every paired peer. Returns the number of
  *  StartSync commands queued (0 if the P2P node isn't running). */
 export const triggerSyncNow = () => invoke<number>('trigger_sync_now');
+
+export interface GeneratePairQrResult {
+	qr_payload_b64: string;
+	pin: string;
+	expires_at: number;
+}
+
+/** Existing device → produce a QR + 6-digit PIN that lets a new
+ *  device import this user's AccountKey. The QR is single-use and
+ *  expires after ~60s (per backend `PAIR_TTL_SECONDS`). */
+export const generatePairQr = () =>
+	invoke<GeneratePairQrResult>('generate_pair_qr');
+
+export interface PairPayloadPreview {
+	source_peer_id: string;
+	source_device_name: string;
+	issued_at: number;
+	expires_at: number;
+}
+
+/** New device → decrypt the QR with the typed PIN and preview metadata
+ *  (source device name, expiry). Doesn't persist anything. */
+export const consumePairQrPreview = (qrPayloadB64: string, pin: string) =>
+	invoke<PairPayloadPreview>('consume_pair_qr_preview', {
+		input: { qr_payload_b64: qrPayloadB64, pin }
+	});
+
+export interface CompletePairedOnboardingInput {
+	qr_payload_b64: string;
+	pin: string;
+	/** New local passphrase for this device — different from the
+	 *  source device is fine. */
+	password: string;
+	duress_password?: string | null;
+	nickname?: string | null;
+	bubble_style?: string | null;
+	canary_phrase?: string | null;
+	/** Accepted for API symmetry but ignored — paired devices skip
+	 *  seeding because their real data arrives through sync. */
+	seed_sample_data: boolean;
+}
+
+/** New device → full onboarding using an imported AccountKey. After
+ *  this returns Ok, the next `validate_password` unlocks the imported
+ *  AccountKey and the user lands in a fully synced workspace. */
+export const completeOnboardingPaired = (input: CompletePairedOnboardingInput) =>
+	invoke<void>('complete_onboarding_paired', { input });
+
+/** Local libp2p PeerId for display in the Settings → Devices section.
+ *  Empty string when the p2p feature is off or the identity key isn't
+ *  loaded. */
+export const getLocalPeerId = () => invoke<string>('get_local_peer_id');

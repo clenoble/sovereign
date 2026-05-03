@@ -1,11 +1,34 @@
 <script lang="ts">
 	import { app } from '$lib/stores/app.svelte';
-	import { getProfile, saveProfile, getConfig, getTrustEntries, resetTrustAction, resetTrustAll, getCommsConfig, saveCommsConfig } from '$lib/api/commands';
-	import type { UserProfileDto, AppConfigDto, SaveProfileDto, TrustEntryDto, CommsConfigDto, SaveCommsConfigDto } from '$lib/api/commands';
+	import {
+		getProfile,
+		saveProfile,
+		getConfig,
+		getTrustEntries,
+		resetTrustAction,
+		resetTrustAll,
+		getCommsConfig,
+		saveCommsConfig,
+		listPairedDevices,
+		forgetPairedDevice,
+		getLocalPeerId,
+		triggerSyncNow
+	} from '$lib/api/commands';
+	import type {
+		UserProfileDto,
+		AppConfigDto,
+		SaveProfileDto,
+		TrustEntryDto,
+		CommsConfigDto,
+		SaveCommsConfigDto,
+		PairedDevice
+	} from '$lib/api/commands';
 	import BubblePreview from './BubblePreview.svelte';
+	import PairQrPanel from './PairQrPanel.svelte';
 	import { focusTrap } from '$lib/actions/focusTrap';
+	import { sync, clearError } from '$lib/stores/sync.svelte';
 
-	type Tab = 'profile' | 'ai' | 'security' | 'trust' | 'comms';
+	type Tab = 'profile' | 'ai' | 'security' | 'trust' | 'comms' | 'devices';
 
 	const BUBBLE_STYLES = ['icon', 'wave', 'spin', 'pulse', 'blink', 'rings', 'matrix', 'orbit', 'morph'];
 
@@ -52,6 +75,13 @@
 	let signalEnabled = $state(false);
 	let signalPhone = $state('');
 
+	// Devices state (Phase 5)
+	let devicesLoading = $state(false);
+	let pairedDevices = $state<PairedDevice[]>([]);
+	let localPeerId = $state('');
+	let pairPanelOpen = $state(false);
+	let syncing = $state(false);
+
 	$effect(() => {
 		if (app.settingsVisible) {
 			loadData();
@@ -63,6 +93,8 @@
 			loadTrust();
 		} else if (activeTab === 'comms') {
 			loadComms();
+		} else if (activeTab === 'devices') {
+			loadDevices();
 		}
 	});
 
@@ -175,6 +207,47 @@
 		lockoutSeconds = c.crypto_lockout_seconds;
 	}
 
+	async function loadDevices() {
+		devicesLoading = true;
+		error = '';
+		try {
+			const [devices, pid] = await Promise.all([listPairedDevices(), getLocalPeerId()]);
+			pairedDevices = devices;
+			localPeerId = pid;
+		} catch (e) {
+			error = String(e);
+		}
+		devicesLoading = false;
+	}
+
+	async function handleForgetDevice(peerId: string) {
+		error = '';
+		try {
+			await forgetPairedDevice(peerId);
+			await loadDevices();
+		} catch (e) {
+			error = String(e);
+		}
+	}
+
+	async function handleSyncNow() {
+		syncing = true;
+		clearError();
+		try {
+			await triggerSyncNow();
+		} catch (e) {
+			error = String(e);
+		}
+		syncing = false;
+	}
+
+	function copyPeerId() {
+		if (!localPeerId) return;
+		navigator.clipboard.writeText(localPeerId).catch((e) =>
+			console.warn('Copy failed:', e)
+		);
+	}
+
 	async function handleSaveProfile() {
 		saving = true;
 		error = '';
@@ -259,6 +332,13 @@
 				onclick={() => (activeTab = 'comms')}
 			>
 				Comms
+			</button>
+			<button
+				class="tab"
+				class:active={activeTab === 'devices'}
+				onclick={() => (activeTab = 'devices')}
+			>
+				Devices
 			</button>
 		</div>
 
@@ -598,6 +678,118 @@
 
 					{#if commsSaveStatus}
 						<p class="save-status">{commsSaveStatus}</p>
+					{/if}
+				{/if}
+
+			{:else if activeTab === 'devices'}
+				<!-- Devices Tab (Phase 5: P2P sync) -->
+				{#if devicesLoading}
+					<div class="loading">Loading paired devices...</div>
+				{:else}
+					<!-- Sync status summary -->
+					<div class="sync-summary">
+						<div class="sync-row">
+							<span class="sync-label">Status</span>
+							{#if sync.inProgress.size > 0}
+								<span class="sync-value">Syncing with {sync.inProgress.size} peer(s)</span>
+							{:else if sync.lastError}
+								<span class="sync-value error">Last sync failed</span>
+							{:else if sync.lastSyncedAt}
+								<span class="sync-value">
+									Last synced {new Date(sync.lastSyncedAt).toLocaleTimeString()}
+								</span>
+							{:else}
+								<span class="sync-value muted">Idle</span>
+							{/if}
+						</div>
+						{#if sync.lastError}
+							<p class="sync-error-text">{sync.lastError}</p>
+						{/if}
+						<div class="sync-actions">
+							<button
+								class="sync-now-btn"
+								onclick={handleSyncNow}
+								disabled={syncing}
+							>
+								{syncing ? 'Triggering...' : 'Sync now'}
+							</button>
+						</div>
+					</div>
+
+					<!-- Local PeerId (debug helper) -->
+					<div class="form-section">
+						<label class="field-label">This device's PeerId</label>
+						{#if localPeerId}
+							<div class="peer-id-row">
+								<code class="peer-id">{localPeerId}</code>
+								<button class="copy-btn" onclick={copyPeerId}>Copy</button>
+							</div>
+						{:else}
+							<span class="readonly-value muted">
+								Not available (P2P feature disabled or pre-login)
+							</span>
+						{/if}
+					</div>
+
+					<!-- Paired devices list -->
+					<div class="form-section">
+						<label class="field-label">Paired devices</label>
+						{#if pairedDevices.length === 0}
+							<div class="empty-state">
+								<p>No paired devices yet.</p>
+								<p class="muted">
+									Pair another device (e.g. your phone) to keep documents,
+									threads, and the PII vault in sync across both.
+								</p>
+							</div>
+						{:else}
+							<ul class="device-list">
+								{#each pairedDevices as device (device.peer_id)}
+									<li class="device-item">
+										<div class="device-info">
+											<span class="device-name">{device.device_name}</span>
+											<span class="device-meta">
+												Paired {new Date(device.paired_at).toLocaleDateString()}
+											</span>
+											<code class="device-peer-id">{device.peer_id}</code>
+										</div>
+										<button
+											class="forget-btn"
+											onclick={() => handleForgetDevice(device.peer_id)}
+										>
+											Forget
+										</button>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+
+					<!-- Pair-new affordance / panel -->
+					{#if !pairPanelOpen}
+						<button class="primary-btn" onclick={() => (pairPanelOpen = true)}>
+							Pair a new device
+						</button>
+					{:else}
+						<PairQrPanel onClose={() => { pairPanelOpen = false; loadDevices(); }} />
+					{/if}
+
+					<!-- Conflicts (if any) -->
+					{#if sync.conflicts.length > 0}
+						<div class="form-section">
+							<label class="field-label">Sync conflicts</label>
+							<ul class="conflict-list">
+								{#each sync.conflicts as c (c.docId)}
+									<li class="conflict-item">
+										<span class="conflict-doc">{c.docId}</span>
+										<span class="conflict-desc">{c.description}</span>
+									</li>
+								{/each}
+							</ul>
+							<p class="hint">
+								Open the document to view its commit history and pick a head.
+							</p>
+						</div>
 					{/if}
 				{/if}
 			{/if}
@@ -966,6 +1158,216 @@
 		color: var(--success);
 		text-align: center;
 		margin: 8px 0 0 0;
+	}
+
+	/* Devices tab (Phase 5) */
+	.sync-summary {
+		margin-bottom: 20px;
+		padding: 12px;
+		background: var(--bg-input);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+	}
+
+	.sync-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 6px;
+	}
+
+	.sync-label {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--text-muted);
+	}
+
+	.sync-value {
+		font-size: 0.85rem;
+		color: var(--text-primary);
+	}
+
+	.sync-value.muted {
+		color: var(--text-muted);
+	}
+
+	.sync-value.error {
+		color: var(--error, #ef4444);
+	}
+
+	.sync-error-text {
+		font-size: 0.75rem;
+		color: var(--error, #ef4444);
+		margin: 4px 0 8px 0;
+	}
+
+	.sync-actions {
+		display: flex;
+		justify-content: flex-end;
+		margin-top: 8px;
+	}
+
+	.sync-now-btn {
+		background: var(--bg-hover);
+		border: 1px solid var(--border);
+		color: var(--text-secondary);
+		padding: 4px 12px;
+		font-size: 0.75rem;
+		border-radius: 4px;
+		cursor: pointer;
+	}
+
+	.sync-now-btn:hover {
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+
+	.peer-id-row {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+	}
+
+	.peer-id {
+		flex: 1;
+		font-family: 'Consolas', 'Fira Code', monospace;
+		font-size: 0.7rem;
+		padding: 6px 8px;
+		background: var(--bg-input);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: var(--text-primary);
+		word-break: break-all;
+	}
+
+	.copy-btn {
+		background: var(--bg-hover);
+		border: 1px solid var(--border);
+		color: var(--text-secondary);
+		padding: 4px 10px;
+		font-size: 0.75rem;
+		border-radius: 4px;
+		cursor: pointer;
+		flex-shrink: 0;
+	}
+
+	.copy-btn:hover {
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+
+	.device-list {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.device-item {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 10px 12px;
+		background: var(--bg-input);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		gap: 8px;
+	}
+
+	.device-info {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+		flex: 1;
+	}
+
+	.device-name {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+
+	.device-meta {
+		font-size: 0.7rem;
+		color: var(--text-muted);
+	}
+
+	.device-peer-id {
+		font-family: 'Consolas', 'Fira Code', monospace;
+		font-size: 0.65rem;
+		color: var(--text-muted);
+		word-break: break-all;
+	}
+
+	.forget-btn {
+		background: none;
+		border: 1px solid var(--border);
+		color: var(--text-secondary);
+		padding: 4px 10px;
+		font-size: 0.75rem;
+		border-radius: 4px;
+		cursor: pointer;
+		flex-shrink: 0;
+	}
+
+	.forget-btn:hover {
+		color: var(--error, #ef4444);
+		border-color: var(--error, #ef4444);
+	}
+
+	.primary-btn {
+		width: 100%;
+		padding: 10px;
+		background: var(--accent);
+		border: none;
+		color: var(--bg-primary);
+		font-size: 0.85rem;
+		font-weight: 600;
+		border-radius: 6px;
+		cursor: pointer;
+		margin-top: 4px;
+	}
+
+	.primary-btn:hover {
+		opacity: 0.92;
+	}
+
+	.conflict-list {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.conflict-item {
+		padding: 8px 10px;
+		background: var(--bg-input);
+		border-left: 3px solid var(--warning, #f59e0b);
+		border-radius: 4px;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.conflict-doc {
+		font-family: 'Consolas', 'Fira Code', monospace;
+		font-size: 0.75rem;
+		color: var(--text-primary);
+	}
+
+	.conflict-desc {
+		font-size: 0.7rem;
+		color: var(--text-muted);
+	}
+
+	.muted {
+		color: var(--text-muted);
 	}
 
 	@media (max-width: 768px) {
