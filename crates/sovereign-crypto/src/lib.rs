@@ -3,6 +3,7 @@ pub mod aead;
 pub mod auth;
 pub mod canary;
 pub mod device_key;
+pub mod pair_payload;
 pub mod document_key;
 pub mod error;
 pub mod kek;

@@ -35,6 +35,9 @@ pub enum CryptoError {
     #[error("Base64 decode error: {0}")]
     Base64(String),
 
+    #[error("Pair payload error: {0}")]
+    PairPayload(String),
+
     #[cfg(feature = "guardian")]
     #[error("Shamir reconstruction failed: need at least {threshold} shards, got {got}")]
     InsufficientShards { threshold: u8, got: usize },
