@@ -19,7 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sovereign_core::interfaces::ModelBackend;
-use sovereign_crypto::device_key::DeviceKey;
+use sovereign_crypto::account_key::AccountKey;
 use sovereign_crypto::vault::EncryptedBlob;
 use sovereign_db::schema::{thing_to_raw, Contact, Entity, PiiRecord, ReviewState, SourceKind, SourceRef};
 use sovereign_db::traits::GraphDB;
@@ -124,7 +124,7 @@ pub struct IngestResult {
     /// (Unreviewed) findings left in raw form.
     pub canonical_body: String,
     /// Base64 ciphertext of the original body, encrypted under
-    /// `DeviceKey`. Stored in `*.body_raw_encrypted`.
+    /// the user's `AccountKey`. Stored in `*.body_raw_encrypted`.
     pub body_raw_encrypted: String,
     /// Base64 nonce paired with `body_raw_encrypted`. Stored in
     /// `*.body_raw_nonce`.
@@ -159,7 +159,7 @@ pub async fn ingest_text(
     entities: &[Entity],
     contacts: &[Contact],
     sink: &dyn PiiSink,
-    device_key: &DeviceKey,
+    account_key: &AccountKey,
 ) -> anyhow::Result<IngestResult> {
     let now = Utc::now();
 
@@ -183,7 +183,7 @@ pub async fn ingest_text(
             slot.canonical_start,
             slot.canonical_end,
             now,
-            device_key,
+            account_key,
         )?;
         let id = sink.create_pii_record(record).await?;
         slot_record_ids.push(id.clone());
@@ -200,7 +200,7 @@ pub async fn ingest_text(
             deferred.finding.start,
             deferred.finding.end,
             now,
-            device_key,
+            account_key,
         )?;
         let id = sink.create_pii_record(record).await?;
         all_record_ids.push(id);
@@ -230,7 +230,7 @@ pub async fn ingest_text(
     }
 
     // Stage 6 — encrypt the original body for L3-gated reveal.
-    let raw_blob = EncryptedBlob::encrypt_str(text, device_key)
+    let raw_blob = EncryptedBlob::encrypt_str(text, account_key)
         .map_err(|e| anyhow::anyhow!("vault encrypt failed: {e}"))?;
     let (body_raw_encrypted, body_raw_nonce) = raw_blob.into_pair();
 
@@ -251,9 +251,9 @@ fn build_pii_record(
     canonical_start: usize,
     canonical_end: usize,
     now: DateTime<Utc>,
-    device_key: &DeviceKey,
+    account_key: &AccountKey,
 ) -> anyhow::Result<PiiRecord> {
-    let blob = EncryptedBlob::encrypt_str(&scanned.finding.sample, device_key)
+    let blob = EncryptedBlob::encrypt_str(&scanned.finding.sample, account_key)
         .map_err(|e| anyhow::anyhow!("vault encrypt failed: {e}"))?;
     Ok(PiiRecord {
         id: None,
@@ -327,16 +327,16 @@ mod tests {
         }
     }
 
-    fn test_device_key() -> DeviceKey {
+    fn test_account_key() -> AccountKey {
         let mk = MasterKey::from_passphrase(b"ingest-test", b"salt").unwrap();
-        DeviceKey::derive(&mk, "dev-ingest").unwrap()
+        AccountKey::derive(&mk).unwrap()
     }
 
     // --- regex-only ingest end-to-end ---
 
     #[tokio::test]
     async fn ingest_email_writes_record_and_encrypts_body() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let sink = MockSink::default();
         let text = "Email me at alice@example.ch.";
         let result = ingest_text(
@@ -401,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn ingest_multiple_findings_correct_substitution() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let sink = MockSink::default();
         let text = "Call 555-123-4567 or email alice@example.ch.";
         let result = ingest_text(
@@ -491,7 +491,7 @@ mod tests {
             }
         }
 
-        let dk = test_device_key();
+        let dk = test_account_key();
         let sink = MockSink::default();
         let response = serde_json::to_string(&[NerEntity {
             kind: "person_name".into(),
@@ -533,7 +533,7 @@ mod tests {
 
     #[tokio::test]
     async fn ingest_email_links_to_known_entity_no_proposal() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let sink = MockSink::default();
         let mut acme = Entity::new("Acme Corp".into(), sovereign_db::schema::EntityKind::Org);
         acme.domains = vec!["acme.com".into()];
@@ -571,7 +571,7 @@ mod tests {
         use sovereign_db::mock::MockGraphDB;
         use sovereign_db::traits::GraphDB;
 
-        let dk = test_device_key();
+        let dk = test_account_key();
         let db: Arc<dyn GraphDB> = Arc::new(MockGraphDB::new());
         let sink = GraphDbPiiSink::new(db.clone());
         let text = "Email me at alice@example.ch.";
@@ -618,7 +618,7 @@ mod tests {
 
     #[tokio::test]
     async fn ingest_clean_text_writes_nothing_but_still_encrypts_raw() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let sink = MockSink::default();
         let text = "Just plain prose, no PII here.";
         let result = ingest_text(

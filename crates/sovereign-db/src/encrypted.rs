@@ -652,6 +652,17 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.update_pii_record_review_state(id, review_state).await
     }
 
+    async fn update_pii_record_value(
+        &self,
+        id: &str,
+        value_encrypted: &str,
+        value_nonce: &str,
+    ) -> DbResult<()> {
+        self.inner
+            .update_pii_record_value(id, value_encrypted, value_nonce)
+            .await
+    }
+
     async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
         self.inner.soft_delete_pii_record(id).await
     }
@@ -914,6 +925,7 @@ mod tests {
         async fn get_pii_record(&self, _id: &str) -> DbResult<PiiRecord> { Err(DbError::NotFound("mock".into())) }
         async fn list_pii_records(&self, _entity_id: Option<&str>, _review_state: Option<ReviewState>, _stored_secret: Option<bool>) -> DbResult<Vec<PiiRecord>> { Ok(vec![]) }
         async fn update_pii_record_review_state(&self, _id: &str, _review_state: ReviewState) -> DbResult<()> { Ok(()) }
+        async fn update_pii_record_value(&self, _id: &str, _value_encrypted: &str, _value_nonce: &str) -> DbResult<()> { Ok(()) }
         async fn soft_delete_pii_record(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn get_entity(&self, _id: &str) -> DbResult<Entity> { Err(DbError::NotFound("mock".into())) }
         async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> { Ok(record) }

@@ -215,14 +215,19 @@ pub fn persona_db_path(
     }
 }
 
-/// Derive a 32-byte session log encryption key from the device key via HKDF-SHA256.
+/// Derive a 32-byte session log encryption key from the account key via HKDF-SHA256.
+///
+/// The session log derivation moved from DeviceKey to AccountKey in v0.0.5
+/// so paired devices can read each other's session log entries (currently
+/// the session log is per-device, but this is forward-compat for v0.0.6
+/// which may sync it). The HKDF info string is unchanged.
 #[cfg(all(feature = "encryption", feature = "encrypted-log"))]
 pub fn derive_session_log_key(
-    device_key: &sovereign_crypto::device_key::DeviceKey,
+    account_key: &sovereign_crypto::account_key::AccountKey,
 ) -> [u8; 32] {
     use sovereign_crypto::aead::KEY_SIZE;
 
-    let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, device_key.as_bytes());
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, account_key.as_bytes());
     let mut key = [0u8; KEY_SIZE];
     hk.expand(b"sovereign-session-log", &mut key)
         .expect("HKDF expand for session log key");

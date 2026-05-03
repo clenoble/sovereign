@@ -17,7 +17,7 @@ use std::sync::Arc;
 use sovereign_ai::pii::ingest::{ingest_text, GraphDbPiiSink};
 use sovereign_ai::pii::pipeline::PipelineConfig;
 use sovereign_comms::pii_hook::{ContactIngestHook, MessageIngestHook};
-use sovereign_crypto::device_key::DeviceKey;
+use sovereign_crypto::account_key::AccountKey;
 use sovereign_db::schema::{thing_to_raw, SourceKind};
 use sovereign_db::traits::GraphDB;
 
@@ -51,7 +51,7 @@ impl SweepStats {
 /// sweep picks them up.
 pub async fn run_sweep_cycle(
     db: Arc<dyn GraphDB>,
-    device_key: Arc<DeviceKey>,
+    account_key: Arc<AccountKey>,
 ) -> SweepStats {
     let mut stats = SweepStats::default();
 
@@ -69,7 +69,7 @@ pub async fn run_sweep_cycle(
                     None => continue,
                 };
                 let body = extract_body(&doc.content);
-                match ingest_document_body(&db, device_key.as_ref(), &id, &body).await {
+                match ingest_document_body(&db, account_key.as_ref(), &id, &body).await {
                     Ok(Some(canonical)) => {
                         // Body changed — persist the canonical form.
                         let new_content = replace_body(&doc.content, &canonical);
@@ -94,7 +94,7 @@ pub async fn run_sweep_cycle(
 
     // --- Messages — reuse the channel-side hook ---
     let message_hook: Arc<dyn MessageIngestHook> =
-        Arc::new(PiiMessageHook::new(db.clone(), device_key.clone()));
+        Arc::new(PiiMessageHook::new(db.clone(), account_key.clone()));
     match db.list_all_messages().await {
         Ok(messages) => {
             let unscanned: Vec<_> = messages
@@ -146,7 +146,7 @@ pub async fn run_sweep_cycle(
 /// sweeps skip the document).
 async fn ingest_document_body(
     db: &Arc<dyn GraphDB>,
-    device_key: &DeviceKey,
+    account_key: &AccountKey,
     doc_id: &str,
     body: &str,
 ) -> anyhow::Result<Option<String>> {
@@ -165,7 +165,7 @@ async fn ingest_document_body(
         &entities,
         &contacts,
         &sink,
-        device_key,
+        account_key,
     )
     .await?;
 

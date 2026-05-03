@@ -14,7 +14,7 @@ use sovereign_db::GraphDB;
 #[cfg(feature = "encryption")]
 use std::sync::Arc;
 #[cfg(feature = "encryption")]
-use sovereign_crypto::device_key::DeviceKey;
+use sovereign_crypto::account_key::AccountKey;
 
 /// Populate the database with sample data when it's empty.
 /// Provides a visual baseline for testing the canvas.
@@ -440,14 +440,14 @@ pub fn seed_profile_and_history(profile_dir: &Path) -> Result<()> {
 /// Provides a visual baseline for testing the PII management dashboard:
 /// 5 entities across all `EntityKind` variants, ~10 PiiRecords spanning
 /// discovered findings (`stored_secret = false`, mixed review states) and
-/// vault entries (`stored_secret = true`, encrypted under the DeviceKey),
+/// vault entries (`stored_secret = true`, encrypted under the AccountKey),
 /// plus 3 ShareRecords on the disclosure ledger.
 ///
 /// Skipped if any entity already exists, so it's idempotent across restarts.
 /// Requires the `encryption` feature because vault entries need a real
-/// DeviceKey for the encrypt → reveal round-trip to work in the dashboard.
+/// AccountKey for the encrypt → reveal round-trip to work in the dashboard.
 #[cfg(feature = "encryption")]
-pub async fn seed_pii_if_empty(db: &SurrealGraphDB, device_key: &Arc<DeviceKey>) -> Result<()> {
+pub async fn seed_pii_if_empty(db: &SurrealGraphDB, account_key: &Arc<AccountKey>) -> Result<()> {
     use chrono::{Duration, Utc};
     use sovereign_crypto::vault::EncryptedBlob;
     use sovereign_db::schema::{
@@ -499,7 +499,7 @@ pub async fn seed_pii_if_empty(db: &SurrealGraphDB, device_key: &Arc<DeviceKey>)
 
     let mut discovered_ids = Vec::new();
     for (kind, label, value, ent_idx, confidence, state, days_ago) in &discovered {
-        let blob = EncryptedBlob::encrypt_str(value, device_key)
+        let blob = EncryptedBlob::encrypt_str(value, account_key)
             .map_err(|e| anyhow::anyhow!("seed PII encrypt failed: {e}"))?;
         let discovered_at = now - Duration::days(*days_ago);
         let record = PiiRecord {
@@ -535,7 +535,7 @@ pub async fn seed_pii_if_empty(db: &SurrealGraphDB, device_key: &Arc<DeviceKey>)
     ];
 
     for (kind, label, value, ent_idx, days_ago) in &vault {
-        let blob = EncryptedBlob::encrypt_str(value, device_key)
+        let blob = EncryptedBlob::encrypt_str(value, account_key)
             .map_err(|e| anyhow::anyhow!("seed vault encrypt failed: {e}"))?;
         let discovered_at = now - Duration::days(*days_ago);
         let record = PiiRecord {
@@ -655,7 +655,7 @@ pub async fn seed_pii_if_empty(db: &SurrealGraphDB, device_key: &Arc<DeviceKey>)
                 .ok_or_else(|| anyhow::anyhow!("PII doc missing ID"))?;
 
             // Encrypt the raw (PII-inline) body so reveal can decrypt it later.
-            let raw_blob = EncryptedBlob::encrypt_str(&raw, device_key)
+            let raw_blob = EncryptedBlob::encrypt_str(&raw, account_key)
                 .map_err(|e| anyhow::anyhow!("seed raw-body encrypt failed: {e}"))?;
             db.update_document_pii_fields(
                 &doc_id,
@@ -751,7 +751,7 @@ mod tests {
     #[tokio::test]
     async fn seed_pii_populates_empty_db() {
         use sovereign_core::content::ContentFields;
-        use sovereign_crypto::device_key::DeviceKey;
+        use sovereign_crypto::account_key::AccountKey;
         use sovereign_crypto::master_key::MasterKey;
         use sovereign_crypto::vault::EncryptedBlob;
         use sovereign_db::schema::ReviewState;
@@ -760,9 +760,9 @@ mod tests {
         // Threads are needed for the PII-bearing doc seed to land.
         seed_if_empty(&db).await.unwrap();
         let mk = MasterKey::generate();
-        let dk = Arc::new(DeviceKey::derive(&mk, "seed-test").unwrap());
+        let ak = Arc::new(AccountKey::derive(&mk).unwrap());
 
-        seed_pii_if_empty(&db, &dk).await.unwrap();
+        seed_pii_if_empty(&db, &ak).await.unwrap();
 
         let entities = db.list_entities().await.unwrap();
         assert_eq!(entities.len(), 5, "Should create 5 PII entities");
@@ -790,13 +790,13 @@ mod tests {
             assert!(n > 0, "Should have at least one {state:?} record");
         }
 
-        // Reveal round-trip: encrypted values must decrypt with the same DeviceKey.
+        // Reveal round-trip: encrypted values must decrypt with the same AccountKey.
         let one = &records[0];
         let blob = EncryptedBlob {
             ciphertext_b64: one.value_encrypted.clone(),
             nonce_b64: one.value_nonce.clone(),
         };
-        let plaintext = blob.decrypt(&dk).expect("decrypt with seed key");
+        let plaintext = blob.decrypt(&ak).expect("decrypt with seed key");
         assert!(!plaintext.is_empty(), "Decrypted value should be non-empty");
 
         // ── PII-bearing documents ───────────────────────────────────────
@@ -823,7 +823,7 @@ mod tests {
                 ciphertext_b64: doc.body_raw_encrypted.clone().unwrap(),
                 nonce_b64: doc.body_raw_nonce.clone().unwrap(),
             };
-            let raw = String::from_utf8(raw_blob.decrypt(&dk).unwrap()).unwrap();
+            let raw = String::from_utf8(raw_blob.decrypt(&ak).unwrap()).unwrap();
             assert!(!raw.contains("[pii:"), "Raw body should NOT contain tokens");
             assert!(raw.len() > cf.body.len() / 2, "Raw body should be substantial");
         }
@@ -836,16 +836,16 @@ mod tests {
     #[cfg(feature = "encryption")]
     #[tokio::test]
     async fn seed_pii_is_idempotent() {
-        use sovereign_crypto::device_key::DeviceKey;
+        use sovereign_crypto::account_key::AccountKey;
         use sovereign_crypto::master_key::MasterKey;
 
         let db = test_db().await;
         seed_if_empty(&db).await.unwrap();
         let mk = MasterKey::generate();
-        let dk = Arc::new(DeviceKey::derive(&mk, "seed-test").unwrap());
+        let ak = Arc::new(AccountKey::derive(&mk).unwrap());
 
-        seed_pii_if_empty(&db, &dk).await.unwrap();
-        seed_pii_if_empty(&db, &dk).await.unwrap(); // no-op
+        seed_pii_if_empty(&db, &ak).await.unwrap();
+        seed_pii_if_empty(&db, &ak).await.unwrap(); // no-op
 
         let entities = db.list_entities().await.unwrap();
         assert_eq!(entities.len(), 5, "Still 5 entities after double seed");

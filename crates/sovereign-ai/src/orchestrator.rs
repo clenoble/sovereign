@@ -36,10 +36,11 @@ pub struct Orchestrator {
     profile_dir: PathBuf,
     model_dir: String,
     n_gpu_layers: i32,
-    /// Device key for PII pipeline encryption of session-log content.
-    /// None until login installs it via set_pii_device_key. Wrapped in a
+    /// Account key for PII pipeline encryption of session-log content.
+    /// None until login installs it via set_pii_account_key. Wrapped in a
     /// Mutex so the setter can be `&self` (orchestrator lives behind Arc).
-    pii_device_key: Mutex<Option<Arc<sovereign_crypto::device_key::DeviceKey>>>,
+    /// User-scoped (same on every paired device) as of v0.0.5.
+    pii_account_key: Mutex<Option<Arc<sovereign_crypto::account_key::AccountKey>>>,
     #[cfg(feature = "encrypted-log")]
     session_log_key: Mutex<Option<[u8; 32]>>,
     #[cfg(feature = "p2p")]
@@ -106,7 +107,7 @@ impl Orchestrator {
             profile_dir,
             model_dir,
             n_gpu_layers,
-            pii_device_key: Mutex::new(None),
+            pii_account_key: Mutex::new(None),
             #[cfg(feature = "encrypted-log")]
             session_log_key: Mutex::new(None),
             #[cfg(feature = "p2p")]
@@ -160,17 +161,15 @@ impl Orchestrator {
         }
     }
 
-    /// Enable session log encryption with the given key.
-    ///
-    /// Attach the device key used by the PII pipeline to encrypt
+    /// Attach the account key used by the PII pipeline to encrypt
     /// findings discovered in user inputs and chat responses. With a
     /// key set, every `log_user_input` / `log_chat_response` is
     /// pre-tokenized: the canonical body (with `[pii:<record_id>]`
     /// tokens) lands in the session log, and PiiRecord rows are
     /// written for each finding. Without a key, log entries pass
     /// through raw and the idle sweep handles tokenization later.
-    pub fn set_pii_device_key(&self, key: Arc<sovereign_crypto::device_key::DeviceKey>) {
-        if let Ok(mut guard) = self.pii_device_key.lock() {
+    pub fn set_pii_account_key(&self, key: Arc<sovereign_crypto::account_key::AccountKey>) {
+        if let Ok(mut guard) = self.pii_account_key.lock() {
             *guard = Some(key);
         }
     }
@@ -663,7 +662,7 @@ impl Orchestrator {
 
     /// Run PII ingest over a session-log text (user input or chat
     /// response). Returns the canonical form with `[pii:<record_id>]`
-    /// tokens. When `pii_device_key` isn't set (encryption off, or
+    /// tokens. When `pii_account_key` isn't set (encryption off, or
     /// crypto init failed), passes through unchanged.
     ///
     /// Synthesizes a `source_id` of `"session:<rfc3339>"` since the
@@ -671,7 +670,7 @@ impl Orchestrator {
     /// errors are logged via `tracing::warn!` and the original text is
     /// returned so the chat pipeline never blocks on ingest.
     async fn tokenize_session_text(&self, content: &str) -> String {
-        let device_key = match self.pii_device_key.lock().ok().and_then(|g| g.clone()) {
+        let account_key = match self.pii_account_key.lock().ok().and_then(|g| g.clone()) {
             Some(k) => k,
             None => return content.to_string(),
         };
@@ -704,7 +703,7 @@ impl Orchestrator {
             &entities,
             &contacts,
             &sink,
-            device_key.as_ref(),
+            account_key.as_ref(),
         )
         .await
         {

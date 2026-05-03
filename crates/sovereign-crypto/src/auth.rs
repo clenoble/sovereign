@@ -1,6 +1,7 @@
 use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 
+use crate::account_key::AccountKey;
 use crate::aead::{self, NONCE_SIZE};
 use crate::device_key::DeviceKey;
 use crate::error::{CryptoError, CryptoResult};
@@ -113,7 +114,11 @@ pub struct PersonaEntry {
 /// Successful authentication result.
 pub struct AuthSuccess {
     pub persona: PersonaKind,
+    /// Per-device key used for libp2p identity and KEK wrapping.
     pub device_key: DeviceKey,
+    /// User-scoped at-rest key used for vault, body_raw, session log.
+    /// Same on every device that shares this MasterKey (paired devices).
+    pub account_key: AccountKey,
     pub kek: Kek,
 }
 
@@ -149,6 +154,10 @@ impl AuthStore {
     pub fn authenticate(&self, passphrase: &[u8]) -> CryptoResult<AuthSuccess> {
         let master = MasterKey::from_passphrase(passphrase, &self.salt)?;
         let device_key = DeviceKey::derive(&master, &self.device_id)?;
+        // AccountKey is user-scoped: derived from MasterKey alone, no
+        // device_id input. Two paired devices with the same passphrase
+        // and salt produce the same AccountKey.
+        let account_key = AccountKey::derive(&master)?;
 
         for entry in &self.personas {
             if let Ok(plaintext) = aead::decrypt(
@@ -167,6 +176,7 @@ impl AuthStore {
                 return Ok(AuthSuccess {
                     persona,
                     device_key,
+                    account_key,
                     kek,
                 });
             }

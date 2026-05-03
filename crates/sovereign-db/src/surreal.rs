@@ -1130,6 +1130,26 @@ impl GraphDB for SurrealGraphDB {
         Ok(())
     }
 
+    async fn update_pii_record_value(
+        &self,
+        id: &str,
+        value_encrypted: &str,
+        value_nonce: &str,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({
+                "value_encrypted": value_encrypted,
+                "value_nonce": value_nonce,
+            }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
     async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
         let (table, key) = parse_and_validate(id, "pii_record")?;
         let updated: Option<PiiRecord> = self.db

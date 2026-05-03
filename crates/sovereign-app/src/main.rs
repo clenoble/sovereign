@@ -1,3 +1,5 @@
+#[cfg(feature = "encryption")]
+mod account_key_migration;
 mod cli;
 mod commands;
 mod llm_bridge;
@@ -351,7 +353,9 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 model_assignments: std::sync::Mutex::new(backend.model_assignments),
                 profile_dir: backend.profile_dir,
                 #[cfg(feature = "encryption")]
-                device_key: tokio::sync::RwLock::new(None),
+                account_key: tokio::sync::RwLock::new(None),
+                #[cfg(feature = "encryption")]
+                p2p_identity_key: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "voice-stt")]
                 stt_engine: backend.stt_engine,
             });
