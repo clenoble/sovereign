@@ -8,7 +8,7 @@ pub mod protocol;
 pub mod sync_engine;
 pub mod sync_service;
 
-pub use config::P2pConfig;
+pub use config::{ConnectivityState, P2pConfig};
 pub use error::{P2pError, P2pResult};
 pub use node::{P2pCommand, P2pEvent, SovereignNode};
 pub use sync_service::SyncService;

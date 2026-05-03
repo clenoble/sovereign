@@ -23,10 +23,11 @@
 //! a user logging out and back in) is a no-op on the second pass.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use sovereign_core::interfaces::OrchestratorEvent;
 use sovereign_p2p::pairing::PairingManager;
-use sovereign_p2p::{P2pCommand, P2pConfig, P2pEvent, SovereignNode, SyncService};
+use sovereign_p2p::{ConnectivityState, P2pCommand, P2pConfig, P2pEvent, SovereignNode, SyncService};
 use tokio::sync::mpsc;
 
 use crate::tauri_state::AppState;
@@ -40,6 +41,19 @@ fn p2p_config_from_app(app_p2p: &sovereign_core::config::P2pConfig) -> P2pConfig
         listen_port: app_p2p.listen_port,
         rendezvous_server: app_p2p.rendezvous_server.clone(),
         device_name: app_p2p.device_name.clone(),
+        wifi_only: app_p2p.wifi_only,
+    }
+}
+
+/// Decode a u8 written by `tauri_state::connectivity_to_u8` back into
+/// the `ConnectivityState` enum. Kept inline so the translator + the
+/// periodic poll task don't need to import the helper from `tauri_state`.
+fn connectivity_from_u8(byte: u8) -> ConnectivityState {
+    match byte {
+        1 => ConnectivityState::Wifi,
+        2 => ConnectivityState::Cellular,
+        3 => ConnectivityState::Offline,
+        _ => ConnectivityState::Unknown,
     }
 }
 
@@ -106,12 +120,14 @@ pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
 
     // Spawn the event translator: P2pEvent → (auto-trigger StartSync,
     // forward as OrchestratorEvent). Holds clones of command_tx +
-    // orch_tx; both outlive the task naturally because their other ends
-    // live for the process lifetime.
+    // orch_tx + connectivity gate; all outlive the task naturally
+    // because their other ends live for the process lifetime.
     let orch_tx = state.orch_tx.clone();
     let cmd_for_autosync = command_tx.clone();
+    let connectivity = state.connectivity.clone();
+    let wifi_only = state.config.p2p.wifi_only;
     tauri::async_runtime::spawn(async move {
-        spawn_event_translator(event_rx, cmd_for_autosync, orch_tx).await;
+        spawn_event_translator(event_rx, cmd_for_autosync, orch_tx, connectivity, wifi_only).await;
     });
 
     // Install the command sender on AppState + orchestrator.
@@ -141,20 +157,35 @@ pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
 /// and auto-trigger `StartSync` for any peer mDNS surfaces (LAN trust
 /// boundary in v0.0.5; pair-key encryption in v0.0.5.x will drop
 /// unpaired peers via decrypt failure).
+///
+/// The connectivity gate (Phase 4.2) suppresses the auto-trigger when
+/// the device reports cellular/offline and `wifi_only` is set. mDNS
+/// itself doesn't work over cellular (no multicast on most carriers),
+/// so this is mostly about not waking the QUIC transport for
+/// unreachable peers and not racking up metered data on Android.
 async fn spawn_event_translator(
     mut event_rx: mpsc::Receiver<P2pEvent>,
     command_tx: mpsc::Sender<P2pCommand>,
     orch_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
+    connectivity: Arc<AtomicU8>,
+    wifi_only: bool,
 ) {
     while let Some(event) = event_rx.recv().await {
         // Auto-trigger sync on peer discovery. The node's StartSync
         // handler already dedupes against an in-flight session for the
         // same peer, so an mDNS burst doesn't kick off duplicate syncs.
         if let P2pEvent::PeerDiscovered { ref peer_id, .. } = event {
-            let _ = command_tx
-                .try_send(P2pCommand::StartSync {
-                    peer_id: peer_id.clone(),
-                });
+            let state = connectivity_from_u8(connectivity.load(Ordering::Relaxed));
+            if state.allows_auto_sync(wifi_only) {
+                let _ = command_tx
+                    .try_send(P2pCommand::StartSync {
+                        peer_id: peer_id.clone(),
+                    });
+            } else {
+                tracing::debug!(
+                    "Skipping auto-sync for {peer_id}: connectivity={state:?}, wifi_only={wifi_only}"
+                );
+            }
         }
 
         // Forward as OrchestratorEvent so tauri_events.rs can emit a
@@ -207,12 +238,21 @@ async fn spawn_event_translator(
 
 /// Fire `StartSync` for every paired peer. Used by the periodic 5-min
 /// poll task and by the `trigger_sync_now` Tauri command. A no-op when
-/// the P2P node hasn't started.
+/// the P2P node hasn't started or when the connectivity gate
+/// (Phase 4.2) blocks (e.g. cellular + wifi_only on Android).
 pub async fn trigger_sync_for_all_paired(state: &AppState) -> u32 {
     let cmd_tx = match state.p2p_command_tx().await {
         Some(tx) => tx,
         None => return 0,
     };
+    let connectivity = state.connectivity_state();
+    if !connectivity.allows_auto_sync(state.config.p2p.wifi_only) {
+        tracing::debug!(
+            "Skipping paired-peer sync: connectivity={connectivity:?}, wifi_only={}",
+            state.config.p2p.wifi_only
+        );
+        return 0;
+    }
     let manager_guard = state.pairing_manager.read().await;
     let manager = match manager_guard.as_ref() {
         Some(m) => m,

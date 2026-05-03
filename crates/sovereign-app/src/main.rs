@@ -289,9 +289,11 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pairing::get_local_peer_id,
             #[cfg(feature = "encryption")]
             tauri_commands::pairing::trigger_sync_now,
-            // Mobile: voice transcription + share-sheet receiver
+            // Mobile: voice transcription + share-sheet receiver + connectivity
             tauri_commands::mobile::voice_transcribe_buffer,
             tauri_commands::mobile::receive_shared_content,
+            tauri_commands::mobile::set_connectivity_state,
+            tauri_commands::mobile::get_connectivity_state,
         ])
         .setup(move |app| -> std::result::Result<(), Box<dyn std::error::Error>> {
             use tauri::Manager;
@@ -382,6 +384,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 p2p_command_tx: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "p2p")]
                 pairing_manager: tokio::sync::RwLock::new(None),
+                #[cfg(feature = "p2p")]
+                connectivity: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
                 #[cfg(feature = "voice-stt")]
                 stt_engine: backend.stt_engine,
             });
@@ -454,24 +458,56 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             // alongside the mDNS-discovery auto-trigger and the
             // foreground `trigger_sync_now` Tauri command. No-op until
             // the post-login P2P startup runs.
+            //
+            // Phase 4.5: exponential backoff. After 3 consecutive
+            // "fired = 0" cycles (no peers reachable / connectivity
+            // gate denied / no paired peers) the cadence stretches
+            // 5min → 15min → 1h → 1h ... Once a cycle fires anything,
+            // it snaps back to 5min. Keeps idle Android devices out of
+            // a tight 5-min wakeup loop on cellular.
             #[cfg(feature = "p2p")]
             {
                 let app_handle_for_poll = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     use tauri::Manager as _;
-                    let mut interval =
-                        tokio::time::interval(std::time::Duration::from_secs(300));
+                    use std::time::Duration;
+                    const BASE: Duration = Duration::from_secs(300); // 5min
+                    const STEP_2: Duration = Duration::from_secs(900); // 15min
+                    const STEP_3: Duration = Duration::from_secs(3600); // 1h
+
+                    let mut consecutive_idle: u32 = 0;
                     // Skip the immediate tick — a freshly logged-in user
                     // already gets a sync via the mDNS auto-trigger.
-                    interval.tick().await;
+                    tokio::time::sleep(BASE).await;
                     loop {
-                        interval.tick().await;
-                        if let Some(state) = app_handle_for_poll.try_state::<tauri_state::AppState>() {
-                            let fired = crate::sync_startup::trigger_sync_for_all_paired(&state).await;
-                            if fired > 0 {
-                                tracing::debug!("periodic sync poll: fired StartSync for {fired} paired peers");
-                            }
+                        let fired = if let Some(state) =
+                            app_handle_for_poll.try_state::<tauri_state::AppState>()
+                        {
+                            crate::sync_startup::trigger_sync_for_all_paired(&state).await
+                        } else {
+                            0
+                        };
+
+                        if fired > 0 {
+                            tracing::debug!(
+                                "periodic sync poll: fired StartSync for {fired} paired peers"
+                            );
+                            consecutive_idle = 0;
+                        } else {
+                            consecutive_idle = consecutive_idle.saturating_add(1);
                         }
+
+                        let next = match consecutive_idle {
+                            0..=2 => BASE,
+                            3..=4 => STEP_2,
+                            _ => STEP_3,
+                        };
+                        if consecutive_idle >= 3 {
+                            tracing::debug!(
+                                "periodic sync poll: idle for {consecutive_idle} cycles, sleeping {next:?}"
+                            );
+                        }
+                        tokio::time::sleep(next).await;
                     }
                 });
             }

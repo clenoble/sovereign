@@ -112,3 +112,63 @@ pub async fn receive_shared_content(
 
     Ok(doc_id)
 }
+
+// ---------------------------------------------------------------------------
+// Connectivity callback (Phase 4.2: P2P sync gating)
+// ---------------------------------------------------------------------------
+
+/// Called by the Android plugin's `NetworkCallback` (and by the
+/// frontend test harness) to report a connectivity transition. The
+/// auto-trigger gate in `sync_startup` reads this state when deciding
+/// whether to fire `StartSync` on PeerDiscovered or from the periodic
+/// poll.
+///
+/// Accepted values (case-insensitive): `"wifi"`, `"cellular"`,
+/// `"offline"`, `"unknown"`. Anything else is treated as `unknown`.
+#[tauri::command]
+pub async fn set_connectivity_state(
+    state: State<'_, AppState>,
+    kind: String,
+) -> Result<(), String> {
+    #[cfg(feature = "p2p")]
+    {
+        use sovereign_p2p::ConnectivityState;
+        let parsed = match kind.to_lowercase().as_str() {
+            "wifi" => ConnectivityState::Wifi,
+            "cellular" => ConnectivityState::Cellular,
+            "offline" => ConnectivityState::Offline,
+            _ => ConnectivityState::Unknown,
+        };
+        state.set_connectivity_state(parsed);
+        tracing::info!("Connectivity transition: {parsed:?}");
+        Ok(())
+    }
+    #[cfg(not(feature = "p2p"))]
+    {
+        let _ = (state, kind);
+        Ok(())
+    }
+}
+
+/// Read the current connectivity state. Useful for the Devices panel
+/// in Settings (so a user can see the gate state) and for debugging
+/// "why isn't sync firing".
+#[tauri::command]
+pub async fn get_connectivity_state(state: State<'_, AppState>) -> Result<String, String> {
+    #[cfg(feature = "p2p")]
+    {
+        use sovereign_p2p::ConnectivityState;
+        let s = match state.connectivity_state() {
+            ConnectivityState::Wifi => "wifi",
+            ConnectivityState::Cellular => "cellular",
+            ConnectivityState::Offline => "offline",
+            ConnectivityState::Unknown => "unknown",
+        };
+        Ok(s.into())
+    }
+    #[cfg(not(feature = "p2p"))]
+    {
+        let _ = state;
+        Ok("unknown".into())
+    }
+}

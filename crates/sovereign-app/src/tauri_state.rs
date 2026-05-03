@@ -73,6 +73,15 @@ pub struct AppState {
     #[cfg(feature = "p2p")]
     pub pairing_manager:
         tokio::sync::RwLock<Option<sovereign_p2p::pairing::PairingManager>>,
+    /// Latest connectivity state reported by the Android plugin (Phase
+    /// 4.2). Shared with the sync_startup event translator + periodic
+    /// poll so they can suppress auto-sync on Cellular/Offline when
+    /// `config.p2p.wifi_only` is true. Defaults to `Unknown`; desktop
+    /// builds leave it there (wifi_only is false on desktop, so the
+    /// gate is permissive).
+    #[cfg(feature = "p2p")]
+    pub connectivity:
+        std::sync::Arc<std::sync::atomic::AtomicU8>,
     /// Whisper STT engine for mobile voice-to-text (Web Audio API → Whisper).
     /// Populated when voice-stt feature is enabled and whisper model exists.
     /// Desktop uses the cpal-based VoicePipeline instead.
@@ -120,5 +129,42 @@ impl AppState {
         tx: tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>,
     ) {
         *self.p2p_command_tx.write().await = Some(tx);
+    }
+
+    /// Snapshot the current connectivity state. Lock-free atomic read.
+    pub fn connectivity_state(&self) -> sovereign_p2p::ConnectivityState {
+        connectivity_from_u8(
+            self.connectivity.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// Update the connectivity state. Called by the
+    /// `set_connectivity_state` Tauri command, which the Android plugin
+    /// invokes on every network transition.
+    pub fn set_connectivity_state(&self, state: sovereign_p2p::ConnectivityState) {
+        self.connectivity
+            .store(connectivity_to_u8(state), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(feature = "p2p")]
+fn connectivity_to_u8(state: sovereign_p2p::ConnectivityState) -> u8 {
+    use sovereign_p2p::ConnectivityState;
+    match state {
+        ConnectivityState::Unknown => 0,
+        ConnectivityState::Wifi => 1,
+        ConnectivityState::Cellular => 2,
+        ConnectivityState::Offline => 3,
+    }
+}
+
+#[cfg(feature = "p2p")]
+fn connectivity_from_u8(byte: u8) -> sovereign_p2p::ConnectivityState {
+    use sovereign_p2p::ConnectivityState;
+    match byte {
+        1 => ConnectivityState::Wifi,
+        2 => ConnectivityState::Cellular,
+        3 => ConnectivityState::Offline,
+        _ => ConnectivityState::Unknown,
     }
 }
