@@ -56,6 +56,9 @@ async fn spawn_node(device_id: &str, seed: [u8; 32]) -> Harness {
         listen_port: 0,
         rendezvous_server: None,
         device_name: device_id.into(),
+        // Allow auto-trigger regardless of host platform — the test
+        // doesn't model connectivity transitions.
+        wifi_only: false,
     };
     let kp = keypair_from_seed(&seed);
     let peer_id = kp.public().to_peer_id();

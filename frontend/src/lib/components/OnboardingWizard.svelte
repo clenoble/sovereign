@@ -15,9 +15,11 @@
 		PairPayloadPreview
 	} from '$lib/api/commands';
 	import BubblePreview from './BubblePreview.svelte';
+	import QrScanner from './QrScanner.svelte';
 	import { applyTheme, theme } from '$lib/stores/theme.svelte';
 
 	type FlowMode = 'first' | 'paired';
+	type PairedInputMode = 'scan' | 'paste';
 
 	// ---------------------------------------------------------------------------
 	// Designation generator
@@ -90,6 +92,17 @@
 	let qrPreview = $state<PairPayloadPreview | null>(null);
 	let qrPreviewError = $state('');
 	let qrPreviewLoading = $state(false);
+	// Phase 4.4: camera-first input on the paired branch, with paste
+	// fallback (the QrScanner component itself surfaces the fallback
+	// option if the camera API isn't available).
+	let pairedInputMode = $state<PairedInputMode>('scan');
+
+	function handleScannedPayload(payload: string) {
+		qrPayload = payload;
+		// After a successful scan, switch to paste mode so the user
+		// sees what was decoded and can edit / re-scan if needed.
+		pairedInputMode = 'paste';
+	}
 
 	// Step 2 — Nickname
 	let nickname = $state('');
@@ -418,18 +431,35 @@
 					<h2 class="step-title">Pair with your existing device</h2>
 					<p class="description">
 						On the existing device, open <strong>Settings &rarr; Devices &rarr;
-						Pair a new device</strong>. Paste the payload + PIN here.
+						Pair a new device</strong>. Scan the QR (or paste it manually) and
+						enter the 6-digit PIN.
 					</p>
-					<div class="field-group">
-						<label class="field-label" for="pair-payload">Pairing payload</label>
-						<textarea
-							id="pair-payload"
-							class="text-input"
-							rows="4"
-							placeholder="paste base64url payload from existing device"
-							bind:value={qrPayload}
-						></textarea>
-					</div>
+
+					{#if pairedInputMode === 'scan'}
+						<QrScanner
+							onDecode={handleScannedPayload}
+							onCancel={() => (pairedInputMode = 'paste')}
+						/>
+					{:else}
+						<div class="field-group">
+							<label class="field-label" for="pair-payload">Pairing payload</label>
+							<textarea
+								id="pair-payload"
+								class="text-input"
+								rows="4"
+								placeholder="paste base64url payload from existing device"
+								bind:value={qrPayload}
+							></textarea>
+							<button
+								class="link-btn"
+								type="button"
+								onclick={() => (pairedInputMode = 'scan')}
+							>
+								Scan with camera instead
+							</button>
+						</div>
+					{/if}
+
 					<div class="field-group">
 						<label class="field-label" for="pair-pin">PIN</label>
 						<input
@@ -1063,6 +1093,21 @@
 	.preview-value {
 		font-size: 0.9rem;
 		color: var(--text-primary);
+	}
+
+	.link-btn {
+		background: none;
+		border: none;
+		color: var(--accent, #f59e0b);
+		font-size: 0.8rem;
+		padding: 4px 0;
+		margin-top: 4px;
+		cursor: pointer;
+		text-decoration: underline;
+		align-self: flex-start;
+	}
+	.link-btn:hover {
+		opacity: 0.8;
 	}
 
 	/* ===================================================================
