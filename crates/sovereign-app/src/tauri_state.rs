@@ -61,6 +61,18 @@ pub struct AppState {
     #[cfg(feature = "encryption")]
     pub pending_pairing:
         tokio::sync::RwLock<Option<(sovereign_crypto::pair_payload::PairPayload, String)>>,
+    /// P2P command sender for queueing `StartSync` / `PairDevice` /
+    /// `Shutdown` from Tauri commands and the periodic poll task.
+    /// `None` until `install_session` runs the post-login P2P startup.
+    #[cfg(feature = "p2p")]
+    pub p2p_command_tx:
+        tokio::sync::RwLock<Option<tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>>>,
+    /// In-memory paired devices, persisted under
+    /// `~/.sovereign/crypto/paired_devices.json`. `None` until
+    /// `install_session` loads (or initialises) the manager.
+    #[cfg(feature = "p2p")]
+    pub pairing_manager:
+        tokio::sync::RwLock<Option<sovereign_p2p::pairing::PairingManager>>,
     /// Whisper STT engine for mobile voice-to-text (Web Audio API → Whisper).
     /// Populated when voice-stt feature is enabled and whisper model exists.
     /// Desktop uses the cpal-based VoicePipeline instead.
@@ -90,5 +102,23 @@ impl AppState {
     /// Install the per-device libp2p identity key (called post-authentication).
     pub async fn set_p2p_identity_key(&self, key: Arc<sovereign_crypto::device_key::DeviceKey>) {
         *self.p2p_identity_key.write().await = Some(key);
+    }
+}
+
+#[cfg(feature = "p2p")]
+impl AppState {
+    /// Snapshot the P2P command channel. Cheap (one mpsc::Sender clone).
+    pub async fn p2p_command_tx(
+        &self,
+    ) -> Option<tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>> {
+        self.p2p_command_tx.read().await.clone()
+    }
+
+    /// Install the P2P command channel after the post-login node start.
+    pub async fn set_p2p_command_tx(
+        &self,
+        tx: tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>,
+    ) {
+        *self.p2p_command_tx.write().await = Some(tx);
     }
 }

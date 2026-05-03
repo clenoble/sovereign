@@ -731,3 +731,22 @@ export const deleteCookie = (name: string, domain: string, path: string) =>
  *  Returns the count actually removed. L5 Destruct. */
 export const clearEntityCookies = (entityId: string) =>
 	invoke<number>('clear_entity_cookies', { entityId });
+
+// ---------------------------------------------------------------------------
+// Phase 3c — P2P sync (pairing UI lands in Phase 5)
+// ---------------------------------------------------------------------------
+
+export interface PairedDevice {
+	peer_id: string;
+	device_name: string;
+	paired_at: string;
+}
+
+/** Devices this device has paired with. Empty list on encryption-only
+ *  builds (no `p2p` feature) or pre-login. */
+export const listPairedDevices = () =>
+	invoke<PairedDevice[]>('list_paired_devices');
+
+/** Trigger a sync with every paired peer. Returns the number of
+ *  StartSync commands queued (0 if the P2P node isn't running). */
+export const triggerSyncNow = () => invoke<number>('trigger_sync_now');

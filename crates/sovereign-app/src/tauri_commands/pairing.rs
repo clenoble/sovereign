@@ -232,7 +232,32 @@ pub async fn complete_onboarding_paired(
     //    but ignored.
     let _ = input.seed_sample_data;
 
-    // 7. Mark onboarding_done.
+    // 7. Persist a PairedDevice record for the source so the post-login
+    //    P2P startup can auto-sync with it. The pair_key_b64 is left
+    //    empty in v0.0.5 — wire-level encryption arrives in v0.0.5.x;
+    //    until then, both sides derive the pair-transport key from the
+    //    shared AccountKey on demand.
+    #[cfg(feature = "p2p")]
+    if !payload.source_peer_id.is_empty() {
+        let paired_path = crypto_dir.join("paired_devices.json");
+        let mut manager = if paired_path.exists() {
+            sovereign_p2p::pairing::PairingManager::load(&paired_path)
+                .unwrap_or_else(|_| sovereign_p2p::pairing::PairingManager::new(paired_path.clone()))
+        } else {
+            sovereign_p2p::pairing::PairingManager::new(paired_path.clone())
+        };
+        manager.add_device(sovereign_p2p::pairing::PairedDevice {
+            peer_id: payload.source_peer_id.clone(),
+            device_name: payload.source_device_name.clone(),
+            pair_key_b64: String::new(),
+            paired_at: chrono::Utc::now().to_rfc3339(),
+        });
+        if let Err(e) = manager.save() {
+            tracing::warn!("Failed to persist paired_devices.json: {e}");
+        }
+    }
+
+    // 8. Mark onboarding_done.
     std::fs::write(profile_dir.join("onboarding_done"), "1").str_err()?;
     tracing::info!(
         "Paired onboarding complete (source: {})",
@@ -241,27 +266,72 @@ pub async fn complete_onboarding_paired(
     Ok(())
 }
 
-/// List devices this device has paired with.
+/// List devices this device has paired with. Reads through the
+/// `PairingManager` installed by the post-login P2P startup; returns
+/// an empty list if the manager isn't loaded yet (encryption-only
+/// builds without the p2p feature, or pre-login).
 #[tauri::command]
 pub async fn list_paired_devices(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
 ) -> Result<Vec<PairedDeviceDto>, String> {
-    // Phase 2 stub: PairingManager persistence is wired in Phase 2.5
-    // (PairingManager.save_encrypted_under_account_key). For now,
-    // return an empty list so the Settings panel can render without
-    // errors. A real implementation lands when the manager is wired
-    // into AppState.
+    #[cfg(feature = "p2p")]
+    {
+        if let Some(ref manager) = *state.pairing_manager.read().await {
+            return Ok(manager
+                .list_devices()
+                .into_iter()
+                .map(|d| PairedDeviceDto {
+                    peer_id: d.peer_id.clone(),
+                    device_name: d.device_name.clone(),
+                    paired_at: d.paired_at.clone(),
+                })
+                .collect());
+        }
+    }
+    let _ = &state;
     Ok(Vec::new())
 }
 
 /// Remove a paired device from this device's records.
 #[tauri::command]
 pub async fn forget_paired_device(
-    _state: State<'_, AppState>,
-    _peer_id: String,
+    state: State<'_, AppState>,
+    peer_id: String,
 ) -> Result<(), String> {
-    // Phase 2 stub — see list_paired_devices for context.
-    Ok(())
+    #[cfg(feature = "p2p")]
+    {
+        let mut guard = state.pairing_manager.write().await;
+        if let Some(manager) = guard.as_mut() {
+            manager.remove_device(&peer_id);
+            manager
+                .save()
+                .map_err(|e| format!("save paired_devices.json: {e}"))?;
+        }
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (&state, &peer_id);
+        Ok(())
+    }
+}
+
+/// Trigger a sync with every paired peer. Frontend invokes this from
+/// the document `visibilitychange` listener (when the window comes back
+/// to the foreground) and from a manual "Sync now" button. Returns the
+/// number of `StartSync` commands queued (0 if the P2P node isn't
+/// running, or the user has no paired peers).
+#[tauri::command]
+pub async fn trigger_sync_now(state: State<'_, AppState>) -> Result<u32, String> {
+    #[cfg(feature = "p2p")]
+    {
+        return Ok(crate::sync_startup::trigger_sync_for_all_paired(&state).await);
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = &state;
+        Ok(0)
+    }
 }
 
 /// Return this device's libp2p PeerId for display in the Settings
