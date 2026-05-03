@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use surrealdb::engine::local::{Db, Mem, RocksDb};
+use surrealdb::engine::local::{Db, Mem};
+#[cfg(feature = "rocksdb")]
+use surrealdb::engine::local::RocksDb;
 use surrealdb::sql::Thing;
 use surrealdb::Surreal;
 
@@ -29,7 +31,18 @@ impl SurrealGraphDB {
     pub async fn new(mode: StorageMode) -> DbResult<Self> {
         let db = match mode {
             StorageMode::Memory => Surreal::new::<Mem>(()).await?,
+            #[cfg(feature = "rocksdb")]
             StorageMode::Persistent(ref path) => Surreal::new::<RocksDb>(path).await?,
+            #[cfg(not(feature = "rocksdb"))]
+            StorageMode::Persistent(_) => {
+                // Mobile + non-default desktop builds: fall back to in-memory.
+                // Persistent storage requires the `rocksdb` feature (desktop)
+                // or a future SQLite-backed engine (mobile, Phase 5).
+                eprintln!(
+                    "[sovereign-db] persistent storage requested but rocksdb feature is off — using in-memory"
+                );
+                Surreal::new::<Mem>(()).await?
+            }
         };
         Ok(Self { db })
     }
