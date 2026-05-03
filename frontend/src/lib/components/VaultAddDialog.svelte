@@ -20,6 +20,7 @@
 	let entityId = $state<string | null>(defaultEntityId);
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
+	let showValue = $state(false);
 
 	$effect(() => {
 		if (open) {
@@ -29,6 +30,7 @@
 			entityId = defaultEntityId ?? piiState.selectedEntityId;
 			submitting = false;
 			error = null;
+			showValue = false;
 		}
 	});
 
@@ -133,13 +135,25 @@
 
 			<label class="field">
 				<span class="field-label">Value</span>
-				<input
-					type="password"
-					bind:value
-					placeholder="encrypted under your device key"
-					autocomplete="new-password"
-					disabled={submitting}
-				/>
+				<div class="value-input-wrapper">
+					<input
+						type={showValue ? 'text' : 'password'}
+						bind:value
+						placeholder="encrypted under your device key"
+						autocomplete="new-password"
+						disabled={submitting}
+					/>
+					<button
+						type="button"
+						class="reveal-btn"
+						aria-label={showValue ? 'Hide value' : 'Show value'}
+						aria-pressed={showValue}
+						onclick={() => (showValue = !showValue)}
+						disabled={submitting}
+					>
+						{showValue ? '🙈' : '👁'}
+					</button>
+				</div>
 			</label>
 
 			{#if error}
@@ -237,6 +251,31 @@
 	.field select:focus {
 		outline: 1px solid var(--accent);
 		border-color: var(--accent);
+	}
+
+	.value-input-wrapper {
+		display: flex;
+		gap: 6px;
+	}
+	.value-input-wrapper input {
+		flex: 1;
+	}
+	.reveal-btn {
+		background: var(--bg-input, var(--bg-hover));
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 0 10px;
+		cursor: pointer;
+		color: var(--text-primary);
+		font-size: 0.95rem;
+		line-height: 1;
+	}
+	.reveal-btn:hover:not(:disabled) {
+		background: var(--bg-hover);
+	}
+	.reveal-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	.error {

@@ -52,7 +52,7 @@ readability = { workspace = true, optional = true }
 tauri-build = { workspace = true }
 
 [features]
-default = ["encrypted-log"]
+default = ["encrypted-log", "encryption"]
 cuda = ["sovereign-ai/cuda"]
 encrypted-log = ["sovereign-ai/encrypted-log", "hkdf", "sha2"]
 voice-stt = ["sovereign-ai/voice-stt"]

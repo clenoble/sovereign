@@ -41,8 +41,8 @@ pub async fn maybe_ingest_document_body(
     doc_id: &str,
     body: &str,
 ) -> Result<String, String> {
-    let device_key = match state.device_key.as_ref() {
-        Some(dk) => dk.clone(),
+    let device_key = match state.device_key().await {
+        Some(dk) => dk,
         None => {
             tracing::debug!("PII ingest skipped: device_key unavailable");
             return Ok(body.to_string());

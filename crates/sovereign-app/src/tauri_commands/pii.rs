@@ -282,9 +282,10 @@ pub async fn reveal_pii_record(
     use sovereign_crypto::vault::EncryptedBlob;
 
     let device_key = state
-        .device_key
-        .as_ref()
+        .device_key()
+        .await
         .ok_or_else(|| "PII reveal unavailable: device key not loaded".to_string())?;
+    let device_key = &*device_key;
     let record = state.db.get_pii_record(&id).await.str_err()?;
     let blob = EncryptedBlob::from_pair(record.value_encrypted, record.value_nonce);
     let plaintext = blob
@@ -340,9 +341,10 @@ pub async fn create_vault_entry(
     use sovereign_db::schema::{PiiKind, PiiRecord, ReviewState};
 
     let device_key = state
-        .device_key
-        .as_ref()
+        .device_key()
+        .await
         .ok_or_else(|| "Vault add unavailable: device key not loaded".to_string())?;
+    let device_key = &*device_key;
 
     let kind = parse_pii_kind(&input.kind)
         .ok_or_else(|| format!("unknown PII kind: {}", input.kind))?;
@@ -426,9 +428,10 @@ pub async fn autofill_pii_record(
     use sovereign_crypto::vault::EncryptedBlob;
 
     let device_key = state
-        .device_key
-        .as_ref()
+        .device_key()
+        .await
         .ok_or_else(|| "Autofill unavailable: device key not loaded".to_string())?;
+    let device_key = &*device_key;
     let record = state.db.get_pii_record(&record_id).await.str_err()?;
     let blob = EncryptedBlob::from_pair(record.value_encrypted, record.value_nonce);
     let plaintext = blob
@@ -536,9 +539,10 @@ pub async fn commit_signup_capture(
     };
 
     let device_key = state
-        .device_key
-        .as_ref()
+        .device_key()
+        .await
         .ok_or_else(|| "Signup capture unavailable: device key not loaded".to_string())?;
+    let device_key = &*device_key;
 
     // Step 1: resolve or create the entity.
     let (entity_id, entity_created) = match input.entity_id {
@@ -768,9 +772,10 @@ pub async fn resolve_pii_tokens(
     use crate::err::ToStringErr;
 
     let device_key = state
-        .device_key
-        .as_ref()
+        .device_key()
+        .await
         .ok_or_else(|| "PII resolution unavailable: device key not loaded".to_string())?;
+    let device_key = &*device_key;
 
     let body = match source_kind.as_str() {
         "document" => {

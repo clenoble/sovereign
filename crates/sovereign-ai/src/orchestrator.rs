@@ -25,7 +25,10 @@ pub struct Orchestrator {
     classifier: tokio::sync::Mutex<IntentClassifier>,
     db: Arc<dyn GraphDB>,
     event_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
-    session_log: Option<Mutex<SessionLog>>,
+    /// Mutex<Option<…>> instead of Option<Mutex<…>> so the inner SessionLog
+    /// can be replaced post-login (e.g. when set_session_log_key opens an
+    /// encrypted log over the existing plaintext one).
+    session_log: Mutex<Option<SessionLog>>,
     decision_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ActionDecision>>>,
     feedback_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<FeedbackEvent>>>,
     trust: Mutex<TrustTracker>,
@@ -34,10 +37,11 @@ pub struct Orchestrator {
     model_dir: String,
     n_gpu_layers: i32,
     /// Device key for PII pipeline encryption of session-log content.
-    /// None = pass-through (raw user input + chat responses go to log).
-    pii_device_key: Option<Arc<sovereign_crypto::device_key::DeviceKey>>,
+    /// None until login installs it via set_pii_device_key. Wrapped in a
+    /// Mutex so the setter can be `&self` (orchestrator lives behind Arc).
+    pii_device_key: Mutex<Option<Arc<sovereign_crypto::device_key::DeviceKey>>>,
     #[cfg(feature = "encrypted-log")]
-    session_log_key: Option<[u8; 32]>,
+    session_log_key: Mutex<Option<[u8; 32]>>,
     #[cfg(feature = "p2p")]
     p2p_command_tx: Option<tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>>,
     #[cfg(feature = "p2p")]
@@ -61,10 +65,10 @@ impl Orchestrator {
             .join(".sovereign")
             .join("orchestrator");
         let session_log = match SessionLog::open(&profile_dir) {
-            Ok(log) => Some(Mutex::new(log)),
+            Ok(log) => Mutex::new(Some(log)),
             Err(e) => {
                 tracing::warn!("Session log unavailable: {e}");
-                None
+                Mutex::new(None)
             }
         };
 
@@ -104,9 +108,9 @@ impl Orchestrator {
             profile_dir,
             model_dir,
             n_gpu_layers,
-            pii_device_key: None,
+            pii_device_key: Mutex::new(None),
             #[cfg(feature = "encrypted-log")]
-            session_log_key: None,
+            session_log_key: Mutex::new(None),
             #[cfg(feature = "p2p")]
             p2p_command_tx: None,
             #[cfg(feature = "p2p")]
@@ -167,19 +171,25 @@ impl Orchestrator {
     /// tokens) lands in the session log, and PiiRecord rows are
     /// written for each finding. Without a key, log entries pass
     /// through raw and the idle sweep handles tokenization later.
-    pub fn set_pii_device_key(&mut self, key: Arc<sovereign_crypto::device_key::DeviceKey>) {
-        self.pii_device_key = Some(key);
+    pub fn set_pii_device_key(&self, key: Arc<sovereign_crypto::device_key::DeviceKey>) {
+        if let Ok(mut guard) = self.pii_device_key.lock() {
+            *guard = Some(key);
+        }
     }
 
     /// Re-opens the session log in encrypted mode. Each subsequent entry will be
     /// encrypted with XChaCha20-Poly1305 and hash-chained to the previous entry
     /// for tamper detection.
     #[cfg(feature = "encrypted-log")]
-    pub fn set_session_log_key(&mut self, key: [u8; 32]) {
+    pub fn set_session_log_key(&self, key: [u8; 32]) {
         match SessionLog::open_encrypted(&self.profile_dir, key) {
             Ok(log) => {
-                self.session_log = Some(Mutex::new(log));
-                self.session_log_key = Some(key);
+                if let Ok(mut guard) = self.session_log.lock() {
+                    *guard = Some(log);
+                }
+                if let Ok(mut guard) = self.session_log_key.lock() {
+                    *guard = Some(key);
+                }
                 tracing::info!("Session log encryption enabled");
             }
             Err(e) => {
@@ -646,8 +656,8 @@ impl Orchestrator {
 
     /// Log a chat response to the session log for persistent conversation history.
     fn log_chat_response(&self, response: &str) {
-        if let Some(ref log) = self.session_log {
-            if let Ok(mut log) = log.lock() {
+        if let Ok(mut guard) = self.session_log.lock() {
+            if let Some(log) = guard.as_mut() {
                 log.log_chat_response(response);
             }
         }
@@ -663,8 +673,8 @@ impl Orchestrator {
     /// errors are logged via `tracing::warn!` and the original text is
     /// returned so the chat pipeline never blocks on ingest.
     async fn tokenize_session_text(&self, content: &str) -> String {
-        let device_key = match self.pii_device_key.as_ref() {
-            Some(k) => k.clone(),
+        let device_key = match self.pii_device_key.lock().ok().and_then(|g| g.clone()) {
+            Some(k) => k,
             None => return content.to_string(),
         };
         let source_id = format!("session:{}", chrono::Utc::now().to_rfc3339());
@@ -713,8 +723,8 @@ impl Orchestrator {
     /// AI as conversation context.
     async fn log_user_input_pii_aware(&self, mode: &str, content: &str, intent: &str) {
         let canonical = self.tokenize_session_text(content).await;
-        if let Some(ref log) = self.session_log {
-            if let Ok(mut log) = log.lock() {
+        if let Ok(mut guard) = self.session_log.lock() {
+            if let Some(log) = guard.as_mut() {
                 log.log_user_input(mode, &canonical, intent);
             }
         }
@@ -725,8 +735,8 @@ impl Orchestrator {
     /// through the pipeline too.
     async fn log_chat_response_pii_aware(&self, response: &str) {
         let canonical = self.tokenize_session_text(response).await;
-        if let Some(ref log) = self.session_log {
-            if let Ok(mut log) = log.lock() {
+        if let Ok(mut guard) = self.session_log.lock() {
+            if let Some(log) = guard.as_mut() {
                 log.log_chat_response(&canonical);
             }
         }
@@ -1567,8 +1577,8 @@ impl Orchestrator {
     }
 
     fn log_action(&self, action: &str, details: &str) {
-        if let Some(ref log) = self.session_log {
-            if let Ok(mut log) = log.lock() {
+        if let Ok(mut guard) = self.session_log.lock() {
+            if let Some(log) = guard.as_mut() {
                 log.log_action(action, details);
             }
         }
@@ -1577,8 +1587,11 @@ impl Orchestrator {
     /// Load recent session entries, using encrypted decryption if a key is available.
     fn load_session_entries(&self, max_entries: usize) -> Vec<crate::session_log::SessionEntry> {
         #[cfg(feature = "encrypted-log")]
-        if let Some(ref key) = self.session_log_key {
-            return SessionLog::load_recent_encrypted(&self.profile_dir, max_entries, key);
+        {
+            let key = self.session_log_key.lock().ok().and_then(|g| *g);
+            if let Some(key) = key {
+                return SessionLog::load_recent_encrypted(&self.profile_dir, max_entries, &key);
+            }
         }
         SessionLog::load_recent(&self.profile_dir, max_entries)
     }

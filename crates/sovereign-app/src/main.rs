@@ -153,24 +153,18 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     // Compute profile directory (~/.sovereign)
     let profile_dir = sovereign_core::home_dir().join(".sovereign");
 
-    // Initialize crypto subsystem if enabled. The DeviceKey is wrapped
-    // in Arc so it can be shared with the Tauri AppState for the PII
-    // ingest path (see pii_ingest.rs); without DeviceKey the pipeline
-    // runs in pass-through mode (no records written).
+    // Crypto subsystem: prepare the auth dir / salt / device-id but do
+    // NOT prompt for a password here (rpassword would block on a missing
+    // console in GUI mode). The actual DeviceKey is loaded after login
+    // via the validate_password / complete_onboarding Tauri commands —
+    // see install_session() in tauri_commands::auth and AppState's
+    // RwLock-backed device_key field.
     #[cfg(feature = "encryption")]
-    let _crypto_state = if config.crypto.enabled {
-        match setup::init_crypto() {
-            Ok((device_key, key_db, kek)) => {
-                Some((Arc::new(device_key), key_db, kek))
-            }
-            Err(e) => {
-                tracing::warn!("Crypto init failed (continuing without encryption): {e}");
-                None
-            }
+    if config.crypto.enabled {
+        if let Err(e) = setup::prepare_auth() {
+            tracing::warn!("prepare_auth failed: {e}");
         }
-    } else {
-        None
-    };
+    }
 
     // Run async backend setup inside the existing runtime
     let (db, orchestrator, skill_registry, skill_db, decision_tx, feedback_tx, orch_tx, orch_rx, autocommit, model_assignments) =
@@ -178,14 +172,9 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             let db = create_db(config).await?;
             seed::seed_if_empty(&db).await?;
 
-            // PII seed needs the DeviceKey (encryption feature) to encrypt
-            // vault values. Skip silently when crypto is disabled or init failed.
-            #[cfg(feature = "encryption")]
-            if let Some((ref device_key, _, _)) = _crypto_state {
-                if let Err(e) = seed::seed_pii_if_empty(&db, device_key).await {
-                    tracing::warn!("PII seed failed: {e}");
-                }
-            }
+            // PII seed runs in complete_onboarding (auth.rs) once the
+            // device_key is installed. Skipped at startup because the
+            // device_key isn't available until login completes.
 
             // Seed user profile and session log history
             let profile_dir = sovereign_core::home_dir()
@@ -249,67 +238,19 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                     o.set_decision_rx(decision_rx);
                     o.set_feedback_rx(feedback_rx);
 
-                    // Wire P2P channels if crypto + P2P are enabled
+                    // P2P startup is deferred to post-login wiring (v0.0.5);
+                    // requires the device key to derive identity, which is
+                    // not available until the user authenticates.
                     #[cfg(feature = "p2p")]
                     if config.p2p.enabled {
-                        if let Some((ref device_key, _, _)) = _crypto_state {
-                            match sovereign_p2p::identity::derive_keypair(device_key) {
-                                Ok(keypair) => {
-                                    let p2p_config = sovereign_p2p::config::P2pConfig {
-                                        enabled: true,
-                                        listen_port: config.p2p.listen_port,
-                                        rendezvous_server: config.p2p.rendezvous_server.clone(),
-                                        device_name: config.p2p.device_name.clone(),
-                                    };
-                                    let (p2p_event_tx, p2p_event_rx) =
-                                        tokio::sync::mpsc::channel(256);
-                                    let (p2p_cmd_tx, p2p_cmd_rx) =
-                                        tokio::sync::mpsc::channel(64);
-
-                                    let sync_service = Arc::new(
-                                        sovereign_p2p::SyncService::new(
-                                            db_arc.clone(),
-                                            p2p_config.device_name.clone(),
-                                        ),
-                                    );
-                                    match sovereign_p2p::node::SovereignNode::new(
-                                        &p2p_config, keypair, p2p_event_tx, p2p_cmd_rx, sync_service,
-                                    ) {
-                                        Ok(node) => {
-                                            tokio::spawn(node.run());
-                                            o.set_p2p_channels(p2p_cmd_tx, p2p_event_rx);
-                                            tracing::info!("P2P node spawned");
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!("P2P node failed to start: {e}");
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!("P2P identity derivation failed: {e}");
-                                }
-                            }
-                        } else {
-                            tracing::warn!(
-                                "P2P enabled but crypto not initialized — skipping P2P"
-                            );
-                        }
+                        tracing::warn!(
+                            "P2P startup deferred until login wiring is complete (v0.0.5)"
+                        );
                     }
 
-                    // Enable session log encryption if crypto is initialized
-                    #[cfg(all(feature = "encryption", feature = "encrypted-log"))]
-                    if let Some((ref device_key, _, _)) = _crypto_state {
-                        let session_key = setup::derive_session_log_key(device_key);
-                        o.set_session_log_key(session_key);
-                    }
-
-                    // Wire device key into the orchestrator so session log
-                    // entries (user input + chat responses) get PII-tokenized
-                    // at write time.
-                    #[cfg(feature = "encryption")]
-                    if let Some((ref device_key, _, _)) = _crypto_state {
-                        o.set_pii_device_key(device_key.clone());
-                    }
+                    // Session-log encryption + PII tokenization for the
+                    // orchestrator are installed after login by
+                    // install_session() in tauri_commands::auth.rs.
 
                     tracing::info!("AI orchestrator initialized (Tauri mode)");
                     Some(Arc::new(o))
@@ -347,15 +288,12 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     // Clone orchestrator for consolidation idle-watcher
     let consolidation_orch = orchestrator.clone();
 
-    // Clones for the PII sweep idle-watcher (4e4). The sweep cycle
-    // takes db + device_key directly so it can run independently of
-    // the orchestrator's model — useful because the sweep is regex-only
-    // and shouldn't wait for an idle LLM.
+    // PII sweep watcher (4e4) is deferred to v0.0.5: it currently
+    // captures device_key by value at spawn time, but device_key is no
+    // longer available at startup (requires login). To re-enable, the
+    // sweep loop must read state.device_key().await each cycle.
     #[cfg(all(feature = "comms", feature = "encryption"))]
-    let pii_sweep_db: std::sync::Arc<dyn sovereign_db::GraphDB> = db.clone();
-    #[cfg(all(feature = "comms", feature = "encryption"))]
-    let pii_sweep_device_key: Option<Arc<sovereign_crypto::device_key::DeviceKey>> =
-        _crypto_state.as_ref().map(|(dk, _, _)| dk.clone());
+    tracing::info!("PII sweep watcher idle until next launch (v0.0.5)");
 
     // Bridge orchestrator into SkillLlmAccess for skills that need inference.
     let skill_llm: Option<Arc<dyn sovereign_skills::SkillLlmAccess>> =
@@ -402,14 +340,16 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             decision_tx,
             feedback_tx,
             orch_tx,
-            theme: std::sync::Mutex::new("dark".to_string()),
+            theme: std::sync::Mutex::new(
+                sovereign_core::profile::UserProfile::load(&profile_dir)
+                    .map(|p| p.theme)
+                    .unwrap_or_else(|_| "dark".to_string()),
+            ),
             autocommit: autocommit.clone(),
             model_assignments: std::sync::Mutex::new(model_assignments),
             profile_dir,
             #[cfg(feature = "encryption")]
-            device_key: _crypto_state
-                .as_ref()
-                .map(|(dk, _, _)| dk.clone()),
+            device_key: tokio::sync::RwLock::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             // AI: status, chat, search, action gate, models, trust
@@ -591,26 +531,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 });
             }
 
-            // PII sweep idle-watcher — rescans documents, messages, and
-            // contacts that lack a `pii_scanned_at` marker. Runs every
-            // 5 minutes; each cycle scans up to BATCH_SIZE items per
-            // kind. Doesn't depend on model idle since it's regex-only.
-            #[cfg(all(feature = "comms", feature = "encryption"))]
-            if let Some(device_key) = pii_sweep_device_key {
-                let db = pii_sweep_db.clone();
-                tauri::async_runtime::spawn(async move {
-                    use std::time::Duration;
-                    let interval = Duration::from_secs(300);
-                    // First run after a short delay, so app startup
-                    // tasks (seeding, schema init) have settled.
-                    tokio::time::sleep(Duration::from_secs(60)).await;
-                    loop {
-                        let _stats =
-                            pii_sweep::run_sweep_cycle(db.clone(), device_key.clone()).await;
-                        tokio::time::sleep(interval).await;
-                    }
-                });
-            }
+            // PII sweep idle-watcher (4e4): deferred to v0.0.5 — see
+            // comment earlier in run_tauri() for the rationale.
 
             Ok(())
         })

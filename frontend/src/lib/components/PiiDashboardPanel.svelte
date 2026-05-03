@@ -705,7 +705,7 @@
 	.pii-panel {
 		position: fixed;
 		width: 880px;
-		max-height: 600px;
+		height: min(600px, calc(100vh - 80px));
 		background: var(--bg-panel);
 		border: 1px solid var(--border);
 		border-radius: 12px;
@@ -713,6 +713,7 @@
 		display: flex;
 		flex-direction: column;
 		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+		overflow: hidden;
 	}
 
 	.pii-header {
@@ -831,6 +832,7 @@
 		display: flex;
 		flex-direction: column;
 		min-width: 0;
+		min-height: 0;
 	}
 	.detail-header {
 		padding: 10px 14px;
@@ -915,6 +917,7 @@
 		border-left: 1px solid var(--border);
 		display: flex;
 		flex-direction: column;
+		min-height: 0;
 	}
 	.review-header {
 		display: flex;
