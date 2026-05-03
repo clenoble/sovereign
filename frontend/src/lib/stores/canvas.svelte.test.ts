@@ -11,7 +11,7 @@ import {
 } from './canvas.svelte';
 
 const ZOOM_MIN = 0.02;
-const ZOOM_MAX = 5.0;
+const ZOOM_MAX = 20.0;
 const VIEWPORT_PAD = 300;
 const HEATMAP_THRESHOLD = 0.15;
 
