@@ -7,7 +7,7 @@
 //! bounded amount of work, returns stats, and the caller spawns a
 //! tokio task in `main.rs` that loops with cooldowns.
 //!
-//! Takes `db` and `device_key` directly rather than `&AppState`, so
+//! Takes `db` and `account_key` directly rather than `&AppState`, so
 //! the idle-watcher closure in `main.rs` can capture cheap Arc
 //! clones — `AppState` itself is held inside Tauri's state manager
 //! and isn't easily reachable from a spawned task.
@@ -112,7 +112,7 @@ pub async fn run_sweep_cycle(
 
     // --- Contacts — reuse the channel-side hook ---
     let contact_hook: Arc<dyn ContactIngestHook> =
-        Arc::new(PiiContactHook::new(db.clone(), device_key));
+        Arc::new(PiiContactHook::new(db.clone(), account_key.clone()));
     match db.list_contacts().await {
         Ok(contacts) => {
             let unscanned: Vec<_> = contacts
