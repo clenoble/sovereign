@@ -1,7 +1,7 @@
 {
 	"name": "frontend",
 	"private": true,
-	"version": "0.0.4",
+	"version": "0.0.5",
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
@@ -33,7 +33,9 @@
 	},
 	"dependencies": {
 		"@tauri-apps/api": "^2.10.1",
+		"@tauri-apps/plugin-haptics": "^2.3.2",
 		"dompurify": "^3.3.1",
+		"jsqr": "^1.4.0",
 		"marked": "^17.0.3"
 	},
 	"overrides": {

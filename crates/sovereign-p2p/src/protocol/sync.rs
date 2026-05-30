@@ -1,5 +1,47 @@
 use serde::{Deserialize, Serialize};
 
+/// Tables that participate in the row-level sync protocol. Documents
+/// have their own commit-chain track via `EncryptedCommit`; everything
+/// else moves through `EncryptedRow`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum SyncTable {
+    Thread,
+    Entity,
+    PiiRecord,
+    ShareRecord,
+}
+
+impl SyncTable {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SyncTable::Thread => "thread",
+            SyncTable::Entity => "entity",
+            SyncTable::PiiRecord => "pii_record",
+            SyncTable::ShareRecord => "share_record",
+        }
+    }
+}
+
+/// A row-level sync envelope. The `ciphertext` is JSON-of-row encrypted
+/// under the device-pair transport key; receivers decrypt the envelope
+/// and persist the inner row. PII records additionally carry their own
+/// AccountKey-encrypted value inside the row body.
+///
+/// `modified_at` (or the table-specific equivalent — `discovered_at` for
+/// PiiRecord, `shared_at` for ShareRecord) stays in the clear so the
+/// receiver can perform LWW conflict resolution without decrypting first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncryptedRow {
+    pub id: String,
+    pub ciphertext: String,
+    pub nonce: String,
+    pub modified_at: String,
+    /// Soft-delete marker (mirrors the row's `deleted_at`); receivers
+    /// honour this without decrypting the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+}
+
 /// An encrypted commit for sync transport.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedCommit {

@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use surrealdb::engine::local::{Db, Mem, RocksDb};
+use surrealdb::engine::local::{Db, Mem};
+#[cfg(feature = "rocksdb")]
+use surrealdb::engine::local::RocksDb;
 use surrealdb::sql::Thing;
 use surrealdb::Surreal;
 
@@ -29,7 +31,18 @@ impl SurrealGraphDB {
     pub async fn new(mode: StorageMode) -> DbResult<Self> {
         let db = match mode {
             StorageMode::Memory => Surreal::new::<Mem>(()).await?,
+            #[cfg(feature = "rocksdb")]
             StorageMode::Persistent(ref path) => Surreal::new::<RocksDb>(path).await?,
+            #[cfg(not(feature = "rocksdb"))]
+            StorageMode::Persistent(_) => {
+                // Mobile + non-default desktop builds: fall back to in-memory.
+                // Persistent storage requires the `rocksdb` feature (desktop)
+                // or a future SQLite-backed engine (mobile, Phase 5).
+                eprintln!(
+                    "[sovereign-db] persistent storage requested but rocksdb feature is off — using in-memory"
+                );
+                Surreal::new::<Mem>(()).await?
+            }
         };
         Ok(Self { db })
     }
@@ -285,6 +298,7 @@ impl GraphDB for SurrealGraphDB {
         if let Some(d) = description {
             thread.description = d.to_string();
         }
+        thread.modified_at = Utc::now();
 
         let updated: Option<Thread> = self.db.update((table, key)).content(thread).await?;
         updated.ok_or_else(|| DbError::Query("Failed to update thread".into()))
@@ -1117,6 +1131,26 @@ impl GraphDB for SurrealGraphDB {
         Ok(())
     }
 
+    async fn update_pii_record_value(
+        &self,
+        id: &str,
+        value_encrypted: &str,
+        value_nonce: &str,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({
+                "value_encrypted": value_encrypted,
+                "value_nonce": value_nonce,
+            }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
     async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
         let (table, key) = parse_and_validate(id, "pii_record")?;
         let updated: Option<PiiRecord> = self.db
@@ -1142,6 +1176,21 @@ impl GraphDB for SurrealGraphDB {
             .content(record)
             .await?;
         created.ok_or_else(|| DbError::Query("Failed to create share_record".into()))
+    }
+
+    async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM share_record ORDER BY shared_at DESC")
+            .await?;
+        let records: Vec<ShareRecord> = result.take(0)?;
+        Ok(records)
+    }
+
+    async fn get_share_record(&self, id: &str) -> DbResult<ShareRecord> {
+        let (table, key) = parse_and_validate(id, "share_record")?;
+        let record: Option<ShareRecord> = self.db.select((table, key)).await?;
+        record.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
 
     async fn list_share_records_for_entity(

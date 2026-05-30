@@ -34,7 +34,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4.5", features = ["derive"] }
 
 # Database
-surrealdb = { version = "2.6", features = ["kv-mem", "kv-rocksdb"] }
+surrealdb = { version = "2.6", features = ["kv-mem"] }
+# kv-rocksdb is NOT enabled here — sovereign-db gates it behind its own
+# `rocksdb` feature so Android builds (which can't compile RocksDB's C++)
+# get kv-mem only. Desktop builds re-enable it via sovereign-app's default
+# features. See crates/sovereign-db/Cargo.toml.
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
@@ -104,3 +108,11 @@ reqwest = { version = "0.13", features = ["json", "rustls"] }
 # Web browsing
 readability = "0.3"
 url = "2.5"
+
+# Force the whole dep graph onto Signal's curve25519-dalek fork.
+# zkgroup (via presage → libsignal-service → libsignal) needs the fork's
+# unstable internals; without this patch two copies of curve25519-dalek
+# end up in the build and zkgroup fails with RistrettoPoint/Scalar type
+# mismatches across crate identities.
+[patch.crates-io]
+curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }

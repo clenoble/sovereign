@@ -18,5 +18,10 @@ base64 = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 
 [features]
+default = []
 encryption = ["sovereign-crypto", "base64", "tracing"]
+# rocksdb: opt-in persistent storage. Disabled on Android/iOS (RocksDB has no
+# Android cross-compilation support). Desktop builds activate this via
+# sovereign-app's `rocksdb` feature → `sovereign-db/rocksdb`.
+rocksdb = ["surrealdb/kv-rocksdb"]
 test-utils = []

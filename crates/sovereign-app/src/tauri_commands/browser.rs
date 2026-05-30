@@ -23,7 +23,7 @@ pub async fn get_comms_config(_state: State<'_, AppState>) -> Result<CommsConfig
     #[cfg(feature = "comms")]
     {
         // Load comms config from disk
-        let config_path = sovereign_core::home_dir().join(".sovereign/comms.toml");
+        let config_path = sovereign_core::sovereign_dir().join("comms.toml");
         if config_path.exists() {
             let data = std::fs::read_to_string(&config_path).str_err()?;
             let cfg: sovereign_comms::config::CommsConfig =
@@ -100,7 +100,7 @@ pub async fn save_comms_config(
     _state: State<'_, AppState>,
     data: SaveCommsConfigDto,
 ) -> Result<(), String> {
-    let config_dir = sovereign_core::home_dir().join(".sovereign");
+    let config_dir = sovereign_core::sovereign_dir();
     std::fs::create_dir_all(&config_dir).str_err()?;
 
     let mut lines = Vec::new();
@@ -146,10 +146,11 @@ pub async fn save_comms_config(
 
 
 // ---------------------------------------------------------------------------
-// Embedded Browser
+// Embedded Browser (desktop only — see crate::browser for the cfg rationale)
 // ---------------------------------------------------------------------------
 
 /// Open the embedded browser webview (or navigate if already open).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn open_browser(
     app: tauri::AppHandle,
@@ -166,36 +167,42 @@ pub async fn open_browser(
 }
 
 /// Close the embedded browser webview.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn close_browser(app: tauri::AppHandle) -> Result<(), String> {
     crate::browser::destroy_browser(&app)
 }
 
 /// Navigate the browser to a new URL.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn navigate_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
     crate::browser::navigate_browser(&app, &url)
 }
 
 /// Go back in browser history.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn browser_back(app: tauri::AppHandle) -> Result<(), String> {
     crate::browser::browser_back(&app)
 }
 
 /// Go forward in browser history.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn browser_forward(app: tauri::AppHandle) -> Result<(), String> {
     crate::browser::browser_forward(&app)
 }
 
 /// Reload the browser page.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn browser_refresh(app: tauri::AppHandle) -> Result<(), String> {
     crate::browser::browser_refresh(&app)
 }
 
 /// Update browser webview position and size.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn set_browser_bounds(
     app: tauri::AppHandle,
@@ -205,6 +212,7 @@ pub async fn set_browser_bounds(
 }
 
 /// Show or hide the browser webview.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn set_browser_visible(
     app: tauri::AppHandle,

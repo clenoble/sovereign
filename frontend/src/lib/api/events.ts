@@ -18,6 +18,15 @@ import { closeBrowserCmd } from '$lib/api/commands';
 import { addSuggestion, removeSuggestion, type LinkSuggestion } from '$lib/stores/suggestions.svelte';
 import { piiState, loadPii } from '$lib/stores/pii.svelte';
 import { applyVoiceEvent, markSpeaking } from '$lib/stores/voice.svelte';
+import {
+	onDeviceDiscovered,
+	onSyncCompleted,
+	onSyncConflict,
+	onSyncDisconnected,
+	onSyncError,
+	onSyncStarted
+} from '$lib/stores/sync.svelte';
+import type { PendingShare } from '$lib/stores/app.svelte';
 import type { ReliabilityResultDto } from '$lib/api/commands';
 
 // Payload types matching the Rust-side structs
@@ -129,6 +138,29 @@ interface VoiceEventPayload {
 	/** "listening" | "transcription" | "speaking" | "idle" */
 	kind: string;
 	text?: string | null;
+}
+interface ShareReceivedPayload {
+	content_type: 'text' | 'url';
+	text?: string;
+	url?: string;
+	title?: string;
+}
+
+interface DeviceDiscoveredPayload {
+	device_id: string;
+	device_name: string;
+}
+interface SyncStatusPayload {
+	peer_id: string;
+	/** "started" | "completed (N items)" | "disconnected" | error message */
+	status: string;
+}
+interface SyncConflictPayload {
+	doc_id: string;
+	description: string;
+}
+interface DevicePairedPayload {
+	device_id: string;
 }
 
 /** Subscribe to all backend events. Returns an unlisten function. */
@@ -343,6 +375,51 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	unlisteners.push(
 		await listen<VoiceEventPayload>('voice-event', (e) => {
 			applyVoiceEvent(e.payload.kind, e.payload.text ?? undefined);
+		})
+	);
+
+	// Mobile: OS share sheet delivers content here; SharePickerSheet handles it
+	unlisteners.push(
+		await listen<ShareReceivedPayload>('share-received', (e) => {
+			const p = e.payload;
+			app.pendingShare = {
+				contentType: p.content_type,
+				text: p.text,
+				url: p.url,
+				title: p.title
+			} as PendingShare;
+		})
+	);
+
+	// Phase 5: P2P sync events — feed the sync.svelte.ts store.
+	unlisteners.push(
+		await listen<DeviceDiscoveredPayload>('device-discovered', (e) => {
+			onDeviceDiscovered(e.payload.device_id);
+		})
+	);
+	unlisteners.push(
+		await listen<SyncStatusPayload>('sync-status', (e) => {
+			const { peer_id, status } = e.payload;
+			if (status === 'started') {
+				onSyncStarted(peer_id);
+			} else if (status.startsWith('completed')) {
+				onSyncCompleted(peer_id);
+			} else if (status === 'disconnected') {
+				onSyncDisconnected(peer_id);
+			} else {
+				// Anything else surfaces as an error string.
+				onSyncError(`${peer_id}: ${status}`);
+			}
+		})
+	);
+	unlisteners.push(
+		await listen<SyncConflictPayload>('sync-conflict', (e) => {
+			onSyncConflict(e.payload.doc_id, e.payload.description);
+		})
+	);
+	unlisteners.push(
+		await listen<DevicePairedPayload>('device-paired', (e) => {
+			console.info('Device paired:', e.payload.device_id);
 		})
 	);
 

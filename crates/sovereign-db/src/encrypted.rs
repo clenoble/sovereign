@@ -652,6 +652,17 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.update_pii_record_review_state(id, review_state).await
     }
 
+    async fn update_pii_record_value(
+        &self,
+        id: &str,
+        value_encrypted: &str,
+        value_nonce: &str,
+    ) -> DbResult<()> {
+        self.inner
+            .update_pii_record_value(id, value_encrypted, value_nonce)
+            .await
+    }
+
     async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
         self.inner.soft_delete_pii_record(id).await
     }
@@ -669,6 +680,14 @@ impl GraphDB for EncryptedGraphDB {
         entity_id: &str,
     ) -> DbResult<Vec<ShareRecord>> {
         self.inner.list_share_records_for_entity(entity_id).await
+    }
+
+    async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>> {
+        self.inner.list_all_share_records().await
+    }
+
+    async fn get_share_record(&self, id: &str) -> DbResult<ShareRecord> {
+        self.inner.get_share_record(id).await
     }
 
     async fn update_pii_record_sources(
@@ -914,10 +933,13 @@ mod tests {
         async fn get_pii_record(&self, _id: &str) -> DbResult<PiiRecord> { Err(DbError::NotFound("mock".into())) }
         async fn list_pii_records(&self, _entity_id: Option<&str>, _review_state: Option<ReviewState>, _stored_secret: Option<bool>) -> DbResult<Vec<PiiRecord>> { Ok(vec![]) }
         async fn update_pii_record_review_state(&self, _id: &str, _review_state: ReviewState) -> DbResult<()> { Ok(()) }
+        async fn update_pii_record_value(&self, _id: &str, _value_encrypted: &str, _value_nonce: &str) -> DbResult<()> { Ok(()) }
         async fn soft_delete_pii_record(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn get_entity(&self, _id: &str) -> DbResult<Entity> { Err(DbError::NotFound("mock".into())) }
         async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> { Ok(record) }
         async fn list_share_records_for_entity(&self, _entity_id: &str) -> DbResult<Vec<ShareRecord>> { Ok(vec![]) }
+        async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>> { Ok(vec![]) }
+        async fn get_share_record(&self, _id: &str) -> DbResult<ShareRecord> { Err(DbError::NotFound("mock".into())) }
         async fn update_pii_record_sources(&self, _id: &str, _sources: Vec<SourceRef>) -> DbResult<()> { Ok(()) }
         async fn update_pii_record_revealed_at(&self, _id: &str, _last_revealed_at: chrono::DateTime<chrono::Utc>) -> DbResult<()> { Ok(()) }
         async fn update_document_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }

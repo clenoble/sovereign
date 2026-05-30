@@ -345,6 +345,17 @@ pub trait GraphDB: Send + Sync {
         review_state: ReviewState,
     ) -> DbResult<()>;
 
+    /// Replace a PiiRecord's encrypted value + nonce in place. Used by
+    /// the v0.0.4 → v0.0.5 migration to re-encrypt vault entries from
+    /// the per-device DeviceKey to the user-scoped AccountKey, and by
+    /// any future re-key flow. Other fields are untouched.
+    async fn update_pii_record_value(
+        &self,
+        id: &str,
+        value_encrypted: &str,
+        value_nonce: &str,
+    ) -> DbResult<()>;
+
     /// Soft-delete a PiiRecord. Sets `deleted_at` so the record falls
     /// out of `list_pii_records` but remains in the DB for audit / undo.
     /// Used by the dashboard's redact (L5) action.
@@ -369,6 +380,15 @@ pub trait GraphDB: Send + Sync {
         &self,
         entity_id: &str,
     ) -> DbResult<Vec<ShareRecord>>;
+
+    /// Return every share record (across all entities). Used by the
+    /// cross-device sync engine to build the share-ledger manifest;
+    /// share records are append-only so the full list isn't pruned.
+    async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>>;
+
+    /// Fetch a single share record by ID. Used by the sync engine when
+    /// a remote peer requests specific share records via `GetRows`.
+    async fn get_share_record(&self, id: &str) -> DbResult<ShareRecord>;
 
     /// Replace a record's `sources` list. Used by the ingest hook after
     /// canonical-body substitution to update spans from indexed

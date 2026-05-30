@@ -2,7 +2,7 @@
 	import { app } from '$lib/stores/app.svelte';
 	import { toggleChat } from '$lib/stores/chat.svelte';
 	import { theme, applyTheme } from '$lib/stores/theme.svelte';
-	import { toggleTheme as toggleThemeCmd } from '$lib/api/commands';
+	import { toggleTheme as toggleThemeCmd, triggerSyncNow } from '$lib/api/commands';
 	import { canvas, navigateToDoc as canvasNavigateToDoc } from '$lib/stores/canvas.svelte';
 	import { openById } from '$lib/stores/documents.svelte';
 	import { contactsState } from '$lib/stores/contacts.svelte';
@@ -11,6 +11,7 @@
 	import { piiState, loadPii, unreviewedCount } from '$lib/stores/pii.svelte';
 	import { voice } from '$lib/stores/voice.svelte';
 	import { startListening, stopListening } from '$lib/api/commands';
+	import { sync, syncStatus, clearError } from '$lib/stores/sync.svelte';
 	import SkillsPanel from './SkillsPanel.svelte';
 
 	async function handleBrowse() {
@@ -103,6 +104,33 @@
 	let recentContacts = $derived(contactsState.contacts.slice(0, 3));
 
 	let totalUnread = $derived(contactsState.contacts.reduce((sum, c) => sum + c.unread_count, 0));
+
+	// Phase 5: sync indicator. `_sync` triggers reactivity on the Set
+	// mutations + lastError + lastSyncedAt fields used by syncStatus().
+	let _sync = $derived([sync.inProgress.size, sync.lastError, sync.lastSyncedAt]);
+	let currentSyncStatus = $derived(_sync && syncStatus());
+	let syncTooltip = $derived.by(() => {
+		if (sync.inProgress.size > 0) {
+			return `Syncing with ${sync.inProgress.size} peer(s)...`;
+		}
+		if (sync.lastError) {
+			return `Last sync failed: ${sync.lastError}`;
+		}
+		if (sync.lastSyncedAt) {
+			const ts = new Date(sync.lastSyncedAt);
+			return `Last synced ${ts.toLocaleTimeString()}. Click to sync now.`;
+		}
+		return 'Sync now';
+	});
+
+	async function handleSync() {
+		clearError();
+		try {
+			await triggerSyncNow();
+		} catch (e) {
+			console.warn('triggerSyncNow failed:', e);
+		}
+	}
 </script>
 
 <nav class="taskbar">
@@ -137,6 +165,43 @@
 	</div>
 
 	<div class="right">
+		<button
+			class="tb-btn sync-btn"
+			class:syncing={currentSyncStatus === 'syncing'}
+			class:error={currentSyncStatus === 'error'}
+			onclick={handleSync}
+			title={syncTooltip}
+			aria-label={syncTooltip}
+		>
+			<!-- Two arrows in a circle: the sync glyph. The class above
+			     drives a rotation animation when syncing and a red tint
+			     on error. -->
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<path
+					d="M2 7 A6 6 0 0 1 12.5 4.5 M14 9 A6 6 0 0 1 3.5 11.5"
+					stroke="currentColor"
+					stroke-width="1.5"
+					stroke-linecap="round"
+				/>
+				<path
+					d="M11 1.5 L13 4.5 L10 5"
+					stroke="currentColor"
+					stroke-width="1.5"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					fill="none"
+				/>
+				<path
+					d="M5 14.5 L3 11.5 L6 11"
+					stroke="currentColor"
+					stroke-width="1.5"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					fill="none"
+				/>
+			</svg>
+		</button>
+
 		<button class="tb-btn tb-text" class:active={browser.isOpen} onclick={handleBrowse} title="Browse (Ctrl+B)">Browse</button>
 
 		<div class="skills-anchor">
@@ -389,5 +454,21 @@
 		height: 6px;
 		border-radius: 50%;
 		background: var(--error, #ef4444);
+	}
+
+	/* Sync status icon (Phase 5). Idle: muted; syncing: rotating accent;
+	   error: red tint. */
+	.sync-btn.syncing {
+		color: var(--accent, #F59E0B);
+		animation: spin-sync 1.4s linear infinite;
+	}
+
+	.sync-btn.error {
+		color: var(--error, #ef4444);
+	}
+
+	@keyframes spin-sync {
+		from { transform: rotate(0deg); }
+		to { transform: rotate(360deg); }
 	}
 </style>

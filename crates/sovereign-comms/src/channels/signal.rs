@@ -116,7 +116,8 @@ impl CommunicationChannel for SignalChannel {
 
         #[cfg(feature = "signal")]
         {
-            use presage::manager::ReceivingMode;
+            use presage::model::identity::OnNewIdentity;
+            use presage::store::StateStore;
             use presage_store_sqlite::SqliteStore;
 
             // Ensure store directory exists
@@ -127,26 +128,22 @@ impl CommunicationChannel for SignalChannel {
                 )))?;
 
             let db_path = format!("{}/signal.db", self.config.store_path);
-            let store = SqliteStore::open(&db_path, None)
+            let store = SqliteStore::open(&db_path, OnNewIdentity::Trust)
                 .await
                 .map_err(|e| CommsError::NotConnected(format!(
                     "Failed to open Signal store: {e}"
                 )))?;
 
-            // Check if we're already registered/linked
-            match store.is_registered() {
-                true => {
-                    tracing::info!("Signal: already linked as secondary device");
-                    self.status = ChannelStatus::Connected;
-                }
-                false => {
-                    self.status = ChannelStatus::Error(
-                        "Not linked — run Signal pairing first".into(),
-                    );
-                    return Err(CommsError::AuthFailed(
-                        "Signal device not linked. Use the pairing flow to connect.".into(),
-                    ));
-                }
+            if store.is_registered().await {
+                tracing::info!("Signal: already linked as secondary device");
+                self.status = ChannelStatus::Connected;
+            } else {
+                self.status = ChannelStatus::Error(
+                    "Not linked — run Signal pairing first".into(),
+                );
+                return Err(CommsError::AuthFailed(
+                    "Signal device not linked. Use the pairing flow to connect.".into(),
+                ));
             }
         }
 
@@ -181,12 +178,15 @@ impl CommunicationChannel for SignalChannel {
     ) -> Result<Vec<Message>, CommsError> {
         #[cfg(feature = "signal")]
         {
-            use presage::manager::ReceivingMode;
+            use presage::libsignal_service::content::ContentBody;
+            use presage::model::identity::OnNewIdentity;
+            use presage::model::messages::Received;
+            use presage::proto::DataMessage;
             use presage_store_sqlite::SqliteStore;
             use futures::StreamExt;
 
             let db_path = format!("{}/signal.db", self.config.store_path);
-            let store = SqliteStore::open(&db_path, None)
+            let store = SqliteStore::open(&db_path, OnNewIdentity::Trust)
                 .await
                 .map_err(|e| CommsError::FetchFailed(format!("Store open: {e}")))?;
 
@@ -194,10 +194,15 @@ impl CommunicationChannel for SignalChannel {
                 .await
                 .map_err(|e| CommsError::FetchFailed(format!("Manager load: {e}")))?;
 
+            // receive_messages() returns an `impl Stream` that isn't Unpin;
+            // box-pin so `.next()` is callable.
+            let mut receiving = Box::pin(
+                manager.receive_messages()
+                    .await
+                    .map_err(|e| CommsError::FetchFailed(format!("Receive: {e}")))?,
+            );
+
             let mut messages = Vec::new();
-            let mut receiving = manager.receive_messages(ReceivingMode::WaitForContacts)
-                .await
-                .map_err(|e| CommsError::FetchFailed(format!("Receive: {e}")))?;
 
             // Pre-load conversation cache and own contact ID
             let conversations = self.db.list_conversations(Some(&ChannelType::Signal)).await?;
@@ -211,38 +216,41 @@ impl CommunicationChannel for SignalChannel {
             ).await?;
 
             // Collect available messages (non-blocking drain)
-            while let Ok(Some(content)) = tokio::time::timeout(
+            while let Ok(Some(received)) = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 receiving.next(),
             ).await {
-                if let Some(content) = content {
-                    let sender = content.metadata.sender.uuid.to_string();
-                    let from_id = self.resolve_contact_id(&sender, None).await?;
+                let content = match received {
+                    Received::Content(c) => c,
+                    Received::QueueEmpty | Received::Contacts => continue,
+                };
 
-                    if let Some(body) = content.body.as_deref() {
-                        let title = format!("Signal: {sender}");
-                        let conv = self.get_or_create_conversation(
-                            &title,
-                            vec![from_id.clone(), my_id.clone()],
-                            &mut conv_cache,
-                        ).await?;
-                        let conv_id = conv.id_string().unwrap_or_default();
+                let sender = content.metadata.sender.raw_uuid().to_string();
+                let from_id = self.resolve_contact_id(&sender, None).await?;
 
-                        let mut msg = Message::new(
-                            conv_id,
-                            ChannelType::Signal,
-                            MessageDirection::Inbound,
-                            from_id,
-                            vec![my_id.clone()],
-                            body.to_string(),
-                        );
-                        msg.received_at = Some(Utc::now());
-                        msg.external_id = Some(format!(
-                            "signal:{}",
-                            content.metadata.timestamp
-                        ));
-                        messages.push(msg);
-                    }
+                if let ContentBody::DataMessage(DataMessage { body: Some(body), .. }) = &content.body {
+                    let title = format!("Signal: {sender}");
+                    let conv = self.get_or_create_conversation(
+                        &title,
+                        vec![from_id.clone(), my_id.clone()],
+                        &mut conv_cache,
+                    ).await?;
+                    let conv_id = conv.id_string().unwrap_or_default();
+
+                    let mut msg = Message::new(
+                        conv_id,
+                        ChannelType::Signal,
+                        MessageDirection::Inbound,
+                        from_id,
+                        vec![my_id.clone()],
+                        body.clone(),
+                    );
+                    msg.received_at = Some(Utc::now());
+                    msg.external_id = Some(format!(
+                        "signal:{}",
+                        content.metadata.timestamp
+                    ));
+                    messages.push(msg);
                 }
             }
 
@@ -258,10 +266,13 @@ impl CommunicationChannel for SignalChannel {
     async fn send_message(&self, msg: &OutgoingMessage) -> Result<String, CommsError> {
         #[cfg(feature = "signal")]
         {
+            use presage::libsignal_service::protocol::ServiceId;
+            use presage::model::identity::OnNewIdentity;
+            use presage::proto::DataMessage;
             use presage_store_sqlite::SqliteStore;
 
             let db_path = format!("{}/signal.db", self.config.store_path);
-            let store = SqliteStore::open(&db_path, None)
+            let store = SqliteStore::open(&db_path, OnNewIdentity::Trust)
                 .await
                 .map_err(|e| CommsError::SendFailed(format!("Store open: {e}")))?;
 
@@ -269,18 +280,26 @@ impl CommunicationChannel for SignalChannel {
                 .await
                 .map_err(|e| CommsError::SendFailed(format!("Manager load: {e}")))?;
 
+            let timestamp = Utc::now().timestamp_millis() as u64;
+
             for recipient in &msg.to {
-                let recipient_uuid = recipient.parse()
-                    .map_err(|e| CommsError::SendFailed(format!(
-                        "Invalid recipient UUID '{recipient}': {e}"
+                let recipient_sid = ServiceId::parse_from_service_id_string(recipient)
+                    .ok_or_else(|| CommsError::SendFailed(format!(
+                        "Invalid recipient service ID '{recipient}'"
                     )))?;
 
-                manager.send_message(recipient_uuid, msg.body.clone(), vec![])
+                let data_message = DataMessage {
+                    body: Some(msg.body.clone()),
+                    timestamp: Some(timestamp),
+                    ..Default::default()
+                };
+
+                manager.send_message(recipient_sid, data_message, timestamp)
                     .await
                     .map_err(|e| CommsError::SendFailed(format!("Send: {e}")))?;
             }
 
-            let msg_id = format!("signal:sent:{}", Utc::now().timestamp_millis());
+            let msg_id = format!("signal:sent:{timestamp}");
             Ok(msg_id)
         }
 
