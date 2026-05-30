@@ -27,7 +27,12 @@ mod tauri_state;
 
 #[cfg(feature = "web-browse")]
 mod web;
+// Embedded browser uses Tauri Webview multi-window APIs (set_position/set_size/
+// show/hide) that only exist on desktop. Mobile (Android/iOS) has one WebView
+// per Activity and no positioning surface.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod browser;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod browser_pii;
 mod cookie_api;
 
@@ -259,13 +264,21 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             // Browser, web, comms
             tauri_commands::browser::get_comms_config,
             tauri_commands::browser::save_comms_config,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             tauri_commands::browser::open_browser,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             tauri_commands::browser::close_browser,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             tauri_commands::browser::navigate_browser,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             tauri_commands::browser::browser_back,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             tauri_commands::browser::browser_forward,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             tauri_commands::browser::browser_refresh,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             tauri_commands::browser::set_browser_bounds,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             tauri_commands::browser::set_browser_visible,
             tauri_commands::browser::fetch_web_page,
             tauri_commands::browser::save_web_page,
@@ -287,7 +300,9 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pii::reveal_pii_record,
             tauri_commands::pii::create_vault_entry,
             tauri_commands::pii::list_share_records_for_entity,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             tauri_commands::pii::extract_form_fields,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             tauri_commands::pii::__browser_form_extracted,
             tauri_commands::pii::autofill_pii_record,
             tauri_commands::pii::generate_password,
