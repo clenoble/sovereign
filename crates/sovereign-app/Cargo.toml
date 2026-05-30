@@ -88,6 +88,8 @@ haptics = ["tauri-plugin-haptics"]
 # Mobile (iOS / Android) feature set.
 # Excludes desktop-only deps: voice (cpal-based), email (native-tls),
 # P2P (libp2p mDNS restrictions), embedded browser (pixel-bounded child webview).
-# Signal is included via comms-signal — pure Rust (presage), works on mobile,
-# though keys still need OS keychain integration in Phase 5.
-mobile = ["encrypted-log", "encryption", "comms-signal", "haptics"]
+# Signal (comms-signal) is deferred to v0.0.6: presage's Manager stream holds
+# a !Send ThreadRng, which is incompatible with CommunicationChannel's
+# Send-bound async_trait. A LocalSet-backed wrapper is needed before
+# re-adding it here.
+mobile = ["encrypted-log", "encryption", "haptics"]
