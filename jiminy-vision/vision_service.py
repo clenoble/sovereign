@@ -151,12 +151,22 @@ class GestureDetector:
             kp = fdet.detections[0].keypoints[3]  # BlazeFace mouth keypoint
             mouth = (kp.x, kp.y)
 
-        # shush takes priority: extended index whose tip is at the mouth.
-        if mouth is not None and lm[8].y < lm[6].y:
-            d = ((lm[8].x - mouth[0]) ** 2 + (lm[8].y - mouth[1]) ** 2) ** 0.5
+        return self.classify_gesture(
+            (lm[8].x, lm[8].y), (lm[6].x, lm[6].y), builtin, mouth)
+
+    @staticmethod
+    def classify_gesture(index_tip, index_pip, builtin, mouth):
+        """Map hand landmarks + the built-in category to a gesture name.
+
+        `shush` (an extended index finger whose tip sits at the mouth) takes
+        priority over the built-in category; otherwise the built-in is mapped via
+        _MAP. Coordinates are normalized (x, y) in [0, 1]; `mouth` may be None.
+        """
+        if mouth is not None and index_tip[1] < index_pip[1]:
+            d = ((index_tip[0] - mouth[0]) ** 2 + (index_tip[1] - mouth[1]) ** 2) ** 0.5
             if d < 0.12:
                 return "shush"
-        return self._MAP.get(builtin)
+        return GestureDetector._MAP.get(builtin)
 
 
 # --------------------------------------------------------------------------- #

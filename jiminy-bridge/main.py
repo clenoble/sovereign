@@ -89,6 +89,19 @@ media_backend: str = os.environ.get("JIMINY_MEDIA_BACKEND", "default")
 use_sim: bool = False
 
 
+def resolve_media_backend(explicit: Optional[str], sim: bool, env) -> str:
+    """Choose the Reachy Mini media backend.
+
+    Priority: explicit CLI flag > JIMINY_MEDIA_BACKEND env var > sim-aware default
+    ('default_no_video' under --sim, since headless sim has no camera) > 'default'.
+    """
+    if explicit:
+        return explicit
+    if "JIMINY_MEDIA_BACKEND" in env:
+        return env["JIMINY_MEDIA_BACKEND"]
+    return "default_no_video" if sim else "default"
+
+
 # --- Lifespan ---
 
 
@@ -352,11 +365,7 @@ def main():
     args = parser.parse_args()
 
     use_sim = args.sim
-    if args.media_backend:
-        media_backend = args.media_backend
-    elif args.sim and "JIMINY_MEDIA_BACKEND" not in os.environ:
-        # Headless sim exposes no camera; keep audio, skip video.
-        media_backend = "default_no_video"
+    media_backend = resolve_media_backend(args.media_backend, args.sim, os.environ)
 
     logging.basicConfig(
         level=logging.INFO,

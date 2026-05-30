@@ -285,6 +285,8 @@ mod tests {
         let event = OrchestratorEvent::InjectionDetected {
             source: "test.html".into(),
             pattern: "ignore previous".into(),
+            indicators: vec!["ignore previous".into()],
+            severity: 7,
         };
         bridge.handle_event(&event).await;
     }
