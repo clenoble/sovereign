@@ -30,6 +30,7 @@ import cv2
 import numpy as np
 import uvicorn
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel
@@ -356,6 +357,13 @@ class VisionEngine:
 # --------------------------------------------------------------------------- #
 engine: Optional[VisionEngine] = None
 app = FastAPI(title="Jiminy Vision", version="0.1.0")
+# Allow the Tauri webview to fetch /vision/* cross-origin (state + window control).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class WindowRequest(BaseModel):

@@ -9,6 +9,8 @@
 	import DocumentPanel from '$lib/components/DocumentPanel.svelte';
 	import BrowserPanel from '$lib/components/BrowserPanel.svelte';
 	import SuggestionPanel from '$lib/components/SuggestionPanel.svelte';
+	import VisionPanel from '$lib/components/VisionPanel.svelte';
+	import { vision } from '$lib/stores/vision.svelte';
 	import Canvas from '$lib/components/Canvas.svelte';
 
 	let error = $state('');
@@ -91,6 +93,10 @@
 
 	<!-- AI-suggested links panel (floats near bubble) -->
 	<SuggestionPanel />
+
+	{#if vision.open}
+		<VisionPanel />
+	{/if}
 
 	{#if error}
 		<p class="error">{error}</p>

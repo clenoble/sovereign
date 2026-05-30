@@ -10,6 +10,7 @@
 	import { openBrowser as openBrowserCmd, closeBrowserCmd } from '$lib/api/commands';
 	import { piiState, loadPii, unreviewedCount } from '$lib/stores/pii.svelte';
 	import { voice } from '$lib/stores/voice.svelte';
+	import { vision, toggleVisionPanel } from '$lib/stores/vision.svelte';
 	import { startListening, stopListening } from '$lib/api/commands';
 	import { sync, syncStatus, clearError } from '$lib/stores/sync.svelte';
 	import SkillsPanel from './SkillsPanel.svelte';
@@ -278,6 +279,18 @@
 			{#if voice.listening || voice.speaking}
 				<span class="unread-dot"></span>
 			{/if}
+		</button>
+
+		<button
+			class="tb-btn"
+			class:active={vision.open}
+			onclick={toggleVisionPanel}
+			title="Jiminy vision (camera)"
+		>
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<rect x="1" y="4" width="11" height="8" rx="1.5" stroke="currentColor" stroke-width="1.5" />
+				<path d="M12 7 L15 5 V11 L12 9 Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+			</svg>
 		</button>
 
 		<button class="tb-btn" onclick={handleChat} title="Chat">
