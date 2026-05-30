@@ -16,44 +16,41 @@ open class BuildTask : DefaultTask() {
 
     @TaskAction
     fun assemble() {
-        val executable = """C:\Program Files\nodejs\node""";
-        try {
-            runTauriCli(executable)
-        } catch (e: Exception) {
-            if (Os.isFamily(Os.FAMILY_WINDOWS)) {
-                // Try different Windows-specific extensions
-                val fallbacks = listOf(
-                    "$executable.exe",
-                    "$executable.cmd",
-                    "$executable.bat",
-                )
-                
+        if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+            // Original Windows path: spawn node directly against the npm-installed
+            // @tauri-apps/cli, with Windows extension fallbacks.
+            val executable = """C:\Program Files\nodejs\node"""
+            try {
+                runWithExecutable(executable, listOf("tauri", "android", "android-studio-script"))
+            } catch (e: Exception) {
+                val fallbacks = listOf("$executable.exe", "$executable.cmd", "$executable.bat")
                 var lastException: Exception = e
                 for (fallback in fallbacks) {
                     try {
-                        runTauriCli(fallback)
+                        runWithExecutable(fallback, listOf("tauri", "android", "android-studio-script"))
                         return
                     } catch (fallbackException: Exception) {
                         lastException = fallbackException
                     }
                 }
                 throw lastException
-            } else {
-                throw e;
             }
+        } else {
+            // Linux/macOS: invoke the cargo-installed tauri CLI as `cargo tauri ...`.
+            // Requires `cargo install tauri-cli --version '^2'` (or equivalent on PATH).
+            runWithExecutable("cargo", listOf("tauri", "android", "android-studio-script"))
         }
     }
 
-    fun runTauriCli(executable: String) {
+    fun runWithExecutable(executable: String, leadingArgs: List<String>) {
         val rootDirRel = rootDirRel ?: throw GradleException("rootDirRel cannot be null")
         val target = target ?: throw GradleException("target cannot be null")
         val release = release ?: throw GradleException("release cannot be null")
-        val args = listOf("tauri", "android", "android-studio-script");
 
         project.exec {
             workingDir(File(project.projectDir, rootDirRel))
             executable(executable)
-            args(args)
+            args(leadingArgs)
             if (project.logger.isEnabled(LogLevel.DEBUG)) {
                 args("-vv")
             } else if (project.logger.isEnabled(LogLevel.INFO)) {

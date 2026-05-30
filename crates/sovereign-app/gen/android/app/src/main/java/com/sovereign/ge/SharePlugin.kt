@@ -33,7 +33,6 @@ import app.tauri.annotation.Command
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
-import app.tauri.plugin.PluginCall
 
 @TauriPlugin
 class SharePlugin(private val activity: android.app.Activity) : Plugin(activity) {
@@ -42,7 +41,7 @@ class SharePlugin(private val activity: android.app.Activity) : Plugin(activity)
     private var pendingIntent: Intent? = null
 
     /** Called by MainActivity.onNewIntent — forward a fresh share intent. */
-    fun onNewIntent(intent: Intent) {
+    override fun onNewIntent(intent: Intent) {
         if (isWebViewReady()) {
             forwardShare(intent)
         } else {
