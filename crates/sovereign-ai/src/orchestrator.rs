@@ -49,6 +49,11 @@ pub struct Orchestrator {
     /// (orchestrator lives behind Arc).
     #[cfg(feature = "p2p")]
     p2p_command_tx: Mutex<Option<tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>>>,
+    /// Shared vision state (latest gesture + scene). `None` until set_vision is
+    /// called; the chat context reads the scene caption from here. Wrapped in a
+    /// Mutex so the setter can be `&self` (orchestrator lives behind Arc).
+    #[cfg(feature = "vision")]
+    vision: Mutex<Option<crate::jiminy_vision::SharedVision>>,
 }
 
 impl Orchestrator {
@@ -114,6 +119,8 @@ impl Orchestrator {
             session_log_key: Mutex::new(None),
             #[cfg(feature = "p2p")]
             p2p_command_tx: Mutex::new(None),
+            #[cfg(feature = "vision")]
+            vision: Mutex::new(None),
         })
     }
 
@@ -129,6 +136,24 @@ impl Orchestrator {
     /// Attach a decision channel for user confirmations of Level 3+ actions.
     pub fn set_decision_rx(&mut self, rx: tokio::sync::mpsc::Receiver<ActionDecision>) {
         self.decision_rx = Some(tokio::sync::Mutex::new(rx));
+    }
+
+    /// Attach the shared vision state so the chat context can include what
+    /// Jiminy currently sees. `&self` (interior mutability) — orchestrator
+    /// lives behind an Arc.
+    #[cfg(feature = "vision")]
+    pub fn set_vision(&self, vision: crate::jiminy_vision::SharedVision) {
+        *self.vision.lock().unwrap() = Some(vision);
+    }
+
+    /// The latest VLM scene caption, if a vision window is currently open.
+    #[cfg(feature = "vision")]
+    fn current_scene(&self) -> Option<String> {
+        self.vision
+            .lock()
+            .ok()?
+            .as_ref()
+            .and_then(|sv| sv.lock().ok().and_then(|st| st.scene.clone()))
     }
 
     /// Attach a feedback channel for suggestion accept/dismiss events from the UI.
@@ -401,6 +426,15 @@ impl Orchestrator {
             nickname.as_deref(),
             Some(&*formatter),
         );
+        // Inject what Jiminy currently sees (vision scene) into the system prompt.
+        #[cfg(feature = "vision")]
+        let system_prompt = {
+            let mut sp = system_prompt;
+            sp.push_str(&crate::llm::context::format_vision_context(
+                self.current_scene().as_deref(),
+            ));
+            sp
+        };
 
         // 6. Append current user message to turns
         turns.push(crate::llm::context::ChatTurn {

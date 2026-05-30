@@ -520,16 +520,16 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
 
             // Jiminy vision: poll the vision sidecar for gestures + scene; react
             // to shush by POSTing /stop to the jiminy-bridge (speech barge-in).
+            // `vision` is the same store the orchestrator reads for scene context.
             #[cfg(feature = "vision")]
             {
-                let vision = sovereign_ai::jiminy_vision::shared_vision();
                 let vision_url = std::env::var("JIMINY_VISION_URL")
                     .unwrap_or_else(|_| "http://127.0.0.1:9101".into());
                 let bridge_url = std::env::var("JIMINY_URL")
                     .unwrap_or_else(|_| "http://127.0.0.1:9100".into());
                 let _vision_handle = sovereign_ai::jiminy_vision::spawn_poller(
                     &vision_url,
-                    vision,
+                    backend.vision,
                     Some(bridge_url.clone()),
                     |_g| {},
                     1.5,
@@ -685,6 +685,8 @@ struct BackendInit {
     model_assignments: tauri_state::ModelAssignments,
     #[cfg(feature = "voice-stt")]
     stt_engine: Option<Arc<tokio::sync::Mutex<sovereign_ai::voice::stt::SttEngine>>>,
+    #[cfg(feature = "vision")]
+    vision: sovereign_ai::jiminy_vision::SharedVision,
 }
 
 /// Backend init: crypto, DB, seeding, skills, orchestrator, channels.
@@ -753,6 +755,11 @@ async fn init_backend(
     let (decision_tx, decision_rx) = tokio::sync::mpsc::channel::<ActionDecision>(32);
     let (feedback_tx, feedback_rx) = tokio::sync::mpsc::channel::<FeedbackEvent>(32);
 
+    // Shared vision state: written by the vision poller (in .setup() below),
+    // read by the orchestrator's chat context — one store shared by both.
+    #[cfg(feature = "vision")]
+    let vision = sovereign_ai::jiminy_vision::shared_vision();
+
     // Orchestrator
     let db_dyn: Arc<dyn sovereign_db::GraphDB> = db_arc.clone();
     let orchestrator = match sovereign_ai::Orchestrator::new(
@@ -765,6 +772,8 @@ async fn init_backend(
         Ok(mut o) => {
             o.set_decision_rx(decision_rx);
             o.set_feedback_rx(feedback_rx);
+            #[cfg(feature = "vision")]
+            o.set_vision(vision.clone());
 
             // Session-log encryption + PII tokenization for the
             // orchestrator are installed after login by
@@ -831,5 +840,7 @@ async fn init_backend(
         model_assignments,
         #[cfg(feature = "voice-stt")]
         stt_engine,
+        #[cfg(feature = "vision")]
+        vision,
     })
 }
