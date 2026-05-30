@@ -202,6 +202,8 @@ When launching `sovereign.exe` in the background (e.g. `./sovereign.exe &`), the
 
 ## Testing
 
+**Test-as-you-go.** Build a feature's tests in the same change as the feature, not afterward — extract pure logic into testable functions and add unit tests alongside. Run the FULL suite before claiming green: `cargo test` (NOT just `cargo check` — check is lib-only and never compiles test targets, so broken/stale tests stay hidden), `vitest` for the frontend, and `pytest` for the Python sidecars (`jiminy-bridge`, `jiminy-vision`).
+
 ### WSL2 / Linux
 ```bash
 cargo test -j 4

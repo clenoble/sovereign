@@ -10,6 +10,8 @@ pub mod intent;
 pub mod jiminy;
 #[cfg(feature = "jiminy")]
 pub mod jiminy_camera;
+#[cfg(feature = "vision")]
+pub mod jiminy_vision;
 pub mod llm;
 pub mod orchestrator;
 pub mod pii;
