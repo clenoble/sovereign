@@ -33,6 +33,11 @@ fn run(cmd: &mut Command) -> String {
     stdout
 }
 
+// Needs persistent storage to survive across subprocess invocations.
+// Mobile builds turn rocksdb off and fall back to in-memory, which dies
+// with each CLI process — the second invocation can't see the doc the
+// first one created.
+#[cfg_attr(not(feature = "rocksdb"), ignore = "requires rocksdb for cross-subprocess persistence")]
 #[test]
 fn test_cli_round_trip() {
     // Create a thread
