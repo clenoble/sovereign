@@ -5,9 +5,7 @@
 //! and surfaces its state to the frontend via the `voice-event` Tauri emit
 //! (see `tauri_events::spawn_voice_forwarder`). These commands give the
 //! frontend an explicit push-to-talk affordance: they emit a synthetic
-//! `voice-event` so the mic button can reflect listening/idle immediately,
-//! reconstructing the listening/speaking feedback the retired Iced taskbar
-//! used to provide.
+//! `voice-event` so the mic button can reflect listening/idle immediately.
 
 use tauri::Emitter;
 

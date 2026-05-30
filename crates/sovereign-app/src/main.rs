@@ -345,8 +345,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     // voice_query_cb path routes user speech into the orchestrator
     // (handle_query). VoiceEvents (listening / transcription / speaking /
     // idle) are surfaced to the Svelte frontend via a Tauri "voice-event"
-    // emit (see spawn_voice_forwarder in the .setup() closure below) — this
-    // is the Tauri-native replacement for the retired Iced taskbar feedback.
+    // emit (see spawn_voice_forwarder in the .setup() closure below) so the
+    // Taskbar mic button can reflect live voice state.
     let voice_rx = if config.voice.enabled {
         let (vtx, vrx) = mpsc::channel();
         let voice_query_cb: Box<dyn Fn(String) + Send + 'static> =

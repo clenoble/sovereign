@@ -17,7 +17,7 @@ import {
 import { closeBrowserCmd } from '$lib/api/commands';
 import { addSuggestion, removeSuggestion, type LinkSuggestion } from '$lib/stores/suggestions.svelte';
 import { piiState, loadPii } from '$lib/stores/pii.svelte';
-import { applyVoiceEvent } from '$lib/stores/voice.svelte';
+import { applyVoiceEvent, markSpeaking } from '$lib/stores/voice.svelte';
 import type { ReliabilityResultDto } from '$lib/api/commands';
 
 // Payload types matching the Rust-side structs
@@ -138,6 +138,9 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	unlisteners.push(
 		await listen<ChatResponsePayload>('chat-response', (e) => {
 			pushAssistant(e.payload.text);
+			// The robot speaks the reply via the Jiminy sidecar; light the mic
+			// "speaking" indicator for the duration of delivery.
+			markSpeaking(e.payload.text);
 		})
 	);
 

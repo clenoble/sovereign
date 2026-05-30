@@ -313,8 +313,7 @@ pub async fn execute_skill(
         title: doc.title,
         content: fields,
     };
-    // Auto-grant exactly the capabilities the skill declares, matching the
-    // legacy Iced build_skill_context behavior at sovereign-ui app.rs:1704.
+    // Auto-grant exactly the capabilities the skill declares.
     let granted: HashSet<_> = state
         .skill_registry
         .find_skill(&skill_name)

@@ -408,8 +408,8 @@ pub struct VoiceEventPayload {
 
 /// Spawn a background thread that forwards `VoiceEvent`s from the voice
 /// pipeline to the Tauri frontend via `app_handle.emit("voice-event", ..)`.
-/// Mirrors `spawn_event_forwarder`. This is the Tauri-native replacement for
-/// the listening/speaking feedback that the retired Iced taskbar provided.
+/// Mirrors `spawn_event_forwarder`; surfaces voice-pipeline state to the
+/// Taskbar mic button.
 pub fn spawn_voice_forwarder(
     app_handle: tauri::AppHandle,
     voice_rx: std::sync::mpsc::Receiver<sovereign_ai::VoiceEvent>,
