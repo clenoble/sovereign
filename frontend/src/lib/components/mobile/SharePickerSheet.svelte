@@ -51,6 +51,7 @@
 </script>
 
 {#if app.pendingShare}
+	{@const share = app.pendingShare}
 	<!-- Share picker is always full-detent: thread list needs the space -->
 	<BottomSheet detent="full" peekHeight={0}>
 		{#snippet children()}
@@ -61,7 +62,7 @@
 				</div>
 
 				<div class="share-preview">
-					<span class="preview-type">{app.pendingShare.contentType}</span>
+					<span class="preview-type">{share.contentType}</span>
 					<span class="preview-text">{contentPreview()}</span>
 				</div>
 

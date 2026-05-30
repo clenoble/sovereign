@@ -97,6 +97,7 @@
 		<div
 			class="autofill-dialog"
 			role="dialog"
+			tabindex="-1"
 			aria-modal="true"
 			aria-label="Fill credentials from vault"
 			onclick={(e) => e.stopPropagation()}
