@@ -336,7 +336,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
         ])
         .setup(move |app| -> std::result::Result<(), Box<dyn std::error::Error>> {
             use tauri::Manager;
-            let config = config_for_setup;
+            #[allow(unused_mut)]
+            let mut config = config_for_setup;
 
             // Mobile: pin SOVEREIGN_DATA_DIR to the app sandbox before any
             // sovereign code resolves a path. Desktop leaves it unset and
@@ -351,6 +352,25 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 let _ = std::fs::create_dir_all(&app_data);
                 std::env::set_var("SOVEREIGN_DATA_DIR", &app_data);
                 tracing::info!("Mobile data dir: {}", app_data.display());
+
+                // AppConfig::load_or_default ran before this hook so it
+                // resolved `ai.model_dir` against `project_root()`, which
+                // on Android falls back to CWD ("/") → "/models" (EROFS).
+                // Re-point it at the app sandbox now that we know it.
+                let model_dir = app_data.join("models");
+                let _ = std::fs::create_dir_all(&model_dir);
+                config.ai.model_dir = model_dir.to_string_lossy().into_owned();
+                tracing::info!("Mobile model_dir: {}", config.ai.model_dir);
+
+                // Mobile builds gate rocksdb off — sovereign-db falls back
+                // to kv-mem regardless of the config's "persistent" default,
+                // but create_db() still tries to compute a persistent path
+                // via home_dir().join(".sovereign") (which ignores
+                // SOVEREIGN_DATA_DIR) and create_dir_all on it. On Android
+                // that lands at "/.sovereign/..." → EROFS. Force memory mode
+                // so we skip that path entirely.
+                config.database.mode = "memory".into();
+                tracing::info!("Mobile database.mode forced to memory (kv-mem)");
             }
 
             // Profile dir (correct on both platforms after the env-var step).
