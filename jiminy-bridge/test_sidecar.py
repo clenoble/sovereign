@@ -2,11 +2,13 @@
 
 Run from jiminy-bridge/:  .venv/Scripts/python -m pytest -q
 """
+import asyncio
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import main  # noqa: E402
 import tts_engine  # noqa: E402
 from main import resolve_media_backend  # noqa: E402
 
@@ -69,3 +71,36 @@ class TestPiperAutodetect:
         for var in ("PIPER_BINARY", "PIPER_MODEL", "PIPER_CONFIG"):
             monkeypatch.delenv(var, raising=False)
         assert tts_engine.create_tts_engine() is None
+
+
+class TestBargeIn:
+    """The /stop (shush) barge-in cancels in-flight speech."""
+
+    def test_cancel_speak_cancels_inflight(self, monkeypatch):
+        monkeypatch.setattr(main, "mini", None)  # skip the stop_playing() call
+        captured = {}
+
+        async def scenario():
+            async def long_speak():
+                await asyncio.sleep(10)
+
+            t = asyncio.create_task(long_speak())
+            main._speak_task = t
+            await asyncio.sleep(0)  # let the task start
+            await main._cancel_speak()
+            captured["task"] = t
+
+        asyncio.run(scenario())
+        assert captured["task"].cancelled()
+        assert main._speak_task is None
+
+    def test_cancel_speak_is_noop_when_idle(self, monkeypatch):
+        monkeypatch.setattr(main, "mini", None)
+        main._speak_task = None
+        asyncio.run(main._cancel_speak())
+        assert main._speak_task is None
+
+    def test_stop_handler_returns_stopped(self, monkeypatch):
+        monkeypatch.setattr(main, "mini", None)
+        main._speak_task = None
+        assert asyncio.run(main.stop()) == {"status": "stopped"}

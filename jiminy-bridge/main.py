@@ -78,6 +78,7 @@ mini: Optional[ReachyMini] = None
 library: Optional[EmotionLibrary] = None
 tts_engine: Optional[PiperTts] = None
 _idle_task: Optional[asyncio.Task] = None
+_speak_task: Optional[asyncio.Task] = None
 
 # Media backend + sim mode, resolved from env / CLI in main() before startup.
 # In headless --sim there is no physical camera, so the "default" backend (which
@@ -235,18 +236,10 @@ async def idle():
     return {"status": "ok"}
 
 
-@app.post("/speak")
-async def speak(req: SpeakRequest):
-    """Speak text through the robot's speaker via Piper TTS.
-
-    Falls back to antenna animation if TTS is not configured.
-    """
-    if mini is None:
-        raise HTTPException(503, "Robot not connected")
-    logger.info("Speaking: %s", req.text[:80])
-
+async def _do_speak(text: str) -> float:
+    """Render `text` to the robot speaker (Piper TTS, else antenna-only)."""
     if tts_engine is not None:
-        # Real TTS: generate speech + animate antennas concurrently
+        # Real TTS: generate speech + animate antennas concurrently.
         async def animate_antennas():
             try:
                 while True:
@@ -259,22 +252,69 @@ async def speak(req: SpeakRequest):
 
         anim_task = asyncio.create_task(animate_antennas())
         try:
-            duration = await tts_engine.speak_to_robot(mini, req.text)
+            return await tts_engine.speak_to_robot(mini, text)
         finally:
             anim_task.cancel()
             try:
                 await anim_task
             except asyncio.CancelledError:
                 pass
-        return {"status": "ok", "duration_secs": duration}
     else:
-        # Fallback: antenna animation only (no audio)
-        for _ in range(max(1, len(req.text) // 20)):
+        # Fallback: antenna animation only (no audio).
+        for _ in range(max(1, len(text) // 20)):
             mini.set_target(antennas=[0.3, 0.3])
             await asyncio.sleep(0.15)
             mini.set_target(antennas=[0.0, 0.0])
             await asyncio.sleep(0.15)
-        return {"status": "ok", "duration_secs": 0.0}
+        return 0.0
+
+
+async def _cancel_speak() -> None:
+    """Cancel any in-flight speech (barge-in) and halt the robot's audio."""
+    global _speak_task
+    task = _speak_task
+    _speak_task = None
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    if mini is not None:
+        try:
+            mini.media_manager.stop_playing()
+        except Exception:
+            pass
+
+
+@app.post("/speak")
+async def speak(req: SpeakRequest):
+    """Speak text through the robot's speaker via Piper TTS (antenna-only fallback).
+
+    Interrupts any in-flight speech first, so a new utterance — or a /stop
+    (shush) barge-in — cleanly replaces the previous one.
+    """
+    global _speak_task
+    if mini is None:
+        raise HTTPException(503, "Robot not connected")
+    logger.info("Speaking: %s", req.text[:80])
+
+    await _cancel_speak()
+    _speak_task = asyncio.create_task(_do_speak(req.text))
+    try:
+        duration = await _speak_task
+        return {"status": "ok", "duration_secs": duration}
+    except asyncio.CancelledError:
+        return {"status": "stopped", "duration_secs": 0.0}
+    finally:
+        _speak_task = None
+
+
+@app.post("/stop")
+async def stop():
+    """Stop the robot mid-speech (barge-in) — driven by the shush gesture."""
+    await _cancel_speak()
+    return {"status": "stopped"}
 
 
 @app.post("/look_at")
