@@ -15,8 +15,9 @@ use tokio::sync::RwLock;
 
 use crate::error::{DbError, DbResult};
 use crate::schema::{
-    ChannelType, Commit, Contact, Conversation, Document, Message, Milestone,
-    ReadStatus, RelatedTo, RelationType, Thread,
+    ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, ShareRecord, SourceRef,
+    SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -170,9 +171,27 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.delete_document(id).await
     }
 
+    async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
+        self.inner.update_document_position(id, x, y).await
+    }
+
     async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>> {
         let docs = self.inner.search_documents_by_title(query).await?;
         self.decrypt_documents(docs).await
+    }
+
+    async fn update_document_reliability(
+        &self,
+        id: &str,
+        source_url: Option<&str>,
+        classification: Option<&str>,
+        score: Option<f32>,
+        assessment_json: Option<&str>,
+    ) -> DbResult<Document> {
+        let doc = self.inner.update_document_reliability(
+            id, source_url, classification, score, assessment_json,
+        ).await?;
+        self.decrypt_document(doc).await
     }
 
     // Thread operations pass through unchanged
@@ -221,8 +240,12 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.create_relationship(from_id, to_id, relation_type, strength).await
     }
 
-    async fn list_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
-        self.inner.list_relationships(doc_id).await
+    async fn list_outgoing_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
+        self.inner.list_outgoing_relationships(doc_id).await
+    }
+
+    async fn list_incoming_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
+        self.inner.list_incoming_relationships(doc_id).await
     }
 
     async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>> {
@@ -232,6 +255,39 @@ impl GraphDB for EncryptedGraphDB {
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>> {
         let docs = self.inner.traverse(doc_id, depth, limit).await?;
         self.decrypt_documents(docs).await
+    }
+
+    // Suggested links: not encrypted (rationale text is AI-generated, not user content)
+    async fn create_suggested_link(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        relation_type: RelationType,
+        strength: f32,
+        rationale: &str,
+        source: SuggestionSource,
+    ) -> DbResult<SuggestedLink> {
+        self.inner.create_suggested_link(from_id, to_id, relation_type, strength, rationale, source).await
+    }
+
+    async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> {
+        self.inner.list_pending_suggestions().await
+    }
+
+    async fn list_suggestions_for_document(&self, doc_id: &str) -> DbResult<Vec<SuggestedLink>> {
+        self.inner.list_suggestions_for_document(doc_id).await
+    }
+
+    async fn resolve_suggestion(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+    ) -> DbResult<SuggestedLink> {
+        self.inner.resolve_suggestion(id, status).await
+    }
+
+    async fn suggestion_exists(&self, from_id: &str, to_id: &str) -> DbResult<bool> {
+        self.inner.suggestion_exists(from_id, to_id).await
     }
 
     async fn adopt_document(&self, id: &str) -> DbResult<Document> {
@@ -298,6 +354,10 @@ impl GraphDB for EncryptedGraphDB {
 
     async fn list_milestones(&self, thread_id: &str) -> DbResult<Vec<Milestone>> {
         self.inner.list_milestones(thread_id).await
+    }
+
+    async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>> {
+        self.inner.list_all_milestones().await
     }
 
     async fn delete_milestone(&self, id: &str) -> DbResult<()> {
@@ -457,6 +517,49 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.delete_message(id).await
     }
 
+    async fn list_all_messages(&self) -> DbResult<Vec<Message>> {
+        let msgs = self.inner.list_all_messages().await?;
+        let mut result = Vec::with_capacity(msgs.len());
+        for mut m in msgs {
+            if let Some(nonce) = &m.encryption_nonce {
+                let id = m.id.as_ref()
+                    .map(|t| crate::schema::thing_to_raw(t))
+                    .unwrap_or_default();
+                m.body = self.decrypt_content(&id, &m.body, nonce).await?;
+                if let Some(ref html) = m.body_html {
+                    m.body_html = Some(self.decrypt_content(&id, html, nonce).await?);
+                }
+                m.encryption_nonce = None;
+            }
+            result.push(m);
+        }
+        Ok(result)
+    }
+
+    async fn list_messages_in_time_range(
+        &self,
+        after: chrono::DateTime<chrono::Utc>,
+        before: chrono::DateTime<chrono::Utc>,
+        limit: u32,
+    ) -> DbResult<Vec<Message>> {
+        let msgs = self.inner.list_messages_in_time_range(after, before, limit).await?;
+        let mut result = Vec::with_capacity(msgs.len());
+        for mut m in msgs {
+            if let Some(nonce) = &m.encryption_nonce {
+                let id = m.id.as_ref()
+                    .map(|t| crate::schema::thing_to_raw(t))
+                    .unwrap_or_default();
+                m.body = self.decrypt_content(&id, &m.body, nonce).await?;
+                if let Some(ref html) = m.body_html {
+                    m.body_html = Some(self.decrypt_content(&id, html, nonce).await?);
+                }
+                m.encryption_nonce = None;
+            }
+            result.push(m);
+        }
+        Ok(result)
+    }
+
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>> {
         // Search operates on stored (potentially encrypted) content
         self.inner.search_messages(query).await
@@ -506,6 +609,144 @@ impl GraphDB for EncryptedGraphDB {
     ) -> DbResult<Conversation> {
         self.inner.link_conversation_to_thread(conversation_id, thread_id).await
     }
+
+    // -- Entities and PII records pass through unencrypted by this
+    //    decorator: PiiRecord values are already ciphertext (encrypted
+    //    under DeviceKey by the AI layer's vault primitive), and Entity
+    //    has no fields that need additional encryption.
+
+    async fn create_entity(&self, entity: Entity) -> DbResult<Entity> {
+        self.inner.create_entity(entity).await
+    }
+
+    async fn list_entities(&self) -> DbResult<Vec<Entity>> {
+        self.inner.list_entities().await
+    }
+
+    async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord> {
+        self.inner.create_pii_record(record).await
+    }
+
+    async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord> {
+        // PiiRecord values are encrypted at the AI layer (vault primitive)
+        // before reaching the DB — this decorator passes through.
+        self.inner.get_pii_record(id).await
+    }
+
+    async fn list_pii_records(
+        &self,
+        entity_id: Option<&str>,
+        review_state: Option<ReviewState>,
+        stored_secret: Option<bool>,
+    ) -> DbResult<Vec<PiiRecord>> {
+        self.inner
+            .list_pii_records(entity_id, review_state, stored_secret)
+            .await
+    }
+
+    async fn update_pii_record_review_state(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+    ) -> DbResult<()> {
+        self.inner.update_pii_record_review_state(id, review_state).await
+    }
+
+    async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
+        self.inner.soft_delete_pii_record(id).await
+    }
+
+    async fn get_entity(&self, id: &str) -> DbResult<Entity> {
+        self.inner.get_entity(id).await
+    }
+
+    async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> {
+        self.inner.create_share_record(record).await
+    }
+
+    async fn list_share_records_for_entity(
+        &self,
+        entity_id: &str,
+    ) -> DbResult<Vec<ShareRecord>> {
+        self.inner.list_share_records_for_entity(entity_id).await
+    }
+
+    async fn update_pii_record_sources(
+        &self,
+        id: &str,
+        sources: Vec<SourceRef>,
+    ) -> DbResult<()> {
+        self.inner.update_pii_record_sources(id, sources).await
+    }
+
+    async fn update_pii_record_revealed_at(
+        &self,
+        id: &str,
+        last_revealed_at: chrono::DateTime<chrono::Utc>,
+    ) -> DbResult<()> {
+        self.inner.update_pii_record_revealed_at(id, last_revealed_at).await
+    }
+
+    async fn update_document_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> DbResult<()> {
+        self.inner
+            .update_document_pii_fields(id, body_raw_encrypted, body_raw_nonce, pii_scanned_at)
+            .await
+    }
+
+    async fn update_message_body(
+        &self,
+        id: &str,
+        body: &str,
+        body_html: Option<&str>,
+    ) -> DbResult<()> {
+        // Encrypt the rewritten canonical body just like create_message
+        // would have, so subsequent reads decrypt correctly. Reuse the
+        // existing per-doc key for this message ID.
+        let (encrypted_body, _nonce) = self
+            .encrypt_content(id, body)
+            .await
+            .map_err(|e| DbError::Query(format!("update_message_body encrypt: {e}")))?;
+        let encrypted_html = match body_html {
+            Some(h) => Some(
+                self.encrypt_content(id, h)
+                    .await
+                    .map(|(ct, _)| ct)
+                    .map_err(|e| DbError::Query(format!("update_message_body encrypt html: {e}")))?,
+            ),
+            None => None,
+        };
+        self.inner
+            .update_message_body(id, &encrypted_body, encrypted_html.as_deref())
+            .await
+    }
+
+    async fn update_message_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> DbResult<()> {
+        // body_raw_* is already ciphertext from the AI layer's vault
+        // primitive — pass through.
+        self.inner
+            .update_message_pii_fields(id, body_raw_encrypted, body_raw_nonce, pii_scanned_at)
+            .await
+    }
+
+    async fn update_contact_pii_fields(
+        &self,
+        id: &str,
+        pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> DbResult<()> {
+        self.inner.update_contact_pii_fields(id, pii_scanned_at).await
+    }
 }
 
 #[cfg(test)]
@@ -513,14 +754,13 @@ mod tests {
     use super::*;
     use sovereign_crypto::kek::Kek;
     use sovereign_crypto::key_db::KeyDatabase;
-    use std::path::PathBuf;
 
     fn test_kek() -> Kek {
         Kek::generate()
     }
 
     fn test_key_db() -> KeyDatabase {
-        KeyDatabase::new(PathBuf::from("/tmp/test-encrypted-db-keys.db"))
+        KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-keys.db"))
     }
 
     #[test]
@@ -605,7 +845,14 @@ mod tests {
         async fn list_documents(&self, _thread_id: Option<&str>) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn update_document(&self, _id: &str, _title: Option<&str>, _content: Option<&str>) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn delete_document(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        async fn update_document_position(&self, _id: &str, _x: f32, _y: f32) -> DbResult<()> { Ok(()) }
         async fn search_documents_by_title(&self, _query: &str) -> DbResult<Vec<Document>> { Ok(vec![]) }
+        async fn update_document_reliability(&self, _id: &str, _source_url: Option<&str>, _classification: Option<&str>, _score: Option<f32>, _assessment_json: Option<&str>) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
+        async fn create_suggested_link(&self, _from_id: &str, _to_id: &str, _relation_type: RelationType, _strength: f32, _rationale: &str, _source: SuggestionSource) -> DbResult<SuggestedLink> { Err(DbError::NotFound("mock".into())) }
+        async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> { Ok(vec![]) }
+        async fn list_suggestions_for_document(&self, _doc_id: &str) -> DbResult<Vec<SuggestedLink>> { Ok(vec![]) }
+        async fn resolve_suggestion(&self, _id: &str, _status: SuggestionStatus) -> DbResult<SuggestedLink> { Err(DbError::NotFound("mock".into())) }
+        async fn suggestion_exists(&self, _from_id: &str, _to_id: &str) -> DbResult<bool> { Ok(false) }
         async fn create_thread(&self, thread: Thread) -> DbResult<Thread> { Ok(thread) }
         async fn get_thread(&self, _id: &str) -> DbResult<Thread> { Err(DbError::NotFound("mock".into())) }
         async fn list_threads(&self) -> DbResult<Vec<Thread>> { Ok(vec![]) }
@@ -614,7 +861,8 @@ mod tests {
         async fn find_thread_by_name(&self, _name: &str) -> DbResult<Option<Thread>> { Ok(None) }
         async fn move_document_to_thread(&self, _doc_id: &str, _new_thread_id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn create_relationship(&self, _from_id: &str, _to_id: &str, _relation_type: RelationType, _strength: f32) -> DbResult<RelatedTo> { Err(DbError::NotFound("mock".into())) }
-        async fn list_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
+        async fn list_outgoing_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
+        async fn list_incoming_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
         async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
         async fn traverse(&self, _doc_id: &str, _depth: u32, _limit: u32) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn adopt_document(&self, _id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
@@ -631,6 +879,7 @@ mod tests {
         async fn restore_document(&self, _doc_id: &str, _commit_id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn create_milestone(&self, milestone: Milestone) -> DbResult<Milestone> { Ok(milestone) }
         async fn list_milestones(&self, _thread_id: &str) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
+        async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
         async fn delete_milestone(&self, _id: &str) -> DbResult<()> { Ok(()) }
         // Contacts
         async fn create_contact(&self, contact: Contact) -> DbResult<Contact> { Ok(contact) }
@@ -647,6 +896,8 @@ mod tests {
         async fn list_messages(&self, _conversation_id: &str, _before: Option<chrono::DateTime<chrono::Utc>>, _limit: u32) -> DbResult<Vec<Message>> { Ok(vec![]) }
         async fn update_message_read_status(&self, _id: &str, _status: ReadStatus) -> DbResult<Message> { Err(DbError::NotFound("mock".into())) }
         async fn delete_message(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        async fn list_all_messages(&self) -> DbResult<Vec<Message>> { Ok(vec![]) }
+        async fn list_messages_in_time_range(&self, _after: chrono::DateTime<chrono::Utc>, _before: chrono::DateTime<chrono::Utc>, _limit: u32) -> DbResult<Vec<Message>> { Ok(vec![]) }
         async fn search_messages(&self, _query: &str) -> DbResult<Vec<Message>> { Ok(vec![]) }
         // Conversations
         async fn create_conversation(&self, conversation: Conversation) -> DbResult<Conversation> { Ok(conversation) }
@@ -656,5 +907,22 @@ mod tests {
         async fn update_conversation_last_message_at(&self, _id: &str, _at: chrono::DateTime<chrono::Utc>) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
         async fn delete_conversation(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn link_conversation_to_thread(&self, _conversation_id: &str, _thread_id: &str) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
+        // Entities + PII records
+        async fn create_entity(&self, entity: Entity) -> DbResult<Entity> { Ok(entity) }
+        async fn list_entities(&self) -> DbResult<Vec<Entity>> { Ok(vec![]) }
+        async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord> { Ok(record) }
+        async fn get_pii_record(&self, _id: &str) -> DbResult<PiiRecord> { Err(DbError::NotFound("mock".into())) }
+        async fn list_pii_records(&self, _entity_id: Option<&str>, _review_state: Option<ReviewState>, _stored_secret: Option<bool>) -> DbResult<Vec<PiiRecord>> { Ok(vec![]) }
+        async fn update_pii_record_review_state(&self, _id: &str, _review_state: ReviewState) -> DbResult<()> { Ok(()) }
+        async fn soft_delete_pii_record(&self, _id: &str) -> DbResult<()> { Ok(()) }
+        async fn get_entity(&self, _id: &str) -> DbResult<Entity> { Err(DbError::NotFound("mock".into())) }
+        async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> { Ok(record) }
+        async fn list_share_records_for_entity(&self, _entity_id: &str) -> DbResult<Vec<ShareRecord>> { Ok(vec![]) }
+        async fn update_pii_record_sources(&self, _id: &str, _sources: Vec<SourceRef>) -> DbResult<()> { Ok(()) }
+        async fn update_pii_record_revealed_at(&self, _id: &str, _last_revealed_at: chrono::DateTime<chrono::Utc>) -> DbResult<()> { Ok(()) }
+        async fn update_document_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
+        async fn update_message_body(&self, _id: &str, _body: &str, _body_html: Option<&str>) -> DbResult<()> { Ok(()) }
+        async fn update_message_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
+        async fn update_contact_pii_fields(&self, _id: &str, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
     }
 }

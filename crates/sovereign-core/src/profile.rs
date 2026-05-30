@@ -83,7 +83,7 @@ const NON_LATIN_POOL: &[char] = &[
 ///
 /// - 4 Latin/numeric chars from [`LATIN_POOL`] (30^4 = 810,000 combos)
 /// - 1 non-Latin char from [`NON_LATIN_POOL`] (20 chars)
-/// - Total: ~16.2M combinations — no collision check needed for a personal OS.
+/// - Total: ~16.2M combinations — no collision check needed for a personal GE.
 pub fn generate_designation() -> String {
     let mut rng = rand::rng();
     let latin: String = (0..4)
@@ -91,6 +91,11 @@ pub fn generate_designation() -> String {
         .collect();
     let suffix = *NON_LATIN_POOL.choose(&mut rng).unwrap();
     format!("Ikshal-{latin}-{suffix}")
+}
+
+/// Default theme for new profiles.
+fn default_theme() -> String {
+    "dark".to_string()
 }
 
 /// Top-level persistent user profile.
@@ -109,6 +114,9 @@ pub struct UserProfile {
     /// The user's own display name.
     #[serde(default)]
     pub display_name: Option<String>,
+    /// UI theme: "dark" or "light". Persisted across sessions.
+    #[serde(default = "default_theme")]
+    pub theme: String,
     pub created: String,
     pub last_updated: String,
     pub interaction_patterns: InteractionPatterns,
@@ -215,6 +223,7 @@ impl UserProfile {
             nickname: None,
             bubble_style: BubbleStyle::default(),
             display_name: None,
+            theme: default_theme(),
             created: now.clone(),
             last_updated: now,
             interaction_patterns: InteractionPatterns {

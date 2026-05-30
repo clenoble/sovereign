@@ -1,28 +1,31 @@
-//! System prompt builders for the Sovereign OS orchestrator.
+//! System prompt builders for the Sovereign GE orchestrator.
 //!
 //! Replaces bare constant strings with rich, context-aware prompt builders
-//! that include the Sovereign OS identity, few-shot examples, UX principles,
+//! that include the Sovereign GE identity, few-shot examples, UX principles,
 //! workspace context, and tool definitions.
 
 use super::context::WorkspaceContext;
+use super::format::PromptFormatter;
 use crate::tools::format_tool_descriptions;
 
 /// Core identity shared across all prompts.
 const SOVEREIGN_IDENTITY: &str = "\
-You are the AI assistant for Sovereign OS, a local-first personal operating system. \
-Sovereign OS organizes the user's documents, threads (projects), contacts, and \
+You are the AI assistant for Sovereign GE, a local-first personal graphic environment. \
+Sovereign GE organizes the user's documents, threads (projects), contacts, and \
 conversations on their own device. Everything is private and local — no cloud, no \
 external servers. You help the user navigate, search, organize, and understand \
 their workspace.";
 
+/// Build a single-turn system+user prompt using the given formatter.
+pub fn format_single_turn(formatter: &dyn PromptFormatter, system: &str, user: &str) -> String {
+    formatter.format_system_user(system, user)
+}
+
 /// Build a Qwen2.5 chat-format prompt with system + user messages (single-turn).
-/// Used by the intent classifier for classification queries.
+/// Retained for backward compatibility — delegates to ChatML formatter.
 pub fn qwen_chat_prompt(system: &str, user: &str) -> String {
-    format!(
-        "<|im_start|>system\n{system}\n<|im_end|>\n\
-         <|im_start|>user\n{user}\n<|im_end|>\n\
-         <|im_start|>assistant\n"
-    )
+    let f = super::format::ChatMLFormatter;
+    f.format_system_user(system, user)
 }
 
 /// Build the router (3B) system prompt with few-shot examples.
@@ -69,7 +72,13 @@ User: how's the weather today?\n\
 User: rename thread Alpha to Beta\n\
 {{\"action\": \"rename_thread\", \"target\": \"Alpha\", \"confidence\": 0.95, \"entities\": [[\"old_name\", \"Alpha\"], [\"new_name\", \"Beta\"]]}}\n\n\
 User: delete the old drafts thread\n\
-{{\"action\": \"delete_thread\", \"target\": \"old drafts\", \"confidence\": 0.88, \"entities\": []}}"
+{{\"action\": \"delete_thread\", \"target\": \"old drafts\", \"confidence\": 0.88, \"entities\": []}}\n\n\
+User: switch to Ministral\n\
+{{\"action\": \"swap_model\", \"target\": \"Ministral\", \"confidence\": 0.95, \"entities\": []}}\n\n\
+User: use the llama model\n\
+{{\"action\": \"swap_model\", \"target\": \"llama\", \"confidence\": 0.92, \"entities\": []}}\n\n\
+User: what models are available?\n\
+{{\"action\": \"list_models\", \"target\": null, \"confidence\": 0.95, \"entities\": []}}"
     )
 }
 
@@ -101,7 +110,11 @@ pub fn build_chat_system_prompt(
     user_name: Option<&str>,
     designation: Option<&str>,
     nickname: Option<&str>,
+    formatter: Option<&dyn PromptFormatter>,
 ) -> String {
+    // Default to ChatML if no formatter provided (backward compat).
+    let default_fmt = super::format::ChatMLFormatter;
+    let fmt: &dyn PromptFormatter = formatter.unwrap_or(&default_fmt);
     let mut prompt = String::from(SOVEREIGN_IDENTITY);
     prompt.push_str("\n\n");
 
@@ -144,31 +157,29 @@ pub fn build_chat_system_prompt(
         prompt.push_str(&super::context::format_workspace_context(ctx));
     }
 
-    // Tool definitions
+    // Tool definitions (format-aware)
     prompt.push('\n');
-    prompt.push_str(&format_tool_descriptions());
+    prompt.push_str(&format_tool_descriptions(fmt));
 
-    // Few-shot examples
-    prompt.push_str(
+    // Few-shot examples using formatter's wrapping
+    let ex1 = fmt.wrap_tool_call_example(r#"{"name": "list_documents", "arguments": {"thread": "Research"}}"#);
+    let ex2 = fmt.wrap_tool_call_example(r#"{"name": "create_document", "arguments": {"title": "Project Ideas"}}"#);
+    let ex3 = fmt.wrap_tool_call_example(r#"{"name": "create_thread", "arguments": {"name": "Marketing"}}"#);
+
+    prompt.push_str(&format!(
         "\nExamples:\n\
          User: what documents do I have in Research?\n\
-         <tool_call>\n\
-         {\"name\": \"list_documents\", \"arguments\": {\"thread\": \"Research\"}}\n\
-         </tool_call>\n\n\
+         {ex1}\n\n\
          [After receiving tool results, respond naturally with the information, noting provenance.]\n\n\
          User: create a document called Project Ideas\n\
-         <tool_call>\n\
-         {\"name\": \"create_document\", \"arguments\": {\"title\": \"Project Ideas\"}}\n\
-         </tool_call>\n\n\
+         {ex2}\n\n\
          [The system asks the user for confirmation. After approval, respond naturally confirming the action.]\n\n\
          User: create a new thread called Marketing\n\
-         <tool_call>\n\
-         {\"name\": \"create_thread\", \"arguments\": {\"name\": \"Marketing\"}}\n\
-         </tool_call>\n\n\
+         {ex3}\n\n\
          [The system asks the user for confirmation. After approval, respond naturally confirming the action.]\n\n\
          User: hello!\n\
          Hello! How can I help you with your workspace today?\n",
-    );
+    ));
 
     prompt
 }
@@ -219,19 +230,19 @@ mod tests {
 
     #[test]
     fn chat_prompt_respects_terse_verbosity() {
-        let prompt = build_chat_system_prompt(None, "terse", None, None, None);
+        let prompt = build_chat_system_prompt(None, "terse", None, None, None, None);
         assert!(prompt.contains("brief and direct"));
     }
 
     #[test]
     fn chat_prompt_respects_conversational_verbosity() {
-        let prompt = build_chat_system_prompt(None, "conversational", None, None, None);
+        let prompt = build_chat_system_prompt(None, "conversational", None, None, None, None);
         assert!(prompt.contains("warm and conversational"));
     }
 
     #[test]
     fn chat_prompt_includes_user_name() {
-        let prompt = build_chat_system_prompt(None, "detailed", Some("Alex"), None, None);
+        let prompt = build_chat_system_prompt(None, "detailed", Some("Alex"), None, None, None);
         assert!(prompt.contains("Alex"));
     }
 
@@ -245,7 +256,7 @@ mod tests {
             contact_count: 5,
             unread_conversations: 1,
         };
-        let prompt = build_chat_system_prompt(Some(&ctx), "detailed", None, None, None);
+        let prompt = build_chat_system_prompt(Some(&ctx), "detailed", None, None, None, None);
         assert!(prompt.contains("4 threads"));
         assert!(prompt.contains("Research, Development"));
         assert!(prompt.contains("Project Plan"));
@@ -253,7 +264,7 @@ mod tests {
 
     #[test]
     fn chat_prompt_includes_tools() {
-        let prompt = build_chat_system_prompt(None, "detailed", None, None, None);
+        let prompt = build_chat_system_prompt(None, "detailed", None, None, None, None);
         assert!(prompt.contains("search_documents"));
         assert!(prompt.contains("list_threads"));
         assert!(prompt.contains("<tool_call>"));
@@ -261,7 +272,7 @@ mod tests {
 
     #[test]
     fn chat_prompt_includes_ux_principles() {
-        let prompt = build_chat_system_prompt(None, "detailed", None, None, None);
+        let prompt = build_chat_system_prompt(None, "detailed", None, None, None, None);
         // Principle 2: Conversational Confirmation
         assert!(prompt.contains("confirmation"));
         // Principle 3: Provenance
@@ -275,7 +286,7 @@ mod tests {
 
     #[test]
     fn chat_prompt_includes_write_tool_examples() {
-        let prompt = build_chat_system_prompt(None, "detailed", None, None, None);
+        let prompt = build_chat_system_prompt(None, "detailed", None, None, None, None);
         assert!(prompt.contains("create_document"));
         assert!(prompt.contains("\"name\": \"create_document\""));
         assert!(prompt.contains("\"name\": \"create_thread\""));
@@ -285,7 +296,7 @@ mod tests {
     #[test]
     fn chat_prompt_includes_designation() {
         let prompt = build_chat_system_prompt(
-            None, "detailed", None, Some("Ikshal-B4T9-Ω"), None,
+            None, "detailed", None, Some("Ikshal-B4T9-Ω"), None, None,
         );
         assert!(prompt.contains("Ikshal-B4T9-Ω"));
         assert!(prompt.contains("designation"));
@@ -294,7 +305,7 @@ mod tests {
     #[test]
     fn chat_prompt_includes_designation_and_nickname() {
         let prompt = build_chat_system_prompt(
-            None, "detailed", None, Some("Ikshal-B4T9-Ω"), Some("Ike"),
+            None, "detailed", None, Some("Ikshal-B4T9-Ω"), Some("Ike"), None,
         );
         assert!(prompt.contains("Ikshal-B4T9-Ω"));
         assert!(prompt.contains("Ike"));
@@ -302,7 +313,7 @@ mod tests {
 
     #[test]
     fn chat_prompt_omits_designation_when_none() {
-        let prompt = build_chat_system_prompt(None, "detailed", None, None, None);
+        let prompt = build_chat_system_prompt(None, "detailed", None, None, None, None);
         assert!(!prompt.contains("designation"));
     }
 }

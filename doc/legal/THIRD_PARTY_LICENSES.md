@@ -1,10 +1,10 @@
 # Third-Party Licenses
 
-## Sovereign OS — Third-Party Component Licenses
+## Sovereign GE — Third-Party Component Licenses
 
 **Last Updated:** February 22, 2026
 
-This document lists all third-party dependencies included in or required by Sovereign OS, grouped by component. Each entry includes the project name, license, and upstream URL.
+This document lists all third-party dependencies included in or required by Sovereign GE, grouped by component. Each entry includes the project name, license, and upstream URL.
 
 This file is maintained manually and updated with each release. If you discover a missing or incorrect entry, please open an issue.
 
@@ -31,7 +31,7 @@ This file is maintained manually and updated with each release. If you discover 
 
 ### Note on SurrealDB License
 
-SurrealDB uses the Business Source License 1.1, which converts to Apache 2.0 after a specified change date. Sovereign OS uses SurrealDB in embedded mode (not as a hosted service). Verify compliance with the current BSL terms before each release. If the BSL terms become incompatible, the `sovereign-db` crate is designed behind a `GraphDB` trait that can be backed by SQLite + JSONB as a fallback.
+SurrealDB uses the Business Source License 1.1, which converts to Apache 2.0 after a specified change date. Sovereign GE uses SurrealDB in embedded mode (not as a hosted service). Verify compliance with the current BSL terms before each release. If the BSL terms become incompatible, the `sovereign-db` crate is designed behind a `GraphDB` trait that can be backed by SQLite + JSONB as a fallback.
 
 ---
 
@@ -54,7 +54,7 @@ SurrealDB uses the Business Source License 1.1, which converts to Apache 2.0 aft
 
 ## AI Models (Weights)
 
-AI model weights are distributed separately from the Sovereign OS source code. Each model has its own license governing use, modification, and redistribution.
+AI model weights are distributed separately from the Sovereign GE source code. Each model has its own license governing use, modification, and redistribution.
 
 | Model | License | URL |
 |---|---|---|
@@ -67,13 +67,13 @@ AI model weights are distributed separately from the Sovereign OS source code. E
 
 ### Note on Llama 3.1 License
 
-The Llama 3.1 Community License permits commercial and research use but includes specific terms regarding acceptable use policies and attribution. It is **not** an OSI-approved open-source license. Users who redistribute Sovereign OS with Llama 3.1 weights must comply with Meta's license terms independently. The `sovereign-ai` model abstraction layer supports swapping Llama for a fully permissive alternative (e.g., Mistral-7B under Apache 2.0, Qwen2.5-7B under Apache 2.0) without code changes.
+The Llama 3.1 Community License permits commercial and research use but includes specific terms regarding acceptable use policies and attribution. It is **not** an OSI-approved open-source license. Users who redistribute Sovereign GE with Llama 3.1 weights must comply with Meta's license terms independently. The `sovereign-ai` model abstraction layer supports swapping Llama for a fully permissive alternative (e.g., Mistral-7B under Apache 2.0, Qwen2.5-7B under Apache 2.0) without code changes.
 
 ---
 
 ## System Dependencies
 
-These are not bundled with Sovereign OS but are required at runtime. They are installed via the system package manager.
+These are not bundled with Sovereign GE but are required at runtime. They are installed via the system package manager.
 
 | Component | License | Purpose |
 |---|---|---|
@@ -89,7 +89,7 @@ These are not bundled with Sovereign OS but are required at runtime. They are in
 
 ### Note on CUDA
 
-NVIDIA CUDA is proprietary software. It is **not** bundled with Sovereign OS. Users who install CUDA for GPU acceleration do so under NVIDIA's terms. Sovereign OS functions without CUDA (CPU-only inference) and supports ROCm (MIT-licensed) as an open alternative for AMD GPUs.
+NVIDIA CUDA is proprietary software. It is **not** bundled with Sovereign GE. Users who install CUDA for GPU acceleration do so under NVIDIA's terms. Sovereign GE functions without CUDA (CPU-only inference) and supports ROCm (MIT-licensed) as an open alternative for AMD GPUs.
 
 ---
 

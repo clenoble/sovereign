@@ -7,6 +7,8 @@
 use serde::Deserialize;
 use sovereign_db::GraphDB;
 
+use crate::llm::format::PromptFormatter;
+
 /// Definition of a tool the model can call.
 pub struct ToolDef {
     pub name: &'static str,
@@ -87,85 +89,31 @@ pub const WRITE_TOOLS: &[ToolDef] = &[
     },
 ];
 
-/// All available tools (read + write).
-pub const TOOLS: &[ToolDef] = &[
-    // Read tools (Observe level)
-    ToolDef {
-        name: "search_documents",
-        description: "Search documents by title or content keyword. Returns matching titles and IDs.",
-        parameters: r#"{"query": "search term"}"#,
-    },
-    ToolDef {
-        name: "list_threads",
-        description: "List all threads (projects) with document counts.",
-        parameters: "{}",
-    },
-    ToolDef {
-        name: "get_document",
-        description: "Get the full content of a document by title.",
-        parameters: r#"{"title": "document title"}"#,
-    },
-    ToolDef {
-        name: "list_documents",
-        description: "List documents, optionally filtered by thread name.",
-        parameters: r#"{"thread": "thread name (optional)"}"#,
-    },
-    ToolDef {
-        name: "search_messages",
-        description: "Search conversation messages by keyword.",
-        parameters: r#"{"query": "search term"}"#,
-    },
-    ToolDef {
-        name: "list_contacts",
-        description: "List all contacts with their communication channels.",
-        parameters: "{}",
-    },
-    // Write tools (Modify level — gated by action gravity)
-    ToolDef {
-        name: "create_document",
-        description: "Create a new owned document. Requires user confirmation.",
-        parameters: r#"{"title": "document title", "thread_name": "thread name (optional, defaults to first thread)"}"#,
-    },
-    ToolDef {
-        name: "create_thread",
-        description: "Create a new thread (project). Requires user confirmation.",
-        parameters: r#"{"name": "thread name"}"#,
-    },
-    ToolDef {
-        name: "rename_thread",
-        description: "Rename an existing thread. Requires user confirmation.",
-        parameters: r#"{"old_name": "current thread name", "new_name": "new thread name"}"#,
-    },
-    ToolDef {
-        name: "move_document",
-        description: "Move a document to a different thread. Requires user confirmation.",
-        parameters: r#"{"document_title": "document title", "thread_name": "destination thread name"}"#,
-    },
-];
+/// All available tools (read + write), derived from READ_TOOLS and WRITE_TOOLS.
+pub fn all_tools() -> impl Iterator<Item = &'static ToolDef> {
+    READ_TOOLS.iter().chain(WRITE_TOOLS.iter())
+}
 
 /// Format tool definitions as a text block for the system prompt.
-pub fn format_tool_descriptions() -> String {
+/// Uses the formatter's tool-call instruction format.
+pub fn format_tool_descriptions(formatter: &dyn PromptFormatter) -> String {
     let mut out = String::from("You have access to these tools:\n");
-    for tool in TOOLS {
+    for tool in all_tools() {
         out.push_str(&format!(
             "- {}: {} Parameters: {}\n",
             tool.name, tool.description, tool.parameters
         ));
     }
-    out.push_str(
-        "\nTo use a tool, you MUST output exactly this format (no markdown, no code fences):\n\
-         <tool_call>\n\
-         {\"name\": \"tool_name\", \"arguments\": {\"key\": \"value\"}}\n\
-         </tool_call>\n\n\
-         You can call one tool per turn. After seeing the result, either call another tool or give your final answer.\n\
-         For create/rename/move actions, ALWAYS use the tool — never just describe the action in text.\n",
-    );
+    out.push('\n');
+    out.push_str(&formatter.tool_call_format_instruction());
     out
 }
 
 /// Check if model output contains a tool call.
-pub fn has_tool_call(output: &str) -> bool {
-    output.contains("<tool_call>") || has_bare_tool_json(output)
+/// Uses the formatter's open tag; falls back to bare JSON detection.
+pub fn has_tool_call(output: &str, formatter: Option<&dyn PromptFormatter>) -> bool {
+    let open_tag = formatter.map_or("<tool_call>", |f| f.tool_call_open_tag());
+    output.contains(open_tag) || has_bare_tool_json(output)
 }
 
 /// Check if the output contains bare tool-call JSON without `<tool_call>` tags.
@@ -196,21 +144,23 @@ fn strip_code_fences(output: &str) -> String {
 }
 
 /// Parse tool calls from model output.
-/// Looks for `<tool_call>...</tool_call>` delimiters containing JSON,
-/// with fallback to bare JSON or code-fenced JSON.
-pub fn parse_tool_calls(output: &str) -> Vec<ToolCall> {
+/// Uses the formatter's open/close tags, with fallback to bare JSON.
+pub fn parse_tool_calls(output: &str, formatter: Option<&dyn PromptFormatter>) -> Vec<ToolCall> {
+    let open_tag = formatter.map_or("<tool_call>", |f| f.tool_call_open_tag());
+    let close_tag = formatter.map_or("</tool_call>", |f| f.tool_call_close_tag());
+
     let mut calls = Vec::new();
     let mut remaining = output;
 
-    // Primary: look for <tool_call>...</tool_call> tags
-    while let Some(start) = remaining.find("<tool_call>") {
-        let after_tag = &remaining[start + 11..];
-        if let Some(end) = after_tag.find("</tool_call>") {
+    // Primary: look for open_tag...close_tag delimiters containing JSON
+    while let Some(start) = remaining.find(open_tag) {
+        let after_tag = &remaining[start + open_tag.len()..];
+        if let Some(end) = after_tag.find(close_tag) {
             let json_str = after_tag[..end].trim();
             if let Ok(call) = serde_json::from_str::<ToolCall>(json_str) {
                 calls.push(call);
             }
-            remaining = &after_tag[end + 12..];
+            remaining = &after_tag[end + close_tag.len()..];
         } else {
             break;
         }
@@ -220,7 +170,7 @@ pub fn parse_tool_calls(output: &str) -> Vec<ToolCall> {
     if calls.is_empty() {
         let stripped = strip_code_fences(output);
         if let Ok(call) = serde_json::from_str::<ToolCall>(&stripped) {
-            if TOOLS.iter().any(|t| t.name == call.name) {
+            if all_tools().any(|t| t.name == call.name) {
                 calls.push(call);
             }
         }
@@ -230,12 +180,15 @@ pub fn parse_tool_calls(output: &str) -> Vec<ToolCall> {
 }
 
 /// Extract the text response (non-tool-call portion) from model output.
-pub fn extract_text_response(output: &str) -> String {
+pub fn extract_text_response(output: &str, formatter: Option<&dyn PromptFormatter>) -> String {
+    let open_tag = formatter.map_or("<tool_call>", |f| f.tool_call_open_tag());
+    let close_tag = formatter.map_or("</tool_call>", |f| f.tool_call_close_tag());
+
     let mut text = output.to_string();
-    // Remove all <tool_call>...</tool_call> blocks
-    while let Some(start) = text.find("<tool_call>") {
-        if let Some(end_offset) = text[start..].find("</tool_call>") {
-            text.replace_range(start..start + end_offset + 12, "");
+    // Remove all open_tag...close_tag blocks
+    while let Some(start) = text.find(open_tag) {
+        if let Some(end_offset) = text[start..].find(close_tag) {
+            text.replace_range(start..start + end_offset + close_tag.len(), "");
         } else {
             break;
         }
@@ -290,7 +243,6 @@ async fn execute_create_document(call: &ToolCall, db: &dyn GraphDB) -> WriteTool
     // Resolve thread ID
     let thread = if let Some(tname) = thread_name {
         db.find_thread_by_name(tname).await.unwrap_or(None)
-            .or_else(|| None) // fallback handled below
     } else {
         None
     };
@@ -473,6 +425,25 @@ async fn execute_move_document(call: &ToolCall, db: &dyn GraphDB) -> WriteToolRe
     }
 }
 
+/// Strip `<think>...</think>` blocks from model output.
+///
+/// Safety net for models (like Qwen 3.5) that may emit thinking blocks
+/// despite being instructed not to. Applied unconditionally — cheap no-op
+/// for models that don't emit `<think>` blocks.
+pub fn strip_think_blocks(output: &str) -> String {
+    let mut result = output.to_string();
+    while let Some(start) = result.find("<think>") {
+        if let Some(end) = result[start..].find("</think>") {
+            result.replace_range(start..start + end + "</think>".len(), "");
+        } else {
+            // Unclosed <think> block — remove from <think> to end
+            result.truncate(start);
+            break;
+        }
+    }
+    result.trim().to_string()
+}
+
 /// Execute a read-only tool call against the database. Returns a result with truncated output.
 pub async fn execute_tool(call: &ToolCall, db: &dyn GraphDB) -> ToolResult {
     let output = match call.name.as_str() {
@@ -653,7 +624,7 @@ mod tests {
 <tool_call>
 {"name": "search_documents", "arguments": {"query": "meeting notes"}}
 </tool_call>"#;
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "search_documents");
         assert_eq!(
@@ -665,50 +636,50 @@ mod tests {
     #[test]
     fn parse_tool_calls_empty() {
         let output = "Hello! I can help with that.";
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert!(calls.is_empty());
     }
 
     #[test]
     fn parse_tool_calls_malformed_json() {
         let output = "<tool_call>\n{not valid json}\n</tool_call>";
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert!(calls.is_empty());
     }
 
     #[test]
     fn parse_tool_calls_no_closing_tag() {
         let output = "<tool_call>\n{\"name\": \"test\", \"arguments\": {}}";
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert!(calls.is_empty());
     }
 
     #[test]
     fn has_tool_call_true() {
-        assert!(has_tool_call("some text <tool_call> stuff </tool_call>"));
+        assert!(has_tool_call("some text <tool_call> stuff </tool_call>", None));
     }
 
     #[test]
     fn has_tool_call_false() {
-        assert!(!has_tool_call("just a normal response"));
+        assert!(!has_tool_call("just a normal response", None));
     }
 
     #[test]
     fn has_tool_call_bare_json() {
         let output = r#"{"name": "create_document", "arguments": {"title": "Test"}}"#;
-        assert!(has_tool_call(output));
+        assert!(has_tool_call(output, None));
     }
 
     #[test]
     fn has_tool_call_code_fenced() {
         let output = "```json\n{\"name\": \"create_document\", \"arguments\": {\"title\": \"Test\"}}\n```";
-        assert!(has_tool_call(output));
+        assert!(has_tool_call(output, None));
     }
 
     #[test]
     fn parse_tool_calls_bare_json() {
         let output = r#"{"name": "create_document", "arguments": {"title": "Test"}}"#;
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "create_document");
     }
@@ -716,7 +687,7 @@ mod tests {
     #[test]
     fn parse_tool_calls_code_fenced() {
         let output = "```json\n{\"name\": \"create_thread\", \"arguments\": {\"name\": \"Marketing\"}}\n```";
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "create_thread");
     }
@@ -724,28 +695,29 @@ mod tests {
     #[test]
     fn parse_tool_calls_bare_json_unknown_tool_ignored() {
         let output = r#"{"name": "unknown_tool", "arguments": {}}"#;
-        let calls = parse_tool_calls(output);
+        let calls = parse_tool_calls(output, None);
         assert!(calls.is_empty());
     }
 
     #[test]
     fn extract_text_response_strips_tool_blocks() {
         let output = "Here's what I found:\n<tool_call>\n{\"name\":\"search\",\"arguments\":{}}\n</tool_call>\nDone!";
-        let text = extract_text_response(output);
+        let text = extract_text_response(output, None);
         assert_eq!(text, "Here's what I found:\n\nDone!");
     }
 
     #[test]
     fn extract_text_response_no_tool() {
         let output = "Just a response.";
-        let text = extract_text_response(output);
+        let text = extract_text_response(output, None);
         assert_eq!(text, "Just a response.");
     }
 
     #[test]
     fn format_tool_descriptions_contains_all_tools() {
-        let desc = format_tool_descriptions();
-        for tool in TOOLS {
+        let fmt = crate::llm::format::ChatMLFormatter;
+        let desc = format_tool_descriptions(&fmt);
+        for tool in all_tools() {
             assert!(desc.contains(tool.name), "Missing tool: {}", tool.name);
         }
         assert!(desc.contains("<tool_call>"));
@@ -951,5 +923,46 @@ mod tests {
         let result = execute_write_tool(&call, &db).await;
         assert!(result.success);
         assert!(result.output.contains("Moved"));
+    }
+
+    // --- strip_think_blocks tests ---
+
+    #[test]
+    fn strip_think_blocks_removes_thinking() {
+        let output = "<think>Let me reason about this...</think>Here is the answer.";
+        assert_eq!(strip_think_blocks(output), "Here is the answer.");
+    }
+
+    #[test]
+    fn strip_think_blocks_no_think() {
+        let output = "Just a normal response with no thinking.";
+        assert_eq!(strip_think_blocks(output), output);
+    }
+
+    #[test]
+    fn strip_think_blocks_unclosed() {
+        let output = "Preamble<think>partial thinking that never closes";
+        assert_eq!(strip_think_blocks(output), "Preamble");
+    }
+
+    #[test]
+    fn strip_think_blocks_multiple() {
+        let output = "<think>first</think>A<think>second</think>B";
+        assert_eq!(strip_think_blocks(output), "AB");
+    }
+
+    #[test]
+    fn strip_think_blocks_preserves_tool_call() {
+        let output = "<think>reasoning</think>\n<tool_call>\n{\"name\":\"search_documents\",\"arguments\":{\"query\":\"test\"}}\n</tool_call>";
+        let stripped = strip_think_blocks(output);
+        assert!(stripped.contains("<tool_call>"));
+        assert!(stripped.contains("search_documents"));
+        assert!(!stripped.contains("<think>"));
+    }
+
+    #[test]
+    fn strip_think_blocks_empty_think() {
+        let output = "<think></think>Answer";
+        assert_eq!(strip_think_blocks(output), "Answer");
     }
 }

@@ -1,0 +1,9 @@
+{
+    "name": "Duplicate Finder",
+    "version": "0.0.1",
+    "description": "Find near-duplicate documents in the workspace (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["read_all_documents"],
+    "file_types": []
+}

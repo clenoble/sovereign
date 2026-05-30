@@ -1,4 +1,5 @@
-use crate::traits::{CoreSkill, SkillDocument, SkillOutput};
+use crate::manifest::Capability;
+use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 use sovereign_core::content::{ContentFields, ContentVideo};
 
 /// Skill for managing video references in documents.
@@ -10,6 +11,10 @@ pub struct VideoSkill;
 impl CoreSkill for VideoSkill {
     fn name(&self) -> &str {
         "video"
+    }
+
+    fn required_capabilities(&self) -> Vec<Capability> {
+        vec![Capability::ReadDocument, Capability::WriteDocument]
     }
 
     fn activate(&mut self) -> anyhow::Result<()> {
@@ -25,6 +30,7 @@ impl CoreSkill for VideoSkill {
         action: &str,
         doc: &SkillDocument,
         params: &str,
+        _ctx: &SkillContext,
     ) -> anyhow::Result<SkillOutput> {
         match action {
             "add" => {
@@ -88,23 +94,20 @@ impl CoreSkill for VideoSkill {
             ("play".into(), "Play Video".into()),
         ]
     }
+
+    fn file_types(&self) -> Vec<String> {
+        vec!["md".into(), "txt".into()]
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use sovereign_core::content::ContentFields;
+    use crate::test_util::{dummy_ctx, make_doc as shared_make_doc};
 
     fn make_doc() -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "Test".into(),
-            content: ContentFields {
-                body: "text".into(),
-                images: vec![],
-                videos: vec![],
-            },
-        }
+        shared_make_doc("text")
     }
 
     fn make_doc_with_video() -> SkillDocument {
@@ -136,7 +139,7 @@ mod tests {
     fn add_video() {
         let skill = VideoSkill;
         let doc = make_doc();
-        let result = skill.execute("add", &doc, "/path/to/demo.mp4").unwrap();
+        let result = skill.execute("add", &doc, "/path/to/demo.mp4", &dummy_ctx()).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
                 assert_eq!(cf.videos.len(), 1);
@@ -152,14 +155,14 @@ mod tests {
     fn add_video_empty_path_fails() {
         let skill = VideoSkill;
         let doc = make_doc();
-        assert!(skill.execute("add", &doc, "").is_err());
+        assert!(skill.execute("add", &doc, "", &dummy_ctx()).is_err());
     }
 
     #[test]
     fn remove_video() {
         let skill = VideoSkill;
         let doc = make_doc_with_video();
-        let result = skill.execute("remove", &doc, "0").unwrap();
+        let result = skill.execute("remove", &doc, "0", &dummy_ctx()).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
                 assert_eq!(cf.videos.len(), 1);
@@ -173,14 +176,14 @@ mod tests {
     fn remove_video_out_of_range() {
         let skill = VideoSkill;
         let doc = make_doc();
-        assert!(skill.execute("remove", &doc, "0").is_err());
+        assert!(skill.execute("remove", &doc, "0", &dummy_ctx()).is_err());
     }
 
     #[test]
     fn play_returns_none() {
         let skill = VideoSkill;
         let doc = make_doc();
-        let result = skill.execute("play", &doc, "").unwrap();
+        let result = skill.execute("play", &doc, "", &dummy_ctx()).unwrap();
         assert!(matches!(result, SkillOutput::None));
     }
 
@@ -188,7 +191,7 @@ mod tests {
     fn unknown_action_fails() {
         let skill = VideoSkill;
         let doc = make_doc();
-        assert!(skill.execute("unknown", &doc, "").is_err());
+        assert!(skill.execute("unknown", &doc, "", &dummy_ctx()).is_err());
     }
 
     #[test]

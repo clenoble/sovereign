@@ -20,6 +20,10 @@ env/
 *.swp
 *.swo
 *~
+*.code-workspace
+
+# Local-only Claude / dev notes (machine-specific paths, NAS workflows, etc.)
+CLAUDE.local.md
 
 # OS
 .DS_Store
@@ -51,3 +55,12 @@ jiminy-bridge/
 models/
 *.gguf
 jiminy-bridge/.venv/
+
+# Frontend (SvelteKit / Tauri)
+frontend/node_modules/
+frontend/build/
+frontend/.svelte-kit/
+
+# RAG chatbot index (deployed to HF Space, not tracked in git)
+sovereign-chatbot/chunks.json
+sovereign-chatbot/embeddings.npy

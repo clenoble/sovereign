@@ -1,13 +1,11 @@
 [workspace]
 resolver = "2"
-exclude = []
+exclude = ["skills/word-count-wasm"]
 members = [
     "crates/sovereign-core",
     "crates/sovereign-db",
     "crates/sovereign-crypto",
     "crates/sovereign-skills",
-    "crates/sovereign-ui",
-    "crates/sovereign-canvas",
     "crates/sovereign-ai",
     "crates/sovereign-p2p",
     "crates/sovereign-comms",
@@ -45,15 +43,13 @@ chrono = { version = "0.4", features = ["serde"] }
 sovereign-core = { path = "crates/sovereign-core" }
 sovereign-db = { path = "crates/sovereign-db" }
 sovereign-skills = { path = "crates/sovereign-skills" }
-sovereign-ui = { path = "crates/sovereign-ui" }
-sovereign-canvas = { path = "crates/sovereign-canvas" }
 sovereign-ai = { path = "crates/sovereign-ai", default-features = false }
 sovereign-crypto = { path = "crates/sovereign-crypto" }
 sovereign-p2p = { path = "crates/sovereign-p2p" }
 sovereign-comms = { path = "crates/sovereign-comms" }
 
 # LLM inference
-llama-cpp-2 = "0.1"
+llama-cpp-2 = "0.1.136"
 encoding_rs = "0.8"
 
 
@@ -63,15 +59,34 @@ genpdf = "0.2"
 # PDF text extraction
 pdf-extract = "0.10"
 
-# UI framework
-iced = { version = "0.14", features = ["tokio", "wgpu", "image", "markdown", "canvas"] }
-open = "5.3"
-bytemuck = { version = "1.0", features = ["derive"] }
-wgpu = "24"
-rfd = "0.17"
+# Markdown parsing / rendering (used by HTML Export, Plaintext Export)
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+
+# Regex (used by Link Checker, PII Detector)
+regex = "1.12"
+
+# YAML parsing (maintained fork of serde_yaml; used by JSON/YAML Formatter)
+serde_yml = "0.0.12"
+
+# CSV parsing (used by CSV → Markdown Table)
+csv = "1.4"
+
+# WASM plugin runtime
+wasmtime = { version = "42", features = ["component-model"] }
+
+# Crypto primitives (also used directly by sovereign-ai encrypted-log)
+sha2 = "0.10"
+base64 = "0.22"
+
+# UUID
+uuid = { version = "1.20", features = ["v4"] }
 
 # RNG
 rand = "0.10"
+
+# Tauri (Svelte 5 web UI)
+tauri = { version = "2.10", features = ["devtools", "unstable"] }
+tauri-build = { version = "2.5", features = [] }
 
 # Voice pipeline
 whisper-rs = "0.15"
@@ -83,5 +98,9 @@ ringbuf = "0.4"
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
 
-# HTTP client (for Jiminy bridge)
-reqwest = { version = "0.13", features = ["json"] }
+# HTTP client (Jiminy bridge needs "json" POST bodies; web browsing needs "rustls" TLS)
+reqwest = { version = "0.13", features = ["json", "rustls"] }
+
+# Web browsing
+readability = "0.3"
+url = "2.5"

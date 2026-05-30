@@ -1,0 +1,739 @@
+/** Typed wrappers around Tauri invoke() calls. */
+
+import { invoke } from '@tauri-apps/api/core';
+
+export interface AppStatus {
+	documents: number;
+	threads: number;
+	contacts: number;
+	orchestrator_available: boolean;
+}
+
+export interface DocSummary {
+	id: string;
+	title: string;
+	thread_id: string;
+	is_owned: boolean;
+	modified_at: string;
+}
+
+export interface ThreadSummary {
+	id: string;
+	name: string;
+	description: string;
+}
+
+export interface SearchHit {
+	id: string;
+	title: string;
+	snippet: string;
+}
+
+export interface FullDocument {
+	id: string;
+	title: string;
+	body: string;
+	images: ContentImageDto[];
+	videos: ContentVideoDto[];
+	thread_id: string;
+	is_owned: boolean;
+	created_at: string;
+	modified_at: string;
+}
+
+export interface ContentImageDto {
+	path: string;
+	caption: string;
+}
+
+export interface ContentVideoDto {
+	path: string;
+	caption: string;
+	duration_secs: number | null;
+	thumbnail_path: string | null;
+}
+
+export interface CommitSummary {
+	id: string;
+	message: string;
+	timestamp: string;
+	snapshot_title: string;
+	snapshot_preview: string;
+}
+
+export interface SkillInfo {
+	skill_name: string;
+	actions: SkillActionInfo[];
+}
+
+export interface SkillActionInfo {
+	action_id: string;
+	label: string;
+}
+
+export interface SkillResultDto {
+	kind: string;
+	body?: string;
+	images?: ContentImageDto[];
+	videos?: ContentVideoDto[];
+	file_name?: string;
+	file_mime?: string;
+	file_data_base64?: string;
+	structured_kind?: string;
+	structured_json?: string;
+}
+
+export interface ModelEntry {
+	filename: string;
+	size_mb: number;
+	is_router: boolean;
+	is_reasoning: boolean;
+}
+
+// Health / status
+export const getStatus = () => invoke<AppStatus>('get_status');
+
+// Chat
+export const chatMessage = (message: string) => invoke<void>('chat_message', { message });
+
+// Search
+export const searchDocuments = (query: string) => invoke<SearchHit[]>('search_documents', { query });
+export const searchQuery = (query: string) => invoke<void>('search_query', { query });
+
+// Action gate
+export const approveAction = () => invoke<void>('approve_action');
+export const rejectAction = (reason: string) => invoke<void>('reject_action', { reason });
+
+// Theme
+export const toggleTheme = () => invoke<string>('toggle_theme');
+export const getTheme = () => invoke<string>('get_theme');
+
+// Document CRUD
+export const getDocument = (id: string) => invoke<FullDocument>('get_document', { id });
+export const saveDocument = (
+	id: string,
+	title: string,
+	body: string,
+	images: ContentImageDto[],
+	videos: ContentVideoDto[]
+) => invoke<void>('save_document', { id, title, body, images, videos });
+export const createDocument = (title: string, threadId: string) =>
+	invoke<string>('create_document', { title, threadId });
+export const closeDocument = (id: string) => invoke<void>('close_document', { id });
+
+// Version history
+export const listCommits = (docId: string) => invoke<CommitSummary[]>('list_commits', { docId });
+export const restoreCommit = (docId: string, commitId: string) =>
+	invoke<FullDocument>('restore_commit', { docId, commitId });
+
+// Skills
+export const listSkillsForDoc = (docTitle: string) =>
+	invoke<SkillInfo[]>('list_skills_for_doc', { docTitle });
+export const executeSkill = (skillName: string, action: string, docId: string, params: string) =>
+	invoke<SkillResultDto>('execute_skill', { skillName, action, docId, params });
+export const listAllSkills = () => invoke<SkillInfo[]>('list_all_skills');
+
+// Model management
+export const scanModels = () => invoke<ModelEntry[]>('scan_models');
+export const assignModelRole = (filename: string, role: string) =>
+	invoke<void>('assign_model_role', { filename, role });
+export const deleteModel = (filename: string) => invoke<void>('delete_model', { filename });
+
+// ---------------------------------------------------------------------------
+// Phase 3: Canvas, Threads, Contacts, Messaging
+// ---------------------------------------------------------------------------
+
+export interface CanvasDocDto {
+	id: string;
+	title: string;
+	thread_id: string;
+	is_owned: boolean;
+	spatial_x: number;
+	spatial_y: number;
+	created_at: string;
+	modified_at: string;
+	reliability_classification: string | null;
+	reliability_score: number | null;
+	source_url: string | null;
+}
+
+export interface ThreadDto {
+	id: string;
+	name: string;
+	description: string;
+	created_at: string;
+}
+
+export interface RelationshipDto {
+	id: string;
+	from_doc_id: string;
+	to_doc_id: string;
+	relation_type: string;
+	strength: number;
+}
+
+export interface ContactSummaryDto {
+	id: string;
+	name: string;
+	avatar: string | null;
+	unread_count: number;
+	channels: string[];
+}
+
+export interface ContactDetailDto {
+	id: string;
+	name: string;
+	avatar: string | null;
+	notes: string;
+	addresses: ChannelAddressDto[];
+	conversations: ConversationDto[];
+}
+
+export interface ChannelAddressDto {
+	channel: string;
+	address: string;
+	display_name: string | null;
+	is_primary: boolean;
+}
+
+export interface ConversationDto {
+	id: string;
+	title: string;
+	channel: string;
+	participant_ids: string[];
+	unread_count: number;
+	last_message_at: string | null;
+}
+
+export interface MessageDto {
+	id: string;
+	conversation_id: string;
+	direction: string;
+	from_contact_id: string;
+	subject: string | null;
+	body: string;
+	sent_at: string;
+	read_status: string;
+}
+
+export interface MilestoneDto {
+	id: string;
+	title: string;
+	timestamp: string;
+	thread_id: string;
+	description: string;
+}
+
+export interface CanvasMessageDto {
+	id: string;
+	conversation_id: string;
+	thread_id: string;
+	contact_id: string;
+	subject: string;
+	is_outbound: boolean;
+	sent_at: string;
+}
+
+export interface CanvasData {
+	documents: CanvasDocDto[];
+	threads: ThreadDto[];
+	relationships: RelationshipDto[];
+	contacts: ContactSummaryDto[];
+	milestones: MilestoneDto[];
+	messages: CanvasMessageDto[];
+}
+
+// Canvas
+export const canvasLoad = () => invoke<CanvasData>('canvas_load');
+export const updateDocumentPosition = (id: string, x: number, y: number) =>
+	invoke<void>('update_document_position', { id, x, y });
+export const canvasLoadMessages = (tMin: string, tMax: string, limit?: number) =>
+	invoke<CanvasMessageDto[]>('canvas_load_messages', { tMin, tMax, limit: limit ?? 200 });
+
+// Thread CRUD
+export const createThread = (name: string, description: string) =>
+	invoke<ThreadDto>('create_thread', { name, description });
+export const updateThread = (id: string, name?: string, description?: string) =>
+	invoke<ThreadDto>('update_thread', { id, name: name ?? null, description: description ?? null });
+export const deleteThread = (id: string) => invoke<void>('delete_thread', { id });
+export const moveDocumentToThread = (docId: string, threadId: string) =>
+	invoke<void>('move_document_to_thread', { docId, threadId });
+
+// Contacts & messaging
+export const listContacts = () => invoke<ContactSummaryDto[]>('list_contacts');
+export const getContactDetail = (id: string) => invoke<ContactDetailDto>('get_contact_detail', { id });
+export const listConversations = (contactId?: string) =>
+	invoke<ConversationDto[]>('list_conversations', { contactId: contactId ?? null });
+export const listMessages = (conversationId: string, before?: string, limit: number = 50) =>
+	invoke<MessageDto[]>('list_messages', { conversationId, before: before ?? null, limit });
+export const markMessageRead = (id: string) => invoke<void>('mark_message_read', { id });
+export const createRelationship = (fromId: string, toId: string, relationType: string, strength: number) =>
+	invoke<void>('create_relationship', { fromId, toId, relationType, strength });
+
+// ---------------------------------------------------------------------------
+// Phase 4: Auth, Onboarding, Settings, Document deletion
+// ---------------------------------------------------------------------------
+
+export interface AuthCheckResult {
+	needs_onboarding: boolean;
+	needs_login: boolean;
+	crypto_enabled: boolean;
+}
+
+export interface PasswordValidationDto {
+	valid: boolean;
+	errors: string[];
+}
+
+export interface UserProfileDto {
+	user_id: string;
+	designation: string;
+	nickname: string | null;
+	bubble_style: string;
+	display_name: string | null;
+}
+
+export interface SaveProfileDto {
+	nickname?: string;
+	bubble_style?: string;
+	display_name?: string;
+}
+
+export interface AppConfigDto {
+	ai_model_dir: string;
+	ai_router_model: string;
+	ai_reasoning_model: string;
+	ai_n_gpu_layers: number;
+	ai_n_ctx: number;
+	ai_prompt_format: string;
+	crypto_enabled: boolean;
+	crypto_keystroke_enabled: boolean;
+	crypto_max_login_attempts: number;
+	crypto_lockout_seconds: number;
+	ui_theme: string;
+}
+
+export interface KeystrokeSampleDto {
+	key: string;
+	press_ms: number;
+	release_ms: number;
+}
+
+export interface OnboardingData {
+	nickname: string | null;
+	bubble_style: string | null;
+	seed_sample_data: boolean;
+	password: string | null;
+	duress_password: string | null;
+	canary_phrase: string | null;
+	keystrokes: KeystrokeSampleDto[][];
+}
+
+// Auth
+export const checkAuthState = () => invoke<AuthCheckResult>('check_auth_state');
+export const validatePassword = (password: string, keystrokes: KeystrokeSampleDto[]) =>
+	invoke<string>('validate_password', { password, keystrokes });
+export const validatePasswordPolicy = (password: string) =>
+	invoke<PasswordValidationDto>('validate_password_policy', { password });
+
+// Onboarding
+export const completeOnboarding = (data: OnboardingData) =>
+	invoke<void>('complete_onboarding', { data });
+
+// Profile
+export const getProfile = () => invoke<UserProfileDto>('get_profile');
+export const saveProfile = (data: SaveProfileDto) =>
+	invoke<void>('save_profile', { data });
+
+// Config
+export const getConfig = () => invoke<AppConfigDto>('get_config');
+
+// Document deletion
+export const deleteDocument = (id: string) => invoke<void>('delete_document', { id });
+
+// ---------------------------------------------------------------------------
+// Phase 5: Trust, Import, Comms
+// ---------------------------------------------------------------------------
+
+export interface TrustEntryDto {
+	action: string;
+	approval_count: number;
+	auto_approve: boolean;
+	last_rejected: string | null;
+}
+
+export interface CommsConfigDto {
+	comms_available: boolean;
+	email_configured: boolean;
+	email_imap_host: string;
+	email_imap_port: number;
+	email_smtp_host: string;
+	email_smtp_port: number;
+	email_username: string;
+	signal_configured: boolean;
+	signal_phone: string;
+}
+
+export interface SaveCommsConfigDto {
+	email_imap_host?: string;
+	email_imap_port?: number;
+	email_smtp_host?: string;
+	email_smtp_port?: number;
+	email_username?: string;
+	signal_phone?: string;
+}
+
+// Trust dashboard
+export const getTrustEntries = () => invoke<TrustEntryDto[]>('get_trust_entries');
+export const resetTrustAction = (action: string) =>
+	invoke<void>('reset_trust_action', { action });
+export const resetTrustAll = () => invoke<void>('reset_trust_all');
+
+// File import
+export const importFile = (filePath: string, threadId?: string) =>
+	invoke<CanvasDocDto>('import_file', { filePath, threadId: threadId ?? null });
+
+// Comms config
+export const getCommsConfig = () => invoke<CommsConfigDto>('get_comms_config');
+export const saveCommsConfig = (data: SaveCommsConfigDto) =>
+	invoke<void>('save_comms_config', { data });
+
+// ---------------------------------------------------------------------------
+// Web Browsing & Reliability
+// ---------------------------------------------------------------------------
+
+export interface FetchedPageDto {
+	url: string;
+	title: string;
+	body_markdown: string;
+	raw_text: string;
+}
+
+export interface ReliabilityResultDto {
+	classification: 'Factual' | 'Opinion' | 'Fiction';
+	final_score: number;
+	raw_assessment: RubricScoreDto[];
+}
+
+export interface RubricScoreDto {
+	indicator: string;
+	analysis: string;
+	score: number;
+}
+
+export interface Rect {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+// Embedded browser commands
+export const openBrowser = (url: string, bounds: Rect) =>
+	invoke<void>('open_browser', { url, bounds });
+export const closeBrowserCmd = () => invoke<void>('close_browser');
+export const navigateBrowser = (url: string) =>
+	invoke<void>('navigate_browser', { url });
+export const browserBack = () => invoke<void>('browser_back');
+export const browserForward = () => invoke<void>('browser_forward');
+export const browserRefresh = () => invoke<void>('browser_refresh');
+export const setBrowserBounds = (bounds: Rect) =>
+	invoke<void>('set_browser_bounds', { bounds });
+export const setBrowserVisible = (visible: boolean) =>
+	invoke<void>('set_browser_visible', { visible });
+
+// Web page fetch & extraction
+export const fetchWebPage = (url: string) =>
+	invoke<FetchedPageDto>('fetch_web_page', { url });
+
+// Reliability assessment
+export const assessReliability = (text: string) =>
+	invoke<ReliabilityResultDto>('assess_reliability', { text });
+export const reassessReliability = (docId: string) =>
+	invoke<ReliabilityResultDto>('reassess_reliability', { docId });
+
+// Memory consolidation — AI-suggested links
+export interface SuggestionDto {
+	id: string;
+	from_doc_id: string;
+	from_title: string;
+	to_doc_id: string;
+	to_title: string;
+	relation_type: string;
+	strength: number;
+	rationale: string;
+	source: string;
+}
+
+export const listPendingSuggestions = () =>
+	invoke<SuggestionDto[]>('list_pending_suggestions');
+
+export const acceptLinkSuggestion = (id: string) =>
+	invoke<void>('accept_link_suggestion', { id });
+
+export const dismissLinkSuggestion = (id: string) =>
+	invoke<void>('dismiss_link_suggestion', { id });
+
+export const triggerConsolidation = () =>
+	invoke<number>('trigger_consolidation');
+
+// Save web page as document
+export const saveWebPage = (
+	url: string,
+	title: string,
+	content: string,
+	threadId?: string,
+	classification?: string,
+	score?: number,
+	assessmentJson?: string
+) =>
+	invoke<CanvasDocDto>('save_web_page', {
+		url,
+		title,
+		content,
+		threadId: threadId ?? null,
+		classification: classification ?? null,
+		score: score ?? null,
+		assessmentJson: assessmentJson ?? null
+	});
+
+// ---------------------------------------------------------------------------
+// PII management & dashboard
+// ---------------------------------------------------------------------------
+
+export type PiiAccessLevel =
+	| 'preview'
+	| 'masked_sample'
+	| 'reveal'
+	| 'raw_original';
+
+export type EntityKindString = 'self' | 'org' | 'person' | 'service';
+
+export type ReviewStateString = 'unreviewed' | 'confirmed' | 'dismissed';
+
+export interface PiiEntity {
+	id: string;
+	name: string;
+	kind: EntityKindString;
+	domains: string[];
+	contact_ids: string[];
+	notes: string;
+	is_owned: boolean;
+	created_at: string;
+	modified_at: string;
+}
+
+export interface PiiSourceRef {
+	source_kind: 'document' | 'message' | 'contact' | 'session_log' | 'user_input';
+	source_id: string;
+	span_start: number;
+	span_end: number;
+}
+
+export interface PiiRecord {
+	id: string;
+	/** snake_case kind: "email" | "phone" | "ssn" | "credit_card" | "ipv4" | "avs"
+	 *  | "iban" | "passport" | "dob" | "address" | "person_name" | "org_name"
+	 *  | "password" | "api_token" | "bank_account" | "document_id" | "note" | "other" */
+	kind: string;
+	label: string | null;
+	entity_id: string | null;
+	stored_secret: boolean;
+	confidence: number;
+	review_state: ReviewStateString;
+	discovered_at: string;
+	last_revealed_at: string | null;
+	use_count: number;
+	sources: PiiSourceRef[];
+}
+
+export interface ResolvedBody {
+	body: string;
+	access_level: PiiAccessLevel;
+}
+
+/** Resolve every `[pii:<id>]` token in a Document or Message body. */
+export const resolvePiiTokens = (
+	sourceKind: 'document' | 'message',
+	sourceId: string,
+	accessLevel: PiiAccessLevel
+) =>
+	invoke<ResolvedBody>('resolve_pii_tokens', {
+		sourceKind,
+		sourceId,
+		accessLevel
+	});
+
+/** List all entities (excludes soft-deleted), ordered by name. */
+export const listPiiEntities = () => invoke<PiiEntity[]>('list_pii_entities');
+
+/** Fetch one entity by ID. */
+export const getPiiEntity = (id: string) =>
+	invoke<PiiEntity>('get_pii_entity', { id });
+
+/** List PiiRecords with optional filters. All AND-combined. */
+export const listPiiRecords = (
+	entityId?: string | null,
+	reviewState?: ReviewStateString | null,
+	storedSecret?: boolean | null
+) =>
+	invoke<PiiRecord[]>('list_pii_records', {
+		entityId: entityId ?? null,
+		reviewState: reviewState ?? null,
+		storedSecret: storedSecret ?? null
+	});
+
+/** Mark an Unreviewed record as Confirmed. L2 Annotate. */
+export const confirmPiiRecord = (id: string) =>
+	invoke<void>('confirm_pii_record', { id });
+
+/** Mark an Unreviewed record as Dismissed (false positive). L2 Annotate. */
+export const dismissPiiRecord = (id: string) =>
+	invoke<void>('dismiss_pii_record', { id });
+
+/** Soft-delete a PiiRecord. L5 Destruct — caller must confirm first. */
+export const redactPiiRecord = (id: string) =>
+	invoke<void>('redact_pii_record', { id });
+
+/** Reveal a single PiiRecord's plaintext value. L3 Modify — bumps
+ *  last_revealed_at server-side. */
+export const revealPiiRecord = (id: string) =>
+	invoke<string>('reveal_pii_record', { id });
+
+export interface VaultEntryInput {
+	/** snake_case PiiKind */
+	kind: string;
+	label?: string | null;
+	entity_id?: string | null;
+	value: string;
+}
+
+/** Create a vault entry — user-entered secret encrypted under DeviceKey. */
+export const createVaultEntry = (input: VaultEntryInput) =>
+	invoke<PiiRecord>('create_vault_entry', { input });
+
+export interface ShareRecord {
+	id: string;
+	pii_record_id: string;
+	to_entity_id: string;
+	via_message_id: string | null;
+	via_url: string | null;
+	shared_at: string;
+	/** lowercase channel: "email" | "signal" | "whatsapp" | "sms"
+	 *  | "matrix" | "phone" | "web" | "other" */
+	channel: string;
+}
+
+/** List sharing-ledger entries where the recipient is `entityId`,
+ *  most recent first. */
+export const listShareRecordsForEntity = (entityId: string) =>
+	invoke<ShareRecord[]>('list_share_records_for_entity', { entityId });
+
+// ---------------------------------------------------------------------------
+// Browser-PII (step 8) — signup capture, autofill, password gen, cookies
+// ---------------------------------------------------------------------------
+
+export interface PasswordPolicy {
+	length: number;
+	include_uppercase: boolean;
+	include_lowercase: boolean;
+	include_digits: boolean;
+	include_symbols: boolean;
+	exclude_ambiguous: boolean;
+}
+
+export const defaultPasswordPolicy = (): PasswordPolicy => ({
+	length: 24,
+	include_uppercase: true,
+	include_lowercase: true,
+	include_digits: true,
+	include_symbols: true,
+	exclude_ambiguous: true
+});
+
+/** Generate a password using the provided policy (or the default). */
+export const generatePassword = (policy?: PasswordPolicy) =>
+	invoke<string>('generate_password', { policy: policy ?? defaultPasswordPolicy() });
+
+/** Trigger a JS scan of the active browser webview for input fields.
+ *  Results arrive asynchronously as the `browser-form-extracted`
+ *  Tauri event. */
+export const extractFormFields = () =>
+	invoke<void>('extract_form_fields');
+
+export interface BrowserFormField {
+	/** snake_case kind: "password" | "email" | "phone" | "first_name"
+	 *  | "last_name" | "address" | "text" */
+	kind: string;
+	selector: string;
+	value: string;
+	placeholder: string;
+	label: string;
+}
+
+export interface BrowserFormExtraction {
+	url: string;
+	fields: BrowserFormField[];
+}
+
+export interface SignupFieldInput {
+	kind: string;
+	label?: string | null;
+	value: string;
+}
+
+export interface SignupCaptureInput {
+	url: string;
+	entity_id?: string | null;
+	fields: SignupFieldInput[];
+}
+
+export interface SignupCaptureResult {
+	entity_id: string;
+	record_ids: string[];
+	share_record_count: number;
+	entity_created: boolean;
+}
+
+/** Commit a signup capture: resolve/create entity, write one PiiRecord
+ *  per field, write one Web-channel ShareRecord per record. L4 Transmit. */
+export const commitSignupCapture = (input: SignupCaptureInput) =>
+	invoke<SignupCaptureResult>('commit_signup_capture', { input });
+
+/** Decrypt a vault entry's plaintext value and inject it into the
+ *  active browser webview's input matching `selector`. L3 Modify. */
+export const autofillPiiRecord = (recordId: string, selector: string) =>
+	invoke<void>('autofill_pii_record', { recordId, selector });
+
+export interface BrowserCookie {
+	name: string;
+	value: string;
+	domain: string;
+	path: string;
+	/** ISO-8601 string or null for session cookies. */
+	expires: string | null;
+	http_only: boolean;
+	secure: boolean;
+	/** "strict" | "lax" | "none" | "" */
+	same_site: string;
+}
+
+/** List cookies attributable to an entity via its `domains[]`. Returns
+ *  empty when the entity has no domains or the browser isn't open. */
+export const listCookiesForEntity = (entityId: string) =>
+	invoke<BrowserCookie[]>('list_cookies_for_entity', { entityId });
+
+/** Delete one cookie by (name, domain, path). L5 Destruct. */
+export const deleteCookie = (name: string, domain: string, path: string) =>
+	invoke<void>('delete_cookie', { name, domain, path });
+
+/** Bulk-delete every cookie matching one of the entity's domains.
+ *  Returns the count actually removed. L5 Destruct. */
+export const clearEntityCookies = (entityId: string) =>
+	invoke<number>('clear_entity_cookies', { entityId });
+
+// Voice (push-to-talk). The STT loop itself is wake-word driven on the
+// backend; these signal the UI listening/idle state via a synthetic
+// `voice-event` emit.
+export const startListening = () => invoke<void>('start_listening');
+export const stopListening = () => invoke<void>('stop_listening');

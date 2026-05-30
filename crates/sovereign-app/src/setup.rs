@@ -6,7 +6,24 @@ use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
 pub async fn create_db(config: &AppConfig) -> Result<SurrealGraphDB> {
     let mode = match config.database.mode.as_str() {
         "memory" => StorageMode::Memory,
-        _ => StorageMode::Persistent(config.database.path.clone()),
+        _ => {
+            // Anchor relative paths to ~/.sovereign/ so the DB lives in
+            // a consistent location regardless of where the binary is
+            // launched from (cwd-dependent paths cause silent data loss
+            // when the user double-clicks vs. runs from project root).
+            let raw = std::path::Path::new(&config.database.path);
+            let resolved = if raw.is_absolute() {
+                raw.to_path_buf()
+            } else {
+                sovereign_core::home_dir().join(".sovereign").join(raw)
+            };
+            if let Some(parent) = resolved.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let resolved_str = resolved.to_string_lossy().into_owned();
+            tracing::info!("Database path: {resolved_str}");
+            StorageMode::Persistent(resolved_str)
+        }
     };
     let db = SurrealGraphDB::new(mode).await?;
     db.connect().await?;
@@ -16,8 +33,7 @@ pub async fn create_db(config: &AppConfig) -> Result<SurrealGraphDB> {
 
 #[cfg(feature = "encryption")]
 pub fn crypto_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    std::path::PathBuf::from(home).join(".sovereign").join("crypto")
+    sovereign_core::home_dir().join(".sovereign").join("crypto")
 }
 
 /// Load or create a stable device ID for this machine.
@@ -197,6 +213,20 @@ pub fn persona_db_path(
             }
         }
     }
+}
+
+/// Derive a 32-byte session log encryption key from the device key via HKDF-SHA256.
+#[cfg(all(feature = "encryption", feature = "encrypted-log"))]
+pub fn derive_session_log_key(
+    device_key: &sovereign_crypto::device_key::DeviceKey,
+) -> [u8; 32] {
+    use sovereign_crypto::aead::KEY_SIZE;
+
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, device_key.as_bytes());
+    let mut key = [0u8; KEY_SIZE];
+    hk.expand(b"sovereign-session-log", &mut key)
+        .expect("HKDF expand for session log key");
+    key
 }
 
 /// Wrap an orchestrator method call into a spawn-and-log callback.

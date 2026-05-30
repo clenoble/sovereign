@@ -1,4 +1,9 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use sovereign_core::content::ContentFields;
+
+use crate::manifest::Capability;
 
 /// A document passed to a skill for execution.
 #[derive(Debug, Clone)]
@@ -26,12 +31,71 @@ pub enum SkillOutput {
     StructuredData { kind: String, json: String },
 }
 
-/// Trait for core skills that are compiled into the Sovereign OS binary.
+/// Narrow DB interface exposed to skills.
+/// Skills never see the full database — only this subset.
+pub trait SkillDbAccess: Send + Sync {
+    /// Search documents matching query. Returns (id, title, snippet).
+    fn search_documents(&self, query: &str) -> anyhow::Result<Vec<(String, String, String)>>;
+    /// Get a single document by ID. Returns (title, thread_id, content).
+    fn get_document(&self, id: &str) -> anyhow::Result<(String, String, String)>;
+    /// List documents, optionally filtered by thread. Returns (id, title).
+    fn list_documents(&self, thread_id: Option<&str>) -> anyhow::Result<Vec<(String, String)>>;
+    /// Create a new document, returns the document ID.
+    fn create_document(&self, title: &str, thread_id: &str, content: &str) -> anyhow::Result<String>;
+
+    /// List outgoing relationships from a document.
+    /// Returns (relation_type, target_id) for each edge where this document is the source.
+    fn list_relationships(&self, doc_id: &str) -> anyhow::Result<Vec<(String, String)>>;
+
+    /// List backlinks pointing to a document.
+    /// Returns (source_id, relation_type) for each edge where this document is the target.
+    fn list_backlinks(&self, doc_id: &str) -> anyhow::Result<Vec<(String, String)>>;
+
+    /// List all documents with their incoming and outgoing link counts.
+    /// Returns (id, title, in_degree, out_degree). Used by Orphan Finder
+    /// to identify documents nothing links to (in_degree == 0).
+    fn list_all_documents_with_link_counts(
+        &self,
+    ) -> anyhow::Result<Vec<(String, String, u32, u32)>>;
+
+    /// Find a thread by name (case-insensitive substring match) and return
+    /// its id. If no match is found, create a new thread with the given
+    /// name and description and return its id. Used by skills that target
+    /// a well-known thread (e.g. Daily Journal -> "Journal").
+    fn find_or_create_thread(
+        &self,
+        name: &str,
+        description: &str,
+    ) -> anyhow::Result<String>;
+}
+
+/// Narrow LLM interface exposed to skills.
+/// Skills never see the orchestrator — only this single inference call.
+pub trait SkillLlmAccess: Send + Sync {
+    /// Run inference against the currently loaded model.
+    /// `max_tokens` caps the response length. Returns the generated text
+    /// stripped of any model-specific control tokens.
+    fn generate(&self, prompt: &str, max_tokens: u32) -> anyhow::Result<String>;
+}
+
+/// Resources available to a skill during execution.
+/// The registry checks that required_capabilities() is a subset of granted.
+pub struct SkillContext {
+    pub granted: HashSet<Capability>,
+    pub db: Option<Arc<dyn SkillDbAccess>>,
+    pub llm: Option<Arc<dyn SkillLlmAccess>>,
+}
+
+/// Trait for core skills that are compiled into the Sovereign GE binary.
 ///
 /// Core skills use direct Rust trait calls (no IPC).
 /// Community/sideloaded skills will use IPC instead.
 pub trait CoreSkill: Send + Sync {
     fn name(&self) -> &str;
+
+    /// Capabilities this skill requires to function.
+    fn required_capabilities(&self) -> Vec<Capability>;
+
     fn activate(&mut self) -> anyhow::Result<()>;
     fn deactivate(&mut self) -> anyhow::Result<()>;
 
@@ -42,11 +106,18 @@ pub trait CoreSkill: Send + Sync {
         action: &str,
         doc: &SkillDocument,
         params: &str,
+        ctx: &SkillContext,
     ) -> anyhow::Result<SkillOutput>;
 
     /// List available actions this skill provides.
     /// Returns vec of (action_id, display_label).
     fn actions(&self) -> Vec<(String, String)>;
+
+    /// File extensions this skill applies to (e.g. `["md", "txt"]`).
+    /// Empty means universal — the skill works on any document type.
+    fn file_types(&self) -> Vec<String> {
+        vec![]
+    }
 }
 
 #[cfg(test)]
@@ -61,6 +132,9 @@ mod tests {
         fn name(&self) -> &str {
             "mock-skill"
         }
+        fn required_capabilities(&self) -> Vec<Capability> {
+            vec![Capability::ReadDocument, Capability::WriteDocument]
+        }
         fn activate(&mut self) -> anyhow::Result<()> {
             self.active = true;
             Ok(())
@@ -74,6 +148,7 @@ mod tests {
             action: &str,
             doc: &SkillDocument,
             _params: &str,
+            _ctx: &SkillContext,
         ) -> anyhow::Result<SkillOutput> {
             match action {
                 "save" => {
@@ -106,7 +181,12 @@ mod tests {
                 ..Default::default()
             },
         };
-        let result = skill.execute("save", &doc, "").unwrap();
+        let ctx = SkillContext {
+            granted: skill.required_capabilities().into_iter().collect(),
+            db: None,
+            llm: None,
+        };
+        let result = skill.execute("save", &doc, "", &ctx).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => assert_eq!(cf.body, "saved: hello"),
             _ => panic!("Expected ContentUpdate"),

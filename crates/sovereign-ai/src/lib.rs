@@ -1,5 +1,8 @@
 pub mod action_gate;
 pub mod autocommit;
+pub mod consolidation;
+#[cfg(feature = "encrypted-log")]
+pub mod encrypted_log;
 pub mod events;
 pub mod injection;
 pub mod intent;
@@ -9,6 +12,8 @@ pub mod jiminy;
 pub mod jiminy_camera;
 pub mod llm;
 pub mod orchestrator;
+pub mod pii;
+pub mod reliability;
 pub mod session_log;
 pub mod tools;
 pub mod trust;

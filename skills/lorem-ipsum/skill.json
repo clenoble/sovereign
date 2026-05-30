@@ -1,0 +1,9 @@
+{
+    "name": "Lorem Ipsum",
+    "version": "0.0.1",
+    "description": "Insert placeholder text of configurable length (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["read_document", "write_document"],
+    "file_types": ["md", "txt"]
+}

@@ -1,0 +1,9 @@
+{
+    "name": "Table of Contents",
+    "version": "0.1.0",
+    "description": "Insert or refresh a table of contents from document headings",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_document", "write_document"],
+    "file_types": ["md", "markdown"]
+}

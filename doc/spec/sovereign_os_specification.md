@@ -1,4 +1,4 @@
-# Sovereign OS - Complete Technical Specification
+# Sovereign GE - Complete Technical Specification
 
 **Version:** 1.2
 **Date:** February 13, 2026
@@ -47,7 +47,7 @@ From **Application-Centric** (data imprisoned by software) to **Content-Centric*
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     USER INTERFACE LAYER                     │
-│  • Spatial Map (3D navigation)                               │
+│  • Spatial Map (2D infinite canvas)                           │
 │  • Document Taskbar (Intent Threads)                         │
 │  • Multimodal Input (Voice, Stylus, Keyboard)               │
 └────────────────────────┬────────────────────────────────────┘
@@ -403,7 +403,7 @@ Per-Document Key = random 256-bit per document, wrapped by KEK
 
 **Guardian Requirements:**
 - Explicit opt-in required
-- Does not need full Sovereign OS (small piece of software)
+- Does not need full Sovereign GE (small piece of software)
 - Stores shard as opaque encrypted blob
 
 ### Recovery Flow

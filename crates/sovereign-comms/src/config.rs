@@ -71,8 +71,10 @@ pub struct SignalAccountConfig {
 }
 
 fn default_signal_store_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    format!("{home}/.sovereign/signal")
+    sovereign_core::home_dir()
+        .join(".sovereign/signal")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// WhatsApp Cloud API configuration.

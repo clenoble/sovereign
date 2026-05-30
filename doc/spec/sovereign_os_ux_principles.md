@@ -1,4 +1,4 @@
-# Sovereign OS — Appendix B: AI Orchestrator UX Principles
+# Sovereign GE — Appendix B: AI Orchestrator UX Principles
 
 **Version:** 1.0
 **Date:** February 7, 2026

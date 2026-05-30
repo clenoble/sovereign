@@ -1,4 +1,4 @@
-//! Security type system for Sovereign OS.
+//! Security type system for Sovereign GE.
 //!
 //! Defines action levels, data/control plane separation,
 //! and the authorization primitives that every other phase depends on.
@@ -53,7 +53,10 @@ pub fn action_level(action: &str) -> ActionLevel {
     match action {
         "search" | "open" | "navigate" | "history" | "summarize" | "word_count"
         | "list_models" | "list_milestones" | "chat"
-        | "sync_device" | "list_guardians" | "sync_status" | "list_devices" => ActionLevel::Observe,
+        | "sync_device" | "list_guardians" | "sync_status" | "list_devices"
+        // UI panel toggles — read-only state changes the user can dismiss.
+        | "open_pii_dashboard" | "open_models" | "open_inbox" | "browse"
+        | "open_settings" => ActionLevel::Observe,
         "annotate" | "tag" | "bookmark" => ActionLevel::Annotate,
         "create_document" | "create_thread" | "rename_thread" | "move_document"
         | "restore" | "edit" | "find_replace" | "duplicate" | "import_file"

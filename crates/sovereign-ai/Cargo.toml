@@ -7,6 +7,8 @@ description = "AI orchestrator with llama.cpp inference (Phase 3)"
 [dependencies]
 sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
+sovereign-skills = { workspace = true }
+sovereign-crypto = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
@@ -26,7 +28,6 @@ ringbuf = { workspace = true, optional = true }
 rustpotter = { workspace = true, optional = true }
 
 # Optional P2P deps
-sovereign-crypto = { workspace = true, optional = true }
 sovereign-p2p = { workspace = true, optional = true }
 
 # Jiminy (Reachy Mini) bridge
@@ -34,13 +35,18 @@ reqwest = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 
+# Encrypted session log deps
+sha2 = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+
 [dev-dependencies]
 sovereign-db = { workspace = true, features = ["test-utils"] }
 
 [features]
-default = ["cuda"]
+default = ["cuda", "encrypted-log"]
 cuda = ["llama-cpp-2/cuda"]
 voice-stt = ["whisper-rs", "cpal", "ringbuf"]
 wake-word = ["voice-stt", "rustpotter"]
-p2p = ["sovereign-crypto", "sovereign-p2p"]
+p2p = ["sovereign-p2p"]
+encrypted-log = ["sha2", "base64"]
 jiminy = ["reqwest", "tokio-tungstenite", "futures-util", "ringbuf"]

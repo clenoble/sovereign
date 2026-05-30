@@ -21,6 +21,10 @@ pub struct MockGraphDB {
     conversations: RwLock<HashMap<String, Conversation>>,
     commits: RwLock<HashMap<String, Vec<Commit>>>,
     relationships: RwLock<Vec<RelatedTo>>,
+    suggested_links: RwLock<Vec<SuggestedLink>>,
+    entities: RwLock<HashMap<String, Entity>>,
+    pii_records: RwLock<HashMap<String, PiiRecord>>,
+    share_records: RwLock<HashMap<String, ShareRecord>>,
     next_id: AtomicU64,
 }
 
@@ -34,6 +38,10 @@ impl MockGraphDB {
             conversations: RwLock::new(HashMap::new()),
             commits: RwLock::new(HashMap::new()),
             relationships: RwLock::new(Vec::new()),
+            suggested_links: RwLock::new(Vec::new()),
+            entities: RwLock::new(HashMap::new()),
+            pii_records: RwLock::new(HashMap::new()),
+            share_records: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(1),
         }
     }
@@ -86,6 +94,34 @@ impl GraphDB for MockGraphDB {
         if let Some(c) = content { doc.content = c.to_string(); }
         doc.modified_at = Utc::now();
         Ok(doc.clone())
+    }
+
+    async fn update_document_reliability(
+        &self,
+        id: &str,
+        source_url: Option<&str>,
+        classification: Option<&str>,
+        score: Option<f32>,
+        assessment_json: Option<&str>,
+    ) -> DbResult<Document> {
+        let mut docs = self.documents.write().unwrap();
+        let doc = docs.get_mut(id).ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        if let Some(u) = source_url { doc.source_url = Some(u.to_string()); }
+        if let Some(c) = classification { doc.reliability_classification = Some(c.to_string()); }
+        if let Some(s) = score { doc.reliability_score = Some(s); }
+        if let Some(a) = assessment_json { doc.reliability_assessment = Some(a.to_string()); }
+        if classification.is_some() || score.is_some() {
+            doc.assessed_at = Some(Utc::now());
+        }
+        Ok(doc.clone())
+    }
+
+    async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
+        let mut docs = self.documents.write().unwrap();
+        let doc = docs.get_mut(id).ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        doc.spatial_x = x;
+        doc.spatial_y = y;
+        Ok(())
     }
 
     async fn delete_document(&self, id: &str) -> DbResult<()> {
@@ -173,11 +209,99 @@ impl GraphDB for MockGraphDB {
         Ok(rel)
     }
 
-    async fn list_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
+    async fn list_outgoing_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
+    async fn list_incoming_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
     async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>> {
         Ok(self.relationships.read().unwrap().clone())
     }
     async fn traverse(&self, _doc_id: &str, _depth: u32, _limit: u32) -> DbResult<Vec<Document>> { Ok(vec![]) }
+
+    // -- Suggested Links ---
+
+    async fn create_suggested_link(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        relation_type: RelationType,
+        strength: f32,
+        rationale: &str,
+        source: SuggestionSource,
+    ) -> DbResult<SuggestedLink> {
+        let key = self.next_key();
+        let link = SuggestedLink {
+            id: Some(Self::make_thing("suggested_link", &key)),
+            in_: Some(Self::make_thing("document", to_id.split(':').last().unwrap_or(to_id))),
+            out: Some(Self::make_thing("document", from_id.split(':').last().unwrap_or(from_id))),
+            relation_type,
+            strength,
+            rationale: rationale.to_string(),
+            source,
+            status: SuggestionStatus::Pending,
+            created_at: Utc::now(),
+            resolved_at: None,
+        };
+        self.suggested_links.write().unwrap().push(link.clone());
+        Ok(link)
+    }
+
+    async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> {
+        let links = self.suggested_links.read().unwrap();
+        Ok(links.iter().filter(|l| l.status == SuggestionStatus::Pending).cloned().collect())
+    }
+
+    async fn list_suggestions_for_document(&self, doc_id: &str) -> DbResult<Vec<SuggestedLink>> {
+        let links = self.suggested_links.read().unwrap();
+        let id_part = doc_id.split(':').last().unwrap_or(doc_id);
+        Ok(links
+            .iter()
+            .filter(|l| {
+                let in_match = l.in_.as_ref().map(|t| t.id.to_raw() == id_part).unwrap_or(false);
+                let out_match = l.out.as_ref().map(|t| t.id.to_raw() == id_part).unwrap_or(false);
+                in_match || out_match
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn resolve_suggestion(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+    ) -> DbResult<SuggestedLink> {
+        let result = {
+            let mut links = self.suggested_links.write().unwrap();
+            let link = links
+                .iter_mut()
+                .find(|l| l.id.as_ref().map(|t| t.id.to_raw() == id).unwrap_or(false))
+                .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+
+            link.status = status.clone();
+            link.resolved_at = Some(Utc::now());
+            link.clone()
+        }; // write lock dropped here
+
+        // If accepted, create a real relationship
+        if status == SuggestionStatus::Accepted {
+            if let (Some(in_thing), Some(out_thing)) = (&result.in_, &result.out) {
+                let from_str = crate::schema::thing_to_raw(out_thing);
+                let to_str = crate::schema::thing_to_raw(in_thing);
+                self.create_relationship(&from_str, &to_str, result.relation_type.clone(), result.strength).await?;
+            }
+        }
+        Ok(result)
+    }
+
+    async fn suggestion_exists(&self, from_id: &str, to_id: &str) -> DbResult<bool> {
+        let links = self.suggested_links.read().unwrap();
+        let from_part = from_id.split(':').last().unwrap_or(from_id);
+        let to_part = to_id.split(':').last().unwrap_or(to_id);
+        let exists = links.iter().any(|l| {
+            let in_id = l.in_.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+            let out_id = l.out.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+            (in_id == to_part && out_id == from_part) || (in_id == from_part && out_id == to_part)
+        });
+        Ok(exists)
+    }
 
     async fn adopt_document(&self, id: &str) -> DbResult<Document> {
         let mut docs = self.documents.write().unwrap();
@@ -317,6 +441,7 @@ impl GraphDB for MockGraphDB {
         Ok(_milestone)
     }
     async fn list_milestones(&self, _thread_id: &str) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
+    async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
     async fn delete_milestone(&self, _id: &str) -> DbResult<()> { Ok(()) }
 
     async fn create_contact(&self, mut contact: Contact) -> DbResult<Contact> {
@@ -417,6 +542,29 @@ impl GraphDB for MockGraphDB {
         Ok(())
     }
 
+    async fn list_all_messages(&self) -> DbResult<Vec<Message>> {
+        let msgs = self.messages.read().unwrap();
+        let mut all: Vec<Message> = msgs.values().cloned().collect();
+        all.sort_by(|a, b| b.sent_at.cmp(&a.sent_at));
+        Ok(all)
+    }
+
+    async fn list_messages_in_time_range(
+        &self,
+        after: DateTime<Utc>,
+        before: DateTime<Utc>,
+        limit: u32,
+    ) -> DbResult<Vec<Message>> {
+        let msgs = self.messages.read().unwrap();
+        let mut result: Vec<Message> = msgs.values()
+            .filter(|m| m.deleted_at.is_none() && m.sent_at >= after && m.sent_at <= before)
+            .cloned()
+            .collect();
+        result.sort_by(|a, b| b.sent_at.cmp(&a.sent_at));
+        result.truncate(limit as usize);
+        Ok(result)
+    }
+
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>> {
         let q = query.to_lowercase();
         let msgs = self.messages.read().unwrap();
@@ -475,6 +623,216 @@ impl GraphDB for MockGraphDB {
         let conv = convs.get_mut(conversation_id).ok_or_else(|| DbError::NotFound(conversation_id.to_string()))?;
         conv.linked_thread_id = Some(thread_id.to_string());
         Ok(conv.clone())
+    }
+
+    async fn create_entity(&self, mut entity: Entity) -> DbResult<Entity> {
+        let key = self.next_key();
+        let thing = Self::make_thing("entity", &key);
+        let id_str = thing_to_raw(&thing);
+        entity.id = Some(thing);
+        self.entities.write().unwrap().insert(id_str, entity.clone());
+        Ok(entity)
+    }
+
+    async fn list_entities(&self) -> DbResult<Vec<Entity>> {
+        let entities = self.entities.read().unwrap();
+        let mut out: Vec<Entity> = entities
+            .values()
+            .filter(|e| e.deleted_at.is_none())
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    async fn create_pii_record(&self, mut record: PiiRecord) -> DbResult<PiiRecord> {
+        let key = self.next_key();
+        let thing = Self::make_thing("pii_record", &key);
+        let id_str = thing_to_raw(&thing);
+        record.id = Some(thing);
+        self.pii_records.write().unwrap().insert(id_str, record.clone());
+        Ok(record)
+    }
+
+    async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord> {
+        self.pii_records
+            .read()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn list_pii_records(
+        &self,
+        entity_id: Option<&str>,
+        review_state: Option<ReviewState>,
+        stored_secret: Option<bool>,
+    ) -> DbResult<Vec<PiiRecord>> {
+        let records = self.pii_records.read().unwrap();
+        let mut out: Vec<PiiRecord> = records
+            .values()
+            .filter(|r| r.deleted_at.is_none())
+            .filter(|r| match entity_id {
+                Some(eid) => r.entity_id.as_deref() == Some(eid),
+                None => true,
+            })
+            .filter(|r| match &review_state {
+                Some(rs) => &r.review_state == rs,
+                None => true,
+            })
+            .filter(|r| match stored_secret {
+                Some(ss) => r.stored_secret == ss,
+                None => true,
+            })
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| b.discovered_at.cmp(&a.discovered_at));
+        Ok(out)
+    }
+
+    async fn update_pii_record_review_state(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+    ) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.review_state = review_state;
+        Ok(())
+    }
+
+    async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.deleted_at = Some(Utc::now().to_rfc3339());
+        Ok(())
+    }
+
+    async fn get_entity(&self, id: &str) -> DbResult<Entity> {
+        self.entities
+            .read()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn create_share_record(&self, mut record: ShareRecord) -> DbResult<ShareRecord> {
+        let key = self.next_key();
+        let thing = Self::make_thing("share_record", &key);
+        let id_str = thing_to_raw(&thing);
+        record.id = Some(thing);
+        self.share_records.write().unwrap().insert(id_str, record.clone());
+        Ok(record)
+    }
+
+    async fn list_share_records_for_entity(
+        &self,
+        entity_id: &str,
+    ) -> DbResult<Vec<ShareRecord>> {
+        let records = self.share_records.read().unwrap();
+        let mut out: Vec<ShareRecord> = records
+            .values()
+            .filter(|r| r.to_entity_id == entity_id)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| b.shared_at.cmp(&a.shared_at));
+        Ok(out)
+    }
+
+    async fn update_pii_record_sources(
+        &self,
+        id: &str,
+        sources: Vec<SourceRef>,
+    ) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.sources = sources;
+        Ok(())
+    }
+
+    async fn update_pii_record_revealed_at(
+        &self,
+        id: &str,
+        last_revealed_at: DateTime<Utc>,
+    ) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.last_revealed_at = Some(last_revealed_at);
+        Ok(())
+    }
+
+    async fn update_document_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let mut docs = self.documents.write().unwrap();
+        let doc = docs
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        doc.body_raw_encrypted = body_raw_encrypted.map(str::to_string);
+        doc.body_raw_nonce = body_raw_nonce.map(str::to_string);
+        doc.pii_scanned_at = pii_scanned_at;
+        Ok(())
+    }
+
+    async fn update_message_body(
+        &self,
+        id: &str,
+        body: &str,
+        body_html: Option<&str>,
+    ) -> DbResult<()> {
+        let mut messages = self.messages.write().unwrap();
+        let msg = messages
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        msg.body = body.to_string();
+        if let Some(h) = body_html {
+            msg.body_html = Some(h.to_string());
+        }
+        Ok(())
+    }
+
+    async fn update_message_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let mut messages = self.messages.write().unwrap();
+        let msg = messages
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        msg.body_raw_encrypted = body_raw_encrypted.map(str::to_string);
+        msg.body_raw_nonce = body_raw_nonce.map(str::to_string);
+        msg.pii_scanned_at = pii_scanned_at;
+        Ok(())
+    }
+
+    async fn update_contact_pii_fields(
+        &self,
+        id: &str,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let mut contacts = self.contacts.write().unwrap();
+        let c = contacts
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        c.pii_scanned_at = pii_scanned_at;
+        Ok(())
     }
 }
 
@@ -538,5 +896,121 @@ mod tests {
 
         let all = db.list_threads().await.unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn mock_create_and_list_suggested_links() {
+        let db = MockGraphDB::new();
+        let link = db
+            .create_suggested_link(
+                "document:a",
+                "document:b",
+                RelationType::References,
+                0.8,
+                "Both discuss CRDTs",
+                SuggestionSource::Consolidation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(link.status, SuggestionStatus::Pending);
+        assert!(link.resolved_at.is_none());
+
+        let pending = db.list_pending_suggestions().await.unwrap();
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mock_resolve_suggestion_accepted_creates_relationship() {
+        let db = MockGraphDB::new();
+        let link = db
+            .create_suggested_link(
+                "document:a",
+                "document:b",
+                RelationType::Supports,
+                0.7,
+                "Related topics",
+                SuggestionSource::Consolidation,
+            )
+            .await
+            .unwrap();
+        let link_id = link.id.as_ref().unwrap().id.to_raw();
+
+        let resolved = db.resolve_suggestion(&link_id, SuggestionStatus::Accepted).await.unwrap();
+        assert_eq!(resolved.status, SuggestionStatus::Accepted);
+        assert!(resolved.resolved_at.is_some());
+
+        // Should have created a real relationship
+        let rels = db.list_all_relationships().await.unwrap();
+        assert_eq!(rels.len(), 1);
+
+        // Pending list should be empty
+        let pending = db.list_pending_suggestions().await.unwrap();
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mock_resolve_suggestion_dismissed_no_relationship() {
+        let db = MockGraphDB::new();
+        let link = db
+            .create_suggested_link(
+                "document:x",
+                "document:y",
+                RelationType::Contradicts,
+                0.5,
+                "Opposing views",
+                SuggestionSource::Chat,
+            )
+            .await
+            .unwrap();
+        let link_id = link.id.as_ref().unwrap().id.to_raw();
+
+        db.resolve_suggestion(&link_id, SuggestionStatus::Dismissed).await.unwrap();
+
+        let rels = db.list_all_relationships().await.unwrap();
+        assert!(rels.is_empty());
+
+        let pending = db.list_pending_suggestions().await.unwrap();
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mock_suggestion_exists_bidirectional() {
+        let db = MockGraphDB::new();
+        db.create_suggested_link(
+            "document:a",
+            "document:b",
+            RelationType::References,
+            0.6,
+            "test",
+            SuggestionSource::Consolidation,
+        )
+        .await
+        .unwrap();
+
+        // Forward
+        assert!(db.suggestion_exists("document:a", "document:b").await.unwrap());
+        // Reverse
+        assert!(db.suggestion_exists("document:b", "document:a").await.unwrap());
+        // Unrelated
+        assert!(!db.suggestion_exists("document:a", "document:c").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn mock_list_pending_excludes_resolved() {
+        let db = MockGraphDB::new();
+        let l1 = db
+            .create_suggested_link("document:a", "document:b", RelationType::Supports, 0.8, "r1", SuggestionSource::Consolidation)
+            .await
+            .unwrap();
+        db.create_suggested_link("document:c", "document:d", RelationType::References, 0.6, "r2", SuggestionSource::Consolidation)
+            .await
+            .unwrap();
+
+        let l1_id = l1.id.as_ref().unwrap().id.to_raw();
+        db.resolve_suggestion(&l1_id, SuggestionStatus::Accepted).await.unwrap();
+
+        let pending = db.list_pending_suggestions().await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].rationale, "r2");
     }
 }

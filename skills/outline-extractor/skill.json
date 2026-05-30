@@ -1,0 +1,9 @@
+{
+    "name": "Outline Extractor",
+    "version": "0.1.0",
+    "description": "Extract a nested outline from document headings",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_document"],
+    "file_types": ["md", "markdown"]
+}

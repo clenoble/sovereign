@@ -1,5 +1,6 @@
-use crate::traits::{CoreSkill, SkillDocument, SkillOutput};
-use sovereign_core::content::ContentFields;
+use crate::content_util::replace_body;
+use crate::manifest::Capability;
+use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
 pub struct FindReplaceSkill;
 
@@ -12,6 +13,10 @@ struct FindReplaceParams {
 impl CoreSkill for FindReplaceSkill {
     fn name(&self) -> &str {
         "find-replace"
+    }
+
+    fn required_capabilities(&self) -> Vec<Capability> {
+        vec![Capability::ReadDocument, Capability::WriteDocument]
     }
 
     fn activate(&mut self) -> anyhow::Result<()> {
@@ -27,6 +32,7 @@ impl CoreSkill for FindReplaceSkill {
         action: &str,
         doc: &SkillDocument,
         params: &str,
+        _ctx: &SkillContext,
     ) -> anyhow::Result<SkillOutput> {
         match action {
             "find_replace" => {
@@ -47,11 +53,7 @@ impl CoreSkill for FindReplaceSkill {
                     });
                 }
 
-                Ok(SkillOutput::ContentUpdate(ContentFields {
-                    body: new_body,
-                    images: doc.content.images.clone(),
-                    videos: doc.content.videos.clone(),
-                }))
+                Ok(SkillOutput::ContentUpdate(replace_body(doc, new_body)))
             }
             _ => anyhow::bail!("Unknown action: {action}"),
         }
@@ -60,29 +62,23 @@ impl CoreSkill for FindReplaceSkill {
     fn actions(&self) -> Vec<(String, String)> {
         vec![("find_replace".into(), "Find & Replace".into())]
     }
+
+    fn file_types(&self) -> Vec<String> {
+        vec!["md".into(), "txt".into()]
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_doc(body: &str) -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "Test".into(),
-            content: ContentFields {
-                body: body.into(),
-                ..Default::default()
-            },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc};
 
     #[test]
     fn basic_replace() {
         let skill = FindReplaceSkill;
         let doc = make_doc("hello world");
         let params = r#"{"find": "world", "replace": "rust"}"#;
-        let result = skill.execute("find_replace", &doc, params).unwrap();
+        let result = skill.execute("find_replace", &doc, params, &dummy_ctx()).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
                 assert_eq!(cf.body, "hello rust");
@@ -96,7 +92,7 @@ mod tests {
         let skill = FindReplaceSkill;
         let doc = make_doc("aaa bbb aaa ccc aaa");
         let params = r#"{"find": "aaa", "replace": "xxx"}"#;
-        let result = skill.execute("find_replace", &doc, params).unwrap();
+        let result = skill.execute("find_replace", &doc, params, &dummy_ctx()).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
                 assert_eq!(cf.body, "xxx bbb xxx ccc xxx");
@@ -110,7 +106,7 @@ mod tests {
         let skill = FindReplaceSkill;
         let doc = make_doc("hello world");
         let params = r#"{"find": "notfound", "replace": "x"}"#;
-        let result = skill.execute("find_replace", &doc, params).unwrap();
+        let result = skill.execute("find_replace", &doc, params, &dummy_ctx()).unwrap();
         match result {
             SkillOutput::StructuredData { kind, json } => {
                 assert_eq!(kind, "find_replace");
@@ -126,7 +122,7 @@ mod tests {
         let skill = FindReplaceSkill;
         let doc = make_doc("hello");
         let params = r#"{"find": "", "replace": "x"}"#;
-        let result = skill.execute("find_replace", &doc, params);
+        let result = skill.execute("find_replace", &doc, params, &dummy_ctx());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty"));
     }
@@ -135,7 +131,7 @@ mod tests {
     fn bad_params_errors() {
         let skill = FindReplaceSkill;
         let doc = make_doc("hello");
-        let result = skill.execute("find_replace", &doc, "not json");
+        let result = skill.execute("find_replace", &doc, "not json", &dummy_ctx());
         assert!(result.is_err());
     }
 

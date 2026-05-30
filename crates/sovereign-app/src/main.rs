@@ -1,8 +1,31 @@
 mod cli;
 mod commands;
+mod llm_bridge;
+#[cfg(feature = "duress")]
 mod duress;
+mod err;
 mod seed;
 mod setup;
+
+mod tauri_commands;
+mod tauri_events;
+#[cfg(feature = "encryption")]
+mod pii_ingest;
+#[cfg(all(feature = "comms", feature = "encryption"))]
+mod pii_contact_hook;
+#[cfg(all(feature = "comms", feature = "encryption"))]
+mod pii_message_hook;
+#[cfg(feature = "comms")]
+mod pii_share_hook;
+#[cfg(all(feature = "comms", feature = "encryption"))]
+mod pii_sweep;
+mod tauri_state;
+
+#[cfg(feature = "web-browse")]
+mod web;
+mod browser;
+mod browser_pii;
+mod cookie_api;
 
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -27,13 +50,12 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = AppConfig::load_or_default(cli.config.as_deref());
 
-    // Create a manual tokio runtime — Iced 0.14 (with `tokio` feature) creates
-    // its own runtime, so we must NOT have an active runtime on the main thread
-    // when calling run_app().
     let rt = tokio::runtime::Runtime::new()?;
 
-    match cli.command {
-        Commands::Run => run_gui(&config, &rt)?,
+    match cli.command.unwrap_or(Commands::Run) {
+        Commands::Run => {
+            run_tauri(&config, &rt)?;
+        }
 
         Commands::CreateDoc { title, thread_id, is_owned } => {
             rt.block_on(commands::create_doc(&config, title, thread_id, is_owned))?;
@@ -126,581 +148,457 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Launch the GUI: initialize all subsystems and start the Iced application.
-fn run_gui(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
-    // Scan skills directory for manifests
-    let mut registry = sovereign_skills::SkillRegistry::new();
-    let skills_dir = std::path::Path::new("skills");
-    if skills_dir.exists() {
-        registry.scan_directory(skills_dir)?;
-        tracing::info!("Loaded {} skill manifests", registry.manifests().len());
-        for manifest in registry.manifests() {
-            tracing::info!(
-                "  - {} v{} ({})",
-                manifest.name,
-                manifest.version,
-                manifest.description
-            );
+/// Launch the Tauri web UI: initialize backend subsystems, then start Tauri.
+fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
+    // Compute profile directory (~/.sovereign)
+    let profile_dir = sovereign_core::home_dir().join(".sovereign");
+
+    // Crypto subsystem: prepare the auth dir / salt / device-id but do
+    // NOT prompt for a password here (rpassword would block on a missing
+    // console in GUI mode). The actual DeviceKey is loaded after login
+    // via the validate_password / complete_onboarding Tauri commands —
+    // see install_session() in tauri_commands::auth and AppState's
+    // RwLock-backed device_key field.
+    #[cfg(feature = "encryption")]
+    if config.crypto.enabled {
+        if let Err(e) = setup::prepare_auth() {
+            tracing::warn!("prepare_auth failed: {e}");
         }
     }
 
-    // Initialize crypto subsystem if enabled
-    #[cfg(feature = "encryption")]
-    let _crypto_state = if config.crypto.enabled {
-        match setup::init_crypto() {
-            Ok((device_key, key_db, kek)) => {
-                Some((device_key, key_db, kek))
+    // Run async backend setup inside the existing runtime
+    let (db, orchestrator, skill_registry, skill_db, decision_tx, feedback_tx, orch_tx, orch_rx, autocommit, model_assignments) =
+        rt.block_on(async {
+            let db = create_db(config).await?;
+            seed::seed_if_empty(&db).await?;
+
+            // PII seed runs in complete_onboarding (auth.rs) once the
+            // device_key is installed. Skipped at startup because the
+            // device_key isn't available until login completes.
+
+            // Seed user profile and session log history
+            let profile_dir = sovereign_core::home_dir()
+                .join(".sovereign")
+                .join("orchestrator");
+            if let Err(e) = seed::seed_profile_and_history(&profile_dir) {
+                tracing::warn!("Profile/history seed failed: {e}");
+            }
+
+            let db_arc = Arc::new(db);
+
+            // Register skills
+            let mut registry = sovereign_skills::SkillRegistry::new();
+            let skill_db: Arc<dyn sovereign_skills::SkillDbAccess> =
+                sovereign_skills::wrap_db(db_arc.clone());
+            registry.register(Box::new(sovereign_skills::skills::text_editor::TextEditorSkill));
+            registry.register(Box::new(sovereign_skills::skills::image::ImageSkill));
+            registry.register(Box::new(sovereign_skills::skills::pdf_export::PdfExportSkill));
+            registry.register(Box::new(sovereign_skills::skills::word_count::WordCountSkill));
+            registry.register(Box::new(sovereign_skills::skills::find_replace::FindReplaceSkill));
+            registry.register(Box::new(sovereign_skills::skills::search::SearchSkill));
+            registry.register(Box::new(sovereign_skills::skills::file_import::FileImportSkill));
+            registry.register(Box::new(sovereign_skills::skills::duplicate_document::DuplicateDocumentSkill));
+            registry.register(Box::new(sovereign_skills::skills::markdown_editor::MarkdownEditorSkill));
+            registry.register(Box::new(sovereign_skills::skills::video::VideoSkill));
+            // Wave A: read_document only
+            registry.register(Box::new(sovereign_skills::skills::outline_extractor::OutlineExtractorSkill));
+            registry.register(Box::new(sovereign_skills::skills::link_checker::LinkCheckerSkill));
+            registry.register(Box::new(sovereign_skills::skills::pii_detector::PiiDetectorSkill));
+            registry.register(Box::new(sovereign_skills::skills::readability_score::ReadabilityScoreSkill));
+            registry.register(Box::new(sovereign_skills::skills::html_export::HtmlExportSkill));
+            registry.register(Box::new(sovereign_skills::skills::plaintext_export::PlaintextExportSkill));
+            // Wave B: read_document + write_document
+            registry.register(Box::new(sovereign_skills::skills::table_of_contents::TableOfContentsSkill));
+            registry.register(Box::new(sovereign_skills::skills::json_yaml_formatter::JsonYamlFormatterSkill));
+            registry.register(Box::new(sovereign_skills::skills::csv_to_md::CsvToMdSkill));
+            registry.register(Box::new(sovereign_skills::skills::redactor::RedactorSkill));
+            // Wave D: read_all / write_all (cross-document)
+            registry.register(Box::new(sovereign_skills::skills::backlink_map::BacklinkMapSkill));
+            registry.register(Box::new(sovereign_skills::skills::orphan_finder::OrphanFinderSkill));
+            registry.register(Box::new(sovereign_skills::skills::daily_journal::DailyJournalSkill));
+            // Wave E: LLM-using
+            registry.register(Box::new(sovereign_skills::skills::thread_summary::ThreadSummarySkill));
+            tracing::info!("Registered {} core skills", registry.all_skills().len());
+
+            // Create orchestrator channels
+            let (orch_tx, orch_rx) = mpsc::channel::<OrchestratorEvent>();
+            let (decision_tx, decision_rx) = tokio::sync::mpsc::channel::<ActionDecision>(32);
+            let (feedback_tx, feedback_rx) = tokio::sync::mpsc::channel::<FeedbackEvent>(32);
+
+            // Initialize orchestrator
+            let db_dyn: Arc<dyn sovereign_db::GraphDB> = db_arc.clone();
+            let orchestrator = match sovereign_ai::Orchestrator::new(
+                config.ai.clone(),
+                db_dyn,
+                orch_tx.clone(),
+            )
+            .await
+            {
+                Ok(mut o) => {
+                    o.set_decision_rx(decision_rx);
+                    o.set_feedback_rx(feedback_rx);
+
+                    // P2P startup is deferred to post-login wiring (v0.0.5);
+                    // requires the device key to derive identity, which is
+                    // not available until the user authenticates.
+                    #[cfg(feature = "p2p")]
+                    if config.p2p.enabled {
+                        tracing::warn!(
+                            "P2P startup deferred until login wiring is complete (v0.0.5)"
+                        );
+                    }
+
+                    // Session-log encryption + PII tokenization for the
+                    // orchestrator are installed after login by
+                    // install_session() in tauri_commands::auth.rs.
+
+                    tracing::info!("AI orchestrator initialized (Tauri mode)");
+                    Some(Arc::new(o))
+                }
+                Err(e) => {
+                    tracing::warn!("AI orchestrator unavailable: {e}");
+                    None
+                }
+            };
+
+            // Auto-commit engine
+            let autocommit = Arc::new(tokio::sync::Mutex::new(
+                sovereign_ai::AutoCommitEngine::new(db_arc.clone()),
+            ));
+
+            // Model assignments from config
+            let model_assignments = tauri_state::ModelAssignments {
+                router: config.ai.router_model.clone(),
+                reasoning: config.ai.reasoning_model.clone(),
+            };
+
+            Ok::<_, anyhow::Error>((
+                db_arc, orchestrator, Arc::new(registry), skill_db,
+                decision_tx, feedback_tx, orch_tx, orch_rx,
+                autocommit, model_assignments,
+            ))
+        })?;
+
+    // Jiminy embodiment (BODY): fan-out every orchestrator event to BOTH the
+    // Tauri event forwarder AND the JiminyBridge, so the robot expresses head
+    // poses / antenna motion / emotions and speaks ChatResponse via the sidecar
+    // /speak (Piper TTS) — all without changing the orchestrator. The fan-out
+    // lives here in the synchronous body because main returns `orch_rx` out of
+    // the async block; we rebind it to the UI receiver so the existing
+    // spawn_event_forwarder wiring below consumes the fanned-out stream.
+    #[cfg(feature = "jiminy")]
+    let orch_rx = {
+        let (ui_tx, ui_rx) = mpsc::channel::<OrchestratorEvent>();
+        let (jiminy_tx, jiminy_rx) = mpsc::channel::<OrchestratorEvent>();
+        std::thread::Builder::new()
+            .name("jiminy-fanout".into())
+            .spawn(move || {
+                while let Ok(event) = orch_rx.recv() {
+                    let _ = ui_tx.send(event.clone());
+                    let _ = jiminy_tx.send(event);
+                }
+            })
+            .expect("Failed to spawn jiminy-fanout thread");
+
+        let jiminy_url =
+            std::env::var("JIMINY_URL").unwrap_or_else(|_| "http://127.0.0.1:9100".into());
+        let _jiminy_handle =
+            sovereign_ai::jiminy::JiminyBridge::new(&jiminy_url).spawn(jiminy_rx);
+        tracing::info!("Jiminy bridge started (sidecar at {jiminy_url})");
+        ui_rx
+    };
+
+    // Jiminy camera poller (keep-compiling only — no Tauri consumer yet).
+    // Binds SharedFrame to `_` so nothing leaks as an unused-var warning.
+    #[cfg(feature = "jiminy")]
+    {
+        let jiminy_url =
+            std::env::var("JIMINY_URL").unwrap_or_else(|_| "http://127.0.0.1:9100".into());
+        let frame = sovereign_ai::jiminy_camera::shared_frame();
+        let _camera_handle =
+            sovereign_ai::jiminy_camera::spawn_poller(&jiminy_url, frame.clone(), 70, 640);
+        let _ = frame;
+        tracing::info!("Jiminy camera poller started");
+    }
+
+    // Wrap orch_rx so it can be moved into the setup closure
+    let orch_rx = std::sync::Mutex::new(Some(orch_rx));
+
+    // Clone DB for purge background task
+    let purge_db = db.clone();
+
+    // Clone orchestrator for consolidation idle-watcher
+    let consolidation_orch = orchestrator.clone();
+
+    // PII sweep watcher (4e4) is deferred to v0.0.5: it currently
+    // captures device_key by value at spawn time, but device_key is no
+    // longer available at startup (requires login). To re-enable, the
+    // sweep loop must read state.device_key().await each cycle.
+    #[cfg(all(feature = "comms", feature = "encryption"))]
+    tracing::info!("PII sweep watcher idle until next launch (v0.0.5)");
+
+    // Bridge orchestrator into SkillLlmAccess for skills that need inference.
+    let skill_llm: Option<Arc<dyn sovereign_skills::SkillLlmAccess>> =
+        orchestrator.as_ref().map(|o| llm_bridge::wrap_orchestrator(o.clone()));
+
+    // Initialize voice pipeline (optional). The wake-word + transcribe +
+    // voice_query_cb path routes user speech into the orchestrator
+    // (handle_query). VoiceEvents (listening / transcription / speaking /
+    // idle) are surfaced to the Svelte frontend via a Tauri "voice-event"
+    // emit (see spawn_voice_forwarder in the .setup() closure below) — this
+    // is the Tauri-native replacement for the retired Iced taskbar feedback.
+    let voice_rx = if config.voice.enabled {
+        let (vtx, vrx) = mpsc::channel();
+        let voice_query_cb: Box<dyn Fn(String) + Send + 'static> =
+            if let Some(ref orch) = orchestrator {
+                setup::orch_callback(orch, "Voice query error", |o, t| {
+                    Box::pin(o.handle_query(t))
+                })
+            } else {
+                Box::new(|text: String| {
+                    tracing::warn!("Voice query ignored (no orchestrator): {text}");
+                })
+            };
+
+        match sovereign_ai::voice::VoicePipeline::spawn(
+            config.voice.clone(),
+            vtx,
+            voice_query_cb,
+        ) {
+            Ok(_handle) => {
+                tracing::info!("Voice pipeline started");
+                std::sync::Mutex::new(Some(vrx))
             }
             Err(e) => {
-                tracing::warn!("Crypto init failed (continuing without encryption): {e}");
-                None
+                tracing::warn!("Voice pipeline unavailable: {e}");
+                std::sync::Mutex::new(None)
             }
         }
     } else {
-        None
+        tracing::info!("Voice pipeline disabled in config");
+        std::sync::Mutex::new(None)
     };
 
-    // Run all async setup inside rt.block_on, then launch Iced outside
-    // so the main thread has no active tokio context.
-    let (app, _boot_task) = rt.block_on(async {
-        // Load documents and threads from DB for the canvas
-        let db = create_db(config).await?;
-        seed::seed_if_empty(&db).await?;
-
-        // Seed user profile and session log history for testing
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| "/tmp".into());
-        let profile_dir = std::path::PathBuf::from(home)
-            .join(".sovereign")
-            .join("orchestrator");
-        if let Err(e) = seed::seed_profile_and_history(&profile_dir) {
-            tracing::warn!("Profile/history seed failed: {e}");
-        }
-
-        // Parallelize the 5 independent DB queries.
-        let (threads, documents, relationships, contacts, conversations) = tokio::try_join!(
-            db.list_threads(),
-            db.list_documents(None),
-            db.list_all_relationships(),
-            db.list_contacts(),
-            db.list_conversations(None),
-        )?;
-
-        // Lazy-load commits: pass empty map, load on demand when user opens version history.
-        let commits_map = std::collections::HashMap::new();
-
-        // Lazy-load messages: pass empty vec, load on demand when user opens a contact panel.
-        let all_messages = Vec::new();
-
-        tracing::info!(
-            "Loaded {} documents, {} threads, {} relationships, {} contacts, {} conversations, {} messages",
-            documents.len(),
-            threads.len(),
-            relationships.len(),
-            contacts.len(),
-            conversations.len(),
-            all_messages.len(),
-        );
-
-        // Register all core skills
-        let db_arc_for_skills = Arc::new(db);
-        registry.register(Box::new(
-            sovereign_skills::skills::text_editor::TextEditorSkill,
-        ));
-        registry.register(Box::new(sovereign_skills::skills::image::ImageSkill));
-        registry.register(Box::new(
-            sovereign_skills::skills::pdf_export::PdfExportSkill,
-        ));
-        registry.register(Box::new(
-            sovereign_skills::skills::word_count::WordCountSkill,
-        ));
-        registry.register(Box::new(
-            sovereign_skills::skills::find_replace::FindReplaceSkill,
-        ));
-        registry.register(Box::new(sovereign_skills::skills::search::SearchSkill::new(
-            db_arc_for_skills.clone(),
-        )));
-        registry.register(Box::new(
-            sovereign_skills::skills::file_import::FileImportSkill::new(
-                db_arc_for_skills.clone(),
+    // Build Tauri app
+    tauri::Builder::default()
+        .manage(tauri_state::AppState {
+            db,
+            orchestrator,
+            config: config.clone(),
+            skill_registry,
+            skill_db,
+            skill_llm,
+            decision_tx,
+            feedback_tx,
+            orch_tx,
+            theme: std::sync::Mutex::new(
+                sovereign_core::profile::UserProfile::load(&profile_dir)
+                    .map(|p| p.theme)
+                    .unwrap_or_else(|_| "dark".to_string()),
             ),
-        ));
-        registry.register(Box::new(
-            sovereign_skills::skills::duplicate_document::DuplicateDocumentSkill::new(
-                db_arc_for_skills.clone(),
-            ),
-        ));
-        registry.register(Box::new(
-            sovereign_skills::skills::markdown_editor::MarkdownEditorSkill,
-        ));
-        registry.register(Box::new(
-            sovereign_skills::skills::video::VideoSkill,
-        ));
-        tracing::info!("Registered {} core skills", registry.all_skills().len());
-
-        // Create event channels
-        let (orch_tx, orch_rx) = mpsc::channel::<OrchestratorEvent>();
-        let (decision_tx, decision_rx) = tokio::sync::mpsc::channel::<ActionDecision>(32);
-        let (feedback_tx, feedback_rx) = tokio::sync::mpsc::channel::<FeedbackEvent>(32);
-
-        // Jiminy bridge: fan-out orchestrator events to both UI and robot
-        #[cfg(feature = "jiminy")]
-        let (orch_rx, _jiminy_handle) = {
-            let (ui_tx, ui_rx) = mpsc::channel::<OrchestratorEvent>();
-            let (jiminy_tx, jiminy_rx) = mpsc::channel::<OrchestratorEvent>();
-
-            // Fan-out thread: clone each event to both UI and Jiminy
-            std::thread::Builder::new()
-                .name("jiminy-fanout".into())
-                .spawn(move || {
-                    while let Ok(event) = orch_rx.recv() {
-                        let _ = ui_tx.send(event.clone());
-                        let _ = jiminy_tx.send(event);
-                    }
-                })
-                .expect("Failed to spawn jiminy-fanout thread");
-
-            let jiminy_url = std::env::var("JIMINY_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:9100".into());
-            let bridge = sovereign_ai::jiminy::JiminyBridge::new(&jiminy_url);
-            let handle = bridge.spawn(jiminy_rx);
-            tracing::info!("Jiminy bridge started (sidecar at {jiminy_url})");
-
-            (ui_rx, handle)
-        };
-
-        // Jiminy camera poller: fetches JPEG frames at ~5fps into SharedFrame
-        #[cfg(feature = "jiminy")]
-        let camera_frame = {
-            let jiminy_url = std::env::var("JIMINY_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:9100".into());
-            let frame = sovereign_ai::jiminy_camera::shared_frame();
-            let _camera_handle =
-                sovereign_ai::jiminy_camera::spawn_poller(&jiminy_url, frame.clone(), 70, 640);
-            tracing::info!("Jiminy camera poller started");
-            Some(frame)
-        };
-        #[cfg(not(feature = "jiminy"))]
-        let camera_frame: Option<std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>> = None;
-
-        // Try to initialize AI orchestrator
-        let db_arc = db_arc_for_skills;
-        let db_dyn: std::sync::Arc<dyn sovereign_db::GraphDB> = db_arc.clone();
-        let orchestrator = match sovereign_ai::Orchestrator::new(
-            config.ai.clone(),
-            db_dyn,
-            orch_tx.clone(),
-        )
-        .await
-        {
-            Ok(mut o) => {
-                o.set_decision_rx(decision_rx);
-                o.set_feedback_rx(feedback_rx);
-
-                // Wire P2P channels if crypto + P2P are enabled
-                #[cfg(feature = "p2p")]
-                if config.p2p.enabled {
-                    if let Some((ref device_key, _, _)) = _crypto_state {
-                        match sovereign_p2p::identity::derive_keypair(device_key) {
-                            Ok(keypair) => {
-                                let p2p_config = sovereign_p2p::config::P2pConfig {
-                                    enabled: true,
-                                    listen_port: config.p2p.listen_port,
-                                    rendezvous_server: config.p2p.rendezvous_server.clone(),
-                                    device_name: config.p2p.device_name.clone(),
-                                };
-                                let (p2p_event_tx, p2p_event_rx) =
-                                    tokio::sync::mpsc::channel(256);
-                                let (p2p_cmd_tx, p2p_cmd_rx) =
-                                    tokio::sync::mpsc::channel(64);
-
-                                let sync_service = Arc::new(
-                                    sovereign_p2p::SyncService::new(
-                                        db_arc.clone(),
-                                        p2p_config.device_name.clone(),
-                                    ),
-                                );
-                                match sovereign_p2p::node::SovereignNode::new(
-                                    &p2p_config, keypair, p2p_event_tx, p2p_cmd_rx, sync_service,
-                                ) {
-                                    Ok(node) => {
-                                        tokio::spawn(node.run());
-                                        o.set_p2p_channels(p2p_cmd_tx, p2p_event_rx);
-                                        tracing::info!("P2P node spawned");
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("P2P node failed to start: {e}");
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("P2P identity derivation failed: {e}");
-                            }
-                        }
-                    } else {
-                        tracing::warn!(
-                            "P2P enabled but crypto not initialized — skipping P2P"
-                        );
-                    }
-                }
-
-                tracing::info!("AI orchestrator initialized");
-                Some(Arc::new(o))
-            }
-            Err(e) => {
-                tracing::warn!("AI orchestrator unavailable: {e}");
-                None
-            }
-        };
-
-        // Channel for inbox reply → async send task
-        let send_message_tx: Option<
-            tokio::sync::mpsc::Sender<sovereign_ui::panels::inbox_panel::SendRequest>,
-        > = None;
-        // Wire comms sync if enabled
-        #[cfg(feature = "comms")]
-        if config.comms.enabled {
-            let (comms_event_tx, mut comms_event_rx) =
-                tokio::sync::mpsc::channel::<sovereign_comms::CommsEvent>(256);
-            let mut comms_sync = CommsSync::new(
-                comms_event_tx,
-                config.comms.poll_interval_secs,
-            );
-
-            // Add email channel if configured
-            #[cfg(feature = "comms-email")]
+            autocommit: autocommit.clone(),
+            model_assignments: std::sync::Mutex::new(model_assignments),
+            profile_dir,
+            #[cfg(feature = "encryption")]
+            device_key: tokio::sync::RwLock::new(None),
+        })
+        .invoke_handler(tauri::generate_handler![
+            // AI: status, chat, search, action gate, models, trust
+            tauri_commands::ai::greet,
+            tauri_commands::ai::get_status,
+            tauri_commands::ai::chat_message,
+            tauri_commands::ai::search_documents,
+            tauri_commands::ai::search_query,
+            tauri_commands::ai::approve_action,
+            tauri_commands::ai::reject_action,
+            tauri_commands::ai::accept_suggestion,
+            tauri_commands::ai::dismiss_suggestion,
+            tauri_commands::ai::scan_models,
+            tauri_commands::ai::assign_model_role,
+            tauri_commands::ai::delete_model,
+            tauri_commands::ai::get_trust_entries,
+            tauri_commands::ai::reset_trust_action,
+            tauri_commands::ai::reset_trust_all,
+            // Voice: push-to-talk control surface
+            tauri_commands::voice::start_listening,
+            tauri_commands::voice::stop_listening,
+            // Documents: list, CRUD, commits, skills, import
+            tauri_commands::documents::list_documents,
+            tauri_commands::documents::list_threads,
+            tauri_commands::documents::toggle_theme,
+            tauri_commands::documents::get_theme,
+            tauri_commands::documents::get_document,
+            tauri_commands::documents::save_document,
+            tauri_commands::documents::create_document,
+            tauri_commands::documents::close_document,
+            tauri_commands::documents::delete_document,
+            tauri_commands::documents::list_commits,
+            tauri_commands::documents::restore_commit,
+            tauri_commands::documents::list_skills_for_doc,
+            tauri_commands::documents::execute_skill,
+            tauri_commands::documents::list_all_skills,
+            tauri_commands::documents::import_file,
+            // Canvas
+            tauri_commands::canvas::canvas_load,
+            tauri_commands::canvas::update_document_position,
+            tauri_commands::canvas::canvas_load_messages,
+            // Threads
+            tauri_commands::threads::create_thread,
+            tauri_commands::threads::update_thread,
+            tauri_commands::threads::delete_thread,
+            tauri_commands::threads::move_document_to_thread,
+            // Contacts & messaging
+            tauri_commands::contacts::list_contacts,
+            tauri_commands::contacts::get_contact_detail,
+            tauri_commands::contacts::list_conversations,
+            tauri_commands::contacts::list_messages,
+            tauri_commands::contacts::mark_message_read,
+            tauri_commands::contacts::create_relationship,
+            // Auth, onboarding, profile, config
+            tauri_commands::auth::check_auth_state,
+            tauri_commands::auth::validate_password,
+            tauri_commands::auth::validate_password_policy,
+            tauri_commands::auth::complete_onboarding,
+            tauri_commands::auth::get_profile,
+            tauri_commands::auth::save_profile,
+            tauri_commands::auth::get_config,
+            // Browser, web, comms
+            tauri_commands::browser::get_comms_config,
+            tauri_commands::browser::save_comms_config,
+            tauri_commands::browser::open_browser,
+            tauri_commands::browser::close_browser,
+            tauri_commands::browser::navigate_browser,
+            tauri_commands::browser::browser_back,
+            tauri_commands::browser::browser_forward,
+            tauri_commands::browser::browser_refresh,
+            tauri_commands::browser::set_browser_bounds,
+            tauri_commands::browser::set_browser_visible,
+            tauri_commands::browser::fetch_web_page,
+            tauri_commands::browser::save_web_page,
+            tauri_commands::browser::assess_reliability,
+            tauri_commands::browser::reassess_reliability,
+            // Memory consolidation — AI-suggested links
+            tauri_commands::suggestions::list_pending_suggestions,
+            tauri_commands::suggestions::accept_link_suggestion,
+            tauri_commands::suggestions::dismiss_link_suggestion,
+            tauri_commands::suggestions::trigger_consolidation,
+            // PII resolution (5c). Stubs out to a clear error string
+            // when the `encryption` feature isn't enabled.
+            tauri_commands::pii::resolve_pii_tokens,
+            // PII dashboard (6) — read paths and review/redact write paths.
+            tauri_commands::pii::list_pii_entities,
+            tauri_commands::pii::get_pii_entity,
+            tauri_commands::pii::list_pii_records,
+            tauri_commands::pii::confirm_pii_record,
+            tauri_commands::pii::dismiss_pii_record,
+            tauri_commands::pii::redact_pii_record,
+            // PII dashboard (6c) — per-record reveal + vault add.
+            tauri_commands::pii::reveal_pii_record,
+            tauri_commands::pii::create_vault_entry,
+            // PII dashboard (7b) — sharing ledger.
+            tauri_commands::pii::list_share_records_for_entity,
+            // Browser-PII (8b) — form extraction + autofill + password gen.
+            tauri_commands::pii::extract_form_fields,
+            tauri_commands::pii::__browser_form_extracted,
+            tauri_commands::pii::autofill_pii_record,
+            tauri_commands::pii::generate_password,
+            // Cookie API (8c) — Cookies tab.
+            tauri_commands::pii::list_cookies_for_entity,
+            tauri_commands::pii::delete_cookie,
+            tauri_commands::pii::clear_entity_cookies,
+            // Signup capture (8d) — high-level multi-write commit.
+            tauri_commands::pii::commit_signup_capture,
+        ])
+        .setup(move |app| {
+            // Auto-open DevTools in debug builds
+            #[cfg(debug_assertions)]
             {
-                if let Ok(password) = std::env::var("SOVEREIGN_EMAIL_PASSWORD") {
-                    let email_config = sovereign_comms::EmailAccountConfig {
-                        imap_host: std::env::var("SOVEREIGN_IMAP_HOST")
-                            .unwrap_or_default(),
-                        imap_port: std::env::var("SOVEREIGN_IMAP_PORT")
-                            .ok()
-                            .and_then(|p| p.parse().ok())
-                            .unwrap_or(993),
-                        smtp_host: std::env::var("SOVEREIGN_SMTP_HOST")
-                            .unwrap_or_default(),
-                        smtp_port: std::env::var("SOVEREIGN_SMTP_PORT")
-                            .ok()
-                            .and_then(|p| p.parse().ok())
-                            .unwrap_or(587),
-                        username: std::env::var("SOVEREIGN_EMAIL_USER")
-                            .unwrap_or_default(),
-                        display_name: std::env::var("SOVEREIGN_EMAIL_NAME").ok(),
-                    };
-
-                    if !email_config.imap_host.is_empty() {
-                        // Sync instance (moved into CommsSync)
-                        let email_channel_sync =
-                            sovereign_comms::channels::email::EmailChannel::new(
-                                email_config.clone(),
-                                db_arc.clone(),
-                                password.clone(),
-                            );
-                        comms_sync.add_channel(Box::new(email_channel_sync));
-
-                        // Send instance (for inbox reply)
-                        let email_channel_send =
-                            sovereign_comms::channels::email::EmailChannel::new(
-                                email_config,
-                                db_arc.clone(),
-                                password,
-                            );
-                        let (stx, mut srx) = tokio::sync::mpsc::channel::<
-                            sovereign_ui::panels::inbox_panel::SendRequest,
-                        >(32);
-                        send_message_tx = Some(stx);
-                        tokio::spawn(async move {
-                            use sovereign_comms::channel::{CommunicationChannel, OutgoingMessage};
-                            while let Some(req) = srx.recv().await {
-                                let msg = OutgoingMessage {
-                                    to: req.to_addresses,
-                                    subject: req.subject,
-                                    body: req.body,
-                                    body_html: None,
-                                    in_reply_to: req.in_reply_to,
-                                    conversation_id: Some(req.conversation_id),
-                                };
-                                match email_channel_send.send_message(&msg).await {
-                                    Ok(id) => tracing::info!("Reply sent: {id}"),
-                                    Err(e) => tracing::error!("Reply send failed: {e}"),
-                                }
-                            }
-                        });
-
-                        tracing::info!("Email channel registered");
-                    }
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
                 }
             }
 
-            // Add Signal channel if configured
-            #[cfg(feature = "comms-signal")]
-            {
-                let signal_phone = std::env::var("SOVEREIGN_SIGNAL_PHONE")
-                    .unwrap_or_default();
-                if !signal_phone.is_empty() {
-                    let signal_config = sovereign_comms::SignalAccountConfig {
-                        phone_number: signal_phone,
-                        store_path: std::env::var("SOVEREIGN_SIGNAL_STORE")
-                            .unwrap_or_else(|_| {
-                                let home = std::env::var("HOME")
-                                    .unwrap_or_else(|_| "/tmp".into());
-                                format!("{home}/.sovereign/signal")
-                            }),
-                        device_name: std::env::var("SOVEREIGN_SIGNAL_NAME").ok(),
-                    };
-                    let signal_channel =
-                        sovereign_comms::channels::signal::SignalChannel::new(
-                            signal_config,
-                            db_arc.clone(),
-                        );
-                    comms_sync.add_channel(Box::new(signal_channel));
-                    tracing::info!("Signal channel registered");
-                }
+            // Start the event forwarder — drains orch_rx and emits Tauri events
+            if let Some(rx) = orch_rx.lock().unwrap().take() {
+                tauri_events::spawn_event_forwarder(app.handle().clone(), rx);
             }
 
-            // Add WhatsApp channel if configured
-            #[cfg(feature = "comms-whatsapp")]
-            {
-                if let Ok(token) = std::env::var("SOVEREIGN_WHATSAPP_TOKEN") {
-                    let wa_phone_id = std::env::var("SOVEREIGN_WHATSAPP_PHONE_ID")
-                        .unwrap_or_default();
-                    let wa_biz_id = std::env::var("SOVEREIGN_WHATSAPP_BUSINESS_ID")
-                        .unwrap_or_default();
-                    if !wa_phone_id.is_empty() {
-                        let wa_config = sovereign_comms::WhatsAppAccountConfig {
-                            phone_number_id: wa_phone_id,
-                            business_account_id: wa_biz_id,
-                            api_url: std::env::var("SOVEREIGN_WHATSAPP_API_URL")
-                                .unwrap_or_else(|_| {
-                                    "https://graph.facebook.com".into()
-                                }),
-                            api_version: std::env::var("SOVEREIGN_WHATSAPP_API_VERSION")
-                                .unwrap_or_else(|_| "v21.0".into()),
-                            display_name: std::env::var("SOVEREIGN_WHATSAPP_NAME").ok(),
-                        };
-                        let wa_channel =
-                            sovereign_comms::channels::whatsapp::WhatsAppChannel::new(
-                                wa_config,
-                                db_arc.clone(),
-                                token,
-                            );
-                        comms_sync.add_channel(Box::new(wa_channel));
-                        tracing::info!("WhatsApp channel registered");
-                    }
-                }
+            // Start the voice-event forwarder — drains the voice pipeline rx and
+            // emits "voice-event" to the Svelte frontend (listening / speaking /
+            // transcription / idle).
+            if let Some(vrx) = voice_rx.lock().unwrap().take() {
+                tauri_events::spawn_voice_forwarder(app.handle().clone(), vrx);
             }
 
-            // Bridge CommsEvent → OrchestratorEvent
-            let orch_tx_comms = orch_tx.clone();
-            tokio::spawn(async move {
-                while let Some(event) = comms_event_rx.recv().await {
-                    let orch_event = match event {
-                        sovereign_comms::CommsEvent::NewMessages {
-                            channel,
-                            count,
-                            conversation_id,
-                        } => OrchestratorEvent::NewMessagesReceived {
-                            channel: channel.to_string(),
-                            count,
-                            conversation_id,
-                        },
-                        sovereign_comms::CommsEvent::SyncComplete {
-                            channel,
-                            result,
-                        } => OrchestratorEvent::CommsSyncComplete {
-                            channel: channel.to_string(),
-                            new_messages: result.new_messages,
-                        },
-                        sovereign_comms::CommsEvent::SyncError {
-                            channel,
-                            error,
-                        } => OrchestratorEvent::CommsSyncError {
-                            channel: channel.to_string(),
-                            error,
-                        },
-                        sovereign_comms::CommsEvent::ContactDiscovered {
-                            contact_id,
-                            name,
-                        } => OrchestratorEvent::ContactCreated {
-                            contact_id,
-                            name,
-                        },
-                    };
-                    if orch_tx_comms.send(orch_event).is_err() {
-                        break;
-                    }
-                }
-            });
-
-            tokio::spawn(comms_sync.run());
-            tracing::info!("Communications sync engine spawned");
-        }
-
-        let query_callback: Option<Box<dyn Fn(String) + Send + 'static>> =
-            orchestrator.as_ref().map(|orch| {
-                setup::orch_callback(orch, "Query error", |o, t| Box::pin(o.handle_query(t)))
-            });
-
-        let chat_callback: Option<Box<dyn Fn(String) + Send + 'static>> =
-            orchestrator.as_ref().map(|orch| {
-                setup::orch_callback(orch, "Chat error", |o, t| Box::pin(o.handle_chat(t)))
-            });
-
-        // Initialize voice pipeline (optional)
-        let voice_rx = if config.voice.enabled {
-            let (vtx, vrx) = mpsc::channel();
-
-            let voice_query_cb: Box<dyn Fn(String) + Send + 'static> =
-                if let Some(ref orch) = orchestrator {
-                    setup::orch_callback(orch, "Voice query error", |o, t| Box::pin(o.handle_query(t)))
-                } else {
-                    Box::new(|text: String| {
-                        tracing::warn!("Voice query ignored (no orchestrator): {text}");
-                    })
-                };
-
-            match sovereign_ai::voice::VoicePipeline::spawn(
-                config.voice.clone(),
-                vtx,
-                voice_query_cb,
-            ) {
-                Ok(_handle) => {
-                    tracing::info!("Voice pipeline started");
-                    Some(vrx)
-                }
-                Err(e) => {
-                    tracing::warn!("Voice pipeline unavailable: {e}");
-                    None
-                }
-            }
-        } else {
-            tracing::info!("Voice pipeline disabled in config");
-            None
-        };
-
-        // Convert voice_rx to UI's VoiceEvent type
-        let ui_voice_rx = voice_rx.map(|rx| {
-            let (ui_tx, ui_rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                while let Ok(event) = rx.recv() {
-                    let ui_event = match event {
-                        sovereign_ai::VoiceEvent::WakeWordDetected => {
-                            sovereign_ui::app::VoiceEvent::WakeWordDetected
-                        }
-                        sovereign_ai::VoiceEvent::ListeningStarted => {
-                            sovereign_ui::app::VoiceEvent::ListeningStarted
-                        }
-                        sovereign_ai::VoiceEvent::TranscriptionReady(t) => {
-                            sovereign_ui::app::VoiceEvent::TranscriptionReady(t)
-                        }
-                        sovereign_ai::VoiceEvent::ListeningStopped => {
-                            sovereign_ui::app::VoiceEvent::ListeningStopped
-                        }
-                        sovereign_ai::VoiceEvent::TtsSpeaking(t) => {
-                            sovereign_ui::app::VoiceEvent::TtsSpeaking(t)
-                        }
-                        sovereign_ai::VoiceEvent::TtsDone => {
-                            sovereign_ui::app::VoiceEvent::TtsDone
-                        }
-                    };
-                    if ui_tx.send(ui_event).is_err() {
-                        break;
-                    }
-                }
-            });
-            ui_rx
-        });
-
-        // Auto-commit engine
-        let autocommit = Arc::new(tokio::sync::Mutex::new(
-            sovereign_ai::AutoCommitEngine::new(db_arc.clone()),
-        ));
-
-        // Build save callback for document panel — records edits for auto-commit
-        let save_cb: Box<dyn Fn(String, String, String) + Send + 'static> = {
-            let db = db_arc.clone();
-            let ac = autocommit.clone();
-            Box::new(move |doc_id: String, title: String, content: String| {
-                let db = db.clone();
-                let ac = ac.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = db
-                        .update_document(&doc_id, Some(&title), Some(&content))
-                        .await
-                    {
-                        tracing::error!("Failed to save document {doc_id}: {e}");
-                    }
-                    ac.lock().await.record_edit(&doc_id);
-                });
-            })
-        };
-
-        // Periodic auto-commit check (every 30s)
-        {
-            let ac = autocommit.clone();
-            tokio::spawn(async move {
+            // Periodic auto-commit check (every 30s)
+            tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
                 loop {
                     interval.tick().await;
-                    ac.lock().await.check_and_commit().await;
+                    autocommit.lock().await.check_and_commit().await;
                 }
             });
-        }
 
-        // Close callback for auto-commit on document close
-        let close_cb: Box<dyn Fn(String) + Send + 'static> = {
-            let ac = autocommit.clone();
-            Box::new(move |doc_id: String| {
-                let ac = ac.clone();
-                tokio::spawn(async move {
-                    ac.lock().await.commit_on_close(&doc_id).await;
+            // Hourly purge of soft-deleted items older than 30 days
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+                loop {
+                    interval.tick().await;
+                    let max_age = std::time::Duration::from_secs(30 * 24 * 3600);
+                    match (*purge_db).purge_deleted(max_age).await {
+                        Ok(n) if n > 0 => tracing::info!("Purged {n} soft-deleted items"),
+                        Err(e) => tracing::warn!("Purge failed: {e}"),
+                        _ => {}
+                    }
+                }
+            });
+
+            // Memory consolidation idle-watcher — runs only when:
+            // 1. Orchestrator exists and model is idle (mutex free)
+            // 2. User hasn't interacted for 60s (cooldown)
+            // 3. At least 5 minutes between consolidation runs
+            if let Some(orch) = consolidation_orch {
+                tauri::async_runtime::spawn(async move {
+                    use std::time::{Duration, Instant};
+                    let check_interval = Duration::from_secs(30);
+                    let post_run_cooldown = Duration::from_secs(300);
+                    let mut last_run = Instant::now() - post_run_cooldown; // allow first run after idle_cooldown
+
+                    loop {
+                        tokio::time::sleep(check_interval).await;
+
+                        // Skip if model is busy
+                        if !orch.is_model_idle() {
+                            continue;
+                        }
+
+                        // Skip if not enough time since last run
+                        if last_run.elapsed() < post_run_cooldown {
+                            continue;
+                        }
+
+                        // Run consolidation
+                        match orch.consolidate_memory().await {
+                            Ok(()) => {
+                                tracing::debug!("Memory consolidation cycle completed");
+                            }
+                            Err(e) => {
+                                tracing::warn!("Memory consolidation failed: {e}");
+                            }
+                        }
+                        last_run = Instant::now();
+                    }
                 });
-            })
-        };
+            }
 
-        // Detect first launch for onboarding wizard
-        let first_launch = sovereign_ui::app::is_first_launch();
+            // PII sweep idle-watcher (4e4): deferred to v0.0.5 — see
+            // comment earlier in run_tauri() for the rationale.
 
-        // Load bubble style from user profile
-        let bubble_style = sovereign_core::profile::UserProfile::load(&profile_dir)
-            .map(|p| p.bubble_style)
-            .ok();
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error running Sovereign GE (Tauri)");
 
-        // Build SovereignApp (but don't launch Iced yet)
-        let (app, _boot_task) = sovereign_ui::app::SovereignApp::new(
-            &config.ui,
-            documents,
-            threads,
-            relationships,
-            commits_map,
-            contacts,
-            conversations,
-            all_messages,
-            query_callback,
-            chat_callback,
-            Some(orch_rx),
-            ui_voice_rx,
-            None, // skill_rx — canvas creates its own internally
-            Some(save_cb),
-            Some(close_cb),
-            Some(decision_tx),
-            Some(registry),
-            Some(feedback_tx),
-            send_message_tx,
-            first_launch,
-            config.ai.model_dir.clone(),
-            config.ai.router_model.clone(),
-            config.ai.reasoning_model.clone(),
-            camera_frame,
-            bubble_style,
-        );
-        Ok::<_, anyhow::Error>((app, _boot_task))
-    })?;
-
-    // rt stays alive — spawned tasks (P2P, orchestrator, auto-commit, comms) keep running.
-    // Iced creates its own tokio runtime on the main thread (no active context here).
-    sovereign_ui::app::run_app(app)?;
     Ok(())
 }

@@ -1,6 +1,6 @@
 # Privacy Policy
 
-## Sovereign OS — Privacy Policy
+## Sovereign GE — Privacy Policy
 
 **Effective Date:** [DATE]  
 **Last Updated:** February 22, 2026
@@ -9,7 +9,7 @@
 
 ## The Short Version
 
-Sovereign OS is software that runs on your device. We don't collect your data. We can't see your data. We have no servers, no accounts, no analytics, no telemetry. There is nothing to disclose because there is nothing to collect.
+Sovereign GE is software that runs on your device. We don't collect your data. We can't see your data. We have no servers, no accounts, no analytics, no telemetry. There is nothing to disclose because there is nothing to collect.
 
 The rest of this document explains this in the detail that regulations require.
 
@@ -17,7 +17,7 @@ The rest of this document explains this in the detail that regulations require.
 
 ## 1. Who We Are
 
-Sovereign OS is an open-source software project distributed under the GNU Affero General Public License v3.0 (AGPL-3.0). The source code is publicly available at **[REPOSITORY_URL]**.
+Sovereign GE is an open-source software project distributed under the GNU Affero General Public License v3.0 (AGPL-3.0). The source code is publicly available at **[REPOSITORY_URL]**.
 
 The project is maintained by **[ENTITY_NAME]** ("we," "us," "our").
 
@@ -27,14 +27,14 @@ The project is maintained by **[ENTITY_NAME]** ("we," "us," "our").
 
 ## 2. What This Policy Covers
 
-This policy covers the Sovereign OS software and the project's online presence (website, repository, documentation). It does **not** cover:
+This policy covers the Sovereign GE software and the project's online presence (website, repository, documentation). It does **not** cover:
 
-- Third-party services you choose to connect to Sovereign OS (cloud backup providers, API endpoints, etc.)
+- Third-party services you choose to connect to Sovereign GE (cloud backup providers, API endpoints, etc.)
 - Community skills developed by third parties
-- Websites you visit using Sovereign OS
-- Any fork or derivative of Sovereign OS maintained by others
+- Websites you visit using Sovereign GE
+- Any fork or derivative of Sovereign GE maintained by others
 
-You are responsible for reviewing the privacy practices of any third-party service you use in conjunction with Sovereign OS.
+You are responsible for reviewing the privacy practices of any third-party service you use in conjunction with Sovereign GE.
 
 ---
 
@@ -44,7 +44,7 @@ You are responsible for reviewing the privacy practices of any third-party servi
 
 **None.**
 
-Sovereign OS runs entirely on your device. The software does not:
+Sovereign GE runs entirely on your device. The software does not:
 
 - Transmit data to us or any third party
 - Include telemetry, analytics, crash reporting, or usage tracking
@@ -52,7 +52,7 @@ Sovereign OS runs entirely on your device. The software does not:
 - Create or require user accounts
 - Contain advertising or ad-tracking code
 
-All data you create, import, or process with Sovereign OS remains on your hardware under your exclusive control. We have no technical means to access it.
+All data you create, import, or process with Sovereign GE remains on your hardware under your exclusive control. We have no technical means to access it.
 
 ### 3.2 Through the Project Website
 
@@ -83,7 +83,7 @@ The Trusted Domain List (TDL) used by the Identity Firewall is a static file dis
 
 ## 4. Data the Software Creates on Your Device
 
-Sovereign OS creates and stores data locally on your device. This data never leaves your device unless you explicitly initiate a transfer (P2P sync, export, Guardian shard distribution). For transparency, here is what the software stores:
+Sovereign GE creates and stores data locally on your device. This data never leaves your device unless you explicitly initiate a transfer (P2P sync, export, Guardian shard distribution). For transparency, here is what the software stores:
 
 | Data | Location | Purpose |
 |---|---|---|
@@ -145,25 +145,25 @@ Some skills may require network access (e.g., a web clipper, an API connector). 
 
 ## 6. Third-Party AI Models
 
-Sovereign OS ships with pre-configured AI models that run locally on your device. These models:
+Sovereign GE ships with pre-configured AI models that run locally on your device. These models:
 
 - Process data on-device only
 - Do not transmit data to model providers (Microsoft, Meta, OpenAI, etc.)
 - Do not "call home" or report usage statistics
 
-If you choose to configure an optional cloud AI API (explicitly disabled by default), your data will be transmitted to that provider under their privacy terms. Sovereign OS will display a clear warning before any data is sent to a cloud AI service.
+If you choose to configure an optional cloud AI API (explicitly disabled by default), your data will be transmitted to that provider under their privacy terms. Sovereign GE will display a clear warning before any data is sent to a cloud AI service.
 
 ---
 
 ## 7. Children's Privacy
 
-Sovereign OS does not collect personal information from anyone, including children. The software has no age-gating because there is no data collection to restrict.
+Sovereign GE does not collect personal information from anyone, including children. The software has no age-gating because there is no data collection to restrict.
 
 ---
 
 ## 8. International Data Transfers
 
-Sovereign OS does not transfer your data internationally — or at all. Your data resides on your devices in your jurisdiction.
+Sovereign GE does not transfer your data internationally — or at all. Your data resides on your devices in your jurisdiction.
 
 The project website and repository are hosted on infrastructure that may be located outside your country. Your interactions with those platforms (visiting the website, opening an issue on GitHub) are governed by the respective hosting provider's policies.
 

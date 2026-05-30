@@ -1,0 +1,9 @@
+{
+    "name": "Orphan Finder",
+    "version": "0.1.0",
+    "description": "List documents that nothing else links to",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_all_documents"],
+    "file_types": []
+}

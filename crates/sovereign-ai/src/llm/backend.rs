@@ -1,25 +1,59 @@
 use std::num::NonZeroU32;
+use std::sync::OnceLock;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaModel};
+use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::sampling::LlamaSampler;
 
-/// Synchronous llama.cpp backend. Wraps model + backend + cached context.
+/// Per-model sampling parameters. Different model families perform best with
+/// different settings (e.g. Qwen 3.5 wants higher temperature and top_k).
+#[derive(Debug, Clone)]
+pub struct SamplingConfig {
+    pub temperature: f32,
+    pub top_p: f32,
+    /// 0 = disabled (no top-k filtering).
+    pub top_k: i32,
+    pub presence_penalty: f32,
+    pub seed: u32,
+}
+
+impl Default for SamplingConfig {
+    fn default() -> Self {
+        Self {
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 0,
+            presence_penalty: 0.0,
+            seed: 42,
+        }
+    }
+}
+
+/// Global llama.cpp backend — initialized once, never freed until process exit.
+/// llama_backend_init() is a global operation; calling it twice or freeing it
+/// while models are live causes crashes.
+static LLAMA_BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
+
+fn get_or_init_backend() -> Result<&'static LlamaBackend> {
+    Ok(LLAMA_BACKEND.get_or_init(|| {
+        LlamaBackend::init().expect("Failed to init llama backend")
+    }))
+}
+
+/// Synchronous llama.cpp backend. Wraps model + cached context.
 ///
 /// Field order matters: Rust drops fields in declaration order.
-/// `ctx` must drop before `model`, and `model` must drop before `backend`.
+/// `ctx` must drop before `model`.
 pub struct LlamaCppBackend {
     // SAFETY: `ctx` borrows `model` via a transmuted `'static` lifetime.
     // This is sound because `ctx` is declared first, so it drops before `model`.
     ctx: Option<LlamaContext<'static>>,
     model: LlamaModel,
-    #[allow(dead_code)] // Needed for drop order: must outlive ctx and model.
-    backend: LlamaBackend,
 }
 
 // SAFETY: LlamaCppBackend is only accessed through Mutex in AsyncLlmBackend,
@@ -31,11 +65,11 @@ impl LlamaCppBackend {
     /// Load a GGUF model file. `n_gpu_layers` controls GPU offload (99 = all layers).
     /// Creates and caches a `LlamaContext` so the KV cache is allocated once.
     pub fn load(path: &str, n_gpu_layers: i32, n_ctx: u32) -> Result<Self> {
-        let backend = LlamaBackend::init().context("Failed to init llama backend")?;
+        let backend = get_or_init_backend()?;
 
         let model_params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers as u32);
 
-        let model = LlamaModel::load_from_file(&backend, path, &model_params)
+        let model = LlamaModel::load_from_file(backend, path, &model_params)
             .map_err(|e| anyhow::anyhow!("Failed to load model: {:?}", e))?;
 
         // Create context once during load — avoids MB-scale KV cache re-allocation per generate().
@@ -46,7 +80,7 @@ impl LlamaCppBackend {
             .with_flash_attention_policy(0);
 
         let ctx = model
-            .new_context(&backend, ctx_params)
+            .new_context(backend, ctx_params)
             .map_err(|e| anyhow::anyhow!("Failed to create context: {:?}", e))?;
 
         // SAFETY: `ctx` borrows `model`, but both live in this struct.
@@ -56,13 +90,12 @@ impl LlamaCppBackend {
         Ok(Self {
             ctx: Some(ctx),
             model,
-            backend,
         })
     }
 
     /// Generate text from a prompt. Reuses the cached context (clears KV cache between calls).
     /// Not suitable for direct async use — wrap with spawn_blocking.
-    pub fn generate(&mut self, prompt: &str, max_tokens: u32) -> Result<String> {
+    pub fn generate(&mut self, prompt: &str, max_tokens: u32, sampling: &SamplingConfig) -> Result<String> {
         let ctx = self
             .ctx
             .as_mut()
@@ -73,7 +106,7 @@ impl LlamaCppBackend {
 
         let tokens_list = self
             .model
-            .str_to_token(prompt, AddBos::Always)
+            .str_to_token(prompt, llama_cpp_2::model::AddBos::Never)
             .map_err(|e| anyhow::anyhow!("Tokenization failed: {:?}", e))?;
 
         let mut batch = LlamaBatch::new(2048, 1);
@@ -87,11 +120,21 @@ impl LlamaCppBackend {
         ctx.decode(&mut batch)
             .map_err(|e| anyhow::anyhow!("Initial decode failed: {:?}", e))?;
 
-        let mut sampler = LlamaSampler::chain_simple([
-            LlamaSampler::temp(0.7),
-            LlamaSampler::top_p(0.9, 1),
-            LlamaSampler::dist(42),
-        ]);
+        let mut samplers: Vec<LlamaSampler> = vec![LlamaSampler::temp(sampling.temperature)];
+        if sampling.top_k > 0 {
+            samplers.push(LlamaSampler::top_k(sampling.top_k));
+        }
+        samplers.push(LlamaSampler::top_p(sampling.top_p, 1));
+        if sampling.presence_penalty > 0.0 {
+            samplers.push(LlamaSampler::penalties(
+                256,   // penalty_last_n
+                1.0,   // penalty_repeat (disabled)
+                0.0,   // penalty_freq (disabled)
+                sampling.presence_penalty,
+            ));
+        }
+        samplers.push(LlamaSampler::dist(sampling.seed));
+        let mut sampler = LlamaSampler::chain_simple(samplers);
 
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut output = String::new();
@@ -105,12 +148,16 @@ impl LlamaCppBackend {
                 break;
             }
 
-            let piece = self
-                .model
-                .token_to_piece(token, &mut decoder, false, None)
-                .map_err(|e| anyhow::anyhow!("Detokenize failed: {:?}", e))?;
-
-            output.push_str(&piece);
+            // Try with special=true so control/special tokens are rendered rather
+            // than returning UnknownTokenType. If decoding still fails, skip the
+            // token instead of aborting the entire generation.
+            match self.model.token_to_piece(token, &mut decoder, true, None) {
+                Ok(piece) => output.push_str(&piece),
+                Err(e) => {
+                    tracing::debug!("Skipping undecodable token {}: {:?}", token.0, e);
+                    continue;
+                }
+            }
 
             batch.clear();
             batch

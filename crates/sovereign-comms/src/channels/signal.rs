@@ -11,6 +11,7 @@ use sovereign_db::GraphDB;
 use crate::channel::{ChannelStatus, CommunicationChannel, OutgoingMessage, SyncResult};
 use crate::config::SignalAccountConfig;
 use crate::error::CommsError;
+use crate::pii_hook::{ContactIngestHook, MessageIngestHook, ShareIngestHook};
 
 /// Signal channel implementation using the linked-device protocol.
 ///
@@ -22,6 +23,9 @@ pub struct SignalChannel {
     db: Arc<dyn GraphDB>,
     status: ChannelStatus,
     last_sync: Option<DateTime<Utc>>,
+    pii_hook: Option<Arc<dyn MessageIngestHook>>,
+    pii_contact_hook: Option<Arc<dyn ContactIngestHook>>,
+    pii_share_hook: Option<Arc<dyn ShareIngestHook>>,
 }
 
 impl SignalChannel {
@@ -31,52 +35,70 @@ impl SignalChannel {
             db,
             status: ChannelStatus::Disconnected,
             last_sync: None,
+            pii_hook: None,
+            pii_contact_hook: None,
+            pii_share_hook: None,
         }
     }
 
-    /// Get or create a conversation for a Signal chat, using a local cache.
+    /// Attach a PII ingest hook that will be invoked after every
+    /// `create_message` on this channel.
+    pub fn with_pii_hook(mut self, hook: Arc<dyn MessageIngestHook>) -> Self {
+        self.pii_hook = Some(hook);
+        self
+    }
+
+    /// Attach a PII contact-ingest hook.
+    pub fn with_pii_contact_hook(mut self, hook: Arc<dyn ContactIngestHook>) -> Self {
+        self.pii_contact_hook = Some(hook);
+        self
+    }
+
+    async fn run_pii_hook(&self, message: &sovereign_db::schema::Message) {
+        if let Some(hook) = &self.pii_hook {
+            hook.after_message_created(message).await;
+        }
+    }
+
+    async fn run_pii_contact_hook(&self, contact: &sovereign_db::schema::Contact) {
+        if let Some(hook) = &self.pii_contact_hook {
+            hook.after_contact_created(contact).await;
+        }
+    }
+
+    /// Attach a sharing-ledger hook. Currently dormant in Signal —
+    /// `send_message` doesn't persist outbound messages to the DB
+    /// (presage handles transport directly), so there's no fire site
+    /// here yet. Field exists for symmetry with EmailChannel; once
+    /// outbound persistence is added the hook will activate.
+    pub fn with_pii_share_hook(mut self, hook: Arc<dyn ShareIngestHook>) -> Self {
+        self.pii_share_hook = Some(hook);
+        self
+    }
+
     async fn get_or_create_conversation(
         &self,
         title: &str,
         participant_ids: Vec<String>,
         cache: &mut HashMap<String, Conversation>,
     ) -> Result<Conversation, CommsError> {
-        if let Some(conv) = cache.get(title) {
-            return Ok(conv.clone());
-        }
-
-        let conv = Conversation::new(
-            title.to_string(),
-            ChannelType::Signal,
-            participant_ids,
-        );
-        let created = self.db.create_conversation(conv).await.map_err(CommsError::from)?;
-        cache.insert(title.to_string(), created.clone());
-        Ok(created)
+        super::helpers::get_or_create_conversation(
+            self.db.as_ref(), title, ChannelType::Signal, participant_ids, cache,
+        ).await
     }
 
-    /// Resolve a phone number to a contact ID, creating a stub if needed.
     async fn resolve_contact_id(
         &self,
         phone: &str,
         display_name: Option<&str>,
     ) -> Result<String, CommsError> {
-        if let Some(contact) = self.db.find_contact_by_address(phone).await? {
-            return Ok(contact.id_string().unwrap_or_default());
-        }
-
-        let name = display_name
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| phone.to_string());
-        let mut contact = Contact::new(name, false);
-        contact.addresses.push(ChannelAddress {
-            channel: ChannelType::Signal,
-            address: phone.to_string(),
-            display_name: display_name.map(|s| s.to_string()),
-            is_primary: true,
-        });
-        let created = self.db.create_contact(contact).await?;
-        Ok(created.id_string().unwrap_or_default())
+        super::helpers::resolve_contact_id(
+            self.db.as_ref(),
+            ChannelType::Signal,
+            phone,
+            display_name,
+            self.pii_contact_hook.as_ref(),
+        ).await
     }
 }
 
@@ -284,7 +306,8 @@ impl CommunicationChannel for SignalChannel {
                 }
             }
 
-            self.db.create_message(msg.clone()).await?;
+            let persisted = self.db.create_message(msg.clone()).await?;
+            self.run_pii_hook(&persisted).await;
             new_messages += 1;
         }
 
@@ -309,7 +332,9 @@ impl CommunicationChannel for SignalChannel {
             display_name: None,
             is_primary: true,
         });
-        self.db.create_contact(contact).await.map_err(CommsError::from)
+        let created = self.db.create_contact(contact).await.map_err(CommsError::from)?;
+        self.run_pii_contact_hook(&created).await;
+        Ok(created)
     }
 }
 

@@ -3,11 +3,12 @@ use chrono::{DateTime, Utc};
 
 use crate::error::DbResult;
 use crate::schema::{
-    ChannelType, Commit, Contact, Conversation, Document, Message, Milestone,
-    ReadStatus, RelatedTo, RelationType, Thread,
+    ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, ShareRecord, SourceRef,
+    SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
 
-/// Core database abstraction for the Sovereign OS document graph.
+/// Core database abstraction for the Sovereign GE document graph.
 ///
 /// Uses `async-trait` for object safety (`dyn GraphDB`).
 #[async_trait]
@@ -31,8 +32,21 @@ pub trait GraphDB: Send + Sync {
     ) -> DbResult<Document>;
     async fn delete_document(&self, id: &str) -> DbResult<()>;
 
+    /// Update a document's spatial canvas position.
+    async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()>;
+
     /// Search documents by title (case-insensitive substring match).
     async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>>;
+
+    /// Update a document's reliability assessment fields.
+    async fn update_document_reliability(
+        &self,
+        id: &str,
+        source_url: Option<&str>,
+        classification: Option<&str>,
+        score: Option<f32>,
+        assessment_json: Option<&str>,
+    ) -> DbResult<Document>;
 
     // -- Threads ---
 
@@ -66,13 +80,47 @@ pub trait GraphDB: Send + Sync {
         strength: f32,
     ) -> DbResult<RelatedTo>;
 
-    async fn list_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>>;
+    /// List edges where this document is the source (outgoing).
+    async fn list_outgoing_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>>;
+
+    /// List edges where this document is the target (incoming / backlinks).
+    async fn list_incoming_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>>;
 
     /// List all relationships in the database.
     async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>>;
 
     /// Traverse the graph from a document, returning connected documents up to `depth` hops.
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>>;
+
+    // -- Suggested Links (AI-created, separate from user relationships) ---
+
+    /// Create an AI-suggested link between two documents.
+    async fn create_suggested_link(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        relation_type: RelationType,
+        strength: f32,
+        rationale: &str,
+        source: SuggestionSource,
+    ) -> DbResult<SuggestedLink>;
+
+    /// List all pending (unresolved) suggested links.
+    async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>>;
+
+    /// List all suggested links for a specific document (any status).
+    async fn list_suggestions_for_document(&self, doc_id: &str) -> DbResult<Vec<SuggestedLink>>;
+
+    /// Resolve a suggestion: Accepted promotes to a real `related_to` edge,
+    /// Dismissed marks it as rejected. Both set `resolved_at`.
+    async fn resolve_suggestion(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+    ) -> DbResult<SuggestedLink>;
+
+    /// Check if a suggestion already exists for this document pair (any status, bidirectional).
+    async fn suggestion_exists(&self, from_id: &str, to_id: &str) -> DbResult<bool>;
 
     // -- Adopt ---
 
@@ -130,6 +178,9 @@ pub trait GraphDB: Send + Sync {
 
     /// List milestones for a thread, most recent first.
     async fn list_milestones(&self, thread_id: &str) -> DbResult<Vec<Milestone>>;
+
+    /// List all milestones across all threads, most recent first.
+    async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>>;
 
     /// Delete a milestone by ID.
     async fn delete_milestone(&self, id: &str) -> DbResult<()>;
@@ -198,6 +249,17 @@ pub trait GraphDB: Send + Sync {
     /// Hard-delete a message.
     async fn delete_message(&self, id: &str) -> DbResult<()>;
 
+    /// List all messages across all conversations, ordered by sent_at descending.
+    async fn list_all_messages(&self) -> DbResult<Vec<Message>>;
+
+    /// List messages within a time range, ordered by sent_at descending.
+    async fn list_messages_in_time_range(
+        &self,
+        after: DateTime<Utc>,
+        before: DateTime<Utc>,
+        limit: u32,
+    ) -> DbResult<Vec<Message>>;
+
     /// Search messages by body or subject text.
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>>;
 
@@ -238,4 +300,137 @@ pub trait GraphDB: Send + Sync {
         conversation_id: &str,
         thread_id: &str,
     ) -> DbResult<Conversation>;
+
+    // -- Entities (PII management) ---
+
+    /// Create a new business / personal entity. Used by the PII pipeline
+    /// to write disambiguator-proposed entities (`is_owned == false`)
+    /// and by the dashboard's "new entity" flow (`is_owned == true`).
+    async fn create_entity(&self, entity: Entity) -> DbResult<Entity>;
+
+    /// List all entities (excludes soft-deleted), ordered by name.
+    async fn list_entities(&self) -> DbResult<Vec<Entity>>;
+
+    // -- PII Records ---
+
+    /// Insert a new PiiRecord. Discovered findings (`stored_secret == false`)
+    /// arrive here from the ingest pipeline; vault entries
+    /// (`stored_secret == true`) arrive from the dashboard "new secret" flow.
+    async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord>;
+
+    /// Fetch a `PiiRecord` by ID. The returned record's `value_encrypted`
+    /// is still ciphertext — callers decrypt via `EncryptedBlob` and the
+    /// `DeviceKey`. Used by the resolution API (step 5) when expanding
+    /// `[pii:<record_id>]` tokens.
+    async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord>;
+
+    /// List PiiRecords with optional filters. Excludes soft-deleted
+    /// records. Order: most-recently-discovered first.
+    ///
+    /// All filter args are AND-combined: passing `entity_id = Some(...)`,
+    /// `review_state = Some(Confirmed)`, `stored_secret = Some(false)`
+    /// returns confirmed discovered findings for that entity.
+    async fn list_pii_records(
+        &self,
+        entity_id: Option<&str>,
+        review_state: Option<ReviewState>,
+        stored_secret: Option<bool>,
+    ) -> DbResult<Vec<PiiRecord>>;
+
+    /// Set a record's `review_state`. Used by the dashboard's review
+    /// queue when the user confirms or dismisses an Unreviewed finding.
+    async fn update_pii_record_review_state(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+    ) -> DbResult<()>;
+
+    /// Soft-delete a PiiRecord. Sets `deleted_at` so the record falls
+    /// out of `list_pii_records` but remains in the DB for audit / undo.
+    /// Used by the dashboard's redact (L5) action.
+    async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()>;
+
+    // -- Entity reads ---
+
+    /// Fetch an `Entity` by ID.
+    async fn get_entity(&self, id: &str) -> DbResult<Entity>;
+
+    // -- Share Records (PII sharing ledger) ---
+
+    /// Insert a new `ShareRecord` documenting that a `PiiRecord` was
+    /// disclosed to an `Entity` at a moment in time. Always outbound;
+    /// receiving PII isn't tracked here.
+    async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord>;
+
+    /// List share records where `to_entity_id == entity_id`. Used by
+    /// the dashboard's Shared tab on the entity-detail panel. Order:
+    /// most-recently-shared first.
+    async fn list_share_records_for_entity(
+        &self,
+        entity_id: &str,
+    ) -> DbResult<Vec<ShareRecord>>;
+
+    /// Replace a record's `sources` list. Used by the ingest hook after
+    /// canonical-body substitution to update spans from indexed
+    /// placeholders to the post-substitution placeholder spans.
+    async fn update_pii_record_sources(
+        &self,
+        id: &str,
+        sources: Vec<SourceRef>,
+    ) -> DbResult<()>;
+
+    /// Set `last_revealed_at` on a PiiRecord. Called by the resolution
+    /// API every time the user reveals a value (L3 Modify), so the
+    /// dashboard can show "this PII was last viewed N hours ago".
+    async fn update_pii_record_revealed_at(
+        &self,
+        id: &str,
+        last_revealed_at: chrono::DateTime<Utc>,
+    ) -> DbResult<()>;
+
+    /// Set the PII-pipeline-managed fields on a Document: encrypted raw
+    /// body + nonce, plus the scan timestamp. Caller is responsible for
+    /// updating `content` separately (via `update_document`) since the
+    /// ingest hook returns the canonical body for the same write path.
+    async fn update_document_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<chrono::DateTime<Utc>>,
+    ) -> DbResult<()>;
+
+    /// Replace a Message's `body` (and optionally `body_html`) — used
+    /// after PII ingest to rewrite the body in canonical form with
+    /// `[pii:<record_id>]` tokens. There is no general-purpose
+    /// `update_message` method because the body is the only field we
+    /// rewrite post-ingest; everything else is set at create time.
+    async fn update_message_body(
+        &self,
+        id: &str,
+        body: &str,
+        body_html: Option<&str>,
+    ) -> DbResult<()>;
+
+    /// Set the PII-pipeline-managed fields on a Message: encrypted raw
+    /// body + nonce, plus the scan timestamp. Mirrors
+    /// `update_document_pii_fields` for the Message table.
+    async fn update_message_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<chrono::DateTime<Utc>>,
+    ) -> DbResult<()>;
+
+    /// Set the PII-pipeline-managed fields on a Contact. Contact has no
+    /// `body_raw_encrypted` (notes are already encrypted via the per-doc
+    /// key by `EncryptedGraphDB`); only `pii_scanned_at` is set here.
+    /// Caller uses the existing `update_contact` method to rewrite
+    /// `notes` with canonical-form tokens.
+    async fn update_contact_pii_fields(
+        &self,
+        id: &str,
+        pii_scanned_at: Option<chrono::DateTime<Utc>>,
+    ) -> DbResult<()>;
 }

@@ -1,0 +1,9 @@
+{
+    "name": "Slides Export",
+    "version": "0.0.1",
+    "description": "Convert heading-delimited sections into HTML presentation slides (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["read_document"],
+    "file_types": ["md", "markdown"]
+}

@@ -1,12 +1,15 @@
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use surrealdb::engine::local::{Db, Mem, RocksDb};
+use surrealdb::sql::Thing;
 use surrealdb::Surreal;
 
 use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, DocumentSnapshot,
-    Message, Milestone, ReadStatus, RelatedTo, RelationType, Thread,
+    Entity, Message, Milestone, PiiRecord, ReadStatus, RelatedTo, RelationType,
+    ReviewState, ShareRecord, SourceRef, SuggestedLink, SuggestionSource,
+    SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -38,6 +41,26 @@ fn parse_thing(id: &str) -> DbResult<(&str, &str)> {
         .ok_or_else(|| DbError::InvalidId(format!("Expected 'table:id' format, got: {id}")))
 }
 
+/// Parse and validate that an ID belongs to the expected table.
+fn parse_and_validate<'a>(id: &'a str, expected: &str) -> DbResult<(&'a str, &'a str)> {
+    let (table, key) = parse_thing(id)?;
+    if table != expected {
+        return Err(DbError::InvalidId(format!(
+            "Expected {expected} ID, got table: {table}"
+        )));
+    }
+    Ok((table, key))
+}
+
+/// Parse an ID string into a SurrealDB `Thing`, defaulting to "document" table if no colon.
+fn id_to_thing(s: &str) -> Thing {
+    if let Some((tb, id)) = s.split_once(':') {
+        Thing::from((tb.to_string(), id.to_string()))
+    } else {
+        Thing::from(("document".to_string(), s.to_string()))
+    }
+}
+
 #[async_trait]
 impl GraphDB for SurrealGraphDB {
     async fn connect(&self) -> DbResult<()> {
@@ -64,6 +87,25 @@ impl GraphDB for SurrealGraphDB {
             DEFINE INDEX IF NOT EXISTS idx_message_external ON message FIELDS external_id;\
             DEFINE INDEX IF NOT EXISTS idx_conversation_channel ON conversation FIELDS channel;\
             DEFINE INDEX IF NOT EXISTS idx_conversation_last_msg ON conversation FIELDS last_message_at;\
+            DEFINE INDEX IF NOT EXISTS idx_suggestion_status ON suggested_link FIELDS status;\
+            DEFINE INDEX IF NOT EXISTS idx_doc_is_owned ON document FIELDS is_owned;\
+            DEFINE INDEX IF NOT EXISTS idx_doc_deleted_at ON document FIELDS deleted_at;\
+            DEFINE INDEX IF NOT EXISTS idx_thread_deleted_at ON thread FIELDS deleted_at;\
+            DEFINE INDEX IF NOT EXISTS idx_doc_pii_scanned ON document FIELDS pii_scanned_at;\
+            DEFINE INDEX IF NOT EXISTS idx_msg_pii_scanned ON message FIELDS pii_scanned_at;\
+            DEFINE INDEX IF NOT EXISTS idx_contact_entity ON contact FIELDS entity_id;\
+            DEFINE INDEX IF NOT EXISTS idx_contact_pii_scanned ON contact FIELDS pii_scanned_at;\
+            DEFINE INDEX IF NOT EXISTS idx_entity_name ON entity FIELDS name;\
+            DEFINE INDEX IF NOT EXISTS idx_entity_kind ON entity FIELDS kind;\
+            DEFINE INDEX IF NOT EXISTS idx_entity_deleted_at ON entity FIELDS deleted_at;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_entity ON pii_record FIELDS entity_id;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_kind ON pii_record FIELDS kind;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_stored_secret ON pii_record FIELDS stored_secret;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_review_state ON pii_record FIELDS review_state;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_deleted_at ON pii_record FIELDS deleted_at;\
+            DEFINE INDEX IF NOT EXISTS idx_share_pii ON share_record FIELDS pii_record_id;\
+            DEFINE INDEX IF NOT EXISTS idx_share_entity ON share_record FIELDS to_entity_id;\
+            DEFINE INDEX IF NOT EXISTS idx_share_at ON share_record FIELDS shared_at;\
         ";
         self.db
             .query(schema)
@@ -80,10 +122,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn get_document(&self, id: &str) -> DbResult<Document> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "document")?;
         let doc: Option<Document> = self.db.select((table, key)).await?;
         doc.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
@@ -128,10 +167,7 @@ impl GraphDB for SurrealGraphDB {
         title: Option<&str>,
         content: Option<&str>,
     ) -> DbResult<Document> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "document")?;
 
         // Fetch current document
         let current: Option<Document> = self.db.select((table, key)).await?;
@@ -149,11 +185,52 @@ impl GraphDB for SurrealGraphDB {
         updated.ok_or_else(|| DbError::Query("Failed to update document".into()))
     }
 
-    async fn delete_document(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
+    async fn update_document_reliability(
+        &self,
+        id: &str,
+        source_url: Option<&str>,
+        classification: Option<&str>,
+        score: Option<f32>,
+        assessment_json: Option<&str>,
+    ) -> DbResult<Document> {
+        let (table, key) = parse_and_validate(id, "document")?;
+
+        let current: Option<Document> = self.db.select((table, key)).await?;
+        let mut doc = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+
+        if let Some(u) = source_url {
+            doc.source_url = Some(u.to_string());
         }
+        if let Some(c) = classification {
+            doc.reliability_classification = Some(c.to_string());
+        }
+        if let Some(s) = score {
+            doc.reliability_score = Some(s);
+        }
+        if let Some(a) = assessment_json {
+            doc.reliability_assessment = Some(a.to_string());
+        }
+        if classification.is_some() || score.is_some() {
+            doc.assessed_at = Some(Utc::now());
+        }
+
+        let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to update document reliability".into()))
+    }
+
+    async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
+        parse_and_validate(id, "document")?;
+        self.db
+            .query("UPDATE $id SET spatial_x = $x, spatial_y = $y")
+            .bind(("id", id.to_string()))
+            .bind(("x", x))
+            .bind(("y", y))
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_document(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "document")?;
         let _: Option<Document> = self.db.delete((table, key)).await?;
         Ok(())
     }
@@ -166,10 +243,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn get_thread(&self, id: &str) -> DbResult<Thread> {
-        let (table, key) = parse_thing(id)?;
-        if table != "thread" {
-            return Err(DbError::InvalidId(format!("Expected thread ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "thread")?;
         let thread: Option<Thread> = self.db.select((table, key)).await?;
         thread.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
@@ -177,7 +251,7 @@ impl GraphDB for SurrealGraphDB {
     async fn list_threads(&self) -> DbResult<Vec<Thread>> {
         let mut result = self
             .db
-            .query("SELECT * FROM thread WHERE deleted_at IS NONE")
+            .query("SELECT * FROM thread WHERE deleted_at IS NONE ORDER BY created_at ASC")
             .await?;
         let threads: Vec<Thread> = result.take(0)?;
         Ok(threads)
@@ -200,10 +274,7 @@ impl GraphDB for SurrealGraphDB {
         name: Option<&str>,
         description: Option<&str>,
     ) -> DbResult<Thread> {
-        let (table, key) = parse_thing(id)?;
-        if table != "thread" {
-            return Err(DbError::InvalidId(format!("Expected thread ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "thread")?;
 
         let current: Option<Thread> = self.db.select((table, key)).await?;
         let mut thread = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
@@ -220,10 +291,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn delete_thread(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "thread" {
-            return Err(DbError::InvalidId(format!("Expected thread ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "thread")?;
         let _: Option<Thread> = self.db.delete((table, key)).await?;
         Ok(())
     }
@@ -233,10 +301,7 @@ impl GraphDB for SurrealGraphDB {
         doc_id: &str,
         new_thread_id: &str,
     ) -> DbResult<Document> {
-        let (table, key) = parse_thing(doc_id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(doc_id, "document")?;
 
         let updated: Option<Document> = self.db
             .update((table, key))
@@ -251,12 +316,7 @@ impl GraphDB for SurrealGraphDB {
     // -- Adopt ---
 
     async fn adopt_document(&self, id: &str) -> DbResult<Document> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!(
-                "Expected document ID, got table: {table}"
-            )));
-        }
+        let (table, key) = parse_and_validate(id, "document")?;
         let updated: Option<Document> = self.db
             .update((table, key))
             .merge(serde_json::json!({
@@ -315,12 +375,7 @@ impl GraphDB for SurrealGraphDB {
     // -- Soft delete ---
 
     async fn soft_delete_document(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!(
-                "Expected document ID, got table: {table}"
-            )));
-        }
+        let (table, key) = parse_and_validate(id, "document")?;
         let result: Option<Document> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
@@ -332,12 +387,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn restore_soft_deleted_document(&self, id: &str) -> DbResult<Document> {
-        let (table, key) = parse_thing(id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!(
-                "Expected document ID, got table: {table}"
-            )));
-        }
+        let (table, key) = parse_and_validate(id, "document")?;
         let updated: Option<Document> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "deleted_at": null }))
@@ -346,12 +396,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn soft_delete_thread(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "thread" {
-            return Err(DbError::InvalidId(format!(
-                "Expected thread ID, got table: {table}"
-            )));
-        }
+        let (table, key) = parse_and_validate(id, "thread")?;
         let result: Option<Thread> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
@@ -363,12 +408,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn restore_soft_deleted_thread(&self, id: &str) -> DbResult<Thread> {
-        let (table, key) = parse_thing(id)?;
-        if table != "thread" {
-            return Err(DbError::InvalidId(format!(
-                "Expected thread ID, got table: {table}"
-            )));
-        }
+        let (table, key) = parse_and_validate(id, "thread")?;
         let updated: Option<Thread> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "deleted_at": null }))
@@ -382,15 +422,16 @@ impl GraphDB for SurrealGraphDB {
         let cutoff_str = cutoff.to_rfc3339();
 
         // Delete documents and threads older than cutoff in a single round-trip.
-        // No need to deserialize the DELETE results.
-        self.db
-            .query("DELETE FROM document WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff;\
-                    DELETE FROM thread WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff")
+        let mut resp = self.db
+            .query("DELETE FROM document WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff RETURN BEFORE;\
+                    DELETE FROM thread WHERE deleted_at IS NOT NONE AND deleted_at < $cutoff RETURN BEFORE")
             .bind(("cutoff", cutoff_str))
             .await
             .map_err(|e| DbError::Query(e.to_string()))?;
 
-        Ok(0)
+        let deleted_docs: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        let deleted_threads: Vec<serde_json::Value> = resp.take(1).unwrap_or_default();
+        Ok((deleted_docs.len() + deleted_threads.len()) as u64)
     }
 
     // -- Milestones ---
@@ -411,13 +452,17 @@ impl GraphDB for SurrealGraphDB {
         Ok(milestones)
     }
 
+    async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM milestone ORDER BY timestamp DESC")
+            .await?;
+        let milestones: Vec<Milestone> = result.take(0)?;
+        Ok(milestones)
+    }
+
     async fn delete_milestone(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "milestone" {
-            return Err(DbError::InvalidId(format!(
-                "Expected milestone ID, got table: {table}"
-            )));
-        }
+        let (table, key) = parse_and_validate(id, "milestone")?;
         let _: Option<Milestone> = self.db.delete((table, key)).await?;
         Ok(())
     }
@@ -434,17 +479,21 @@ impl GraphDB for SurrealGraphDB {
         let now = Utc::now();
         let relation_type_str = relation_type.to_string();
 
-        let query = format!(
-            "RELATE {from_id}->related_to->{to_id} SET \
-             relation_type = $rtype, \
-             strength = $strength, \
-             created_at = $created_at \
-             RETURN AFTER"
-        );
+        // Parse "table:id" strings into Thing records for RELATE
+        let from = id_to_thing(from_id);
+        let to = id_to_thing(to_id);
 
         let mut result = self
             .db
-            .query(&query)
+            .query(
+                "RELATE $from->related_to->$to SET \
+                 relation_type = $rtype, \
+                 strength = $strength, \
+                 created_at = $created_at \
+                 RETURN AFTER",
+            )
+            .bind(("from", from))
+            .bind(("to", to))
             .bind(("rtype", relation_type_str))
             .bind(("strength", strength))
             .bind(("created_at", now))
@@ -456,13 +505,29 @@ impl GraphDB for SurrealGraphDB {
             .ok_or_else(|| DbError::Query("Failed to create relationship".into()))
     }
 
-    async fn list_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
-        let query = format!(
-            "SELECT * FROM related_to WHERE in = {doc_id} OR out = {doc_id}"
-        );
-        let mut result = self.db.query(&query).await?;
-        let rels: Vec<RelatedTo> = result.take(0)?;
-        Ok(rels)
+    async fn list_outgoing_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
+        let doc = id_to_thing(doc_id);
+        let mut result = self
+            .db
+            .query("SELECT VALUE ->related_to.* FROM $doc")
+            .bind(("doc", doc))
+            .await?;
+        // SELECT VALUE on a graph traversal yields one inner array per matched
+        // FROM row; when $doc resolves to a single record the outer Vec has
+        // length 0 or 1. Flatten to a flat list of edges.
+        let nested: Vec<Vec<RelatedTo>> = result.take(0)?;
+        Ok(nested.into_iter().flatten().collect())
+    }
+
+    async fn list_incoming_relationships(&self, doc_id: &str) -> DbResult<Vec<RelatedTo>> {
+        let doc = id_to_thing(doc_id);
+        let mut result = self
+            .db
+            .query("SELECT VALUE <-related_to.* FROM $doc")
+            .bind(("doc", doc))
+            .await?;
+        let nested: Vec<Vec<RelatedTo>> = result.take(0)?;
+        Ok(nested.into_iter().flatten().collect())
     }
 
     async fn list_all_relationships(&self) -> DbResult<Vec<RelatedTo>> {
@@ -473,12 +538,151 @@ impl GraphDB for SurrealGraphDB {
 
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>> {
         let arrow_path = "->related_to->document".repeat(depth as usize);
-        let query = format!(
-            "SELECT {arrow_path} FROM {doc_id} LIMIT {limit}"
-        );
-        let mut result = self.db.query(&query).await?;
+        let query = format!("SELECT {arrow_path} FROM $id LIMIT $lim");
+        let id = doc_id.to_string();
+        let mut result = self
+            .db
+            .query(&query)
+            .bind(("id", id))
+            .bind(("lim", limit))
+            .await?;
         let docs: Vec<Document> = result.take(0)?;
         Ok(docs)
+    }
+
+    // -- Suggested Links ---
+
+    async fn create_suggested_link(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        relation_type: RelationType,
+        strength: f32,
+        rationale: &str,
+        source: SuggestionSource,
+    ) -> DbResult<SuggestedLink> {
+        let now = Utc::now();
+        let relation_type_str = relation_type.to_string();
+        let source_str = serde_json::to_string(&source)
+            .map_err(|e| DbError::Query(format!("Failed to serialize source: {e}")))?;
+
+        let from = id_to_thing(from_id);
+        let to = id_to_thing(to_id);
+
+        let mut result = self
+            .db
+            .query(
+                "RELATE $from->suggested_link->$to SET \
+                 relation_type = $rtype, \
+                 strength = $strength, \
+                 rationale = $rationale, \
+                 source = $source, \
+                 status = 'pending', \
+                 created_at = $created_at, \
+                 resolved_at = NONE \
+                 RETURN AFTER",
+            )
+            .bind(("from", from))
+            .bind(("to", to))
+            .bind(("rtype", relation_type_str))
+            .bind(("strength", strength))
+            .bind(("rationale", rationale.to_string()))
+            .bind(("source", source_str))
+            .bind(("created_at", now))
+            .await?;
+
+        let links: Vec<SuggestedLink> = result.take(0)?;
+        links
+            .into_iter()
+            .next()
+            .ok_or_else(|| DbError::Query("Failed to create suggested link".into()))
+    }
+
+    async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM suggested_link WHERE status = 'pending' ORDER BY created_at DESC")
+            .await?;
+        let links: Vec<SuggestedLink> = result.take(0)?;
+        Ok(links)
+    }
+
+    async fn list_suggestions_for_document(&self, doc_id: &str) -> DbResult<Vec<SuggestedLink>> {
+        let id = doc_id.to_string();
+        let mut result = self
+            .db
+            .query("SELECT * FROM suggested_link WHERE in = $id OR out = $id ORDER BY created_at DESC")
+            .bind(("id", id))
+            .await?;
+        let links: Vec<SuggestedLink> = result.take(0)?;
+        Ok(links)
+    }
+
+    async fn resolve_suggestion(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+    ) -> DbResult<SuggestedLink> {
+        let now = Utc::now();
+        let status_str = serde_json::to_string(&status)
+            .map_err(|e| DbError::Query(format!("Failed to serialize status: {e}")))?;
+
+        // Fetch the suggestion first
+        let link: Option<SuggestedLink> = self.db.select(("suggested_link", id)).await?;
+        let link = link.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+
+        // Update status and resolved_at
+        let mut result = self
+            .db
+            .query(
+                "UPDATE $id SET status = $status, resolved_at = $resolved_at RETURN AFTER",
+            )
+            .bind(("id", Thing::from(("suggested_link".to_string(), id.to_string()))))
+            .bind(("status", status_str))
+            .bind(("resolved_at", now))
+            .await?;
+
+        let updated: Vec<SuggestedLink> = result.take(0)?;
+        let updated = updated
+            .into_iter()
+            .next()
+            .ok_or_else(|| DbError::Query("Failed to update suggestion".into()))?;
+
+        // If accepted, promote to a real relationship
+        if status == SuggestionStatus::Accepted {
+            if let (Some(in_thing), Some(out_thing)) = (&link.in_, &link.out) {
+                let from_str = crate::schema::thing_to_raw(out_thing);
+                let to_str = crate::schema::thing_to_raw(in_thing);
+                self.create_relationship(&from_str, &to_str, link.relation_type, link.strength)
+                    .await?;
+            }
+        }
+
+        Ok(updated)
+    }
+
+    async fn suggestion_exists(&self, from_id: &str, to_id: &str) -> DbResult<bool> {
+        let from = from_id.to_string();
+        let to = to_id.to_string();
+        let mut result = self
+            .db
+            .query(
+                "SELECT count() AS c FROM suggested_link \
+                 WHERE (in = $from AND out = $to) OR (in = $to AND out = $from) \
+                 GROUP ALL",
+            )
+            .bind(("from", from))
+            .bind(("to", to))
+            .await?;
+
+        // SurrealDB returns [{c: N}] for GROUP ALL
+        let counts: Vec<serde_json::Value> = result.take(0)?;
+        let count = counts
+            .first()
+            .and_then(|v| v.get("c"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        Ok(count > 0)
     }
 
     // -- Version control ---
@@ -527,10 +731,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn get_commit(&self, commit_id: &str) -> DbResult<Commit> {
-        let (table, key) = parse_thing(commit_id)?;
-        if table != "commit" {
-            return Err(DbError::InvalidId(format!("Expected commit ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(commit_id, "commit")?;
         let commit: Option<Commit> = self.db.select((table, key)).await?;
         commit.ok_or_else(|| DbError::NotFound(commit_id.to_string()))
     }
@@ -539,10 +740,7 @@ impl GraphDB for SurrealGraphDB {
         let commit = self.get_commit(commit_id).await?;
 
         // Update document to the snapshot's state
-        let (table, key) = parse_thing(doc_id)?;
-        if table != "document" {
-            return Err(DbError::InvalidId(format!("Expected document ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(doc_id, "document")?;
         let current: Option<Document> = self.db.select((table, key)).await?;
         let mut doc = current.ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
         doc.title = commit.snapshot.title.clone();
@@ -567,10 +765,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn get_contact(&self, id: &str) -> DbResult<Contact> {
-        let (table, key) = parse_thing(id)?;
-        if table != "contact" {
-            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "contact")?;
         let contact: Option<Contact> = self.db.select((table, key)).await?;
         contact.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
@@ -591,10 +786,7 @@ impl GraphDB for SurrealGraphDB {
         notes: Option<&str>,
         avatar: Option<&str>,
     ) -> DbResult<Contact> {
-        let (table, key) = parse_thing(id)?;
-        if table != "contact" {
-            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "contact")?;
         let current: Option<Contact> = self.db.select((table, key)).await?;
         let mut contact = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
 
@@ -614,19 +806,13 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn delete_contact(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "contact" {
-            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "contact")?;
         let _: Option<Contact> = self.db.delete((table, key)).await?;
         Ok(())
     }
 
     async fn soft_delete_contact(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "contact" {
-            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "contact")?;
         let result: Option<Contact> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
@@ -653,10 +839,7 @@ impl GraphDB for SurrealGraphDB {
         contact_id: &str,
         address: crate::schema::ChannelAddress,
     ) -> DbResult<Contact> {
-        let (table, key) = parse_thing(contact_id)?;
-        if table != "contact" {
-            return Err(DbError::InvalidId(format!("Expected contact ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(contact_id, "contact")?;
         let current: Option<Contact> = self.db.select((table, key)).await?;
         let mut contact = current.ok_or_else(|| DbError::NotFound(contact_id.to_string()))?;
         contact.addresses.push(address);
@@ -674,10 +857,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn get_message(&self, id: &str) -> DbResult<Message> {
-        let (table, key) = parse_thing(id)?;
-        if table != "message" {
-            return Err(DbError::InvalidId(format!("Expected message ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "message")?;
         let message: Option<Message> = self.db.select((table, key)).await?;
         message.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
@@ -719,10 +899,7 @@ impl GraphDB for SurrealGraphDB {
         id: &str,
         status: ReadStatus,
     ) -> DbResult<Message> {
-        let (table, key) = parse_thing(id)?;
-        if table != "message" {
-            return Err(DbError::InvalidId(format!("Expected message ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "message")?;
         let updated: Option<Message> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "read_status": status }))
@@ -731,12 +908,35 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn delete_message(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "message" {
-            return Err(DbError::InvalidId(format!("Expected message ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "message")?;
         let _: Option<Message> = self.db.delete((table, key)).await?;
         Ok(())
+    }
+
+    async fn list_all_messages(&self) -> DbResult<Vec<Message>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM message WHERE deleted_at IS NONE ORDER BY sent_at DESC")
+            .await?;
+        let msgs: Vec<Message> = result.take(0)?;
+        Ok(msgs)
+    }
+
+    async fn list_messages_in_time_range(
+        &self,
+        after: DateTime<Utc>,
+        before: DateTime<Utc>,
+        limit: u32,
+    ) -> DbResult<Vec<Message>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM message WHERE deleted_at IS NONE AND sent_at >= $after AND sent_at <= $before ORDER BY sent_at DESC LIMIT $limit")
+            .bind(("after", after))
+            .bind(("before", before))
+            .bind(("limit", limit))
+            .await?;
+        let msgs: Vec<Message> = result.take(0)?;
+        Ok(msgs)
     }
 
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>> {
@@ -758,10 +958,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn get_conversation(&self, id: &str) -> DbResult<Conversation> {
-        let (table, key) = parse_thing(id)?;
-        if table != "conversation" {
-            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "conversation")?;
         let conv: Option<Conversation> = self.db.select((table, key)).await?;
         conv.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
@@ -797,10 +994,7 @@ impl GraphDB for SurrealGraphDB {
         id: &str,
         unread_count: u32,
     ) -> DbResult<Conversation> {
-        let (table, key) = parse_thing(id)?;
-        if table != "conversation" {
-            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "conversation")?;
         let updated: Option<Conversation> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "unread_count": unread_count }))
@@ -813,10 +1007,7 @@ impl GraphDB for SurrealGraphDB {
         id: &str,
         at: chrono::DateTime<chrono::Utc>,
     ) -> DbResult<Conversation> {
-        let (table, key) = parse_thing(id)?;
-        if table != "conversation" {
-            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "conversation")?;
         let updated: Option<Conversation> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "last_message_at": at.to_rfc3339() }))
@@ -825,10 +1016,7 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn delete_conversation(&self, id: &str) -> DbResult<()> {
-        let (table, key) = parse_thing(id)?;
-        if table != "conversation" {
-            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(id, "conversation")?;
         let _: Option<Conversation> = self.db.delete((table, key)).await?;
         Ok(())
     }
@@ -838,15 +1026,244 @@ impl GraphDB for SurrealGraphDB {
         conversation_id: &str,
         thread_id: &str,
     ) -> DbResult<Conversation> {
-        let (table, key) = parse_thing(conversation_id)?;
-        if table != "conversation" {
-            return Err(DbError::InvalidId(format!("Expected conversation ID, got table: {table}")));
-        }
+        let (table, key) = parse_and_validate(conversation_id, "conversation")?;
         let updated: Option<Conversation> = self.db
             .update((table, key))
             .merge(serde_json::json!({ "linked_thread_id": thread_id }))
             .await?;
         updated.ok_or_else(|| DbError::NotFound(conversation_id.to_string()))
+    }
+
+    // -- Entities ---
+
+    async fn create_entity(&self, entity: Entity) -> DbResult<Entity> {
+        let created: Option<Entity> = self.db.create("entity").content(entity).await?;
+        created.ok_or_else(|| DbError::Query("Failed to create entity".into()))
+    }
+
+    async fn list_entities(&self) -> DbResult<Vec<Entity>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM entity WHERE deleted_at IS NONE ORDER BY name ASC")
+            .await?;
+        let entities: Vec<Entity> = result.take(0)?;
+        Ok(entities)
+    }
+
+    // -- PII Records ---
+
+    async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord> {
+        let created: Option<PiiRecord> = self.db.create("pii_record").content(record).await?;
+        created.ok_or_else(|| DbError::Query("Failed to create pii_record".into()))
+    }
+
+    async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let rec: Option<PiiRecord> = self.db.select((table, key)).await?;
+        rec.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn list_pii_records(
+        &self,
+        entity_id: Option<&str>,
+        review_state: Option<ReviewState>,
+        stored_secret: Option<bool>,
+    ) -> DbResult<Vec<PiiRecord>> {
+        // Build the WHERE clause dynamically: deleted_at IS NONE is
+        // always included, plus one clause per supplied filter.
+        let mut clauses: Vec<&str> = vec!["deleted_at IS NONE"];
+        if entity_id.is_some() {
+            clauses.push("entity_id = $entity_id");
+        }
+        if review_state.is_some() {
+            clauses.push("review_state = $review_state");
+        }
+        if stored_secret.is_some() {
+            clauses.push("stored_secret = $stored_secret");
+        }
+        let sql = format!(
+            "SELECT * FROM pii_record WHERE {} ORDER BY discovered_at DESC",
+            clauses.join(" AND ")
+        );
+
+        let mut q = self.db.query(sql);
+        if let Some(eid) = entity_id {
+            q = q.bind(("entity_id", eid.to_string()));
+        }
+        if let Some(rs) = review_state {
+            q = q.bind(("review_state", rs));
+        }
+        if let Some(ss) = stored_secret {
+            q = q.bind(("stored_secret", ss));
+        }
+        let mut result = q.await?;
+        let records: Vec<PiiRecord> = result.take(0)?;
+        Ok(records)
+    }
+
+    async fn update_pii_record_review_state(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "review_state": review_state }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn get_entity(&self, id: &str) -> DbResult<Entity> {
+        let (table, key) = parse_and_validate(id, "entity")?;
+        let entity: Option<Entity> = self.db.select((table, key)).await?;
+        entity.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> {
+        let created: Option<ShareRecord> = self
+            .db
+            .create("share_record")
+            .content(record)
+            .await?;
+        created.ok_or_else(|| DbError::Query("Failed to create share_record".into()))
+    }
+
+    async fn list_share_records_for_entity(
+        &self,
+        entity_id: &str,
+    ) -> DbResult<Vec<ShareRecord>> {
+        let eid = entity_id.to_string();
+        let mut result = self
+            .db
+            .query(
+                "SELECT * FROM share_record WHERE to_entity_id = $eid ORDER BY shared_at DESC",
+            )
+            .bind(("eid", eid))
+            .await?;
+        let records: Vec<ShareRecord> = result.take(0)?;
+        Ok(records)
+    }
+
+    async fn update_pii_record_sources(
+        &self,
+        id: &str,
+        sources: Vec<SourceRef>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "sources": sources }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn update_pii_record_revealed_at(
+        &self,
+        id: &str,
+        last_revealed_at: DateTime<Utc>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "last_revealed_at": last_revealed_at }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn update_document_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "document")?;
+        let patch = serde_json::json!({
+            "body_raw_encrypted": body_raw_encrypted,
+            "body_raw_nonce": body_raw_nonce,
+            "pii_scanned_at": pii_scanned_at,
+        });
+        let updated: Option<Document> = self.db.update((table, key)).merge(patch).await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn update_message_body(
+        &self,
+        id: &str,
+        body: &str,
+        body_html: Option<&str>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "message")?;
+        let patch = serde_json::json!({
+            "body": body,
+            "body_html": body_html,
+        });
+        let updated: Option<Message> = self.db.update((table, key)).merge(patch).await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn update_message_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "message")?;
+        let patch = serde_json::json!({
+            "body_raw_encrypted": body_raw_encrypted,
+            "body_raw_nonce": body_raw_nonce,
+            "pii_scanned_at": pii_scanned_at,
+        });
+        let updated: Option<Message> = self.db.update((table, key)).merge(patch).await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn update_contact_pii_fields(
+        &self,
+        id: &str,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "contact")?;
+        let patch = serde_json::json!({
+            "pii_scanned_at": pii_scanned_at,
+        });
+        let updated: Option<Contact> = self.db.update((table, key)).merge(patch).await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
     }
 }
 
@@ -974,8 +1391,10 @@ mod tests {
             .unwrap();
         assert!(rel.id.is_some());
 
-        let rels = db.list_relationships(&id1).await.unwrap();
-        assert_eq!(rels.len(), 1);
+        let outgoing = db.list_outgoing_relationships(&id1).await.unwrap();
+        assert_eq!(outgoing.len(), 1);
+        let incoming = db.list_incoming_relationships(&id2).await.unwrap();
+        assert_eq!(incoming.len(), 1);
     }
 
     #[tokio::test]

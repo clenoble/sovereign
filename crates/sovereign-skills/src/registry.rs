@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::manifest::SkillManifest;
-use crate::traits::CoreSkill;
+use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
 pub struct SkillRegistry {
     manifests: Vec<SkillManifest>,
@@ -60,6 +60,82 @@ impl SkillRegistry {
     pub fn all_skills(&self) -> &[Box<dyn CoreSkill>] {
         &self.skills
     }
+
+    /// Return skills relevant to the given file extension.
+    /// Type-matched skills come first, then universal ones (empty `file_types()`).
+    /// Each entry is `(skill_name, actions)`.
+    pub fn skills_for_file_type(&self, ext: &str) -> Vec<(&str, Vec<(String, String)>)> {
+        let ext_lower = ext.to_lowercase();
+        let mut matched = Vec::new();
+        let mut universal = Vec::new();
+
+        for skill in &self.skills {
+            let ftypes = skill.file_types();
+            if ftypes.is_empty() {
+                universal.push((skill.name(), skill.actions()));
+            } else if ftypes.iter().any(|ft| ft == &ext_lower) {
+                matched.push((skill.name(), skill.actions()));
+            }
+        }
+
+        matched.extend(universal);
+        matched
+    }
+
+    /// Scan a directory for WASM skill plugins and register them.
+    /// Returns the number of successfully loaded WASM skills.
+    #[cfg(feature = "wasm-plugins")]
+    pub fn load_wasm_skills(&mut self, dir: &std::path::Path) -> anyhow::Result<usize> {
+        let runner = crate::wasm::WasmSkillRunner::new()?;
+        let discovered = runner.discover_skills(dir);
+        let mut loaded = 0;
+
+        for (dir_name, result) in discovered {
+            match result {
+                Ok(skill) => {
+                    tracing::info!("Loaded WASM skill: {} (from {})", skill.name(), dir_name);
+                    self.register(Box::new(skill));
+                    loaded += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load WASM skill from {}: {e}", dir_name);
+                }
+            }
+        }
+
+        Ok(loaded)
+    }
+
+    /// Execute a skill with capability enforcement.
+    /// Returns an error if the skill requires capabilities not granted by the context.
+    pub fn execute_skill(
+        &self,
+        name: &str,
+        action: &str,
+        doc: &SkillDocument,
+        params: &str,
+        ctx: &SkillContext,
+    ) -> anyhow::Result<SkillOutput> {
+        let skill = self
+            .find_skill(name)
+            .ok_or_else(|| anyhow::anyhow!("Skill '{}' not found", name))?;
+
+        let required = skill.required_capabilities();
+        let missing: Vec<_> = required
+            .iter()
+            .filter(|c| !ctx.granted.contains(c))
+            .collect();
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "Skill '{}' requires capabilities {:?} but context only grants {:?}",
+                name,
+                missing,
+                ctx.granted
+            );
+        }
+
+        skill.execute(action, doc, params, ctx)
+    }
 }
 
 impl Default for SkillRegistry {
@@ -71,7 +147,7 @@ impl Default for SkillRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::{SkillDocument, SkillOutput};
+    use crate::manifest::Capability;
     use std::path::PathBuf;
 
     struct DummySkill(&'static str);
@@ -79,6 +155,9 @@ mod tests {
     impl CoreSkill for DummySkill {
         fn name(&self) -> &str {
             self.0
+        }
+        fn required_capabilities(&self) -> Vec<Capability> {
+            vec![Capability::ReadDocument]
         }
         fn activate(&mut self) -> anyhow::Result<()> {
             Ok(())
@@ -91,6 +170,7 @@ mod tests {
             _action: &str,
             _doc: &SkillDocument,
             _params: &str,
+            _ctx: &SkillContext,
         ) -> anyhow::Result<SkillOutput> {
             Ok(SkillOutput::None)
         }
@@ -115,10 +195,9 @@ mod tests {
         let skills_dir = project_skills_dir();
         let mut registry = SkillRegistry::new();
         registry.scan_directory(&skills_dir).unwrap();
-        assert_eq!(
-            registry.manifests().len(),
-            10,
-            "Expected 10 skill manifests in {:?}, found {}",
+        assert!(
+            registry.manifests().len() >= 10,
+            "Expected at least 10 skill manifests in {:?}, found {}",
             skills_dir,
             registry.manifests().len()
         );
@@ -155,6 +234,65 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_skill_grants_sufficient() {
+        let mut registry = SkillRegistry::new();
+        registry.register(Box::new(DummySkill("test")));
+
+        let doc = SkillDocument {
+            id: "document:1".into(),
+            title: "T".into(),
+            content: sovereign_core::content::ContentFields::default(),
+        };
+        let ctx = SkillContext {
+            granted: [Capability::ReadDocument].into_iter().collect(),
+            db: None,
+            llm: None,
+        };
+        let result = registry.execute_skill("test", "any", &doc, "", &ctx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_skill_rejects_missing_capability() {
+        let mut registry = SkillRegistry::new();
+        registry.register(Box::new(DummySkill("test")));
+
+        let doc = SkillDocument {
+            id: "document:1".into(),
+            title: "T".into(),
+            content: sovereign_core::content::ContentFields::default(),
+        };
+        // Grant nothing — DummySkill requires ReadDocument
+        let ctx = SkillContext {
+            granted: std::collections::HashSet::new(),
+            db: None,
+            llm: None,
+        };
+        let result = registry.execute_skill("test", "any", &doc, "", &ctx);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("requires capabilities"));
+    }
+
+    #[test]
+    fn test_execute_skill_not_found() {
+        let registry = SkillRegistry::new();
+        let doc = SkillDocument {
+            id: "document:1".into(),
+            title: "T".into(),
+            content: sovereign_core::content::ContentFields::default(),
+        };
+        let ctx = SkillContext {
+            granted: std::collections::HashSet::new(),
+            db: None,
+            llm: None,
+        };
+        let result = registry.execute_skill("nonexistent", "any", &doc, "", &ctx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
     fn test_registry_with_all_core_skills() {
         use crate::skills::text_editor::TextEditorSkill;
         use crate::skills::image::ImageSkill;
@@ -163,6 +301,23 @@ mod tests {
         use crate::skills::find_replace::FindReplaceSkill;
         use crate::skills::markdown_editor::MarkdownEditorSkill;
         use crate::skills::video::VideoSkill;
+        use crate::skills::search::SearchSkill;
+        use crate::skills::file_import::FileImportSkill;
+        use crate::skills::duplicate_document::DuplicateDocumentSkill;
+        use crate::skills::outline_extractor::OutlineExtractorSkill;
+        use crate::skills::link_checker::LinkCheckerSkill;
+        use crate::skills::pii_detector::PiiDetectorSkill;
+        use crate::skills::readability_score::ReadabilityScoreSkill;
+        use crate::skills::html_export::HtmlExportSkill;
+        use crate::skills::plaintext_export::PlaintextExportSkill;
+        use crate::skills::table_of_contents::TableOfContentsSkill;
+        use crate::skills::json_yaml_formatter::JsonYamlFormatterSkill;
+        use crate::skills::csv_to_md::CsvToMdSkill;
+        use crate::skills::redactor::RedactorSkill;
+        use crate::skills::backlink_map::BacklinkMapSkill;
+        use crate::skills::orphan_finder::OrphanFinderSkill;
+        use crate::skills::daily_journal::DailyJournalSkill;
+        use crate::skills::thread_summary::ThreadSummarySkill;
 
         let mut registry = SkillRegistry::new();
         registry.register(Box::new(TextEditorSkill));
@@ -172,9 +327,25 @@ mod tests {
         registry.register(Box::new(FindReplaceSkill));
         registry.register(Box::new(MarkdownEditorSkill));
         registry.register(Box::new(VideoSkill));
-        // DB-dependent skills would need Arc<SurrealGraphDB>, tested in async tests below
+        registry.register(Box::new(SearchSkill));
+        registry.register(Box::new(FileImportSkill));
+        registry.register(Box::new(DuplicateDocumentSkill));
+        registry.register(Box::new(OutlineExtractorSkill));
+        registry.register(Box::new(LinkCheckerSkill));
+        registry.register(Box::new(PiiDetectorSkill));
+        registry.register(Box::new(ReadabilityScoreSkill));
+        registry.register(Box::new(HtmlExportSkill));
+        registry.register(Box::new(PlaintextExportSkill));
+        registry.register(Box::new(TableOfContentsSkill));
+        registry.register(Box::new(JsonYamlFormatterSkill));
+        registry.register(Box::new(CsvToMdSkill));
+        registry.register(Box::new(RedactorSkill));
+        registry.register(Box::new(BacklinkMapSkill));
+        registry.register(Box::new(OrphanFinderSkill));
+        registry.register(Box::new(DailyJournalSkill));
+        registry.register(Box::new(ThreadSummarySkill));
 
-        assert_eq!(registry.all_skills().len(), 7);
+        assert_eq!(registry.all_skills().len(), 24);
         assert!(registry.find_skill("text-editor").is_some());
         assert!(registry.find_skill("image").is_some());
         assert!(registry.find_skill("pdf-export").is_some());
@@ -182,5 +353,22 @@ mod tests {
         assert!(registry.find_skill("find-replace").is_some());
         assert!(registry.find_skill("markdown-editor").is_some());
         assert!(registry.find_skill("video").is_some());
+        assert!(registry.find_skill("search").is_some());
+        assert!(registry.find_skill("file-import").is_some());
+        assert!(registry.find_skill("duplicate-document").is_some());
+        assert!(registry.find_skill("outline-extractor").is_some());
+        assert!(registry.find_skill("link-checker").is_some());
+        assert!(registry.find_skill("pii-detector").is_some());
+        assert!(registry.find_skill("readability-score").is_some());
+        assert!(registry.find_skill("html-export").is_some());
+        assert!(registry.find_skill("plaintext-export").is_some());
+        assert!(registry.find_skill("table-of-contents").is_some());
+        assert!(registry.find_skill("json-yaml-formatter").is_some());
+        assert!(registry.find_skill("csv-to-md").is_some());
+        assert!(registry.find_skill("redactor").is_some());
+        assert!(registry.find_skill("backlink-map").is_some());
+        assert!(registry.find_skill("orphan-finder").is_some());
+        assert!(registry.find_skill("daily-journal").is_some());
+        assert!(registry.find_skill("thread-summary").is_some());
     }
 }

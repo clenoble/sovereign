@@ -25,7 +25,10 @@ pub struct Orchestrator {
     classifier: tokio::sync::Mutex<IntentClassifier>,
     db: Arc<dyn GraphDB>,
     event_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
-    session_log: Option<Mutex<SessionLog>>,
+    /// Mutex<Option<…>> instead of Option<Mutex<…>> so the inner SessionLog
+    /// can be replaced post-login (e.g. when set_session_log_key opens an
+    /// encrypted log over the existing plaintext one).
+    session_log: Mutex<Option<SessionLog>>,
     decision_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ActionDecision>>>,
     feedback_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<FeedbackEvent>>>,
     trust: Mutex<TrustTracker>,
@@ -33,6 +36,12 @@ pub struct Orchestrator {
     profile_dir: PathBuf,
     model_dir: String,
     n_gpu_layers: i32,
+    /// Device key for PII pipeline encryption of session-log content.
+    /// None until login installs it via set_pii_device_key. Wrapped in a
+    /// Mutex so the setter can be `&self` (orchestrator lives behind Arc).
+    pii_device_key: Mutex<Option<Arc<sovereign_crypto::device_key::DeviceKey>>>,
+    #[cfg(feature = "encrypted-log")]
+    session_log_key: Mutex<Option<[u8; 32]>>,
     #[cfg(feature = "p2p")]
     p2p_command_tx: Option<tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>>,
     #[cfg(feature = "p2p")]
@@ -52,15 +61,14 @@ impl Orchestrator {
         classifier.load_router().await?;
 
         // Initialize session log + profile directory
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let profile_dir = PathBuf::from(home)
+        let profile_dir = sovereign_core::home_dir()
             .join(".sovereign")
             .join("orchestrator");
         let session_log = match SessionLog::open(&profile_dir) {
-            Ok(log) => Some(Mutex::new(log)),
+            Ok(log) => Mutex::new(Some(log)),
             Err(e) => {
                 tracing::warn!("Session log unavailable: {e}");
-                None
+                Mutex::new(None)
             }
         };
 
@@ -100,11 +108,23 @@ impl Orchestrator {
             profile_dir,
             model_dir,
             n_gpu_layers,
+            pii_device_key: Mutex::new(None),
+            #[cfg(feature = "encrypted-log")]
+            session_log_key: Mutex::new(None),
             #[cfg(feature = "p2p")]
             p2p_command_tx: None,
             #[cfg(feature = "p2p")]
             p2p_event_rx: None,
         })
+    }
+
+    /// Run a one-shot generation against the loaded router model.
+    /// Used by skills that need LLM inference (e.g. Thread Summary) via
+    /// the SkillLlmAccess bridge in sovereign-app. Holds the classifier
+    /// lock for the duration of the call.
+    pub async fn generate(&self, prompt: &str, max_tokens: u32) -> Result<String> {
+        let classifier = self.classifier.lock().await;
+        classifier.router.generate(prompt, max_tokens).await
     }
 
     /// Attach a decision channel for user confirmations of Level 3+ actions.
@@ -115,6 +135,67 @@ impl Orchestrator {
     /// Attach a feedback channel for suggestion accept/dismiss events from the UI.
     pub fn set_feedback_rx(&mut self, rx: tokio::sync::mpsc::Receiver<FeedbackEvent>) {
         self.feedback_rx = Some(tokio::sync::Mutex::new(rx));
+    }
+
+    /// Get all trust entries for dashboard display.
+    pub fn trust_entries(&self) -> Vec<crate::trust::TrustEntryView> {
+        self.trust.lock().map(|t| t.all_entries()).unwrap_or_default()
+    }
+
+    /// Reset trust for a specific action.
+    pub fn reset_trust_action(&self, action: &str) {
+        if let Ok(mut trust) = self.trust.lock() {
+            trust.reset_action(action);
+            if let Err(e) = trust.save(&self.profile_dir) {
+                tracing::warn!("Failed to save trust after reset: {e}");
+            }
+        }
+    }
+
+    /// Reset all trust entries.
+    pub fn reset_trust_all(&self) {
+        if let Ok(mut trust) = self.trust.lock() {
+            trust.reset_all();
+            if let Err(e) = trust.save(&self.profile_dir) {
+                tracing::warn!("Failed to save trust after reset: {e}");
+            }
+        }
+    }
+
+    /// Enable session log encryption with the given key.
+    ///
+    /// Attach the device key used by the PII pipeline to encrypt
+    /// findings discovered in user inputs and chat responses. With a
+    /// key set, every `log_user_input` / `log_chat_response` is
+    /// pre-tokenized: the canonical body (with `[pii:<record_id>]`
+    /// tokens) lands in the session log, and PiiRecord rows are
+    /// written for each finding. Without a key, log entries pass
+    /// through raw and the idle sweep handles tokenization later.
+    pub fn set_pii_device_key(&self, key: Arc<sovereign_crypto::device_key::DeviceKey>) {
+        if let Ok(mut guard) = self.pii_device_key.lock() {
+            *guard = Some(key);
+        }
+    }
+
+    /// Re-opens the session log in encrypted mode. Each subsequent entry will be
+    /// encrypted with XChaCha20-Poly1305 and hash-chained to the previous entry
+    /// for tamper detection.
+    #[cfg(feature = "encrypted-log")]
+    pub fn set_session_log_key(&self, key: [u8; 32]) {
+        match SessionLog::open_encrypted(&self.profile_dir, key) {
+            Ok(log) => {
+                if let Ok(mut guard) = self.session_log.lock() {
+                    *guard = Some(log);
+                }
+                if let Ok(mut guard) = self.session_log_key.lock() {
+                    *guard = Some(key);
+                }
+                tracing::info!("Session log encryption enabled");
+            }
+            Err(e) => {
+                tracing::warn!("Failed to enable session log encryption: {e}");
+            }
+        }
     }
 
     /// Attach P2P command/event channels for device sync and guardian transport.
@@ -192,12 +273,10 @@ impl Orchestrator {
             intent.origin,
         );
 
-        // Log user input
-        if let Some(ref log) = self.session_log {
-            if let Ok(mut log) = log.lock() {
-                log.log_user_input("text", query, &intent.action);
-            }
-        }
+        // Log user input — pre-tokenized so the AI's later context
+        // injection (load_session_entries) sees [pii:<id>] tokens, not
+        // raw values.
+        self.log_user_input_pii_aware("text", query, &intent.action).await;
 
         // Gate check: plane violation
         if let Some(reason) = action_gate::check_plane_violation(&intent) {
@@ -308,27 +387,31 @@ impl Orchestrator {
 
     /// Maximum iterations for the agent loop per chat message.
     const MAX_AGENT_ITERATIONS: usize = 5;
-    /// Maximum character budget for history in the prompt (~1000 tokens * 3.5 chars/token).
-    const MAX_HISTORY_CHARS: usize = 3500;
+    /// Maximum token budget for history (~1000 tokens).
+    const MAX_HISTORY_TOKENS: usize = 1000;
 
     /// Handle a chat message: load context, run agent loop with tool calling.
+    /// Handle chat input. Delegates to handle_query so that all user input
+    /// — whether from the search bar or chat panel — goes through the same
+    /// classify → gate → dispatch path.
     pub async fn handle_chat(&self, message: &str) -> Result<()> {
-        // 1. Log user input
-        if let Some(ref log) = self.session_log {
-            if let Ok(mut log) = log.lock() {
-                log.log_user_input("chat", message, "chat");
-            }
-        }
+        self.handle_query(message).await
+    }
+
+    /// Multi-turn chat agent loop with tool calling and conversation history.
+    /// Called from execute_action when the classified intent is "chat" or "unknown".
+    async fn run_chat_agent_loop(&self, message: &str) -> Result<()> {
+        // 1. Log user input — pre-tokenized so subsequent
+        // load_session_entries calls feed canonical-form chat history
+        // into the LLM context.
+        self.log_user_input_pii_aware("chat", message, "chat").await;
 
         let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
             BubbleVisualState::ProcessingOwned,
         ));
 
         // 2. Load conversation history from persistent session log
-        let session_entries = crate::session_log::SessionLog::load_recent(
-            &self.profile_dir,
-            50,
-        );
+        let session_entries = self.load_session_entries(50);
         let mut turns = crate::llm::context::session_entries_to_chat_turns(&session_entries);
 
         // 3. Gather workspace context
@@ -350,12 +433,14 @@ impl Orchestrator {
         };
 
         // 5. Build system prompt with context and UX principles
+        let formatter = self.classifier.lock().await.formatter.clone();
         let system_prompt = crate::llm::prompt::build_chat_system_prompt(
             Some(&workspace_ctx),
             &verbosity,
             user_name.as_deref(),
             designation.as_deref(),
             nickname.as_deref(),
+            Some(&*formatter),
         );
 
         // 6. Append current user message to turns
@@ -371,18 +456,20 @@ impl Orchestrator {
             if iterations > Self::MAX_AGENT_ITERATIONS {
                 let fallback =
                     "I had trouble processing that request. Could you rephrase it?";
-                self.log_chat_response(fallback);
+                self.log_chat_response_pii_aware(fallback).await;
                 let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
                     text: fallback.into(),
                 });
                 break;
             }
 
-            // Build prompt from full history
+            // Build prompt from full history (budget in chars = tokens * chars_per_token)
+            let max_chars = (Self::MAX_HISTORY_TOKENS as f64 * formatter.chars_per_token()) as usize;
             let full_prompt = crate::llm::context::build_prompt_from_full_history(
                 &system_prompt,
                 &turns,
-                Self::MAX_HISTORY_CHARS,
+                max_chars,
+                Some(&*formatter),
             );
 
             // Generate
@@ -394,11 +481,11 @@ impl Orchestrator {
                 .generate(&full_prompt, 300)
                 .await
             {
-                Ok(r) => r.trim().to_string(),
+                Ok(r) => crate::tools::strip_think_blocks(r.trim()),
                 Err(e) => {
                     tracing::error!("Chat generation failed: {e}");
                     let error_msg = format!("Sorry, I couldn't generate a response: {e}");
-                    self.log_chat_response(&error_msg);
+                    self.log_chat_response_pii_aware(&error_msg).await;
                     let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
                         text: error_msg,
                     });
@@ -407,12 +494,12 @@ impl Orchestrator {
             };
 
             // Check for tool calls
-            if crate::tools::has_tool_call(&response) {
-                let calls = crate::tools::parse_tool_calls(&response);
+            if crate::tools::has_tool_call(&response, Some(&*formatter)) {
+                let calls = crate::tools::parse_tool_calls(&response, Some(&*formatter));
                 if let Some(call) = calls.first() {
                     tracing::info!("Tool call: {} (iteration {})", call.name, iterations);
 
-                    let tool_output = if crate::tools::is_write_tool(&call.name) {
+                    let mut tool_output = if crate::tools::is_write_tool(&call.name) {
                         // Write tool — gate through action gravity system
                         let level = security::action_level(&call.name);
                         let trusted = {
@@ -438,12 +525,20 @@ impl Orchestrator {
                                 plane: security::Plane::Control,
                                 doc_id: None,
                                 thread_id: None,
-                                description: format!(
-                                    "{}: {}",
-                                    call.name,
-                                    call.arguments
+                                description: format_tool_proposal(
+                                    &call.name,
+                                    &call.arguments,
                                 ),
                             };
+                            // Conversational confirmation: send a natural-language question first
+                            let confirm_text = format_confirmation_message(
+                                &call.name,
+                                &call.arguments,
+                            );
+                            let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
+                                text: confirm_text,
+                            });
+
                             let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
                                 BubbleVisualState::Proposing,
                             ));
@@ -491,6 +586,30 @@ impl Orchestrator {
                         format!("[{}] {}", result.tool_name, result.output)
                     };
 
+                    // Scan tool output for injection attempts
+                    let injection_matches = injection::scan_for_injection(&tool_output);
+                    if !injection_matches.is_empty() {
+                        let max_severity = injection_matches.iter().map(|m| m.severity).max().unwrap_or(0);
+                        let indicator_descriptions: Vec<String> = injection_matches.iter()
+                            .map(|m| m.pattern_name.clone())
+                            .collect();
+
+                        let _ = self.event_tx.send(OrchestratorEvent::InjectionDetected {
+                            source: call.name.clone(),
+                            pattern: indicator_descriptions.first().cloned().unwrap_or_default(),
+                            indicators: indicator_descriptions.clone(),
+                            severity: max_severity,
+                        });
+
+                        // For high severity (>= 7), filter the content before feeding back to LLM
+                        if max_severity >= 7 {
+                            tool_output = format!(
+                                "[CONTENT FILTERED — injection indicators detected: {}]",
+                                indicator_descriptions.join(", ")
+                            );
+                        }
+                    }
+
                     // Append assistant turn (tool call) and tool result to history
                     turns.push(crate::llm::context::ChatTurn {
                         role: crate::llm::context::ChatRole::Assistant,
@@ -507,7 +626,7 @@ impl Orchestrator {
             }
 
             // No tool call — this is the final response
-            let text_response = crate::tools::extract_text_response(&response);
+            let text_response = crate::tools::extract_text_response(&response, Some(&*formatter));
             tracing::info!(
                 "Chat response: {} chars, {} iterations",
                 text_response.len(),
@@ -521,7 +640,7 @@ impl Orchestrator {
                     iterations
                 ),
             );
-            self.log_chat_response(&text_response);
+            self.log_chat_response_pii_aware(&text_response).await;
             let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
                 text: text_response,
             });
@@ -537,9 +656,88 @@ impl Orchestrator {
 
     /// Log a chat response to the session log for persistent conversation history.
     fn log_chat_response(&self, response: &str) {
-        if let Some(ref log) = self.session_log {
-            if let Ok(mut log) = log.lock() {
+        if let Ok(mut guard) = self.session_log.lock() {
+            if let Some(log) = guard.as_mut() {
                 log.log_chat_response(response);
+            }
+        }
+    }
+
+    /// Run PII ingest over a session-log text (user input or chat
+    /// response). Returns the canonical form with `[pii:<record_id>]`
+    /// tokens. When `pii_device_key` isn't set (encryption off, or
+    /// crypto init failed), passes through unchanged.
+    ///
+    /// Synthesizes a `source_id` of `"session:<rfc3339>"` since the
+    /// session log is JSONL on disk, not a SurrealDB row. Best-effort —
+    /// errors are logged via `tracing::warn!` and the original text is
+    /// returned so the chat pipeline never blocks on ingest.
+    async fn tokenize_session_text(&self, content: &str) -> String {
+        let device_key = match self.pii_device_key.lock().ok().and_then(|g| g.clone()) {
+            Some(k) => k,
+            None => return content.to_string(),
+        };
+        let source_id = format!("session:{}", chrono::Utc::now().to_rfc3339());
+
+        let entities = match self.db.list_entities().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("session-log PII: list_entities failed: {e}");
+                return content.to_string();
+            }
+        };
+        let contacts = match self.db.list_contacts().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("session-log PII: list_contacts failed: {e}");
+                return content.to_string();
+            }
+        };
+        let sink = crate::pii::ingest::GraphDbPiiSink::new(self.db.clone());
+        let config = crate::pii::pipeline::PipelineConfig::default();
+
+        match crate::pii::ingest::ingest_text(
+            content,
+            &source_id,
+            sovereign_db::schema::SourceKind::SessionLog,
+            &config,
+            None,
+            None,
+            &entities,
+            &contacts,
+            &sink,
+            device_key.as_ref(),
+        )
+        .await
+        {
+            Ok(result) => result.canonical_body,
+            Err(e) => {
+                tracing::warn!("session-log PII: ingest_text failed: {e}");
+                content.to_string()
+            }
+        }
+    }
+
+    /// `log_user_input` with PII tokenization. The canonical form is
+    /// what gets persisted to the session log and (later) fed to the
+    /// AI as conversation context.
+    async fn log_user_input_pii_aware(&self, mode: &str, content: &str, intent: &str) {
+        let canonical = self.tokenize_session_text(content).await;
+        if let Ok(mut guard) = self.session_log.lock() {
+            if let Some(log) = guard.as_mut() {
+                log.log_user_input(mode, &canonical, intent);
+            }
+        }
+    }
+
+    /// `log_chat_response` with PII tokenization. AI responses can
+    /// echo PII back (e.g. quoting the user's data), so they go
+    /// through the pipeline too.
+    async fn log_chat_response_pii_aware(&self, response: &str) {
+        let canonical = self.tokenize_session_text(response).await;
+        if let Ok(mut guard) = self.session_log.lock() {
+            if let Some(log) = guard.as_mut() {
+                log.log_chat_response(&canonical);
             }
         }
     }
@@ -722,7 +920,9 @@ impl Orchestrator {
                     let docs = self.db.search_documents_by_title(target).await?;
                     if let Some(doc) = docs.first() {
                         let content = &doc.content;
-                        let prompt = crate::llm::prompt::qwen_chat_prompt(
+                        let fmt = self.classifier.lock().await.formatter.clone();
+                        let prompt = crate::llm::prompt::format_single_turn(
+                            &*fmt,
                             "You are a concise summarizer. Summarize the following document in 2-3 sentences.",
                             content,
                         );
@@ -783,13 +983,26 @@ impl Orchestrator {
                         });
                     } else {
                         let path_str = full_path.to_string_lossy().to_string();
-                        match self
-                            .classifier.lock().await
+                        let mut classifier = self.classifier.lock().await;
+                        match classifier
                             .swap_router(&path_str, self.n_gpu_layers)
                             .await
                         {
                             Ok(()) => {
-                                tracing::info!("Model swapped to: {model_name}");
+                                // Auto-detect prompt format from the model filename.
+                                let detected = crate::llm::format::detect_format_from_filename(&model_name);
+                                classifier.swap_formatter(detected);
+                                // Apply recommended sampling for the new model family.
+                                let sampling = classifier.formatter.default_sampling_config();
+                                classifier.router.set_sampling(sampling);
+                                let format_name = match detected {
+                                    crate::llm::format::PromptFormat::ChatML => "chatml",
+                                    crate::llm::format::PromptFormat::ChatMLQwen3 => "chatml-qwen3",
+                                    crate::llm::format::PromptFormat::Mistral => "mistral",
+                                    crate::llm::format::PromptFormat::Llama3 => "llama3",
+                                };
+
+                                tracing::info!("Model swapped to: {model_name} (format: {format_name})");
                                 self.log_action("swap_model", &model_name);
                                 let _ = self.event_tx.send(OrchestratorEvent::SkillResult {
                                     skill: "model_manager".into(),
@@ -797,6 +1010,7 @@ impl Orchestrator {
                                     kind: "model_swapped".into(),
                                     data: serde_json::json!({
                                         "model": model_name,
+                                        "prompt_format": format_name,
                                     })
                                     .to_string(),
                                 });
@@ -1124,9 +1338,30 @@ impl Orchestrator {
                     }
                 }
             }
-            "chat" => {
+            "open_pii_dashboard" | "open_models" | "open_inbox" | "browse" | "open_settings" => {
+                // Map orchestrator action → frontend panel name. The frontend
+                // listener flips the corresponding visibility flag.
+                let panel = match action {
+                    "open_pii_dashboard" => "pii_dashboard",
+                    "open_models" => "models",
+                    "open_inbox" => "inbox",
+                    "browse" => "browser",
+                    "open_settings" => "settings",
+                    _ => unreachable!(),
+                };
+                tracing::info!("Toggle panel: {}", panel);
+                self.log_action(action, panel);
+                let _ = self.event_tx.send(OrchestratorEvent::OpenPanel {
+                    name: panel.to_string(),
+                });
+                let _ = self.event_tx.send(OrchestratorEvent::ActionExecuted {
+                    action: action.to_string(),
+                    success: true,
+                });
+            }
+            "chat" | "unknown" => {
                 // Delegate to the agent loop which handles context, tools, and history
-                self.handle_chat(query).await?;
+                self.run_chat_agent_loop(query).await?;
             }
             _ => {
                 let level = security::action_level(action);
@@ -1151,36 +1386,96 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Scan document content for injection attempts. Emits InjectionDetected events.
-    /// Returns true if injection was detected (caller should refuse to process).
-    // TODO: integrate into execute_action pipeline — call before processing user-supplied content
-    #[allow(dead_code)]
-    pub async fn scan_document_for_injection(&self, doc_id: &str) -> bool {
-        match self.db.get_document(doc_id).await {
-            Ok(doc) => {
-                let matches = injection::scan_for_injection(&doc.content);
-                if !matches.is_empty() {
-                    let top = &matches[0];
-                    tracing::warn!(
-                        "Injection detected in {}: {} (severity {})",
-                        doc_id,
-                        top.pattern_name,
-                        top.severity
-                    );
-                    self.log_action(
-                        "injection_detected",
-                        &format!("{}: {}", doc_id, top.pattern_name),
-                    );
-                    let _ = self.event_tx.send(OrchestratorEvent::InjectionDetected {
-                        source: doc_id.to_string(),
-                        pattern: top.pattern_name.clone(),
-                    });
-                    return true;
+    // Injection scanning is handled inline in the chat agent loop (handle_chat)
+    // where tool outputs are scanned via injection::scan_for_injection() before
+    // being fed back to the LLM. See the tool execution block above.
+
+    /// Assess the reliability of web content using local LLM.
+    ///
+    /// Two-step: classifies as Factual/Opinion/Fiction, then scores
+    /// rubric criteria 0-5. Uses the router (3B) model for both steps
+    /// to avoid loading the heavier reasoning model.
+    pub async fn assess_reliability(
+        &self,
+        text: &str,
+    ) -> Result<crate::reliability::ReliabilityResult> {
+        let classifier = self.classifier.lock().await;
+        let result = crate::reliability::assess_reliability(
+            &classifier.router,
+            &*classifier.formatter,
+            text,
+        )
+        .await?;
+        Ok(result)
+    }
+
+    /// Run one memory consolidation cycle: find related document pairs and
+    /// create AI-suggested links. Only runs when the system is idle.
+    ///
+    /// Uses adaptive gating from the user profile — if the user consistently
+    /// dismisses consolidation suggestions, they are shown less often.
+    pub async fn consolidate_memory(&self) -> Result<()> {
+        // Check adaptive gating
+        {
+            let profile = self.profile.lock().unwrap();
+            if let Some(fb) = profile.suggestion_feedback.get("consolidation") {
+                if fb.shown >= 5 {
+                    let rate = fb.acceptance_rate();
+                    let params = AdaptiveParams::from_acceptance_rate(rate);
+                    if rate < params.suggestion_threshold {
+                        return Ok(());
+                    }
                 }
-                false
             }
-            Err(_) => false,
         }
+
+        let classifier = self.classifier.lock().await;
+        let suggestions = crate::consolidation::run_cycle(
+            self.db.as_ref(),
+            &classifier.router,
+            &*classifier.formatter,
+            sovereign_db::schema::SuggestionSource::Consolidation,
+        )
+        .await?;
+        drop(classifier);
+
+        // Emit events for each new suggestion
+        for sugg in &suggestions {
+            let sugg_id = sugg.id_string().unwrap_or_default();
+            let from_id = sugg.out.as_ref().map(|t| sovereign_db::schema::thing_to_raw(t)).unwrap_or_default();
+            let to_id = sugg.in_.as_ref().map(|t| sovereign_db::schema::thing_to_raw(t)).unwrap_or_default();
+
+            // Look up titles
+            let from_title = self.db.get_document(&from_id).await.map(|d| d.title).unwrap_or_default();
+            let to_title = self.db.get_document(&to_id).await.map(|d| d.title).unwrap_or_default();
+
+            let _ = self.event_tx.send(OrchestratorEvent::LinkSuggested {
+                suggestion_id: sugg_id,
+                from_doc_id: from_id,
+                from_title,
+                to_doc_id: to_id,
+                to_title,
+                relation_type: sugg.relation_type.to_string(),
+                strength: sugg.strength,
+                rationale: sugg.rationale.clone(),
+            });
+        }
+
+        // Update suggestion feedback counter
+        if !suggestions.is_empty() {
+            let mut profile = self.profile.lock().unwrap();
+            let fb = profile.suggestion_feedback.entry("consolidation".to_string()).or_default();
+            fb.shown += suggestions.len() as u32;
+            let _ = profile.save(&self.profile_dir);
+        }
+
+        Ok(())
+    }
+
+    /// Returns true if the LLM is not currently generating.
+    /// Used by the idle-watcher to avoid competing with user tasks.
+    pub fn is_model_idle(&self) -> bool {
+        self.classifier.try_lock().is_ok()
     }
 
     /// Generate a proactive suggestion based on current context.
@@ -1282,11 +1577,73 @@ impl Orchestrator {
     }
 
     fn log_action(&self, action: &str, details: &str) {
-        if let Some(ref log) = self.session_log {
-            if let Ok(mut log) = log.lock() {
+        if let Ok(mut guard) = self.session_log.lock() {
+            if let Some(log) = guard.as_mut() {
                 log.log_action(action, details);
             }
         }
+    }
+
+    /// Load recent session entries, using encrypted decryption if a key is available.
+    fn load_session_entries(&self, max_entries: usize) -> Vec<crate::session_log::SessionEntry> {
+        #[cfg(feature = "encrypted-log")]
+        {
+            let key = self.session_log_key.lock().ok().and_then(|g| *g);
+            if let Some(key) = key {
+                return SessionLog::load_recent_encrypted(&self.profile_dir, max_entries, &key);
+            }
+        }
+        SessionLog::load_recent(&self.profile_dir, max_entries)
+    }
+}
+
+/// Format a tool call proposal into a human-readable description.
+fn format_tool_proposal(name: &str, args: &serde_json::Value) -> String {
+    match name {
+        "create_document" => format!(
+            "Create document '{}'",
+            args["title"].as_str().unwrap_or("Untitled"),
+        ),
+        "create_thread" => format!(
+            "Create thread '{}'",
+            args["name"].as_str().unwrap_or("New Thread"),
+        ),
+        "rename_thread" => format!(
+            "Rename thread '{}' to '{}'",
+            args["old_name"].as_str().unwrap_or("?"),
+            args["new_name"].as_str().unwrap_or("?"),
+        ),
+        "move_document" => format!(
+            "Move '{}' to thread '{}'",
+            args["title"].as_str().unwrap_or("?"),
+            args["thread"].as_str().unwrap_or("?"),
+        ),
+        _ => format!("{}: {}", name, args),
+    }
+}
+
+/// Build a natural-language confirmation question for a proposed action.
+fn format_confirmation_message(name: &str, args: &serde_json::Value) -> String {
+    match name {
+        "create_document" => format!(
+            "I'll create a new document called '{}'. Sound good?",
+            args["title"].as_str().unwrap_or("Untitled"),
+        ),
+        "create_thread" => format!(
+            "I'll create a new thread called '{}'. Want me to go ahead?",
+            args["name"].as_str().unwrap_or("New Thread"),
+        ),
+        "rename_thread" => format!(
+            "I'll rename the thread from '{}' to '{}'. Shall I?",
+            args["old_name"].as_str().unwrap_or("?"),
+            args["new_name"].as_str().unwrap_or("?"),
+        ),
+        "move_document" => format!(
+            "I'll move '{}' to thread '{}'. OK?",
+            args["title"].as_str().unwrap_or("?"),
+            args["thread"].as_str().unwrap_or("?"),
+        ),
+        _ => format!("I'd like to perform '{}'. Ready?", name),
     }
 }
 
@@ -1389,12 +1746,71 @@ pub(crate) fn scan_gguf_models(model_dir: &str) -> Vec<(String, u64)> {
 
 /// Resolve a model target name to a full path, appending .gguf if needed.
 pub(crate) fn resolve_model_path(model_dir: &str, target: &str) -> std::path::PathBuf {
-    let model_name = if target.ends_with(".gguf") {
+    let dir = std::path::Path::new(model_dir);
+
+    // 1. Exact filename match (with or without .gguf extension)
+    let exact_name = if target.ends_with(".gguf") {
         target.to_string()
     } else {
         format!("{}.gguf", target)
     };
-    std::path::Path::new(model_dir).join(model_name)
+    let exact_path = dir.join(&exact_name);
+    if exact_path.exists() {
+        return exact_path;
+    }
+
+    // 2. Fuzzy match: scan .gguf files for a name that matches the target.
+    //    Checks substring containment, then expands the target with known aliases
+    //    (e.g. "mistral" also matches "ministral" product names).
+    let target_lower = target.to_lowercase();
+    let aliases = expand_model_aliases(&target_lower);
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        let mut best: Option<std::path::PathBuf> = None;
+        let mut best_len = usize::MAX; // prefer shortest filename (most specific match)
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("gguf") {
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_lowercase();
+                let matched = aliases.iter().any(|alias| name.contains(alias));
+                if matched && name.len() < best_len {
+                    best_len = name.len();
+                    best = Some(path);
+                }
+            }
+        }
+        if let Some(matched) = best {
+            return matched;
+        }
+    }
+
+    // 3. Fallback: return the exact path (will fail exists() check in caller)
+    exact_path
+}
+
+/// Expand a target name into a list of search terms including known aliases.
+/// E.g. "mistral" → ["mistral", "ministral"] so that the user saying "switch to mistral"
+/// matches files named "Ministral-3-3B-Instruct-...".
+fn expand_model_aliases(target_lower: &str) -> Vec<String> {
+    // Alias groups: names that users might use interchangeably.
+    const ALIAS_GROUPS: &[&[&str]] = &[
+        &["mistral", "ministral"],
+    ];
+    let mut result = vec![target_lower.to_string()];
+    for group in ALIAS_GROUPS {
+        if group.iter().any(|a| target_lower.contains(a) || a.contains(target_lower)) {
+            for alias in *group {
+                if *alias != target_lower && !result.iter().any(|r| r == alias) {
+                    result.push(alias.to_string());
+                }
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -1449,6 +1865,33 @@ mod tests {
     fn resolve_model_path_keeps_existing_gguf() {
         let path = resolve_model_path("/models", "Qwen2.5-7B.gguf");
         assert_eq!(path, std::path::PathBuf::from("/models/Qwen2.5-7B.gguf"));
+    }
+
+    #[test]
+    fn resolve_model_path_fuzzy_matches() {
+        let dir = make_test_dir("resolve_fuzzy");
+        std::fs::write(dir.join("Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"), "fake").unwrap();
+        std::fs::write(dir.join("llama-3.2-1b-instruct-q4_k_m.gguf"), "fake").unwrap();
+
+        // "mistral" should fuzzy-match "Ministral-..."
+        let path = resolve_model_path(dir.to_str().unwrap(), "mistral");
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"
+        );
+
+        // "llama" should fuzzy-match "llama-3.2-..."
+        let path = resolve_model_path(dir.to_str().unwrap(), "llama");
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            "llama-3.2-1b-instruct-q4_k_m.gguf"
+        );
+
+        // No match returns fallback exact path
+        let path = resolve_model_path(dir.to_str().unwrap(), "gemma");
+        assert_eq!(path.file_name().unwrap().to_string_lossy(), "gemma.gguf");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

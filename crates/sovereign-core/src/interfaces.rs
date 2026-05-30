@@ -1,30 +1,12 @@
 //! Cross-phase interface definitions.
 //!
 //! Traits and types defining the contracts between crates:
-//! sovereign-canvas (CanvasController), sovereign-ai (ModelBackend,
-//! OrchestratorEvent), and sovereign-skills (SkillEvent).
+//! sovereign-ai (ModelBackend, OrchestratorEvent) and
+//! sovereign-skills (SkillEvent).
 
 use async_trait::async_trait;
 
 use crate::security::{BubbleVisualState, ProposedAction};
-
-/// Controls the spatial canvas viewport and highlights.
-pub trait CanvasController: Send + Sync {
-    fn navigate_to_document(&self, doc_id: &str);
-    fn highlight_card(&self, doc_id: &str, highlight: bool);
-    fn zoom_to_thread(&self, thread_id: &str);
-    fn get_viewport(&self) -> Viewport;
-}
-
-/// Current canvas viewport state.
-#[derive(Debug, Clone)]
-pub struct Viewport {
-    pub x: f64,
-    pub y: f64,
-    pub zoom: f64,
-    pub width: f64,
-    pub height: f64,
-}
 
 /// Events emitted by the AI orchestrator and consumed by the UI and skills.
 #[derive(Debug, Clone)]
@@ -34,7 +16,12 @@ pub enum OrchestratorEvent {
     ActionProposed { proposal: ProposedAction },
     ActionExecuted { action: String, success: bool },
     ActionRejected { action: String, reason: String },
-    InjectionDetected { source: String, pattern: String },
+    InjectionDetected {
+        source: String,
+        pattern: String,
+        indicators: Vec<String>,
+        severity: u8,
+    },
     BubbleState(BubbleVisualState),
     ThreadCreated { thread_id: String, name: String },
     ThreadRenamed { thread_id: String, name: String },
@@ -74,6 +61,25 @@ pub enum OrchestratorEvent {
     ContactCreated { contact_id: String, name: String },
     // Chat response from LLM
     ChatResponse { text: String },
+    // Web browsing events
+    BrowserNavigated { url: String, title: String },
+    BrowserContentExtracted { url: String, title: String, text: String },
+    ReliabilityAssessed { doc_id: String, classification: String, score: f32 },
+    // Memory consolidation events
+    LinkSuggested {
+        suggestion_id: String,
+        from_doc_id: String,
+        from_title: String,
+        to_doc_id: String,
+        to_title: String,
+        relation_type: String,
+        strength: f32,
+        rationale: String,
+    },
+    LinkSuggestionResolved { suggestion_id: String, accepted: bool },
+    /// Toggle a frontend UI panel. `name` is one of:
+    /// "pii_dashboard", "models", "inbox", "browser", "settings".
+    OpenPanel { name: String },
 }
 
 /// Lightweight milestone summary for milestone events.
@@ -131,6 +137,17 @@ pub enum VoiceCommand {
 pub enum VoiceMode {
     WakeWord,
     PushToTalk,
+}
+
+/// Events from the voice pipeline to the UI.
+#[derive(Debug, Clone)]
+pub enum VoiceEvent {
+    WakeWordDetected,
+    ListeningStarted,
+    TranscriptionReady(String),
+    ListeningStopped,
+    TtsSpeaking(String),
+    TtsDone,
 }
 
 #[cfg(test)]

@@ -1,11 +1,16 @@
-use crate::traits::{CoreSkill, SkillDocument, SkillOutput};
-use sovereign_core::content::ContentFields;
+use crate::content_util::replace_body;
+use crate::manifest::Capability;
+use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
 
 pub struct TextEditorSkill;
 
 impl CoreSkill for TextEditorSkill {
     fn name(&self) -> &str {
         "text-editor"
+    }
+
+    fn required_capabilities(&self) -> Vec<Capability> {
+        vec![Capability::ReadDocument, Capability::WriteDocument]
     }
 
     fn activate(&mut self) -> anyhow::Result<()> {
@@ -21,15 +26,11 @@ impl CoreSkill for TextEditorSkill {
         action: &str,
         doc: &SkillDocument,
         params: &str,
+        _ctx: &SkillContext,
     ) -> anyhow::Result<SkillOutput> {
         match action {
             "save" => {
-                let updated = ContentFields {
-                    body: params.to_string(),
-                    images: doc.content.images.clone(),
-                    videos: doc.content.videos.clone(),
-                };
-                Ok(SkillOutput::ContentUpdate(updated))
+                Ok(SkillOutput::ContentUpdate(replace_body(doc, params.to_string())))
             }
             _ => anyhow::bail!("Unknown action: {action}"),
         }
@@ -38,28 +39,22 @@ impl CoreSkill for TextEditorSkill {
     fn actions(&self) -> Vec<(String, String)> {
         vec![("save".into(), "Save".into())]
     }
+
+    fn file_types(&self) -> Vec<String> {
+        vec!["md".into(), "txt".into()]
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_doc() -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "Test Doc".into(),
-            content: ContentFields {
-                body: "original body".into(),
-                ..Default::default()
-            },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc_with_title};
 
     #[test]
     fn save_returns_content_update_with_new_body() {
         let skill = TextEditorSkill;
-        let doc = make_doc();
-        let result = skill.execute("save", &doc, "new body text").unwrap();
+        let doc = make_doc_with_title("Test Doc", "original body");
+        let result = skill.execute("save", &doc, "new body text", &dummy_ctx()).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
                 assert_eq!(cf.body, "new body text");

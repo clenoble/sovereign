@@ -1,8 +1,8 @@
 [package]
 name = "sovereign-app"
-version = "0.1.0"
+version = "0.0.4"
 edition = "2021"
-description = "Sovereign OS binary — CLI and GUI entry point"
+description = "Sovereign GE binary — CLI and GUI entry point"
 
 [[bin]]
 name = "sovereign"
@@ -11,30 +11,50 @@ path = "src/main.rs"
 [dependencies]
 sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
-sovereign-ui = { workspace = true }
 sovereign-skills = { workspace = true }
 sovereign-ai = { workspace = true, default-features = false }
 tokio = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
 chrono = { workspace = true }
+base64 = { workspace = true }
+url = { workspace = true }
+
+# Tauri (Svelte 5 web UI — the only supported frontend)
+tauri = { workspace = true }
+
+# Cookie type used by tauri::Webview::cookies() / delete_cookie().
+# Tauri 2.10 depends on this crate but doesn't re-export it.
+cookie = "0.18"
 
 # Optional crypto / P2P deps
 sovereign-crypto = { workspace = true, optional = true }
 sovereign-p2p = { workspace = true, optional = true }
 sovereign-comms = { workspace = true, optional = true }
 rpassword = { version = "7.3", optional = true }
-uuid = { version = "1", features = ["v4"], optional = true }
+uuid = { workspace = true, optional = true }
 rand = { version = "0.10", optional = true }
 
-[target.'cfg(target_os = "windows")'.build-dependencies]
-winresource = "0.1"
+# Session log encryption key derivation
+hkdf = { version = "0.12", optional = true }
+sha2 = { workspace = true, optional = true }
+
+# Web browsing (optional)
+reqwest = { workspace = true, optional = true }
+readability = { workspace = true, optional = true }
+
+[build-dependencies]
+tauri-build = { workspace = true }
 
 [features]
-default = []
+default = ["encrypted-log", "encryption"]
 cuda = ["sovereign-ai/cuda"]
+encrypted-log = ["sovereign-ai/encrypted-log", "hkdf", "sha2"]
 voice-stt = ["sovereign-ai/voice-stt"]
 encryption = ["sovereign-crypto", "sovereign-db/encryption", "rpassword", "uuid", "rand"]
 p2p = ["encryption", "sovereign-p2p", "sovereign-ai/p2p"]
@@ -42,4 +62,7 @@ comms = ["sovereign-comms"]
 comms-email = ["comms", "sovereign-comms/email"]
 comms-signal = ["comms", "sovereign-comms/signal"]
 comms-whatsapp = ["comms", "sovereign-comms/whatsapp"]
+wasm-plugins = ["sovereign-skills/wasm-plugins"]
+web-browse = ["reqwest", "readability"]
 jiminy = ["sovereign-ai/jiminy"]
+wake-word = ["sovereign-ai/wake-word"]

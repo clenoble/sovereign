@@ -1,3 +1,6 @@
+> **Archive — Philosophical Design Exploration (Not Implemented)**
+> This document describes aspirational cognitive sovereignty concepts (entropy metrics, binary signaling, blind spot detection). These ideas are not currently implemented in the codebase. The active UX principles document is [`sovereign_os_ux_principles.md`](sovereign_os_ux_principles.md) (v1.1). Kept for future reference.
+
 # **UX Principles for Cognitive Sovereignty (v2.1)**
 
 ## **Core Philosophy: The Structural Catalyst**

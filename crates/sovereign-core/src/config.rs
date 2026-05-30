@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub database: DatabaseConfig,
@@ -19,7 +19,7 @@ pub struct AppConfig {
     pub comms: CommsAppConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DatabaseConfig {
     pub mode: String,
@@ -35,7 +35,7 @@ impl Default for DatabaseConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
     pub theme: String,
@@ -53,7 +53,7 @@ impl Default for UiConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiConfig {
     pub model_dir: String,
@@ -61,6 +61,8 @@ pub struct AiConfig {
     pub reasoning_model: String,
     pub n_gpu_layers: i32,
     pub n_ctx: u32,
+    /// Prompt format: "chatml" (default), "mistral", "llama3".
+    pub prompt_format: String,
 }
 
 impl Default for AiConfig {
@@ -71,11 +73,12 @@ impl Default for AiConfig {
             reasoning_model: String::new(),
             n_gpu_layers: 99,
             n_ctx: 4096,
+            prompt_format: "chatml".into(),
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VoiceConfig {
     pub enabled: bool,
@@ -106,7 +109,7 @@ impl Default for VoiceConfig {
 }
 
 /// Encryption-at-rest configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CryptoConfig {
     /// Whether encryption is enabled.
@@ -140,7 +143,7 @@ impl Default for CryptoConfig {
 }
 
 /// P2P networking configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct P2pConfig {
     /// Whether P2P networking is enabled.
@@ -165,7 +168,7 @@ impl Default for P2pConfig {
 }
 
 /// Communications configuration (email, messaging, etc.)
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CommsAppConfig {
     pub enabled: bool,
@@ -203,28 +206,87 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Load config with fallback chain: explicit path → ./config/default.toml → hardcoded defaults.
+    /// Load config with fallback chain: explicit path → CWD → project root → hardcoded defaults.
+    /// Relative paths in `ai.model_dir` are resolved against the directory that contained the
+    /// config file (or the project root for hardcoded defaults).
     pub fn load_or_default(explicit_path: Option<&Path>) -> Self {
+        let mut cfg = None;
+        let mut config_root: Option<std::path::PathBuf> = None;
+
         if let Some(path) = explicit_path {
             match Self::load(path) {
-                Ok(cfg) => return cfg,
+                Ok(c) => {
+                    config_root = path.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+                    cfg = Some(c);
+                }
                 Err(e) => {
                     tracing::warn!("Failed to load config from {}: {e}", path.display());
                 }
             }
         }
 
-        let default_path = Path::new("config/default.toml");
-        if default_path.exists() {
-            match Self::load(default_path) {
-                Ok(cfg) => return cfg,
-                Err(e) => {
-                    tracing::warn!("Failed to load default config: {e}");
+        if cfg.is_none() {
+            // Search for config/default.toml relative to CWD, then project root
+            let candidates = Self::config_search_paths();
+            for path in &candidates {
+                if path.exists() {
+                    match Self::load(path) {
+                        Ok(c) => {
+                            // config_root = grandparent of config file (project root)
+                            config_root =
+                                path.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+                            tracing::info!("Loaded config from {}", path.display());
+                            cfg = Some(c);
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to load config from {}: {e}",
+                                path.display()
+                            );
+                        }
+                    }
                 }
             }
         }
 
-        tracing::info!("Using hardcoded default configuration");
-        Self::default()
+        let root = config_root.unwrap_or_else(|| Self::project_root());
+
+        let mut cfg = cfg.unwrap_or_else(|| {
+            tracing::info!("Using hardcoded default configuration");
+            Self::default()
+        });
+
+        // Resolve relative model_dir against the project root
+        let model_path = Path::new(&cfg.ai.model_dir);
+        if model_path.is_relative() {
+            let resolved = root.join(model_path);
+            cfg.ai.model_dir = resolved.to_string_lossy().into_owned();
+            tracing::info!("Resolved model_dir to {}", cfg.ai.model_dir);
+        }
+
+        cfg
+    }
+
+    /// Candidate paths to search for `config/default.toml`.
+    fn config_search_paths() -> Vec<std::path::PathBuf> {
+        let mut paths = vec![std::path::PathBuf::from("config/default.toml")];
+        // Fallback: project root derived from compile-time CARGO_MANIFEST_DIR
+        let project = Self::project_root();
+        paths.push(project.join("config/default.toml"));
+        paths
+    }
+
+    /// Best-effort project root: compile-time workspace root, then exe dir, then CWD.
+    fn project_root() -> std::path::PathBuf {
+        // CARGO_MANIFEST_DIR is crates/sovereign-app/ at compile time → go up 2 levels
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        if let Some(root) = manifest.parent().and_then(|p| p.parent()) {
+            if root.join("config").is_dir() || root.join("models").is_dir() {
+                return root.to_path_buf();
+            }
+        }
+        // Fallback to CWD
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     }
 }
