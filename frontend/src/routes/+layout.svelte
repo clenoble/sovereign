@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { applyTheme } from '$lib/stores/theme.svelte';
 	import { app } from '$lib/stores/app.svelte';
 	import { toggleChat } from '$lib/stores/chat.svelte';
@@ -29,6 +29,12 @@
 	import MobileShell from '$lib/components/mobile/MobileShell.svelte';
 
 	let { children } = $props();
+
+	// Cleanup is assigned at the end of the async onMount body. Svelte
+	// ignores a Promise returned from an async onMount, so the teardown
+	// is registered via onDestroy instead of `return () => …`.
+	let cleanup: (() => void) | null = null;
+	onDestroy(() => cleanup?.());
 
 	onMount(async () => {
 		// Initialize device detection (viewport + platform). Subscribes
@@ -154,7 +160,7 @@
 		};
 		document.addEventListener('visibilitychange', handleVisibilityChange);
 
-		return () => {
+		cleanup = () => {
 			unlisten();
 			unlistenSignup();
 			stopNowTimer();
