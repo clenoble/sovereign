@@ -17,7 +17,9 @@
 	let kind = $state('password');
 	let label = $state('');
 	let value = $state('');
-	let entityId = $state<string | null>(defaultEntityId);
+	// Initialized to null and synced from `defaultEntityId` in the open
+	// effect below (avoids capturing only the initial prop value).
+	let entityId = $state<string | null>(null);
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
 	let showValue = $state(false);

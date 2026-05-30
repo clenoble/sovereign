@@ -331,4 +331,14 @@
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
+
+	@media (max-width: 768px) {
+		.capture-dialog {
+			min-width: 0;
+			width: calc(100vw - 16px);
+			max-width: 100vw;
+			max-height: 90vh;
+			padding: 14px 16px;
+		}
+	}
 </style>

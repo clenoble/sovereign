@@ -65,6 +65,7 @@
 			class="ctx-item sub-trigger"
 			onpointerenter={() => (showThreadSub = true)}
 			onpointerleave={() => (showThreadSub = false)}
+			onclick={() => (showThreadSub = !showThreadSub)}
 			role="menuitem"
 		>
 			Move to Thread
@@ -153,5 +154,29 @@
 		border-radius: 8px;
 		padding: 4px 0;
 		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+	}
+
+	@media (max-width: 768px) {
+		.ctx-menu {
+			min-width: 200px;
+		}
+		.ctx-item {
+			padding: 12px 16px; /* larger touch targets */
+			font-size: 0.95rem;
+		}
+		/* Stack the submenu below instead of beside on narrow viewports */
+		.sub-menu {
+			position: static;
+			left: auto;
+			top: auto;
+			border: none;
+			border-top: 1px solid var(--border);
+			border-radius: 0;
+			box-shadow: none;
+			margin-top: 4px;
+		}
+		.sub-trigger::after {
+			content: '\25BC'; /* down-pointing triangle */
+		}
 	}
 </style>

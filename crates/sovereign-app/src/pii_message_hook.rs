@@ -18,18 +18,18 @@ use async_trait::async_trait;
 use sovereign_ai::pii::ingest::{ingest_text, GraphDbPiiSink};
 use sovereign_ai::pii::pipeline::PipelineConfig;
 use sovereign_comms::pii_hook::MessageIngestHook;
-use sovereign_crypto::device_key::DeviceKey;
+use sovereign_crypto::account_key::AccountKey;
 use sovereign_db::schema::{thing_to_raw, Message, SourceKind};
 use sovereign_db::traits::GraphDB;
 
 pub struct PiiMessageHook {
     db: Arc<dyn GraphDB>,
-    device_key: Arc<DeviceKey>,
+    account_key: Arc<AccountKey>,
 }
 
 impl PiiMessageHook {
-    pub fn new(db: Arc<dyn GraphDB>, device_key: Arc<DeviceKey>) -> Self {
-        Self { db, device_key }
+    pub fn new(db: Arc<dyn GraphDB>, account_key: Arc<AccountKey>) -> Self {
+        Self { db, account_key }
     }
 
     async fn run_ingest(&self, id: &str, message: &Message) -> anyhow::Result<()> {
@@ -51,7 +51,7 @@ impl PiiMessageHook {
             &entities,
             &contacts,
             &sink,
-            self.device_key.as_ref(),
+            self.account_key.as_ref(),
         )
         .await?;
 

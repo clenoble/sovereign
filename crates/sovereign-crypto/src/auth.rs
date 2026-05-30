@@ -1,6 +1,7 @@
 use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 
+use crate::account_key::{AccountKey, WrappedAccountKey};
 use crate::aead::{self, NONCE_SIZE};
 use crate::device_key::DeviceKey;
 use crate::error::{CryptoError, CryptoResult};
@@ -106,6 +107,13 @@ pub struct PersonaEntry {
     pub probe_ciphertext: Vec<u8>,
     pub probe_nonce: [u8; NONCE_SIZE],
     pub wrapped_kek: WrappedKek,
+    /// AccountKey wrapped under this persona's DeviceKey. Optional for
+    /// backwards compatibility with v0.0.4 stores: when missing, the
+    /// AccountKey is derived from the MasterKey at authenticate-time.
+    /// When present (paired devices, fresh v0.0.5 installs), the stored
+    /// value wins so an imported AccountKey survives across restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrapped_account_key: Option<WrappedAccountKey>,
     /// Random opaque label — NOT "primary" / "duress".
     pub label: [u8; 16],
 }
@@ -113,7 +121,11 @@ pub struct PersonaEntry {
 /// Successful authentication result.
 pub struct AuthSuccess {
     pub persona: PersonaKind,
+    /// Per-device key used for libp2p identity and KEK wrapping.
     pub device_key: DeviceKey,
+    /// User-scoped at-rest key used for vault, body_raw, session log.
+    /// Same on every device that shares this MasterKey (paired devices).
+    pub account_key: AccountKey,
     pub kek: Kek,
 }
 
@@ -149,6 +161,12 @@ impl AuthStore {
     pub fn authenticate(&self, passphrase: &[u8]) -> CryptoResult<AuthSuccess> {
         let master = MasterKey::from_passphrase(passphrase, &self.salt)?;
         let device_key = DeviceKey::derive(&master, &self.device_id)?;
+        // Fallback AccountKey: user-scoped, derived from MasterKey alone.
+        // Used when the persona has no `wrapped_account_key` (v0.0.4
+        // stores). When present, the stored AccountKey wins so paired
+        // devices keep their imported key even though the local passphrase
+        // would derive a different one.
+        let derived_account_key = AccountKey::derive(&master)?;
 
         for entry in &self.personas {
             if let Ok(plaintext) = aead::decrypt(
@@ -164,9 +182,15 @@ impl AuthStore {
                     continue;
                 };
                 let kek = Kek::unwrap(&entry.wrapped_kek, &device_key)?;
+                let account_key = match &entry.wrapped_account_key {
+                    Some(wrapped) => AccountKey::unwrap_with(wrapped, &device_key)?,
+                    None => AccountKey::derive(&master)?,
+                };
+                let _ = &derived_account_key; // suppress unused warning when wrapped path is taken
                 return Ok(AuthSuccess {
                     persona,
                     device_key,
+                    account_key,
                     kek,
                 });
             }
@@ -195,10 +219,26 @@ impl AuthStore {
         device_id: &str,
         probe_plaintext: &[u8],
     ) -> CryptoResult<PersonaEntry> {
+        // Default new-store entry derives the AccountKey locally from
+        // the MasterKey. Pairing flows pass an imported AccountKey via
+        // `build_entry_with_account_key`.
+        let master = MasterKey::from_passphrase(passphrase, salt)?;
+        let account_key = AccountKey::derive(&master)?;
+        Self::build_entry_with_account_key(passphrase, salt, device_id, probe_plaintext, &account_key)
+    }
+
+    fn build_entry_with_account_key(
+        passphrase: &[u8],
+        salt: &[u8],
+        device_id: &str,
+        probe_plaintext: &[u8],
+        account_key: &AccountKey,
+    ) -> CryptoResult<PersonaEntry> {
         let master = MasterKey::from_passphrase(passphrase, salt)?;
         let device_key = DeviceKey::derive(&master, device_id)?;
         let kek = Kek::generate();
         let wrapped_kek = kek.wrap(&device_key)?;
+        let wrapped_account_key = account_key.wrap(&device_key)?;
         let (probe_ciphertext, probe_nonce) =
             aead::encrypt(probe_plaintext, device_key.as_bytes())?;
         let mut label = [0u8; 16];
@@ -208,7 +248,45 @@ impl AuthStore {
             probe_ciphertext,
             probe_nonce,
             wrapped_kek,
+            wrapped_account_key: Some(wrapped_account_key),
             label,
+        })
+    }
+
+    /// Create an AuthStore where the **primary** persona's AccountKey is
+    /// taken from `imported_account_key` rather than derived from the
+    /// primary passphrase. Used by the pairing flow on the new device:
+    /// the AccountKey arrives via QR + PIN out-of-band, and the local
+    /// passphrase only protects the wrapping (not the AccountKey itself).
+    ///
+    /// The duress persona's AccountKey is derived locally from the
+    /// duress passphrase as usual — duress workspaces are per-device
+    /// and not synced.
+    pub fn create_with_imported_account_key(
+        primary_passphrase: &[u8],
+        duress_passphrase: &[u8],
+        salt: &[u8],
+        device_id: &str,
+        imported_account_key: &AccountKey,
+    ) -> CryptoResult<Self> {
+        let primary_entry = Self::build_entry_with_account_key(
+            primary_passphrase,
+            salt,
+            device_id,
+            PRIMARY_PROBE,
+            imported_account_key,
+        )?;
+        let duress_entry = Self::build_entry(duress_passphrase, salt, device_id, DURESS_PROBE)?;
+
+        let mut personas = vec![primary_entry, duress_entry];
+        if rand::rng().random_bool(0.5) {
+            personas.swap(0, 1);
+        }
+
+        Ok(Self {
+            salt: salt.to_vec(),
+            device_id: device_id.to_string(),
+            personas,
         })
     }
 }
@@ -345,6 +423,139 @@ mod tests {
         )
         .unwrap();
         assert_ne!(store.personas[0].label, store.personas[1].label);
+    }
+
+    #[test]
+    fn auth_store_creates_wrapped_account_key_for_each_persona() {
+        let store = AuthStore::create(
+            b"Primary!Pass1234",
+            b"Duress!Pass5678",
+            TEST_SALT,
+            TEST_DEVICE,
+        )
+        .unwrap();
+        // Both personas must have the wrapped_account_key field populated
+        // post-v0.0.5 so paired-device imports survive a save/load cycle.
+        assert!(store.personas.iter().all(|p| p.wrapped_account_key.is_some()));
+    }
+
+    #[test]
+    fn imported_account_key_survives_authenticate() {
+        // Pairing flow: device A's AccountKey is imported on device B.
+        // After authenticate on B, AuthSuccess.account_key must equal
+        // the imported value byte-for-byte, NOT the locally-derived one.
+        let mk_imported = MasterKey::from_passphrase(b"shared", b"shared-salt").unwrap();
+        let imported_ak = AccountKey::derive(&mk_imported).unwrap();
+
+        let store = AuthStore::create_with_imported_account_key(
+            b"NewDevicePass1!",
+            b"NewDuressPass2!",
+            TEST_SALT,
+            TEST_DEVICE,
+            &imported_ak,
+        )
+        .unwrap();
+
+        let primary = store.authenticate(b"NewDevicePass1!").unwrap();
+        assert_eq!(primary.persona, PersonaKind::Primary);
+        assert_eq!(
+            primary.account_key.as_bytes(),
+            imported_ak.as_bytes(),
+            "Primary AccountKey on the paired device must be the imported value"
+        );
+
+        // Duress is still derived locally from the new device's
+        // duress passphrase — different MasterKey → different AccountKey.
+        let duress = store.authenticate(b"NewDuressPass2!").unwrap();
+        assert_eq!(duress.persona, PersonaKind::Duress);
+        assert_ne!(
+            duress.account_key.as_bytes(),
+            imported_ak.as_bytes(),
+            "Duress AccountKey is per-device, not the imported one"
+        );
+    }
+
+    #[test]
+    fn imported_account_key_survives_save_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.store");
+        let mk_imported = MasterKey::from_passphrase(b"shared", b"shared-salt").unwrap();
+        let imported_ak = AccountKey::derive(&mk_imported).unwrap();
+
+        let store = AuthStore::create_with_imported_account_key(
+            b"NewDevicePass1!",
+            b"NewDuressPass2!",
+            TEST_SALT,
+            TEST_DEVICE,
+            &imported_ak,
+        )
+        .unwrap();
+        store.save(&path).unwrap();
+
+        let loaded = AuthStore::load(&path).unwrap();
+        let primary = loaded.authenticate(b"NewDevicePass1!").unwrap();
+        assert_eq!(primary.account_key.as_bytes(), imported_ak.as_bytes());
+    }
+
+    #[test]
+    fn legacy_v04_store_without_wrapped_account_key_still_works() {
+        // Simulate a v0.0.4 file: build the entries by hand, then strip
+        // out wrapped_account_key. authenticate() must fall back to the
+        // MasterKey-derived AccountKey.
+        let mut store = AuthStore::create(
+            b"Primary!Pass1234",
+            b"Duress!Pass5678",
+            TEST_SALT,
+            TEST_DEVICE,
+        )
+        .unwrap();
+        for entry in store.personas.iter_mut() {
+            entry.wrapped_account_key = None;
+        }
+        let primary = store.authenticate(b"Primary!Pass1234").unwrap();
+
+        // Equal to the value Phase 1 used to derive on the fly.
+        let mk = MasterKey::from_passphrase(b"Primary!Pass1234", TEST_SALT).unwrap();
+        let expected = AccountKey::derive(&mk).unwrap();
+        assert_eq!(primary.account_key.as_bytes(), expected.as_bytes());
+    }
+
+    #[test]
+    fn account_key_stable_across_device_ids() {
+        // The v0.0.5 sync invariant at the AuthStore layer: two devices
+        // that share a passphrase + salt produce the same AccountKey on
+        // authenticate, even though their per-device DeviceKeys differ.
+        // Verifies both the wrapped path (post-v0.0.5 stores) and the
+        // legacy MasterKey-derived path (v0.0.4 stores).
+        const SHARED_SALT: &[u8] = b"shared-salt-for-cross-device-test";
+        let pw: &[u8] = b"SharedPass123!";
+        let duress: &[u8] = b"DuressPass456@";
+
+        // Two AuthStores with different device_ids but identical
+        // passphrase + salt — what we'd see if the user runs onboarding
+        // independently on two laptops sharing the same secrets (the
+        // pre-pairing legacy path).
+        let store_a =
+            AuthStore::create(pw, duress, SHARED_SALT, "device-AAA").unwrap();
+        let store_b =
+            AuthStore::create(pw, duress, SHARED_SALT, "device-BBB").unwrap();
+
+        let auth_a = store_a.authenticate(pw).unwrap();
+        let auth_b = store_b.authenticate(pw).unwrap();
+
+        // The DeviceKeys differ (per-device identity).
+        assert_ne!(
+            auth_a.device_key.as_bytes(),
+            auth_b.device_key.as_bytes(),
+            "DeviceKey must differ across device_ids"
+        );
+
+        // The AccountKeys match (user-scoped identity).
+        assert_eq!(
+            auth_a.account_key.as_bytes(),
+            auth_b.account_key.as_bytes(),
+            "AccountKey must be stable across device_id changes — this is the v0.0.5 sync invariant"
+        );
     }
 
     #[test]

@@ -1,12 +1,20 @@
 [package]
 name = "sovereign-app"
-version = "0.0.4"
+version = "0.0.5"
 edition = "2021"
 description = "Sovereign GE binary — CLI and GUI entry point"
 
 [[bin]]
 name = "sovereign"
 path = "src/main.rs"
+
+# Android requires a cdylib for the JNI entry point. Desktop links the
+# rlib from main.rs. The lib re-exports `run()` (mobile entrypoint) and
+# `run_cli()` (desktop entrypoint that parses argv). Lib name defaults
+# to the package name with hyphens → underscores (`sovereign_app`).
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+path = "src/lib.rs"
 
 [dependencies]
 sovereign-core = { workspace = true }
@@ -48,11 +56,22 @@ sha2 = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 readability = { workspace = true, optional = true }
 
+# Haptics (iOS UIImpactFeedbackGenerator / Android VibratorService)
+tauri-plugin-haptics = { version = "2.3.2", optional = true }
+
 [build-dependencies]
 tauri-build = { workspace = true }
 
+[dev-dependencies]
+tempfile = "3"
+sovereign-db = { workspace = true, features = ["test-utils"] }
+
 [features]
-default = ["encrypted-log", "encryption"]
+# rocksdb is included in desktop defaults; excluded from mobile feature so
+# Android builds use kv-mem (in-memory, survives process lifetime only).
+# Persistent mobile storage is planned for Phase 5 (SQLite-backed SurrealDB).
+default = ["encrypted-log", "encryption", "rocksdb"]
+rocksdb = ["sovereign-db/rocksdb"]
 cuda = ["sovereign-ai/cuda"]
 encrypted-log = ["sovereign-ai/encrypted-log", "hkdf", "sha2"]
 voice-stt = ["sovereign-ai/voice-stt"]
@@ -64,3 +83,13 @@ comms-signal = ["comms", "sovereign-comms/signal"]
 comms-whatsapp = ["comms", "sovereign-comms/whatsapp"]
 wasm-plugins = ["sovereign-skills/wasm-plugins"]
 web-browse = ["reqwest", "readability"]
+haptics = ["tauri-plugin-haptics"]
+
+# Mobile (iOS / Android) feature set.
+# Excludes desktop-only deps: voice (cpal-based), email (native-tls),
+# P2P (libp2p mDNS restrictions), embedded browser (pixel-bounded child webview).
+# Signal (comms-signal) is deferred to v0.0.6: presage's Manager stream holds
+# a !Send ThreadRng, which is incompatible with CommunicationChannel's
+# Send-bound async_trait. A LocalSet-backed wrapper is needed before
+# re-adding it here.
+mobile = ["encrypted-log", "encryption", "haptics"]

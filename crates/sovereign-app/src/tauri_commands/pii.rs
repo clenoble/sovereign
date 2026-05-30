@@ -281,15 +281,15 @@ pub async fn reveal_pii_record(
     use chrono::Utc;
     use sovereign_crypto::vault::EncryptedBlob;
 
-    let device_key = state
-        .device_key()
+    let account_key = state
+        .account_key()
         .await
-        .ok_or_else(|| "PII reveal unavailable: device key not loaded".to_string())?;
-    let device_key = &*device_key;
+        .ok_or_else(|| "PII reveal unavailable: account key not loaded".to_string())?;
+    let account_key = &*account_key;
     let record = state.db.get_pii_record(&id).await.str_err()?;
     let blob = EncryptedBlob::from_pair(record.value_encrypted, record.value_nonce);
     let plaintext = blob
-        .decrypt_to_string(device_key)
+        .decrypt_to_string(account_key)
         .map_err(|e| format!("decrypt failed: {e}"))?;
     // Side effect: bump last_revealed_at so the dashboard "last viewed"
     // hint stays accurate.
@@ -340,16 +340,16 @@ pub async fn create_vault_entry(
     use sovereign_crypto::vault::EncryptedBlob;
     use sovereign_db::schema::{PiiKind, PiiRecord, ReviewState};
 
-    let device_key = state
-        .device_key()
+    let account_key = state
+        .account_key()
         .await
-        .ok_or_else(|| "Vault add unavailable: device key not loaded".to_string())?;
-    let device_key = &*device_key;
+        .ok_or_else(|| "Vault add unavailable: account key not loaded".to_string())?;
+    let account_key = &*account_key;
 
     let kind = parse_pii_kind(&input.kind)
         .ok_or_else(|| format!("unknown PII kind: {}", input.kind))?;
 
-    let blob = EncryptedBlob::encrypt_str(&input.value, device_key)
+    let blob = EncryptedBlob::encrypt_str(&input.value, account_key)
         .map_err(|e| format!("vault encrypt failed: {e}"))?;
 
     let now = Utc::now();
@@ -384,12 +384,15 @@ pub async fn create_vault_entry(
 
 // ---------------------------------------------------------------------------
 // Browser-PII (8b) — embedded-browser form extraction + autofill
+// Desktop-only: the embedded browser webview doesn't exist on mobile, so
+// these commands are gated alongside crate::browser / crate::browser_pii.
 // ---------------------------------------------------------------------------
 
 /// Trigger a JS scan of the active browser webview for input fields.
 /// Results arrive asynchronously via the `__browser_form_extracted`
 /// command, which re-emits them as the `browser-form-extracted` Tauri
 /// event for the frontend's SignupCapturePrompt.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn extract_form_fields(app: tauri::AppHandle) -> Result<(), String> {
     crate::browser_pii::trigger_form_extraction(&app)
@@ -399,6 +402,7 @@ pub async fn extract_form_fields(app: tauri::AppHandle) -> Result<(), String> {
 /// the frontend can subscribe to. The leading underscore in the name
 /// matches the existing `__browser_content_extracted` convention used
 /// by `browser.rs`'s extraction script.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn __browser_form_extracted(
@@ -416,7 +420,7 @@ pub async fn __browser_form_extracted(
 /// Bumps `last_revealed_at` and (per the plan) increments `use_count`
 /// — though use_count tracking lands separately when the
 /// successful-submit detector is wired.
-#[cfg(feature = "encryption")]
+#[cfg(all(feature = "encryption", not(any(target_os = "android", target_os = "ios"))))]
 #[tauri::command]
 pub async fn autofill_pii_record(
     state: State<'_, AppState>,
@@ -427,15 +431,15 @@ pub async fn autofill_pii_record(
     use chrono::Utc;
     use sovereign_crypto::vault::EncryptedBlob;
 
-    let device_key = state
-        .device_key()
+    let account_key = state
+        .account_key()
         .await
-        .ok_or_else(|| "Autofill unavailable: device key not loaded".to_string())?;
-    let device_key = &*device_key;
+        .ok_or_else(|| "Autofill unavailable: account key not loaded".to_string())?;
+    let account_key = &*account_key;
     let record = state.db.get_pii_record(&record_id).await.str_err()?;
     let blob = EncryptedBlob::from_pair(record.value_encrypted, record.value_nonce);
     let plaintext = blob
-        .decrypt_to_string(device_key)
+        .decrypt_to_string(account_key)
         .map_err(|e| format!("decrypt failed: {e}"))?;
 
     crate::browser_pii::autofill_field(&app, &selector, &plaintext)?;
@@ -448,7 +452,9 @@ pub async fn autofill_pii_record(
     Ok(())
 }
 
-#[cfg(not(feature = "encryption"))]
+// Stub for builds where the real autofill is unavailable: no encryption,
+// or mobile (no embedded browser to inject into).
+#[cfg(any(not(feature = "encryption"), target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn autofill_pii_record(
     _state: State<'_, AppState>,
@@ -456,7 +462,7 @@ pub async fn autofill_pii_record(
     _record_id: String,
     _selector: String,
 ) -> Result<(), String> {
-    Err("Autofill requires the encryption feature to be enabled at build time".to_string())
+    Err("Autofill is only available on desktop builds with the encryption feature".to_string())
 }
 
 /// Generate a password according to the supplied policy. Stateless;
@@ -538,11 +544,11 @@ pub async fn commit_signup_capture(
         Entity, EntityKind, PiiRecord, ReviewState, ShareChannel, ShareRecord,
     };
 
-    let device_key = state
-        .device_key()
+    let account_key = state
+        .account_key()
         .await
-        .ok_or_else(|| "Signup capture unavailable: device key not loaded".to_string())?;
-    let device_key = &*device_key;
+        .ok_or_else(|| "Signup capture unavailable: account key not loaded".to_string())?;
+    let account_key = &*account_key;
 
     // Step 1: resolve or create the entity.
     let (entity_id, entity_created) = match input.entity_id {
@@ -588,7 +594,7 @@ pub async fn commit_signup_capture(
     for field in &input.fields {
         let kind = parse_pii_kind(&field.kind)
             .ok_or_else(|| format!("unknown PII kind: {}", field.kind))?;
-        let blob = EncryptedBlob::encrypt_str(&field.value, device_key)
+        let blob = EncryptedBlob::encrypt_str(&field.value, account_key)
             .map_err(|e| format!("vault encrypt: {e}"))?;
         let record = PiiRecord {
             id: None,
@@ -771,11 +777,11 @@ pub async fn resolve_pii_tokens(
 
     use crate::err::ToStringErr;
 
-    let device_key = state
-        .device_key()
+    let account_key = state
+        .account_key()
         .await
-        .ok_or_else(|| "PII resolution unavailable: device key not loaded".to_string())?;
-    let device_key = &*device_key;
+        .ok_or_else(|| "PII resolution unavailable: account key not loaded".to_string())?;
+    let account_key = &*account_key;
 
     let body = match source_kind.as_str() {
         "document" => {
@@ -790,13 +796,13 @@ pub async fn resolve_pii_tokens(
                         .body_raw_nonce
                         .as_deref()
                         .ok_or_else(|| "document has no body_raw_nonce".to_string())?;
-                    resolve_raw_original(device_key, enc, nonce).map_err(|e| e.to_string())?
+                    resolve_raw_original(account_key, enc, nonce).map_err(|e| e.to_string())?
                 }
                 _ => {
                     let body = extract_document_body(&doc.content);
                     resolve_body(
                         state.db.as_ref() as &dyn GraphDB,
-                        device_key,
+                        account_key,
                         &body,
                         access_level,
                     )
@@ -816,11 +822,11 @@ pub async fn resolve_pii_tokens(
                         .body_raw_nonce
                         .as_deref()
                         .ok_or_else(|| "message has no body_raw_nonce".to_string())?;
-                    resolve_raw_original(device_key, enc, nonce).map_err(|e| e.to_string())?
+                    resolve_raw_original(account_key, enc, nonce).map_err(|e| e.to_string())?
                 }
                 _ => resolve_body(
                     state.db.as_ref() as &dyn GraphDB,
-                    device_key,
+                    account_key,
                     &msg.body,
                     access_level,
                 )

@@ -15,6 +15,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
+# Argon2id for PIN-stretching in the pair_payload flow.
+argon2 = "0.5"
 
 [dependencies.blahaj]
 version = "0.6"

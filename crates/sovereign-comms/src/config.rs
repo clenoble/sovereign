@@ -71,8 +71,8 @@ pub struct SignalAccountConfig {
 }
 
 fn default_signal_store_path() -> String {
-    sovereign_core::home_dir()
-        .join(".sovereign/signal")
+    sovereign_core::sovereign_dir()
+        .join("signal")
         .to_string_lossy()
         .into_owned()
 }

@@ -148,6 +148,11 @@ pub struct P2pConfig {
     pub rendezvous_server: Option<String>,
     /// Human-readable device name shown to peers.
     pub device_name: String,
+    /// When true, suppress auto-sync triggers while the device reports
+    /// cellular connectivity (Phase 4.2). Defaults to true on Android,
+    /// false on desktop. The actual gating happens in
+    /// `sovereign_p2p::ConnectivityState::allows_auto_sync`.
+    pub wifi_only: bool,
 }
 
 impl Default for P2pConfig {
@@ -157,6 +162,7 @@ impl Default for P2pConfig {
             listen_port: 0,
             rendezvous_server: None,
             device_name: "Sovereign Device".into(),
+            wifi_only: cfg!(target_os = "android"),
         }
     }
 }

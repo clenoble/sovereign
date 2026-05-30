@@ -392,4 +392,19 @@
 		color: var(--error) !important;
 		font-style: normal !important;
 	}
+
+	@media (max-width: 768px) {
+		/* On mobile this becomes a centered modal that floats above the
+		   BottomSheet (which is reserved for chat in Phase 3). For Phase 1
+		   the existing desktop chat panel is essentially unreachable on
+		   mobile (no Bubble, no Taskbar chat button, no Ctrl+N), but in
+		   case anything sets chat.visible = true we keep it usable. */
+		.chat-panel {
+			top: max(env(safe-area-inset-top), 56px);
+			left: 8px;
+			right: 8px;
+			width: auto;
+			max-height: 60vh;
+		}
+	}
 </style>

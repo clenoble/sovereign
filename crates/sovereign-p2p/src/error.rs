@@ -23,6 +23,9 @@ pub enum P2pError {
     #[error("Pairing error: {0}")]
     PairingError(String),
 
+    #[error("Pair payload error: {0}")]
+    PairPayload(String),
+
     #[error("Sync error: {0}")]
     SyncError(String),
 

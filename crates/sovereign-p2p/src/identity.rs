@@ -3,11 +3,19 @@ use sha2::Sha256;
 
 use crate::error::{P2pError, P2pResult};
 
-/// Derive a deterministic Ed25519 libp2p Keypair from a DeviceKey via HKDF.
+/// The per-device key used to derive this device's libp2p PeerId.
+///
+/// Type-aliased to the existing `sovereign_crypto::device_key::DeviceKey`
+/// since v0.0.5 — they're the same key bytes, but the alias narrows the
+/// intent to "P2P identity seed only". User-scoped at-rest encryption
+/// uses `sovereign_crypto::account_key::AccountKey` instead.
+pub type P2pIdentityKey = sovereign_crypto::device_key::DeviceKey;
+
+/// Derive a deterministic Ed25519 libp2p Keypair from a P2pIdentityKey via HKDF.
 ///
 /// This ensures the same device always gets the same PeerId.
-pub fn derive_keypair(device_key: &sovereign_crypto::device_key::DeviceKey) -> P2pResult<libp2p::identity::Keypair> {
-    let hk = Hkdf::<Sha256>::new(None, device_key.as_bytes());
+pub fn derive_keypair(identity_key: &P2pIdentityKey) -> P2pResult<libp2p::identity::Keypair> {
+    let hk = Hkdf::<Sha256>::new(None, identity_key.as_bytes());
     let mut seed = [0u8; 32];
     hk.expand(b"sovereign-p2p-identity", &mut seed)
         .map_err(|e| P2pError::Identity(e.to_string()))?;

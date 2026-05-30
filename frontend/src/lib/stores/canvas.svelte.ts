@@ -416,3 +416,58 @@ export function requestMessagesForViewport() {
 		}
 	}, 200);
 }
+
+// ---------------------------------------------------------------------------
+// Mobile canvas state
+//
+// Separate from the desktop `canvas` store because mobile re-orients the
+// world (Y = time, X = lane) and renders a single lane per screen with
+// horizontal swipe to change lanes. The desktop pan/zoom model doesn't apply.
+// ---------------------------------------------------------------------------
+
+/** Pixels per day at zoom = 1 in mobile mode. Bigger than desktop because
+ *  mobile typically scrolls slower per finger movement. */
+export const MOBILE_PX_PER_DAY = 100;
+
+/** Pinch-zoom bounds expressed as px-per-millisecond. The default value is
+ *  MOBILE_PX_PER_DAY / MS_PER_DAY ≈ 1.16e-6. */
+export const MIN_MOBILE_PX_PER_MS = 5 / MS_PER_DAY; // 5 px/day — extreme zoom-out (≈ year/screen)
+export const MAX_MOBILE_PX_PER_MS = 2000 / MS_PER_DAY; // 2000 px/day — minute-scale
+
+/** Below this px/ms the per-lane card view becomes too cramped to read.
+ *  MobileCanvas pivots to an all-lanes density strip showing day-bucket
+ *  activity across every thread, giving a workspace-wide overview. Tap a
+ *  column to drill into that lane (resets pxPerMs to the default). */
+export const LOD_THRESHOLD_PX_PER_MS = 30 / MS_PER_DAY; // 30 px/day
+
+export interface MobileCanvasState {
+	/** Index into canvas.threads for the centered lane. */
+	currentLaneIndex: number;
+	/** Pixels per millisecond on the time (Y) axis. Adjusted by pinch zoom. */
+	pxPerMs: number;
+}
+
+export const mobileCanvas: MobileCanvasState = $state({
+	currentLaneIndex: 0,
+	pxPerMs: MOBILE_PX_PER_DAY / MS_PER_DAY
+});
+
+export function setLaneIndex(i: number) {
+	const max = Math.max(0, canvas.threads.length - 1);
+	mobileCanvas.currentLaneIndex = Math.min(max, Math.max(0, i));
+}
+
+export function nextLane() {
+	setLaneIndex(mobileCanvas.currentLaneIndex + 1);
+}
+
+export function prevLane() {
+	setLaneIndex(mobileCanvas.currentLaneIndex - 1);
+}
+
+export function setMobilePxPerMs(v: number) {
+	mobileCanvas.pxPerMs = Math.min(
+		MAX_MOBILE_PX_PER_MS,
+		Math.max(MIN_MOBILE_PX_PER_MS, v)
+	);
+}

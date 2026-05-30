@@ -13,17 +13,76 @@ pub struct DocumentManifestEntry {
     pub content_hash: String,
     /// ISO-8601 of last modification.
     pub modified_at: String,
+    /// Soft-delete marker (ISO-8601 string), `None` for active rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
 }
 
-/// A sync manifest listing all documents on a device.
+/// A sync manifest entry for a single thread.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadManifestEntry {
+    pub thread_id: String,
+    pub modified_at: String,
+    pub content_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+}
+
+/// A sync manifest entry for a single entity (PII aggregator).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityManifestEntry {
+    pub entity_id: String,
+    pub modified_at: String,
+    pub content_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+}
+
+/// A sync manifest entry for a single PII record. Uses `discovered_at`
+/// as the LWW timestamp since `PiiRecord` has no `modified_at` today.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PiiRecordManifestEntry {
+    pub record_id: String,
+    pub discovered_at: String,
+    pub content_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+}
+
+/// A sync manifest entry for a single share record. Append-only —
+/// no LWW needed; `shared_at` is the natural ordering field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShareRecordManifestEntry {
+    pub record_id: String,
+    pub shared_at: String,
+    pub content_hash: String,
+}
+
+/// A sync manifest covering every syncable table on a device. Documents
+/// keep their existing commit-chain track via `documents`; everything
+/// else moves through the row-level `EncryptedRow` protocol added in
+/// Phase 3 of the v0.0.5 plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncManifest {
     /// Device identifier.
     pub device_id: String,
     /// ISO-8601 timestamp when this manifest was generated.
     pub generated_at: String,
-    /// Per-document entries.
-    pub entries: Vec<DocumentManifestEntry>,
+    /// Per-document entries (commit-chain tracked).
+    #[serde(default)]
+    pub documents: Vec<DocumentManifestEntry>,
+    /// Per-thread entries (LWW on `modified_at`).
+    #[serde(default)]
+    pub threads: Vec<ThreadManifestEntry>,
+    /// Per-entity entries (LWW on `modified_at`).
+    #[serde(default)]
+    pub entities: Vec<EntityManifestEntry>,
+    /// Per-PII-record entries (LWW on `discovered_at`).
+    #[serde(default)]
+    pub pii_records: Vec<PiiRecordManifestEntry>,
+    /// Per-share-record entries (append-only).
+    #[serde(default)]
+    pub share_records: Vec<ShareRecordManifestEntry>,
 }
 
 /// An encrypted sync manifest for wire transport.
@@ -41,7 +100,11 @@ impl SyncManifest {
         Self {
             device_id,
             generated_at: chrono::Utc::now().to_rfc3339(),
-            entries: Vec::new(),
+            documents: Vec::new(),
+            threads: Vec::new(),
+            entities: Vec::new(),
+            pii_records: Vec::new(),
+            share_records: Vec::new(),
         }
     }
 
@@ -107,12 +170,13 @@ mod tests {
     #[test]
     fn manifest_encrypt_decrypt_roundtrip() {
         let mut manifest = SyncManifest::new("device-001".into());
-        manifest.entries.push(DocumentManifestEntry {
+        manifest.documents.push(DocumentManifestEntry {
             doc_id: "document:abc".into(),
             head_commit: Some("commit:123".into()),
             commit_count: 5,
             content_hash: "deadbeef".into(),
             modified_at: "2026-01-01T00:00:00Z".into(),
+            deleted_at: None,
         });
 
         let pair_key = [42u8; 32];
@@ -120,8 +184,8 @@ mod tests {
         let decrypted = SyncManifest::decrypt(&encrypted, &pair_key).unwrap();
 
         assert_eq!(decrypted.device_id, "device-001");
-        assert_eq!(decrypted.entries.len(), 1);
-        assert_eq!(decrypted.entries[0].doc_id, "document:abc");
+        assert_eq!(decrypted.documents.len(), 1);
+        assert_eq!(decrypted.documents[0].doc_id, "document:abc");
     }
 
     #[test]
@@ -140,6 +204,46 @@ mod tests {
         let encrypted = manifest.encrypt(&pair_key).unwrap();
         let decrypted = SyncManifest::decrypt(&encrypted, &pair_key).unwrap();
         assert_eq!(decrypted.device_id, "dev-1");
-        assert!(decrypted.entries.is_empty());
+        assert!(decrypted.documents.is_empty());
+        assert!(decrypted.threads.is_empty());
+        assert!(decrypted.entities.is_empty());
+        assert!(decrypted.pii_records.is_empty());
+        assert!(decrypted.share_records.is_empty());
+    }
+
+    #[test]
+    fn multi_table_manifest_roundtrip() {
+        let mut manifest = SyncManifest::new("dev-2".into());
+        manifest.threads.push(ThreadManifestEntry {
+            thread_id: "thread:t1".into(),
+            modified_at: "2026-02-01T00:00:00Z".into(),
+            content_hash: "abc".into(),
+            deleted_at: None,
+        });
+        manifest.entities.push(EntityManifestEntry {
+            entity_id: "entity:e1".into(),
+            modified_at: "2026-02-02T00:00:00Z".into(),
+            content_hash: "def".into(),
+            deleted_at: None,
+        });
+        manifest.pii_records.push(PiiRecordManifestEntry {
+            record_id: "pii_record:p1".into(),
+            discovered_at: "2026-02-03T00:00:00Z".into(),
+            content_hash: "ghi".into(),
+            deleted_at: None,
+        });
+        manifest.share_records.push(ShareRecordManifestEntry {
+            record_id: "share_record:s1".into(),
+            shared_at: "2026-02-04T00:00:00Z".into(),
+            content_hash: "jkl".into(),
+        });
+
+        let pair_key = [11u8; 32];
+        let encrypted = manifest.encrypt(&pair_key).unwrap();
+        let decrypted = SyncManifest::decrypt(&encrypted, &pair_key).unwrap();
+        assert_eq!(decrypted.threads.len(), 1);
+        assert_eq!(decrypted.entities.len(), 1);
+        assert_eq!(decrypted.pii_records.len(), 1);
+        assert_eq!(decrypted.share_records.len(), 1);
     }
 }

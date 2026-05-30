@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { getStatus, closeBrowserCmd, setBrowserVisible, listPendingSuggestions } from '$lib/api/commands';
 	import { app } from '$lib/stores/app.svelte';
 	import { setSuggestions, type LinkSuggestion } from '$lib/stores/suggestions.svelte';
@@ -12,6 +12,12 @@
 	import Canvas from '$lib/components/Canvas.svelte';
 
 	let error = $state('');
+
+	// Cleanup is assigned at the end of the async onMount body; Svelte
+	// ignores a Promise returned from an async onMount, so teardown is
+	// registered via onDestroy instead of `return () => …`.
+	let cleanup: (() => void) | null = null;
+	onDestroy(() => cleanup?.());
 
 	onMount(async () => {
 		try {
@@ -45,7 +51,7 @@
 			}
 		}
 		window.addEventListener('keydown', handleKeydown);
-		return () => window.removeEventListener('keydown', handleKeydown);
+		cleanup = () => window.removeEventListener('keydown', handleKeydown);
 	});
 
 	async function toggleBrowser() {

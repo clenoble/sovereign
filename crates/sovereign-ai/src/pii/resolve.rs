@@ -22,7 +22,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sovereign_crypto::device_key::DeviceKey;
+use sovereign_crypto::account_key::AccountKey;
 use sovereign_crypto::vault::EncryptedBlob;
 use sovereign_db::schema::PiiKind;
 use sovereign_db::traits::GraphDB;
@@ -286,7 +286,7 @@ fn mask_generic(s: &str) -> String {
 /// to the caller.
 pub async fn resolve_body(
     db: &dyn GraphDB,
-    device_key: &DeviceKey,
+    account_key: &AccountKey,
     body: &str,
     access_level: AccessLevel,
 ) -> String {
@@ -302,7 +302,7 @@ pub async fn resolve_body(
     for token in &tokens {
         out.push_str(&body[cursor..token.start]);
         let replacement =
-            resolve_one(db, device_key, &token.record_id, access_level, now).await;
+            resolve_one(db, account_key, &token.record_id, access_level, now).await;
         out.push_str(&replacement);
         cursor = token.end;
     }
@@ -312,7 +312,7 @@ pub async fn resolve_body(
 
 async fn resolve_one(
     db: &dyn GraphDB,
-    device_key: &DeviceKey,
+    account_key: &AccountKey,
     record_id: &str,
     access_level: AccessLevel,
     now: DateTime<Utc>,
@@ -329,7 +329,7 @@ async fn resolve_one(
                 record.value_encrypted.clone(),
                 record.value_nonce.clone(),
             );
-            match blob.decrypt_to_string(device_key) {
+            match blob.decrypt_to_string(account_key) {
                 Ok(plaintext) => mask_for_kind(&record.kind, &plaintext),
                 Err(_) => "[pii:error]".to_string(),
             }
@@ -339,7 +339,7 @@ async fn resolve_one(
                 record.value_encrypted.clone(),
                 record.value_nonce.clone(),
             );
-            match blob.decrypt_to_string(device_key) {
+            match blob.decrypt_to_string(account_key) {
                 Ok(plaintext) => {
                     if let Err(e) = db.update_pii_record_revealed_at(record_id, now).await {
                         tracing::warn!(
@@ -360,7 +360,7 @@ async fn resolve_one(
 /// L3 Modify in the plan; the Tauri command layer enforces the
 /// confirmation prompt.
 pub fn resolve_raw_original(
-    device_key: &DeviceKey,
+    account_key: &AccountKey,
     body_raw_encrypted: &str,
     body_raw_nonce: &str,
 ) -> anyhow::Result<String> {
@@ -368,7 +368,7 @@ pub fn resolve_raw_original(
         body_raw_encrypted.to_string(),
         body_raw_nonce.to_string(),
     );
-    blob.decrypt_to_string(device_key)
+    blob.decrypt_to_string(account_key)
         .map_err(|e| anyhow::anyhow!("body_raw decrypt failed: {e}"))
 }
 
@@ -379,18 +379,18 @@ mod tests {
     use sovereign_db::mock::MockGraphDB;
     use sovereign_db::schema::{PiiRecord, ReviewState};
 
-    fn test_device_key() -> DeviceKey {
+    fn test_account_key() -> AccountKey {
         let mk = MasterKey::from_passphrase(b"resolve-test", b"salt").unwrap();
-        DeviceKey::derive(&mk, "dev-resolve").unwrap()
+        AccountKey::derive(&mk).unwrap()
     }
 
     async fn write_record(
         db: &MockGraphDB,
         kind: PiiKind,
         plaintext: &str,
-        device_key: &DeviceKey,
+        account_key: &AccountKey,
     ) -> String {
-        let blob = EncryptedBlob::encrypt_str(plaintext, device_key).unwrap();
+        let blob = EncryptedBlob::encrypt_str(plaintext, account_key).unwrap();
         let record = PiiRecord {
             id: None,
             kind,
@@ -533,7 +533,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_body_no_tokens_passes_through() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let db = MockGraphDB::new();
         let body = "no tokens here";
         let out = resolve_body(&db, &dk, body, AccessLevel::Reveal).await;
@@ -542,7 +542,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_body_preview() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let db = MockGraphDB::new();
         let id = write_record(&db, PiiKind::Email, "alice@example.com", &dk).await;
         let body = format!("Email me at [pii:{id}] please.");
@@ -552,7 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_body_masked_sample() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let db = MockGraphDB::new();
         let id = write_record(&db, PiiKind::Email, "alice@example.com", &dk).await;
         let body = format!("Email me at [pii:{id}].");
@@ -562,7 +562,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_body_reveal_sets_last_revealed_at() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let db = MockGraphDB::new();
         let id = write_record(&db, PiiKind::Email, "alice@example.com", &dk).await;
 
@@ -581,7 +581,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_body_missing_record_yields_placeholder() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let db = MockGraphDB::new();
         let body = "[pii:pii_record:does_not_exist]";
         let out = resolve_body(&db, &dk, body, AccessLevel::Reveal).await;
@@ -590,7 +590,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_body_preserves_surrounding_text_with_unicode() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let db = MockGraphDB::new();
         let id = write_record(&db, PiiKind::Phone, "+41 79 555 12 34", &dk).await;
         let body = format!("Téléphone — [pii:{id}] (mobile)");
@@ -600,7 +600,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_body_multiple_tokens_independent() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let db = MockGraphDB::new();
         let id_email = write_record(&db, PiiKind::Email, "a@b.com", &dk).await;
         let id_phone = write_record(&db, PiiKind::Phone, "+1 555 123 4567", &dk).await;
@@ -613,7 +613,7 @@ mod tests {
 
     #[test]
     fn resolve_raw_original_round_trip() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let blob = EncryptedBlob::encrypt_str("the original text", &dk).unwrap();
         let recovered = resolve_raw_original(&dk, &blob.ciphertext_b64, &blob.nonce_b64).unwrap();
         assert_eq!(recovered, "the original text");
@@ -621,9 +621,9 @@ mod tests {
 
     #[test]
     fn resolve_raw_original_wrong_key_fails() {
-        let dk = test_device_key();
+        let dk = test_account_key();
         let mk2 = MasterKey::from_passphrase(b"wrong", b"salt").unwrap();
-        let dk2 = DeviceKey::derive(&mk2, "dev-resolve").unwrap();
+        let dk2 = AccountKey::derive(&mk2).unwrap();
         let blob = EncryptedBlob::encrypt_str("secret", &dk).unwrap();
         assert!(
             resolve_raw_original(&dk2, &blob.ciphertext_b64, &blob.nonce_b64).is_err()

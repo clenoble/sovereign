@@ -4,6 +4,9 @@ pub mod browser;
 pub mod canvas;
 pub mod contacts;
 pub mod documents;
+pub mod mobile;
+#[cfg(feature = "encryption")]
+pub mod pairing;
 pub mod pii;
 pub mod suggestions;
 pub mod threads;

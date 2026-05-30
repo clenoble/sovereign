@@ -97,6 +97,7 @@
 		<div
 			class="autofill-dialog"
 			role="dialog"
+			tabindex="-1"
 			aria-modal="true"
 			aria-label="Fill credentials from vault"
 			onclick={(e) => e.stopPropagation()}
@@ -320,5 +321,15 @@
 	.autofill-footer button:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	@media (max-width: 768px) {
+		.autofill-dialog {
+			min-width: 0;
+			width: calc(100vw - 16px);
+			max-width: 100vw;
+			max-height: 90vh;
+			padding: 14px 16px;
+		}
 	}
 </style>

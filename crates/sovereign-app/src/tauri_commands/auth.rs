@@ -5,9 +5,16 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// Authenticate a password against the AuthStore and install the
-/// resulting DeviceKey across AppState + the orchestrator. Used by
-/// both `validate_password` (login flow) and `complete_onboarding`
+/// resulting keys across AppState + the orchestrator. Used by both
+/// `validate_password` (login flow) and `complete_onboarding`
 /// (first-run flow). Returns the persona that authenticated.
+///
+/// Two keys are installed:
+///   - `account_key` (user-scoped) — consumed by vault, PII reveal,
+///     PII ingest, and the encrypted session log. Same value on every
+///     paired device.
+///   - `p2p_identity_key` (per-device) — consumed by libp2p identity
+///     derivation. Different on every device.
 #[cfg(feature = "encryption")]
 async fn install_session(
     state: &AppState,
@@ -19,9 +26,13 @@ async fn install_session(
         .map_err(|_| "Invalid password".to_string())?;
     let persona = auth_result.persona;
     let device_key_arc = std::sync::Arc::new(auth_result.device_key);
+    let account_key_arc = std::sync::Arc::new(auth_result.account_key);
 
-    // 1. Install device_key into AppState (vault, PII reveal, ingest).
-    state.set_device_key(device_key_arc.clone()).await;
+    // 1. Install both keys into AppState. account_key serves vault /
+    //    PII reveal / PII ingest. p2p_identity_key is consumed later by
+    //    the P2P startup hook.
+    state.set_account_key(account_key_arc.clone()).await;
+    state.set_p2p_identity_key(device_key_arc.clone()).await;
 
     // 2. Call complete_auth and discard the returned key_db / kek —
     //    side effect: keys.duress.db is created on first duress login,
@@ -30,16 +41,47 @@ async fn install_session(
         tracing::warn!("complete_auth side-effect failed: {e}");
     }
 
-    // 3. Wire orchestrator: inline PII tokenization in chat I/O.
+    // 3. Wire orchestrator: inline PII tokenization in chat I/O uses
+    //    the account_key now (was device_key in v0.0.4).
     if let Some(ref orch) = state.orchestrator {
-        orch.set_pii_device_key(device_key_arc.clone());
+        orch.set_pii_account_key(account_key_arc.clone());
     }
 
     // 4. Enable encrypted session log if the feature is on.
     #[cfg(feature = "encrypted-log")]
     if let Some(ref orch) = state.orchestrator {
-        let session_key = crate::setup::derive_session_log_key(&device_key_arc);
+        let session_key = crate::setup::derive_session_log_key(&account_key_arc);
         orch.set_session_log_key(session_key);
+    }
+
+    // 5. v0.0.4 → v0.0.5 migration: re-encrypt at-rest data under the
+    //    AccountKey. Idempotent via marker file at
+    //    ~/.sovereign/crypto/account_key.migrated. Best-effort — never
+    //    fails the login flow on a bad row.
+    {
+        let db_dyn: std::sync::Arc<dyn sovereign_db::traits::GraphDB> = state.db.clone();
+        if let Err(e) = crate::account_key_migration::migrate_to_account_key(
+            db_dyn,
+            &device_key_arc,
+            &account_key_arc,
+            &state.profile_dir,
+        )
+        .await
+        {
+            tracing::warn!("AccountKey migration failed (continuing): {e}");
+        }
+    }
+
+    // 6. P2P startup (Phase 3c): bring up the libp2p node, install the
+    //    command channel on AppState + orchestrator, load paired
+    //    devices, and spawn the event translator. Idempotent — re-login
+    //    is a no-op on the second pass. Best-effort: a P2P bring-up
+    //    failure must not fail the login.
+    #[cfg(feature = "p2p")]
+    {
+        if let Err(e) = crate::sync_startup::start_p2p_node(state).await {
+            tracing::warn!("P2P startup failed (continuing without sync): {e}");
+        }
     }
 
     Ok(persona)
@@ -223,12 +265,12 @@ pub async fn complete_onboarding(
             .await
             .str_err()?;
 
-        // PII seed needs the DeviceKey to encrypt vault values, so it
+        // PII seed needs the AccountKey to encrypt vault values, so it
         // can only run on builds with the encryption feature and once
-        // install_session has populated AppState.device_key.
+        // install_session has populated AppState.account_key.
         #[cfg(feature = "encryption")]
-        if let Some(dk) = state.device_key().await {
-            crate::seed::seed_pii_if_empty(&state.db, &dk)
+        if let Some(ak) = state.account_key().await {
+            crate::seed::seed_pii_if_empty(&state.db, &ak)
                 .await
                 .str_err()?;
         }

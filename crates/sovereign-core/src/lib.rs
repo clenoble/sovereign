@@ -13,3 +13,16 @@ pub fn home_dir() -> std::path::PathBuf {
         .unwrap_or_else(|_| ".".into());
     std::path::PathBuf::from(home)
 }
+
+/// Sovereign data root.
+///
+/// Resolution:
+/// 1. `SOVEREIGN_DATA_DIR` env var if set (mobile entrypoint sets this to
+///    `app.path().app_data_dir()` before any sovereign code runs).
+/// 2. Desktop default: `~/.sovereign`.
+pub fn sovereign_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("SOVEREIGN_DATA_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    home_dir().join(".sovereign")
+}

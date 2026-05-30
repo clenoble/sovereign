@@ -1,11 +1,12 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { applyTheme } from '$lib/stores/theme.svelte';
 	import { app } from '$lib/stores/app.svelte';
 	import { toggleChat } from '$lib/stores/chat.svelte';
 	import { subscribeToEvents } from '$lib/api/events';
-	import { getTheme, checkAuthState, getProfile } from '$lib/api/commands';
+	import { getTheme, checkAuthState, getProfile, triggerSyncNow } from '$lib/api/commands';
 	import { stopNowTimer } from '$lib/stores/canvas.svelte';
+	import { device, initDevice, destroyDevice } from '$lib/stores/device.svelte';
 
 	import Taskbar from '$lib/components/Taskbar.svelte';
 	import Bubble from '$lib/components/Bubble.svelte';
@@ -25,10 +26,22 @@
 	import LoginScreen from '$lib/components/LoginScreen.svelte';
 	import OnboardingWizard from '$lib/components/OnboardingWizard.svelte';
 	import SettingsPanel from '$lib/components/SettingsPanel.svelte';
+	import MobileShell from '$lib/components/mobile/MobileShell.svelte';
 
 	let { children } = $props();
 
+	// Cleanup is assigned at the end of the async onMount body. Svelte
+	// ignores a Promise returned from an async onMount, so the teardown
+	// is registered via onDestroy instead of `return () => …`.
+	let cleanup: (() => void) | null = null;
+	onDestroy(() => cleanup?.());
+
 	onMount(async () => {
+		// Initialize device detection (viewport + platform). Subscribes
+		// to resize so toggling Chrome devtools' device emulation flips
+		// the layout live.
+		initDevice();
+
 		// Check auth state first
 		try {
 			const auth = await checkAuthState();
@@ -61,8 +74,10 @@
 		// Subscribe to backend events
 		const unlisten = await subscribeToEvents();
 
-		// Global keyboard shortcuts
+		// Global keyboard shortcuts (desktop only — mobile has no
+		// physical keyboard and these would compete with platform IME).
 		const handleKeydown = (e: KeyboardEvent) => {
+			if (device.isMobile) return;
 			const tag = (e.target as HTMLElement)?.tagName;
 			const editable = (e.target as HTMLElement)?.isContentEditable;
 			const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || editable;
@@ -129,11 +144,29 @@
 			}
 		);
 
-		return () => {
+		// Phase 3c: foreground sync trigger. When the document becomes
+		// visible (window refocus, mobile resume from background), kick
+		// off a sync with every paired peer. The backend dedupes against
+		// in-flight sessions per peer, so a quick toggle won't pile up
+		// duplicate syncs.
+		let lastVisibilitySync = 0;
+		const handleVisibilityChange = () => {
+			if (document.visibilityState !== 'visible') return;
+			// 60s cooldown per the v0.0.5 plan §4.5 (foreground budget).
+			const now = Date.now();
+			if (now - lastVisibilitySync < 60_000) return;
+			lastVisibilitySync = now;
+			triggerSyncNow().catch((e) => console.warn('triggerSyncNow failed:', e));
+		};
+		document.addEventListener('visibilitychange', handleVisibilityChange);
+
+		cleanup = () => {
 			unlisten();
 			unlistenSignup();
 			stopNowTimer();
+			destroyDevice();
 			window.removeEventListener('keydown', handleKeydown);
+			document.removeEventListener('visibilitychange', handleVisibilityChange);
 		};
 	});
 </script>
@@ -153,9 +186,19 @@
 	<LoginScreen />
 {:else}
 	<div class="app">
-		{@render children()}
-		<Bubble />
-		<Chat />
+		{#if device.isMobile}
+			<MobileShell />
+		{:else}
+			{@render children()}
+			<Bubble />
+			<Taskbar />
+		{/if}
+
+		<!-- Chat is rendered inside MobileChatSheet on mobile (bottom sheet).
+		     On desktop it stays as the floating panel. -->
+		{#if !device.isMobile}
+			<Chat />
+		{/if}
 		<Search />
 		<ConfirmAction />
 		<ModelPanel />
@@ -174,7 +217,6 @@
 		/>
 		<ContextMenu />
 		<SettingsPanel />
-		<Taskbar />
 	</div>
 {/if}
 

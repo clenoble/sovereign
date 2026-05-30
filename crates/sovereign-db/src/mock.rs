@@ -171,6 +171,7 @@ impl GraphDB for MockGraphDB {
         let thread = threads.get_mut(id).ok_or_else(|| DbError::NotFound(id.to_string()))?;
         if let Some(n) = name { thread.name = n.to_string(); }
         if let Some(d) = description { thread.description = d.to_string(); }
+        thread.modified_at = Utc::now();
         Ok(thread.clone())
     }
 
@@ -704,6 +705,21 @@ impl GraphDB for MockGraphDB {
         Ok(())
     }
 
+    async fn update_pii_record_value(
+        &self,
+        id: &str,
+        value_encrypted: &str,
+        value_nonce: &str,
+    ) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.value_encrypted = value_encrypted.to_string();
+        record.value_nonce = value_nonce.to_string();
+        Ok(())
+    }
+
     async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
         let mut records = self.pii_records.write().unwrap();
         let record = records
@@ -743,6 +759,21 @@ impl GraphDB for MockGraphDB {
             .collect();
         out.sort_by(|a, b| b.shared_at.cmp(&a.shared_at));
         Ok(out)
+    }
+
+    async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>> {
+        let records = self.share_records.read().unwrap();
+        let mut out: Vec<ShareRecord> = records.values().cloned().collect();
+        out.sort_by(|a, b| b.shared_at.cmp(&a.shared_at));
+        Ok(out)
+    }
+
+    async fn get_share_record(&self, id: &str) -> DbResult<ShareRecord> {
+        let records = self.share_records.read().unwrap();
+        records
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
     }
 
     async fn update_pii_record_sources(

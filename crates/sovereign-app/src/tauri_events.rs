@@ -162,6 +162,31 @@ pub struct LinkSuggestionResolvedPayload {
     pub accepted: bool,
 }
 
+// ----- P2P sync event payloads (Phase 3c) -----
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceDiscoveredPayload {
+    pub device_id: String,
+    pub device_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncStatusPayload {
+    pub peer_id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncConflictPayload {
+    pub doc_id: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DevicePairedPayload {
+    pub device_id: String,
+}
+
 // ---------------------------------------------------------------------------
 // Event forwarder
 // ---------------------------------------------------------------------------
@@ -381,6 +406,32 @@ pub fn spawn_event_forwarder(
 
                 OrchestratorEvent::OpenPanel { name } => {
                     let _ = app_handle.emit("open-panel", OpenPanelPayload { name });
+                }
+
+                // P2P sync events (Phase 3c)
+                OrchestratorEvent::DeviceDiscovered { device_id, device_name } => {
+                    let _ = app_handle.emit(
+                        "device-discovered",
+                        DeviceDiscoveredPayload { device_id, device_name },
+                    );
+                }
+                OrchestratorEvent::SyncStatus { peer_id, status } => {
+                    let _ = app_handle.emit(
+                        "sync-status",
+                        SyncStatusPayload { peer_id, status },
+                    );
+                }
+                OrchestratorEvent::SyncConflict { doc_id, description } => {
+                    let _ = app_handle.emit(
+                        "sync-conflict",
+                        SyncConflictPayload { doc_id, description },
+                    );
+                }
+                OrchestratorEvent::DevicePaired { device_id } => {
+                    let _ = app_handle.emit(
+                        "device-paired",
+                        DevicePairedPayload { device_id },
+                    );
                 }
 
                 // All other events: log but don't emit
