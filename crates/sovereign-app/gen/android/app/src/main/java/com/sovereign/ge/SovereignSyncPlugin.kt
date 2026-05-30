@@ -72,7 +72,7 @@ import app.tauri.annotation.Command
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
-import app.tauri.plugin.PluginCall
+import app.tauri.plugin.Invoke
 import java.util.concurrent.TimeUnit
 
 @TauriPlugin
@@ -144,7 +144,7 @@ class SovereignSyncPlugin(private val activity: Activity) : Plugin(activity) {
     /** Frontend → plugin: "what's the current connectivity?" Useful for
      *  the Settings → Devices status row. */
     @Command
-    fun connectivityType(call: PluginCall) {
+    fun connectivityType(call: Invoke) {
         val ret = JSObject()
         ret.put("kind", currentState)
         call.resolve(ret)
