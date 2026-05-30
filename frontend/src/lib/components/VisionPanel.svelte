@@ -1,10 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { vision, closeVisionPanel } from '$lib/stores/vision.svelte';
+	import { vision, closeVisionPanel, setWindowSeconds } from '$lib/stores/vision.svelte';
 	import { visionFrameUrl, openVisionWindow, closeVisionWindow } from '$lib/api/vision';
 
 	let frameTs = $state(Date.now());
-	let durationS = $state(300);
 
 	onMount(() => {
 		// Refresh the camera frame ~5 fps while the panel is open.
@@ -46,8 +45,13 @@
 			<span class="win">Understanding… {remaining}s</span>
 			<button onclick={() => closeVisionWindow()}>Stop</button>
 		{:else}
-			<button onclick={() => openVisionWindow(durationS)} disabled={!vision.cameraOk}>
-				Look ({durationS}s)
+			<div class="dur">
+				<button class="step" onclick={() => setWindowSeconds(vision.windowSeconds - 30)} title="Shorter window">−</button>
+				<span>{vision.windowSeconds}s</span>
+				<button class="step" onclick={() => setWindowSeconds(vision.windowSeconds + 30)} title="Longer window">+</button>
+			</div>
+			<button onclick={() => openVisionWindow(vision.windowSeconds)} disabled={!vision.cameraOk}>
+				Look
 			</button>
 		{/if}
 	</footer>
@@ -133,8 +137,26 @@
 		border-top: 1px solid var(--border, #333);
 	}
 	footer button {
-		margin-left: auto;
 		cursor: pointer;
+	}
+	footer > button:last-child {
+		margin-left: auto;
+	}
+	.dur {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+	.dur span {
+		min-width: 40px;
+		text-align: center;
+		font-variant-numeric: tabular-nums;
+	}
+	.step {
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		line-height: 1;
 	}
 	.win {
 		color: #66aadd;

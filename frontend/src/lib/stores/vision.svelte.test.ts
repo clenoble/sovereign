@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { applyVisionState, vision } from './vision.svelte';
+import { applyVisionState, setWindowSeconds, vision } from './vision.svelte';
 
 beforeEach(() => {
 	vision.open = false;
@@ -41,5 +41,16 @@ describe('applyVisionState', () => {
 		applyVisionState({ gesture: null, scene: '', camera_ok: true });
 		expect(vision.gesture).toBe(null);
 		expect(vision.scene).toBe('');
+	});
+});
+
+describe('setWindowSeconds', () => {
+	it('clamps to [10, 3600] and updates the store', () => {
+		setWindowSeconds(600);
+		expect(vision.windowSeconds).toBe(600);
+		setWindowSeconds(5);
+		expect(vision.windowSeconds).toBe(10);
+		setWindowSeconds(99999);
+		expect(vision.windowSeconds).toBe(3600);
 	});
 });

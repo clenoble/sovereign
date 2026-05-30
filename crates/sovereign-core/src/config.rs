@@ -12,6 +12,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub voice: VoiceConfig,
     #[serde(default)]
+    pub vision: VisionConfig,
+    #[serde(default)]
     pub crypto: CryptoConfig,
     #[serde(default)]
     pub p2p: P2pConfig,
@@ -108,6 +110,32 @@ impl Default for VoiceConfig {
     }
 }
 
+/// Vision integration: the jiminy-vision service (gestures + windowed VLM scene
+/// understanding) that feeds the orchestrator context and the camera UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VisionConfig {
+    /// Whether the vision integration is active (poller + camera UI).
+    pub enabled: bool,
+    /// How long the windowed VLM scene-understanding stays open, in seconds.
+    pub window_seconds: f64,
+    /// Camera source for jiminy-vision: "webcam" (dev/desktop) or "robot".
+    pub camera_source: String,
+    /// Base URL of the jiminy-vision service.
+    pub vision_url: String,
+}
+
+impl Default for VisionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            window_seconds: 300.0,
+            camera_source: "webcam".into(),
+            vision_url: "http://127.0.0.1:9101".into(),
+        }
+    }
+}
+
 /// Encryption-at-rest configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -197,6 +225,7 @@ impl Default for AppConfig {
             ui: UiConfig::default(),
             ai: AiConfig::default(),
             voice: VoiceConfig::default(),
+            vision: VisionConfig::default(),
             crypto: CryptoConfig::default(),
             p2p: P2pConfig::default(),
             comms: CommsAppConfig::default(),
@@ -294,5 +323,24 @@ impl AppConfig {
         }
         // Fallback to CWD
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vision_config_defaults() {
+        let v = VisionConfig::default();
+        assert!(v.enabled);
+        assert_eq!(v.window_seconds, 300.0);
+        assert_eq!(v.camera_source, "webcam");
+        assert_eq!(v.vision_url, "http://127.0.0.1:9101");
+    }
+
+    #[test]
+    fn app_config_default_includes_vision() {
+        assert_eq!(AppConfig::default().vision.window_seconds, 300.0);
     }
 }

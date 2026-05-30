@@ -27,8 +27,9 @@
 	import PairQrPanel from './PairQrPanel.svelte';
 	import { focusTrap } from '$lib/actions/focusTrap';
 	import { sync, clearError } from '$lib/stores/sync.svelte';
+	import { vision, setWindowSeconds } from '$lib/stores/vision.svelte';
 
-	type Tab = 'profile' | 'ai' | 'security' | 'trust' | 'comms' | 'devices';
+	type Tab = 'profile' | 'ai' | 'security' | 'trust' | 'comms' | 'devices' | 'vision';
 
 	const BUBBLE_STYLES = ['icon', 'wave', 'spin', 'pulse', 'blink', 'rings', 'matrix', 'orbit', 'morph'];
 
@@ -340,6 +341,13 @@
 			>
 				Devices
 			</button>
+			<button
+				class="tab"
+				class:active={activeTab === 'vision'}
+				onclick={() => (activeTab = 'vision')}
+			>
+				Vision
+			</button>
 		</div>
 
 		{#if error}
@@ -347,7 +355,30 @@
 		{/if}
 
 		<div class="panel-body">
-			{#if loading}
+			{#if activeTab === 'vision'}
+				<!-- Vision Tab -->
+				<div class="form-section">
+					<label class="field-label" for="settings-vision-window">
+						Vision window duration (seconds)
+					</label>
+					<input
+						id="settings-vision-window"
+						class="field-input"
+						type="number"
+						min="10"
+						max="3600"
+						step="30"
+						value={vision.windowSeconds}
+						oninput={(e) => setWindowSeconds(Number(e.currentTarget.value))}
+					/>
+					<p class="hint">
+						How long a “Look” runs the scene-understanding VLM before it turns off
+						(default 300s). Open the camera tile from the taskbar to use it. The
+						camera source (webcam / robot) is chosen when launching the
+						jiminy-vision service.
+					</p>
+				</div>
+			{:else if loading}
 				<div class="loading">Loading settings...</div>
 
 			{:else if activeTab === 'profile'}
