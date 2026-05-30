@@ -362,15 +362,11 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 config.ai.model_dir = model_dir.to_string_lossy().into_owned();
                 tracing::info!("Mobile model_dir: {}", config.ai.model_dir);
 
-                // Mobile builds gate rocksdb off — sovereign-db falls back
-                // to kv-mem regardless of the config's "persistent" default,
-                // but create_db() still tries to compute a persistent path
-                // via home_dir().join(".sovereign") (which ignores
-                // SOVEREIGN_DATA_DIR) and create_dir_all on it. On Android
-                // that lands at "/.sovereign/..." → EROFS. Force memory mode
-                // so we skip that path entirely.
-                config.database.mode = "memory".into();
-                tracing::info!("Mobile database.mode forced to memory (kv-mem)");
+                // database.path stays as "data/sovereign.db" (relative);
+                // create_db now resolves it against sovereign_dir() (which
+                // honors SOVEREIGN_DATA_DIR), so on Android the DB lands
+                // inside the app sandbox under .../data/sovereign.db.
+                // Persistence is via SurrealKV (kv-mem replaced in v0.0.6).
             }
 
             // Profile dir (correct on both platforms after the env-var step).

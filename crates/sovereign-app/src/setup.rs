@@ -7,15 +7,18 @@ pub async fn create_db(config: &AppConfig) -> Result<SurrealGraphDB> {
     let mode = match config.database.mode.as_str() {
         "memory" => StorageMode::Memory,
         _ => {
-            // Anchor relative paths to ~/.sovereign/ so the DB lives in
-            // a consistent location regardless of where the binary is
-            // launched from (cwd-dependent paths cause silent data loss
-            // when the user double-clicks vs. runs from project root).
+            // Anchor relative paths to sovereign_dir(), which respects
+            // SOVEREIGN_DATA_DIR when set (mobile entry point sets this to
+            // the app sandbox) and falls back to ~/.sovereign on desktop.
+            // Using sovereign_dir() instead of home_dir().join(".sovereign")
+            // is what makes Android persistence work: home_dir() returns "."
+            // when $HOME is unset (Android), which then resolves against a
+            // read-only filesystem root.
             let raw = std::path::Path::new(&config.database.path);
             let resolved = if raw.is_absolute() {
                 raw.to_path_buf()
             } else {
-                sovereign_core::home_dir().join(".sovereign").join(raw)
+                sovereign_core::sovereign_dir().join(raw)
             };
             if let Some(parent) = resolved.parent() {
                 std::fs::create_dir_all(parent)?;

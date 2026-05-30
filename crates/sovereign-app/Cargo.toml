@@ -67,11 +67,13 @@ tempfile = "3"
 sovereign-db = { workspace = true, features = ["test-utils"] }
 
 [features]
-# rocksdb is included in desktop defaults; excluded from mobile feature so
-# Android builds use kv-mem (in-memory, survives process lifetime only).
-# Persistent mobile storage is planned for Phase 5 (SQLite-backed SurrealDB).
+# rocksdb: desktop persistent backend. Excluded from `mobile` because RocksDB
+# doesn't have a clean Android cross-compile path.
+# surrealkv: mobile persistent backend, pure-Rust, cross-compiles cleanly.
+# At runtime sovereign-db picks rocksdb first if both are on (see surreal.rs).
 default = ["encrypted-log", "encryption", "rocksdb"]
 rocksdb = ["sovereign-db/rocksdb"]
+surrealkv = ["sovereign-db/surrealkv"]
 cuda = ["sovereign-ai/cuda"]
 encrypted-log = ["sovereign-ai/encrypted-log", "hkdf", "sha2"]
 voice-stt = ["sovereign-ai/voice-stt"]
@@ -88,8 +90,10 @@ haptics = ["tauri-plugin-haptics"]
 # Mobile (iOS / Android) feature set.
 # Excludes desktop-only deps: voice (cpal-based), email (native-tls),
 # P2P (libp2p mDNS restrictions), embedded browser (pixel-bounded child webview).
+# Persistence is via surrealkv (pure-Rust KV; RocksDB doesn't cross-compile
+# cleanly to Android).
 # Signal (comms-signal) is deferred to v0.0.6: presage's Manager stream holds
 # a !Send ThreadRng, which is incompatible with CommunicationChannel's
 # Send-bound async_trait. A LocalSet-backed wrapper is needed before
 # re-adding it here.
-mobile = ["encrypted-log", "encryption", "haptics"]
+mobile = ["encrypted-log", "encryption", "haptics", "surrealkv"]

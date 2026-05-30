@@ -3,6 +3,8 @@ use chrono::{DateTime, Utc};
 use surrealdb::engine::local::{Db, Mem};
 #[cfg(feature = "rocksdb")]
 use surrealdb::engine::local::RocksDb;
+#[cfg(all(feature = "surrealkv", not(feature = "rocksdb")))]
+use surrealdb::engine::local::SurrealKv;
 use surrealdb::sql::Thing;
 use surrealdb::Surreal;
 
@@ -28,18 +30,27 @@ pub struct SurrealGraphDB {
 
 impl SurrealGraphDB {
     /// Create a new SurrealGraphDB with the given storage mode.
+    ///
+    /// Backend selection priority for `StorageMode::Persistent`:
+    /// 1. `rocksdb` feature on  → RocksDB (desktop default; mature LSM engine).
+    /// 2. `surrealkv` feature on (and rocksdb off) → SurrealKV (mobile;
+    ///    pure-Rust, no native deps, cross-compiles to Android trivially).
+    /// 3. Neither feature on → falls back to in-memory with a stderr warning.
+    ///    This is only hit by misconfigured builds.
     pub async fn new(mode: StorageMode) -> DbResult<Self> {
         let db = match mode {
             StorageMode::Memory => Surreal::new::<Mem>(()).await?,
             #[cfg(feature = "rocksdb")]
             StorageMode::Persistent(ref path) => Surreal::new::<RocksDb>(path).await?,
-            #[cfg(not(feature = "rocksdb"))]
+            #[cfg(all(feature = "surrealkv", not(feature = "rocksdb")))]
+            StorageMode::Persistent(ref path) => Surreal::new::<SurrealKv>(path).await?,
+            #[cfg(not(any(feature = "rocksdb", feature = "surrealkv")))]
             StorageMode::Persistent(_) => {
-                // Mobile + non-default desktop builds: fall back to in-memory.
-                // Persistent storage requires the `rocksdb` feature (desktop)
-                // or a future SQLite-backed engine (mobile, Phase 5).
+                // No persistent backend compiled in — shouldn't happen in
+                // shipped builds (desktop has rocksdb, mobile has surrealkv).
                 eprintln!(
-                    "[sovereign-db] persistent storage requested but rocksdb feature is off — using in-memory"
+                    "[sovereign-db] persistent storage requested but neither rocksdb \
+                     nor surrealkv features are enabled — falling back to in-memory"
                 );
                 Surreal::new::<Mem>(()).await?
             }

@@ -20,8 +20,14 @@ tracing = { workspace = true, optional = true }
 [features]
 default = []
 encryption = ["sovereign-crypto", "base64", "tracing"]
-# rocksdb: opt-in persistent storage. Disabled on Android/iOS (RocksDB has no
-# Android cross-compilation support). Desktop builds activate this via
-# sovereign-app's `rocksdb` feature → `sovereign-db/rocksdb`.
+# rocksdb: opt-in persistent storage. Used on desktop. Disabled on Android/iOS
+# (RocksDB has no clean Android cross-compilation story — C++ + jemalloc
+# + NDK toolchain interactions are painful). Desktop builds activate this
+# via sovereign-app's `rocksdb` feature → `sovereign-db/rocksdb`.
 rocksdb = ["surrealdb/kv-rocksdb"]
+# surrealkv: pure-Rust persistent KV store. Used as the mobile persistence
+# backend since RocksDB isn't viable there. At runtime `rocksdb` wins if
+# both are on, so desktop builds with surrealkv compiled in still use
+# RocksDB as the on-disk engine. See StorageMode::Persistent in surreal.rs.
+surrealkv = ["surrealdb/kv-surrealkv"]
 test-utils = []
