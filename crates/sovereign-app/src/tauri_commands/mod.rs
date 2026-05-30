@@ -4,6 +4,7 @@ pub mod browser;
 pub mod canvas;
 pub mod contacts;
 pub mod documents;
+pub mod pii;
 pub mod suggestions;
 pub mod threads;
 

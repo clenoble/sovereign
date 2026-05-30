@@ -1,6 +1,6 @@
+use crate::content_util::replace_body;
 use crate::manifest::Capability;
 use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
-use sovereign_core::content::ContentFields;
 
 pub struct TextEditorSkill;
 
@@ -30,12 +30,7 @@ impl CoreSkill for TextEditorSkill {
     ) -> anyhow::Result<SkillOutput> {
         match action {
             "save" => {
-                let updated = ContentFields {
-                    body: params.to_string(),
-                    images: doc.content.images.clone(),
-                    videos: doc.content.videos.clone(),
-                };
-                Ok(SkillOutput::ContentUpdate(updated))
+                Ok(SkillOutput::ContentUpdate(replace_body(doc, params.to_string())))
             }
             _ => anyhow::bail!("Unknown action: {action}"),
         }
@@ -53,24 +48,13 @@ impl CoreSkill for TextEditorSkill {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_doc() -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "Test Doc".into(),
-            content: ContentFields {
-                body: "original body".into(),
-                ..Default::default()
-            },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc_with_title};
 
     #[test]
     fn save_returns_content_update_with_new_body() {
         let skill = TextEditorSkill;
-        let doc = make_doc();
-        let ctx = SkillContext { granted: std::collections::HashSet::new(), db: None };
-        let result = skill.execute("save", &doc, "new body text", &ctx).unwrap();
+        let doc = make_doc_with_title("Test Doc", "original body");
+        let result = skill.execute("save", &doc, "new body text", &dummy_ctx()).unwrap();
         match result {
             SkillOutput::ContentUpdate(cf) => {
                 assert_eq!(cf.body, "new body text");

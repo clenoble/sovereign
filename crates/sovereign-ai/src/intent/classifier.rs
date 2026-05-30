@@ -10,7 +10,7 @@ use crate::llm::format::{self, PromptFormatter};
 use crate::llm::prompt::{build_reasoning_system_prompt, build_router_system_prompt, format_single_turn};
 use crate::llm::AsyncLlmBackend;
 
-use super::parser::{override_model_intent, parse_intent_response};
+use super::parser::{override_model_intent, override_panel_intent, parse_intent_response};
 
 /// Idle timeout before unloading the reasoning model to free VRAM.
 const REASONING_IDLE_SECS: u64 = 300; // 5 minutes
@@ -106,10 +106,13 @@ impl IntentClassifier {
 
         let mut intent = parse_intent_response(&response)?;
 
-        // Post-classification override: if the user text clearly signals a model
-        // swap/list but the router misclassified, correct it. The 3B router
-        // sometimes treats model names as search targets.
+        // Post-classification overrides: the router LLM may map UI panel
+        // toggles ("open the PII dashboard") to a generic action="open"
+        // because the panel-toggle vocabulary isn't in the prompt yet.
+        // Same story for model swap/list — the 3B router sometimes treats
+        // model names as search targets.
         override_model_intent(user_text, &mut intent);
+        override_panel_intent(user_text, &mut intent);
 
         if intent.confidence < self.confidence_threshold {
             tracing::info!(

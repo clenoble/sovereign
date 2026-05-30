@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { app, confirmPendingAction, rejectPendingAction } from '$lib/stores/app.svelte';
+	import { focusTrap } from '$lib/actions/focusTrap';
 
 	const handleApprove = () => confirmPendingAction();
 	const handleReject = () => rejectPendingAction('User rejected via UI');
@@ -8,7 +9,16 @@
 {#if app.pendingAction}
 	<div class="confirm-overlay">
 		<div class="confirm-backdrop"></div>
-		<div class="confirm-dialog">
+		<div
+			class="confirm-dialog"
+			role="alertdialog"
+			aria-modal="true"
+			aria-label="Action confirmation: {app.pendingAction.level}"
+			use:focusTrap={{
+				active: app.pendingAction !== null,
+				onEscape: handleReject
+			}}
+		>
 			<div class="confirm-header">
 				<span class="level-badge">{app.pendingAction.level}</span>
 				<span class="confirm-title">Action Confirmation</span>

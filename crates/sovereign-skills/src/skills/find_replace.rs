@@ -1,6 +1,6 @@
+use crate::content_util::replace_body;
 use crate::manifest::Capability;
 use crate::traits::{CoreSkill, SkillContext, SkillDocument, SkillOutput};
-use sovereign_core::content::ContentFields;
 
 pub struct FindReplaceSkill;
 
@@ -53,11 +53,7 @@ impl CoreSkill for FindReplaceSkill {
                     });
                 }
 
-                Ok(SkillOutput::ContentUpdate(ContentFields {
-                    body: new_body,
-                    images: doc.content.images.clone(),
-                    videos: doc.content.videos.clone(),
-                }))
+                Ok(SkillOutput::ContentUpdate(replace_body(doc, new_body)))
             }
             _ => anyhow::bail!("Unknown action: {action}"),
         }
@@ -75,21 +71,7 @@ impl CoreSkill for FindReplaceSkill {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None }
-    }
-
-    fn make_doc(body: &str) -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "Test".into(),
-            content: ContentFields {
-                body: body.into(),
-                ..Default::default()
-            },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc};
 
     #[test]
     fn basic_replace() {

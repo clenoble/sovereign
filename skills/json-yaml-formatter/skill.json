@@ -1,0 +1,9 @@
+{
+    "name": "JSON / YAML Formatter",
+    "version": "0.1.0",
+    "description": "Pretty-print or minify JSON and YAML fenced code blocks",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_document", "write_document"],
+    "file_types": ["md", "json", "yaml", "yml"]
+}

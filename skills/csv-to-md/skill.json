@@ -1,0 +1,9 @@
+{
+    "name": "CSV to Markdown Table",
+    "version": "0.1.0",
+    "description": "Convert CSV blocks (or whole CSV documents) into markdown tables",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_document", "write_document"],
+    "file_types": ["md", "csv"]
+}

@@ -80,6 +80,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             db: Some(crate::db_bridge::wrap_db(db)),
+            llm: None,
         }
     }
 

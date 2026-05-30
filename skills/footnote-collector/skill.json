@@ -1,0 +1,9 @@
+{
+    "name": "Footnote Collector",
+    "version": "0.0.1",
+    "description": "Gather inline footnote definitions and format as endnotes (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["read_document", "write_document"],
+    "file_types": ["md", "markdown"]
+}

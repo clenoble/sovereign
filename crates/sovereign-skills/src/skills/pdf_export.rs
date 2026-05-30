@@ -139,10 +139,10 @@ mod tests {
 
     #[test]
     fn export_returns_nonempty_pdf_bytes() {
+        use crate::test_util::dummy_ctx;
         let skill = PdfExportSkill;
         let doc = make_doc();
-        let ctx = SkillContext { granted: std::collections::HashSet::new(), db: None };
-        let result = skill.execute("export", &doc, "", &ctx);
+        let result = skill.execute("export", &doc, "", &dummy_ctx());
         // May fail if fonts not installed — that's expected in CI
         match result {
             Ok(SkillOutput::File { name, mime_type, data }) => {

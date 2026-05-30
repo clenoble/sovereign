@@ -63,22 +63,7 @@ impl CoreSkill for WordCountSkill {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sovereign_core::content::ContentFields;
-
-    fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None }
-    }
-
-    fn make_doc(body: &str) -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "Test".into(),
-            content: ContentFields {
-                body: body.into(),
-                ..Default::default()
-            },
-        }
-    }
+    use crate::test_util::{dummy_ctx, make_doc};
 
     #[test]
     fn count_basic() {

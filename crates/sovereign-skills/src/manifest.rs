@@ -19,6 +19,9 @@ pub enum Capability {
     ReadFilesystem,
     WriteFilesystem,
     Network,
+    /// Run inference against the local LLM (router or reasoning model).
+    /// Granted via SkillContext.llm; not yet exposed across the WIT/WASM boundary.
+    LlmInference,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

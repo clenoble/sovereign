@@ -1,0 +1,9 @@
+{
+    "name": "Merge Documents",
+    "version": "0.0.1",
+    "description": "Concatenate selected documents from a thread into a single new document (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["read_all_documents", "write_all_documents"],
+    "file_types": []
+}

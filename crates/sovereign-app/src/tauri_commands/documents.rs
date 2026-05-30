@@ -55,14 +55,24 @@ pub async fn list_threads(state: State<'_, AppState>) -> Result<Vec<ThreadSummar
 // Theme
 // ---------------------------------------------------------------------------
 
-/// Toggle the UI theme and return the new theme name.
+/// Toggle the UI theme and persist to the user profile.
 #[tauri::command]
 pub async fn toggle_theme(state: State<'_, AppState>) -> Result<String, String> {
-    let current = state.theme.lock().str_err()?;
-    let next = if *current == "dark" { "light" } else { "dark" };
-    drop(current);
-    let mut theme = state.theme.lock().str_err()?;
-    *theme = next.to_string();
+    let next = {
+        let current = state.theme.lock().str_err()?;
+        if *current == "dark" { "light" } else { "dark" }
+    };
+    {
+        let mut theme = state.theme.lock().str_err()?;
+        *theme = next.to_string();
+    }
+    // Persist to profile so the choice survives a restart.
+    if let Ok(mut profile) = sovereign_core::profile::UserProfile::load(&state.profile_dir) {
+        profile.theme = next.to_string();
+        if let Err(e) = profile.save(&state.profile_dir) {
+            tracing::warn!("Failed to persist theme to profile: {e}");
+        }
+    }
     Ok(next.to_string())
 }
 
@@ -137,6 +147,12 @@ pub async fn save_document(
     images: Vec<ContentImageDto>,
     videos: Vec<ContentVideoDto>,
 ) -> Result<(), String> {
+    // PII ingest on the body before persisting. The helper short-circuits
+    // when crypto isn't initialized or the document was already scanned —
+    // see `pii_ingest::maybe_ingest_document_body` for the policy.
+    #[cfg(feature = "encryption")]
+    let body = crate::pii_ingest::maybe_ingest_document_body(&state, &id, &body).await?;
+
     let fields = ContentFields {
         body,
         images: images
@@ -297,9 +313,17 @@ pub async fn execute_skill(
         title: doc.title,
         content: fields,
     };
+    // Auto-grant exactly the capabilities the skill declares, matching the
+    // legacy Iced build_skill_context behavior at sovereign-ui app.rs:1704.
+    let granted: HashSet<_> = state
+        .skill_registry
+        .find_skill(&skill_name)
+        .map(|s| s.required_capabilities().into_iter().collect())
+        .unwrap_or_default();
     let ctx = SkillContext {
-        granted: HashSet::new(),
+        granted,
         db: Some(state.skill_db.clone()),
+        llm: state.skill_llm.clone(),
     };
     let output = state
         .skill_registry
@@ -443,6 +467,12 @@ pub async fn import_file(
         .as_ref()
         .map(sovereign_db::schema::thing_to_raw)
         .unwrap_or_default();
+
+    // PII ingest on the imported content. With crypto disabled this is a
+    // pass-through; with crypto enabled the body is rewritten with
+    // `[pii:<record_id>]` tokens and the original is preserved encrypted.
+    #[cfg(feature = "encryption")]
+    let content = crate::pii_ingest::maybe_ingest_document_body(&state, &id, &content).await?;
 
     // Save the content
     state

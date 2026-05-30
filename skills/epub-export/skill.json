@@ -1,0 +1,9 @@
+{
+    "name": "EPUB Export",
+    "version": "0.0.1",
+    "description": "Package documents as an EPUB ebook (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["read_document"],
+    "file_types": ["md", "markdown"]
+}

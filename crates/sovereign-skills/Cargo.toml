@@ -16,6 +16,10 @@ tokio = { workspace = true }
 chrono = { workspace = true }
 genpdf = { workspace = true }
 pdf-extract = { workspace = true }
+pulldown-cmark = { workspace = true }
+regex = { workspace = true }
+serde_yml = { workspace = true }
+csv = { workspace = true }
 
 # WASM plugin runtime (optional — heavy dependency)
 wasmtime = { workspace = true, optional = true }

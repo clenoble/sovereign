@@ -246,6 +246,7 @@ mod tests {
         let ctx = SkillContext {
             granted: [Capability::ReadDocument].into_iter().collect(),
             db: None,
+            llm: None,
         };
         let result = registry.execute_skill("test", "any", &doc, "", &ctx);
         assert!(result.is_ok());
@@ -265,6 +266,7 @@ mod tests {
         let ctx = SkillContext {
             granted: std::collections::HashSet::new(),
             db: None,
+            llm: None,
         };
         let result = registry.execute_skill("test", "any", &doc, "", &ctx);
         assert!(result.is_err());
@@ -283,6 +285,7 @@ mod tests {
         let ctx = SkillContext {
             granted: std::collections::HashSet::new(),
             db: None,
+            llm: None,
         };
         let result = registry.execute_skill("nonexistent", "any", &doc, "", &ctx);
         assert!(result.is_err());
@@ -301,6 +304,20 @@ mod tests {
         use crate::skills::search::SearchSkill;
         use crate::skills::file_import::FileImportSkill;
         use crate::skills::duplicate_document::DuplicateDocumentSkill;
+        use crate::skills::outline_extractor::OutlineExtractorSkill;
+        use crate::skills::link_checker::LinkCheckerSkill;
+        use crate::skills::pii_detector::PiiDetectorSkill;
+        use crate::skills::readability_score::ReadabilityScoreSkill;
+        use crate::skills::html_export::HtmlExportSkill;
+        use crate::skills::plaintext_export::PlaintextExportSkill;
+        use crate::skills::table_of_contents::TableOfContentsSkill;
+        use crate::skills::json_yaml_formatter::JsonYamlFormatterSkill;
+        use crate::skills::csv_to_md::CsvToMdSkill;
+        use crate::skills::redactor::RedactorSkill;
+        use crate::skills::backlink_map::BacklinkMapSkill;
+        use crate::skills::orphan_finder::OrphanFinderSkill;
+        use crate::skills::daily_journal::DailyJournalSkill;
+        use crate::skills::thread_summary::ThreadSummarySkill;
 
         let mut registry = SkillRegistry::new();
         registry.register(Box::new(TextEditorSkill));
@@ -313,8 +330,22 @@ mod tests {
         registry.register(Box::new(SearchSkill));
         registry.register(Box::new(FileImportSkill));
         registry.register(Box::new(DuplicateDocumentSkill));
+        registry.register(Box::new(OutlineExtractorSkill));
+        registry.register(Box::new(LinkCheckerSkill));
+        registry.register(Box::new(PiiDetectorSkill));
+        registry.register(Box::new(ReadabilityScoreSkill));
+        registry.register(Box::new(HtmlExportSkill));
+        registry.register(Box::new(PlaintextExportSkill));
+        registry.register(Box::new(TableOfContentsSkill));
+        registry.register(Box::new(JsonYamlFormatterSkill));
+        registry.register(Box::new(CsvToMdSkill));
+        registry.register(Box::new(RedactorSkill));
+        registry.register(Box::new(BacklinkMapSkill));
+        registry.register(Box::new(OrphanFinderSkill));
+        registry.register(Box::new(DailyJournalSkill));
+        registry.register(Box::new(ThreadSummarySkill));
 
-        assert_eq!(registry.all_skills().len(), 10);
+        assert_eq!(registry.all_skills().len(), 24);
         assert!(registry.find_skill("text-editor").is_some());
         assert!(registry.find_skill("image").is_some());
         assert!(registry.find_skill("pdf-export").is_some());
@@ -325,5 +356,19 @@ mod tests {
         assert!(registry.find_skill("search").is_some());
         assert!(registry.find_skill("file-import").is_some());
         assert!(registry.find_skill("duplicate-document").is_some());
+        assert!(registry.find_skill("outline-extractor").is_some());
+        assert!(registry.find_skill("link-checker").is_some());
+        assert!(registry.find_skill("pii-detector").is_some());
+        assert!(registry.find_skill("readability-score").is_some());
+        assert!(registry.find_skill("html-export").is_some());
+        assert!(registry.find_skill("plaintext-export").is_some());
+        assert!(registry.find_skill("table-of-contents").is_some());
+        assert!(registry.find_skill("json-yaml-formatter").is_some());
+        assert!(registry.find_skill("csv-to-md").is_some());
+        assert!(registry.find_skill("redactor").is_some());
+        assert!(registry.find_skill("backlink-map").is_some());
+        assert!(registry.find_skill("orphan-finder").is_some());
+        assert!(registry.find_skill("daily-journal").is_some());
+        assert!(registry.find_skill("thread-summary").is_some());
     }
 }

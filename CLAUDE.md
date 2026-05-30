@@ -11,7 +11,7 @@ This is critical — APIs change between versions and stale knowledge causes cas
 
 ## Workspace Architecture
 
-10-crate Rust workspace (~16k lines):
+8-crate Rust workspace (~12k lines):
 
 | Crate | Role |
 |-------|------|
@@ -19,12 +19,12 @@ This is critical — APIs change between versions and stale knowledge causes cas
 | `sovereign-db` | SurrealDB graph database — documents, threads, relationships, contacts, conversations |
 | `sovereign-crypto` | Encryption (XChaCha20-Poly1305), key management, content signing |
 | `sovereign-ai` | LLM orchestrator, intent classification, chat agent loop, tools, trust, voice pipeline |
-| `sovereign-ui` | Iced 0.14 GUI — panels, chat, search bar, theming (legacy) |
-| `sovereign-canvas` | Spatial canvas — document cards, thread zones, drag-and-drop (legacy) |
 | `sovereign-skills` | Skill registry and built-in skills (markdown editor, PDF export, video) |
 | `sovereign-p2p` | libp2p peer-to-peer sync (experimental) |
 | `sovereign-comms` | Communications — email (IMAP/SMTP), Signal (via presage) |
-| `sovereign-app` | Binary crate — CLI, GUI bootstrap, setup, seeding |
+| `sovereign-app` | Binary crate — CLI, Tauri bootstrap, setup, seeding |
+
+**UI:** the Svelte 5 + Tauri 2 frontend in `frontend/` is the only supported UI. The previous Iced-based `sovereign-ui` and `sovereign-canvas` crates were retired.
 
 ### AI Orchestrator Architecture (`sovereign-ai`)
 
@@ -61,7 +61,7 @@ These 8 principles are implemented across the codebase — respect them when mod
 
 ### Tauri Frontend (`frontend/`)
 
-The active UI is a **Svelte 5 + SvelteKit 2 + Tauri 2.0** web app (replaces the legacy Iced GUI). Stack: Svelte 5.51, SvelteKit 2.50, Tauri 2.10, Vite 7.3.
+The UI is a **Svelte 5 + SvelteKit 2 + Tauri 2.0** web app. Stack: Svelte 5.51, SvelteKit 2.50, Tauri 2.10, Vite 7.3.
 
 **Key patterns:**
 - **Stores use `.svelte.ts` rune modules** — export `$state({})` objects + named functions. Components import and read properties directly (no `$` prefix). Svelte 4 `writable` stores fail with async Tauri IPC.
@@ -107,8 +107,6 @@ frontend/src/
 cd frontend && npm install && npm run build    # produces frontend/build/
 ```
 
-**Feature flag:** `--features tauri-ui` on `sovereign-app` (mutually exclusive with `iced-ui`).
-
 ## Build & Development
 
 ### Toolchain Prerequisites (Windows)
@@ -119,10 +117,21 @@ Install via `winget` if missing:
 - **CMake**: `winget install Kitware.CMake`
 - **Rust** (stable MSVC): `winget install Rustlang.Rustup`
 - **Node.js** 20+ (for frontend): `winget install OpenJS.NodeJS.LTS`
+- **CUDA Toolkit** (only if building/running with `--features cuda`): `winget install Nvidia.CUDA` — installs to `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v<version>\`. The installer sets `CUDA_PATH` machine-wide but **does not propagate to existing shells** — restart any open terminal after install.
+
+#### CUDA 13 runtime DLL gotcha (Windows)
+CUDA **13.x** changed the runtime DLL layout: `cudart64_13.dll`, `cublas64_13.dll`, `cublasLt64_13.dll` live in `<CUDA_PATH>\bin\x64\`, **not** `<CUDA_PATH>\bin\` like CUDA 12. The installer adds `\bin` to system PATH but **not** `\bin\x64`. Symptom: a clean `--features cuda` build links fine but the resulting exe (or any test binary) fails immediately with `STATUS_DLL_NOT_FOUND` (0xc0000135).
+
+For builds and `cargo test`, the env block must include both:
+```bash
+export PATH="$CUDA_PATH/bin/x64:$CUDA_PATH/bin:$PATH"   # bash
+$env:PATH = "$env:CUDA_PATH\bin\x64;$env:CUDA_PATH\bin;$env:PATH"  # PowerShell
+```
+
+For shipping the release exe, copy the 3 runtime DLLs next to `sovereign.exe` (~485 MB) so end users don't need a CUDA toolkit install — only NVIDIA drivers.
 
 ### WSL2 / Linux
-- Source lives on NAS mount (`/mnt/nas/Current/Projets/03 - user-centered OS/`)
-- Copy to WSL native filesystem (`~/`) before building for performance
+- If your source lives on a network mount, copy to WSL native filesystem (`~/`) before building for performance
 - Always `rm -rf` target directory before `cp -r` (cp into existing dir nests instead of overwriting)
 - Rust linker is rust-lld — be aware of `--as-needed` link ordering issues
 - Limit parallel compilation to avoid OOM-crashing WSL: use `-j 4` (confirmed stable with 16 GB `.wslconfig`) or `-j 2` as fallback
@@ -130,47 +139,62 @@ Install via `winget` if missing:
 ### Windows (MSVC target)
 
 #### Build scripts (from PowerShell or cmd.exe)
-Three batch wrappers in the project root set `LIBCLANG_PATH`, `CMAKE`, and `PATH` automatically:
+Three batch wrappers in the project root set `LIBCLANG_PATH`, `CMAKE`, and `PATH` from environment variables (with sensible defaults that match `winget install` locations):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SOVEREIGN_LLVM_DIR` | `C:\Program Files\LLVM\bin` | Directory containing `libclang.dll` |
+| `SOVEREIGN_CMAKE_DIR` | `C:\Program Files\CMake\bin` | Directory containing `cmake.exe` |
+| `SOVEREIGN_TARGET_DIR` | _(unset → cargo's `./target`)_ | Override cargo target dir (e.g. for a fast SSD or network drive) |
+
+The wrappers:
 - `_build.bat` — runs `cargo <args>` (pass any cargo subcommand + flags)
 - `_check.bat` — runs `cargo check -p sovereign-app` with `-j 4`
 - `_run.bat` — runs the app
 
 **From a native Windows shell (PowerShell / cmd):**
 ```powershell
-# Build a specific crate
-_build.bat build -p sovereign-canvas --target-dir "Z:\cargo-target" -j 2
+# Build a specific crate (uses defaults)
+_build.bat build -p sovereign-skills -j 2
 
-# Build the whole app
-_build.bat build -p sovereign-app --target-dir "Z:\cargo-target" -j 2
+# Override target dir for this invocation
+$env:SOVEREIGN_TARGET_DIR = "D:\cargo-target"
+_build.bat build -p sovereign-app -j 2
 ```
 
 #### From bash (Claude Code / Git Bash)
 
 **Critical: Git Bash `link.exe` conflict.** Git Bash ships `/usr/bin/link.exe` (GNU hard-link utility) which shadows the MSVC `link.exe` (linker). You MUST prepend the MSVC bin directory to PATH, otherwise linking fails with `link: extra operand`.
 
-Full environment setup for bash:
+Full environment setup for bash (adjust version numbers and paths to match your installation):
 ```bash
-# MSVC toolchain paths (adjust version numbers if MSVC updates)
-export PATH="/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64:/c/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64:/c/Program Files/CMake/bin:$PATH:/c/Users/celin/.cargo/bin"
+# MSVC toolchain — replace 14.XX.XXXXX and 10.0.XXXXX.0 with the versions installed on your machine
+MSVC_VER="14.44.35207"
+WINSDK_VER="10.0.26100.0"
+MSVC_ROOT="/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/$MSVC_VER"
+WINSDK_ROOT="/c/Program Files (x86)/Windows Kits/10"
+
+export PATH="$MSVC_ROOT/bin/Hostx64/x64:$WINSDK_ROOT/bin/$WINSDK_VER/x64:/c/Program Files/CMake/bin:$PATH:$HOME/.cargo/bin"
 export LIBCLANG_PATH="C:/Program Files/LLVM/bin"
 export CMAKE="C:/Program Files/CMake/bin/cmake.exe"
-export LIB="C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/lib/x64;C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/um/x64;C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64"
-export INCLUDE="C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/include;C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/ucrt;C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um;C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/shared"
+export LIB="$(cygpath -w "$MSVC_ROOT")\\lib\\x64;$(cygpath -w "$WINSDK_ROOT")\\Lib\\$WINSDK_VER\\um\\x64;$(cygpath -w "$WINSDK_ROOT")\\Lib\\$WINSDK_VER\\ucrt\\x64"
+export INCLUDE="$(cygpath -w "$MSVC_ROOT")\\include;$(cygpath -w "$WINSDK_ROOT")\\Include\\$WINSDK_VER\\ucrt;$(cygpath -w "$WINSDK_ROOT")\\Include\\$WINSDK_VER\\um;$(cygpath -w "$WINSDK_ROOT")\\Include\\$WINSDK_VER\\shared"
 
-# Then run cargo as usual
-cargo.exe check -p sovereign-ai --no-default-features --target-dir "C:/cargo-target" -j 2
-cargo.exe build -p sovereign-app --target-dir "C:/cargo-target" -j 2
+# Then run cargo as usual (drop --target-dir to use cargo's default ./target)
+cargo.exe check -p sovereign-ai --no-default-features -j 2
+cargo.exe build -p sovereign-app -j 2
 ```
 
 #### Key notes
 - `sovereign-ai` default feature is `cuda` — disable on machines without CUDA toolkit: `--no-default-features`
-- Use `--target-dir` to control where build artifacts go. Use `"Z:/cargo-target"` if Z: drive (NAS) is available, otherwise `"C:/cargo-target"`. Forward slashes in bash, backslashes in cmd/PowerShell.
+- Set `CARGO_TARGET_DIR` (or `SOVEREIGN_TARGET_DIR` for the batch wrappers) if you want to redirect build artifacts to a faster drive or shared cache. Default is cargo's `./target`. Forward slashes in bash, backslashes in cmd/PowerShell.
 - Windows needs `/FORCE:MULTIPLE` linker flag (MSVC) because `llama-cpp-sys-2` and `whisper-rs-sys` both embed ggml — this is set in `.cargo/config.toml`
 - Before rebuilding after errors, kill stale processes and clean sovereign artifacts:
   ```powershell
   Get-Process -Name cargo,rustc -ErrorAction SilentlyContinue | Stop-Process -Force
-  Remove-Item '<target-dir>\debug\deps\libsovereign_*' -Force -ErrorAction SilentlyContinue
-  Remove-Item '<target-dir>\debug\.fingerprint\sovereign-*' -Recurse -Force -ErrorAction SilentlyContinue
+  $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { "target" }
+  Remove-Item "$target\debug\deps\libsovereign_*" -Force -ErrorAction SilentlyContinue
+  Remove-Item "$target\debug\.fingerprint\sovereign-*" -Recurse -Force -ErrorAction SilentlyContinue
   ```
 
 #### Running the Tauri app from bash
@@ -186,26 +210,26 @@ cargo test -j 4
 ### Windows (from PowerShell / cmd)
 ```powershell
 # All crates except sovereign-ai (which defaults to CUDA)
-_build.bat test --target-dir "Z:\cargo-target" -j 2
+_build.bat test -j 2
 
 # sovereign-ai specifically (skip CUDA)
-_build.bat test -p sovereign-ai --no-default-features --target-dir "Z:\cargo-target" -j 2
+_build.bat test -p sovereign-ai --no-default-features -j 2
 
 # Integration test (builds + runs the binary as subprocess)
-_build.bat test -p sovereign-app --test cli_integration --target-dir "Z:\cargo-target" -j 2
+_build.bat test -p sovereign-app --test cli_integration -j 2
 ```
 
 ### Windows (from bash — Claude Code / Git Bash)
 Set the full environment from the bash section above, then:
 ```bash
 # sovereign-ai (skip CUDA)
-cargo.exe test -p sovereign-ai --no-default-features --target-dir "C:/cargo-target" -j 2
+cargo.exe test -p sovereign-ai --no-default-features -j 2
 
 # Single crate
-cargo.exe test -p sovereign-canvas --target-dir "C:/cargo-target" -j 2
+cargo.exe test -p sovereign-skills -j 2
 
 # All crates except sovereign-ai
-cargo.exe test --target-dir "C:/cargo-target" -j 2
+cargo.exe test -j 2
 ```
 
 ### Key gotchas
@@ -217,53 +241,13 @@ cargo.exe test --target-dir "C:/cargo-target" -j 2
 - When a problem can be solved either by installing a missing system package or by changing the code, **ask the user** which approach they prefer before proceeding
 - Never run `sudo` commands to install packages without explicit user approval
 
-## Git & NAS Push/Merge Workflow
+## Git Workflow
 
 **VSCode `git.untrackedChanges` is set to `hidden`** because SurrealDB `.db` files (10k+) flood source control despite being in `.gitignore`. This means new files won't appear in the Source Control panel — you must `git add <file>` explicitly.
 
-The repo on the NAS is at `\\nas\home\Current\Projets\03 - user-centered OS` (bare repo).
+Standard `git push` / `git pull` against whichever remotes are configured locally. Machine-specific remote setup (e.g. private bare repos on a network share, drive mounts) is intentionally kept out of this file — see `CLAUDE.local.md` (gitignored) if you need to record per-machine git workflow notes.
 
-### Windows (from bash — Claude Code / Git Bash)
-
-Remote URL uses UNC path (already configured):
-```bash
-# Remote should be set to:
-git remote set-url origin '//nas/home/Current/Projets/03 - user-centered OS'
-
-# Safe directory exceptions (one-time, already configured):
-git config --global --add safe.directory '//nas/home/Current/Projets/03 - user-centered OS'
-git config --global --add safe.directory '//nas/home/Current/Projets/03 - user-centered OS/.git'
-
-# Push / pull
-git push origin main
-git pull origin main
-```
-
-### GitHub
-
-Public repo: `https://github.com/clenoble/sovereign.git` (remote name: `github`)
-```bash
-git push github main
-git push github --tags
-```
-
-### WSL2 / Linux
-
-WSL cannot use UNC paths — mount the NAS first:
-```bash
-# 1. Mount the NAS (if not already mounted — requires sudo, ask user)
-sudo mount -t drvfs 'Z:' /mnt/nas
-
-# 2. Ensure git trusts the NAS path (one-time)
-git config --global --add safe.directory '/mnt/nas/03 - user-centered OS'
-git config --global --add safe.directory '/mnt/nas/03 - user-centered OS/.git'
-
-# 3. Set remote to WSL-accessible path
-git remote set-url origin '/mnt/nas/03 - user-centered OS'
-
-# 4. Push
-git push origin main
-```
+The public mirror is on GitHub: `https://github.com/clenoble/sovereign.git`.
 
 ## Code Style
 - Rust: edition 2021, prefer safe code, minimize unsafe blocks
@@ -272,7 +256,7 @@ git push origin main
 
 ## sovereign-app Module Structure
 The binary crate (`sovereign-app`) is split into focused modules:
-- `cli.rs` — Clap CLI struct and Commands enum. **Subcommand is optional** — running `sovereign.exe` with no args defaults to `run` (launches GUI).
+- `cli.rs` — Clap CLI struct and Commands enum. **Subcommand is optional** — running `sovereign.exe` with no args defaults to `run` (launches the Tauri app).
 - `commands.rs` — Async CLI handler functions (create/get/list/update/delete for docs, threads, relationships, commits, contacts, conversations)
 - `tauri_commands.rs` — 40+ Tauri `invoke()` command handlers (chat, documents, threads, contacts, settings, browser, suggestions, reliability)
 - `tauri_events.rs` — `OrchestratorEvent` → Tauri `emit()` bridge with typed payloads
@@ -280,4 +264,4 @@ The binary crate (`sovereign-app`) is split into focused modules:
 - `web.rs` — Web content fetching via `reqwest` + `readability` text extraction (8KB truncation for LLM, 12KB for display)
 - `setup.rs` — DB creation, crypto initialization, orchestrator callback wiring
 - `seed.rs` — Sample data seeding on first launch (DB data + user profile + session log history)
-- `main.rs` — Entry point: CLI dispatch + GUI bootstrap (`run_gui`) + idle-watcher for background memory consolidation
+- `main.rs` — Entry point: CLI dispatch + Tauri bootstrap (`run_tauri`: orchestrator, crypto, P2P, voice pipeline, session-log key, idle-watcher for background memory consolidation)

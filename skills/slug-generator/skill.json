@@ -1,0 +1,9 @@
+{
+    "name": "Slug Generator",
+    "version": "0.0.1",
+    "description": "Generate URL-friendly slugs from document title (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["read_document"],
+    "file_types": []
+}

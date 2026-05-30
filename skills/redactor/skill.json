@@ -1,0 +1,9 @@
+{
+    "name": "Redactor",
+    "version": "0.1.0",
+    "description": "Replace detected PII (emails, phones, SSNs, credit cards, IPs) with [REDACTED]",
+    "author": "Sovereign GE",
+    "skill_type": "core",
+    "capabilities": ["read_document", "write_document"],
+    "file_types": ["md", "txt"]
+}

@@ -6,8 +6,6 @@ members = [
     "crates/sovereign-db",
     "crates/sovereign-crypto",
     "crates/sovereign-skills",
-    "crates/sovereign-ui",
-    "crates/sovereign-canvas",
     "crates/sovereign-ai",
     "crates/sovereign-p2p",
     "crates/sovereign-comms",
@@ -45,8 +43,6 @@ chrono = { version = "0.4", features = ["serde"] }
 sovereign-core = { path = "crates/sovereign-core" }
 sovereign-db = { path = "crates/sovereign-db" }
 sovereign-skills = { path = "crates/sovereign-skills" }
-sovereign-ui = { path = "crates/sovereign-ui" }
-sovereign-canvas = { path = "crates/sovereign-canvas" }
 sovereign-ai = { path = "crates/sovereign-ai", default-features = false }
 sovereign-crypto = { path = "crates/sovereign-crypto" }
 sovereign-p2p = { path = "crates/sovereign-p2p" }
@@ -63,12 +59,17 @@ genpdf = "0.2"
 # PDF text extraction
 pdf-extract = "0.10"
 
-# UI framework
-iced = { version = "0.14", features = ["tokio", "wgpu", "image", "markdown", "canvas"] }
-open = "5.3"
-bytemuck = { version = "1.0", features = ["derive"] }
-wgpu = "24"
-rfd = "0.17"
+# Markdown parsing / rendering (used by HTML Export, Plaintext Export)
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+
+# Regex (used by Link Checker, PII Detector)
+regex = "1.12"
+
+# YAML parsing (maintained fork of serde_yaml; used by JSON/YAML Formatter)
+serde_yml = "0.0.12"
+
+# CSV parsing (used by CSV → Markdown Table)
+csv = "1.4"
 
 # WASM plugin runtime
 wasmtime = { version = "42", features = ["component-model"] }
@@ -83,7 +84,7 @@ uuid = { version = "1.20", features = ["v4"] }
 # RNG
 rand = "0.10"
 
-# Tauri (optional — UI migration)
+# Tauri (Svelte 5 web UI)
 tauri = { version = "2.10", features = ["devtools", "unstable"] }
 tauri-build = { version = "2.5", features = [] }
 

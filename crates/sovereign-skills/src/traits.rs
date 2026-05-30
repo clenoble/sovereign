@@ -42,6 +42,40 @@ pub trait SkillDbAccess: Send + Sync {
     fn list_documents(&self, thread_id: Option<&str>) -> anyhow::Result<Vec<(String, String)>>;
     /// Create a new document, returns the document ID.
     fn create_document(&self, title: &str, thread_id: &str, content: &str) -> anyhow::Result<String>;
+
+    /// List outgoing relationships from a document.
+    /// Returns (relation_type, target_id) for each edge where this document is the source.
+    fn list_relationships(&self, doc_id: &str) -> anyhow::Result<Vec<(String, String)>>;
+
+    /// List backlinks pointing to a document.
+    /// Returns (source_id, relation_type) for each edge where this document is the target.
+    fn list_backlinks(&self, doc_id: &str) -> anyhow::Result<Vec<(String, String)>>;
+
+    /// List all documents with their incoming and outgoing link counts.
+    /// Returns (id, title, in_degree, out_degree). Used by Orphan Finder
+    /// to identify documents nothing links to (in_degree == 0).
+    fn list_all_documents_with_link_counts(
+        &self,
+    ) -> anyhow::Result<Vec<(String, String, u32, u32)>>;
+
+    /// Find a thread by name (case-insensitive substring match) and return
+    /// its id. If no match is found, create a new thread with the given
+    /// name and description and return its id. Used by skills that target
+    /// a well-known thread (e.g. Daily Journal -> "Journal").
+    fn find_or_create_thread(
+        &self,
+        name: &str,
+        description: &str,
+    ) -> anyhow::Result<String>;
+}
+
+/// Narrow LLM interface exposed to skills.
+/// Skills never see the orchestrator — only this single inference call.
+pub trait SkillLlmAccess: Send + Sync {
+    /// Run inference against the currently loaded model.
+    /// `max_tokens` caps the response length. Returns the generated text
+    /// stripped of any model-specific control tokens.
+    fn generate(&self, prompt: &str, max_tokens: u32) -> anyhow::Result<String>;
 }
 
 /// Resources available to a skill during execution.
@@ -49,6 +83,7 @@ pub trait SkillDbAccess: Send + Sync {
 pub struct SkillContext {
     pub granted: HashSet<Capability>,
     pub db: Option<Arc<dyn SkillDbAccess>>,
+    pub llm: Option<Arc<dyn SkillLlmAccess>>,
 }
 
 /// Trait for core skills that are compiled into the Sovereign GE binary.
@@ -149,6 +184,7 @@ mod tests {
         let ctx = SkillContext {
             granted: skill.required_capabilities().into_iter().collect(),
             db: None,
+            llm: None,
         };
         let result = skill.execute("save", &doc, "", &ctx).unwrap();
         match result {

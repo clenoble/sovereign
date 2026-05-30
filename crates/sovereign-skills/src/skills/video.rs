@@ -104,21 +104,10 @@ impl CoreSkill for VideoSkill {
 mod tests {
     use super::*;
     use sovereign_core::content::ContentFields;
-
-    fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None }
-    }
+    use crate::test_util::{dummy_ctx, make_doc as shared_make_doc};
 
     fn make_doc() -> SkillDocument {
-        SkillDocument {
-            id: "document:test".into(),
-            title: "Test".into(),
-            content: ContentFields {
-                body: "text".into(),
-                images: vec![],
-                videos: vec![],
-            },
-        }
+        shared_make_doc("text")
     }
 
     fn make_doc_with_video() -> SkillDocument {

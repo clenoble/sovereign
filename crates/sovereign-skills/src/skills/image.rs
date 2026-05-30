@@ -68,10 +68,7 @@ impl CoreSkill for ImageSkill {
 mod tests {
     use super::*;
     use sovereign_core::content::ContentFields;
-
-    fn dummy_ctx() -> SkillContext {
-        SkillContext { granted: std::collections::HashSet::new(), db: None }
-    }
+    use crate::test_util::dummy_ctx;
 
     fn make_doc() -> SkillDocument {
         SkillDocument {

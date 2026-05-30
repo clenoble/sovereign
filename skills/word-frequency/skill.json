@@ -1,0 +1,9 @@
+{
+    "name": "Word Frequency",
+    "version": "0.0.1",
+    "description": "Corpus-wide term frequency analysis across all documents (spec only — no implementation)",
+    "author": "Community (unimplemented)",
+    "skill_type": "community",
+    "capabilities": ["read_all_documents"],
+    "file_types": []
+}

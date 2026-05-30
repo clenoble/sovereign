@@ -23,6 +23,9 @@ pub struct AppState {
     pub config: AppConfig,
     pub skill_registry: Arc<sovereign_skills::SkillRegistry>,
     pub skill_db: Arc<dyn sovereign_skills::SkillDbAccess>,
+    /// LLM access for skills that declare `Capability::LlmInference`.
+    /// `None` when the orchestrator failed to initialize (model load error).
+    pub skill_llm: Option<Arc<dyn sovereign_skills::SkillLlmAccess>>,
     pub decision_tx: tokio::sync::mpsc::Sender<ActionDecision>,
     pub feedback_tx: tokio::sync::mpsc::Sender<FeedbackEvent>,
     /// Sender end for orchestrator events (for forwarding to Tauri events).
@@ -35,4 +38,29 @@ pub struct AppState {
     pub model_assignments: Mutex<ModelAssignments>,
     /// User profile directory path (~/.sovereign).
     pub profile_dir: std::path::PathBuf,
+    /// Device key for PII vault encryption. None until the user completes
+    /// onboarding or logs in (post-login the lock holds Some). Required
+    /// for PII ingest on document create / import / save.
+    ///
+    /// Wrapped in tokio::sync::RwLock so it can be installed by Tauri
+    /// commands (validate_password, complete_onboarding) after AppState
+    /// is constructed. Reads return a snapshot Arc clone so the guard
+    /// is dropped immediately.
+    #[cfg(feature = "encryption")]
+    pub device_key: tokio::sync::RwLock<Option<Arc<sovereign_crypto::device_key::DeviceKey>>>,
+}
+
+#[cfg(feature = "encryption")]
+impl AppState {
+    /// Snapshot the device key. Cheap (one Arc::clone) and the read
+    /// guard is dropped before returning, so callers can hold the
+    /// result without blocking other readers / writers.
+    pub async fn device_key(&self) -> Option<Arc<sovereign_crypto::device_key::DeviceKey>> {
+        self.device_key.read().await.clone()
+    }
+
+    /// Install a freshly-derived device key (called post-authentication).
+    pub async fn set_device_key(&self, key: Arc<sovereign_crypto::device_key::DeviceKey>) {
+        *self.device_key.write().await = Some(key);
+    }
 }

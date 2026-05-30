@@ -6,7 +6,7 @@ An experimental local-first graphical environment with on-device AI, end-to-end 
 
 Sovereign explores what personal computing looks like when nothing leaves your machine — no cloud accounts, no telemetry, no external servers. AI runs locally via quantized Qwen models (2.5 and 3.5) through llama.cpp. Documents are encrypted at rest with per-document keys. Devices sync directly over libp2p.
 
-This is a prototype. Built in Rust. 10 crates. ~18K lines. Co-developed with [Claude](https://claude.ai) by Anthropic.
+This is a prototype. Built in Rust. 8 crates plus a Svelte 5 + Tauri 2 frontend (the only supported UI as of [v0.0.3](RELEASE_NOTES_v0.0.3.md)). Co-developed with [Claude](https://claude.ai) by Anthropic.
 
 ## What it explores
 
@@ -18,12 +18,12 @@ This is a prototype. Built in Rust. 10 crates. ~18K lines. Co-developed with [Cl
 - **Encryption & social recovery** — XChaCha20-Poly1305 with per-document keys. Zero plaintext on disk. Shamir secret sharing splits your recovery key across trusted guardians — 3 of 5 can reconstruct it.
 - **Peer-to-peer sync** — Device pairing over libp2p. Encrypted manifests ensure even the network can't see your data.
 - **Unified communications** — Email, Signal, WhatsApp — organized by person, not by app. Conversations stay local.
-- **Content skills** — Composable tools instead of monolithic apps. Markdown editor, PDF export, search, image handling, file import. Third-party WASM skill plugins via the Component Model.
+- **Content skills** — Composable tools instead of monolithic apps. ~30 built-in skills as of v0.0.3: markdown editor, PDF/HTML/plaintext export, search, find-replace, image handling, file import, outline extractor, link checker, PII detector, redactor, table of contents, JSON/YAML formatter, CSV → markdown, sort lists, case converter, backlink map, orphan finder, daily journal, thread summary, plus 20 community spec-as-seed skills. Third-party WASM skill plugins via the Component Model.
 - **Voice pipeline** — Wake word, Whisper speech-to-text, Piper TTS (optional).
 
 ## Architecture
 
-Rust workspace with 10 crates:
+Rust workspace with 8 crates:
 
 | Crate | Role |
 |---|---|
@@ -31,14 +31,12 @@ Rust workspace with 10 crates:
 | `sovereign-db` | SurrealDB graph storage (in-memory and RocksDB persistent) |
 | `sovereign-crypto` | XChaCha20-Poly1305, key hierarchy, Shamir secret sharing, guardian recovery |
 | `sovereign-ai` | LLM orchestrator, intent classification, chat agent loop, tool calling, trust, voice, reliability assessment, memory consolidation |
-| `sovereign-ui` | Iced 0.14 GUI — taskbar, panels, chat, search, theming (legacy) |
-| `sovereign-canvas` | Infinite canvas — thread lanes, document cards, relationship arrows, minimap (legacy) |
-| `sovereign-skills` | Skill registry — markdown editor, search, image, PDF export, file import |
+| `sovereign-skills` | Skill registry — ~30 built-in skills covering read-only, read+write, and cross-document operations (markdown editor, exports, find-replace, outline / link / PII / readability scanners, redactor, ToC, formatters, backlink map, orphan finder, daily journal, thread summary, community seeds) |
 | `sovereign-p2p` | libp2p networking, device pairing, encrypted sync |
 | `sovereign-comms` | Unified communications — email (IMAP/SMTP), Signal, WhatsApp |
-| `sovereign-app` | Binary entry point — CLI dispatch, GUI bootstrap, embedded browser, Tauri commands |
+| `sovereign-app` | Binary entry point — CLI dispatch, Tauri bootstrap, embedded browser, Tauri commands |
 
-Plus a **Tauri 2.0 + Svelte 5 frontend** (`frontend/`) — the active UI, built with SvelteKit 2, Vite, and Tauri IPC. Includes timeline canvas, AI chat panel, embedded browser, suggestion panel, onboarding wizard, settings, and trust dashboard.
+The sole UI is a **Tauri 2.10 + Svelte 5 frontend** (`frontend/`), built with SvelteKit 2.50 and Vite 7.3 over Tauri IPC. Includes timeline canvas, AI chat panel, embedded browser, suggestion panel, onboarding wizard, settings, and trust dashboard. The previous Iced-based `sovereign-ui` and `sovereign-canvas` crates were retired in v0.0.3.
 
 ## Getting started
 
@@ -48,7 +46,7 @@ Plus a **Tauri 2.0 + Svelte 5 frontend** (`frontend/`) — the active UI, built 
 
 **Windows additionally:** Visual Studio Build Tools 2022 (C++ workload), [CMake](https://cmake.org/), [LLVM](https://llvm.org/) (for `libclang.dll`)
 
-**Optional:** CUDA toolkit for GPU-accelerated inference
+**Optional:** CUDA toolkit for GPU-accelerated inference. **Note for CUDA 13:** the runtime DLLs (`cudart64_13.dll`, `cublas64_13.dll`, `cublasLt64_13.dll`) live in `<CUDA_PATH>\bin\x64\` rather than `\bin\`, and the installer doesn't add the `\bin\x64` directory to `PATH`. Either copy the three DLLs next to `sovereign.exe` or prepend `\bin\x64` to `PATH` before launch.
 
 ### 1. Download models
 
@@ -70,7 +68,7 @@ huggingface-cli download Qwen/Qwen2.5-7B-Instruct-GGUF \
 
 Filenames must match `config/default.toml`. Qwen 3.5 models are auto-detected from the GGUF filename and use optimized sampling parameters with `/no_think` thinking-mode suppression.
 
-### 2. Build & run (Tauri UI — recommended)
+### 2. Build & run
 
 ```bash
 # Install frontend dependencies
@@ -78,23 +76,21 @@ cd frontend && npm install && cd ..
 
 # Build frontend + Rust backend together
 cd frontend && npm run build && cd ..
-cargo build -p sovereign-app --no-default-features --features tauri-ui,encrypted-log -j 4
+cargo build -p sovereign-app --features encrypted-log -j 4
 
 # Or use Tauri CLI for dev mode (hot-reload)
 cd frontend && npm run tauri dev
 ```
 
-### 2b. Build & run (legacy Iced UI)
+On Windows, set `LIBCLANG_PATH` (defaults to `$env:ProgramFiles\LLVM\bin`) before building if you installed LLVM elsewhere. The `_build.bat` and `_release_build.bat` wrappers in the repo root configure the MSVC + LLVM + CUDA environment for you:
 
-```bash
-# Linux / WSL2
-cargo build --release -j 4
-cargo run --release -- run
+```cmd
+:: Debug build with default features
+_build.bat build -p sovereign-app -j 4
 
-# Windows (PowerShell)
-$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-cargo build --release -p sovereign-app
-.\target\release\sovereign.exe run
+:: Full-feature CUDA release build
+:: (cuda + encryption + p2p + comms-email + web-browse)
+_release_build.bat
 ```
 
 On first launch, sample data is seeded automatically.
@@ -107,8 +103,6 @@ Settings live in `config/default.toml`. Override at runtime with `sovereign --co
 
 | Flag | What it enables |
 |---|---|
-| `tauri-ui` | Tauri 2.0 + Svelte 5 web UI (active frontend) |
-| `iced-ui` | Iced 0.14 native GUI (legacy, default) |
 | `cuda` | GPU-accelerated LLM inference |
 | `voice-stt` | Wake word detection + Whisper STT |
 | `encryption` | Document encryption, guardian recovery |
@@ -122,15 +116,23 @@ Settings live in `config/default.toml`. Override at runtime with `sovereign --co
 ## Tests
 
 ```bash
+# Backend
 cargo test -j 4
 
 # sovereign-ai without CUDA
 cargo test -p sovereign-ai --no-default-features -j 4
+
+# Frontend (Vitest + happy-dom; covers stores and a growing set of components)
+cd frontend && npm test
 ```
 
 ## Status
 
-This is an experimental prototype. Try it, break it, contribute. See [open issues](https://github.com/clenoble/sovereign/issues) for good starting points.
+This is an experimental prototype. Try it, break it, contribute. The most approachable contribution path is writing a new skill — see [doc/writing-skills.md](doc/writing-skills.md) for the WASM Component Model guide, sandbox model, and a worked example.
+
+**Latest release:** [v0.0.3](RELEASE_NOTES_v0.0.3.md) — skills system, embedded browser with Qwen-driven reliability assessment, Qwen 3.5 support, AI-suggested document links, full-feature CUDA release build, and the Iced UI retirement.
+
+**On the `pii-management-dashboard` branch (targeted for v0.0.4):** PII detection pipeline, vault, signup capture, autofill, cookies tab, share ledger, and a three-column dashboard panel.
 
 Ideas we haven't built yet: federation, plugin marketplace, mobile companion, collaborative editing, rich document format (WYSIWYG), semantic search via embeddings.
 
