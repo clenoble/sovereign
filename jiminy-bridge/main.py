@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -78,6 +79,15 @@ library: Optional[EmotionLibrary] = None
 tts_engine: Optional[PiperTts] = None
 _idle_task: Optional[asyncio.Task] = None
 
+# Media backend + sim mode, resolved from env / CLI in main() before startup.
+# In headless --sim there is no physical camera, so the "default" backend (which
+# opens one via OpenCV) hangs ~30s and aborts the whole connection. Override with
+# --media-backend / JIMINY_MEDIA_BACKEND; --sim picks a camera-free default.
+# Values: default | default_no_video | no_media | gstreamer |
+# gstreamer_no_video | webrtc.
+media_backend: str = os.environ.get("JIMINY_MEDIA_BACKEND", "default")
+use_sim: bool = False
+
 
 # --- Lifespan ---
 
@@ -91,7 +101,11 @@ async def lifespan(app: FastAPI):
     # Start daemon first: reachy-mini-daemon        (USB hardware)
     #                   or reachy-mini-daemon --sim  (MuJoCo simulation)
     try:
-        mini = ReachyMini(media_backend="default")
+        logger.info(
+            "Connecting to Reachy Mini (media_backend=%s, sim=%s)...",
+            media_backend, use_sim,
+        )
+        mini = ReachyMini(media_backend=media_backend, use_sim=use_sim)
         mini.__enter__()
         logger.info("Connected to Reachy Mini")
     except Exception as e:
@@ -320,18 +334,37 @@ async def camera_frame(quality: int = 70, max_width: int = 640):
 
 
 def main():
+    global media_backend, use_sim
     parser = argparse.ArgumentParser(description="Jiminy Bridge for Sovereign OS")
     parser.add_argument("--port", type=int, default=9100, help="Server port (default: 9100)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Bind address")
-    parser.add_argument("--sim", action="store_true", help="Force simulation mode")
+    parser.add_argument("--sim", action="store_true",
+                        help="Connect to a simulation daemon (camera-free media default)")
+    parser.add_argument(
+        "--media-backend",
+        choices=["default", "default_no_video", "no_media",
+                 "gstreamer", "gstreamer_no_video", "webrtc"],
+        default=None,
+        help="Reachy Mini media backend. Default: env JIMINY_MEDIA_BACKEND or "
+             "'default'; --sim defaults to 'default_no_video' (headless sim has "
+             "no camera).",
+    )
     args = parser.parse_args()
+
+    use_sim = args.sim
+    if args.media_backend:
+        media_backend = args.media_backend
+    elif args.sim and "JIMINY_MEDIA_BACKEND" not in os.environ:
+        # Headless sim exposes no camera; keep audio, skip video.
+        media_backend = "default_no_video"
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
 
-    logger.info("Starting Jiminy bridge on %s:%d", args.host, args.port)
+    logger.info("Starting Jiminy bridge on %s:%d (media_backend=%s, sim=%s)",
+                args.host, args.port, media_backend, use_sim)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
