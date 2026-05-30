@@ -20,6 +20,7 @@ env/
 *.swp
 *.swo
 *~
+*.code-workspace
 
 # Local-only Claude / dev notes (machine-specific paths, NAS workflows, etc.)
 CLAUDE.local.md
