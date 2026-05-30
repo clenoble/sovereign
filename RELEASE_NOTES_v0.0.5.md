@@ -123,6 +123,13 @@ require the CUDA/CMake/NDK toolchain and are validated in the WSL2/CI build.
   (`is_ancestor`) is a conservative stub.
 - Android keychain integration for key storage is not yet wired (keys live in
   the app's data dir for now).
+- **Signal channel (`comms-signal`) is not included in mobile builds.** Presage's
+  `Manager::receive_messages()` returns a `!Send` stream (holds `ThreadRng`),
+  which conflicts with `CommunicationChannel`'s `Send + Sync` `#[async_trait]`
+  contract. A `LocalSet`-backed wrapper that runs presage on a single thread
+  and proxies commands over an mpsc channel is needed before re-enabling it.
+  Tracked for v0.0.6. The `signal.rs` channel code was updated to the current
+  presage 0.7.0 API in this release as preparation.
 
 ## Build / packaging
 
