@@ -518,6 +518,27 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 tracing::info!("Jiminy camera poller started");
             }
 
+            // Jiminy vision: poll the vision sidecar for gestures + scene; react
+            // to shush by POSTing /stop to the jiminy-bridge (speech barge-in).
+            #[cfg(feature = "vision")]
+            {
+                let vision = sovereign_ai::jiminy_vision::shared_vision();
+                let vision_url = std::env::var("JIMINY_VISION_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:9101".into());
+                let bridge_url = std::env::var("JIMINY_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:9100".into());
+                let _vision_handle = sovereign_ai::jiminy_vision::spawn_poller(
+                    &vision_url,
+                    vision,
+                    Some(bridge_url.clone()),
+                    |_g| {},
+                    1.5,
+                );
+                tracing::info!(
+                    "Jiminy vision poller started ({vision_url}; reactions -> {bridge_url})"
+                );
+            }
+
             tauri_events::spawn_event_forwarder(app.handle().clone(), orch_rx);
 
             // Voice-event forwarder: drains the voice pipeline rx and emits

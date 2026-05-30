@@ -78,13 +78,22 @@ fn to_state(dto: &VisionStateDto) -> VisionState {
     }
 }
 
+/// Whether a detected gesture should stop the robot mid-speech (barge-in).
+/// Currently `shush` (finger-to-lips); extend as the gesture vocabulary grows.
+pub fn gesture_stops_speech(gesture: &str) -> bool {
+    matches!(gesture, "shush")
+}
+
 /// Spawn a background thread that polls `GET /vision/state` at ~5 Hz, updates
-/// `vision`, and calls `on_gesture(name)` once per fresh, distinct gesture.
+/// `vision`, calls `on_gesture(name)` once per fresh, distinct gesture, and —
+/// when `bridge_url` is set — POSTs `/stop` to the jiminy-bridge sidecar for any
+/// gesture that should halt speech (see `gesture_stops_speech`, e.g. shush).
 ///
 /// `fresh_max` is the maximum gesture age (seconds) still considered actionable.
 pub fn spawn_poller(
     base_url: &str,
     vision: SharedVision,
+    bridge_url: Option<String>,
     on_gesture: impl Fn(String) + Send + 'static,
     fresh_max: f64,
 ) -> std::thread::JoinHandle<()> {
@@ -123,6 +132,16 @@ pub fn spawn_poller(
                                     fresh_max,
                                 ) {
                                     on_gesture(g.clone());
+                                    // Reaction: shush -> stop the robot mid-speech.
+                                    if gesture_stops_speech(&g) {
+                                        if let Some(ref burl) = bridge_url {
+                                            let _ = client
+                                                .post(format!("{}/stop", burl.trim_end_matches('/')))
+                                                .send()
+                                                .await;
+                                            tracing::info!("Vision '{g}' -> stop speaking");
+                                        }
+                                    }
                                     last_fired = Some(g);
                                 }
                                 if let Ok(mut v) = vision.lock() {
@@ -163,6 +182,14 @@ mod tests {
     fn shared_vision_starts_empty() {
         let v = shared_vision();
         assert_eq!(*v.lock().unwrap(), VisionState::default());
+    }
+
+    #[test]
+    fn shush_stops_speech_others_do_not() {
+        assert!(gesture_stops_speech("shush"));
+        assert!(!gesture_stops_speech("open_palm"));
+        assert!(!gesture_stops_speech("point"));
+        assert!(!gesture_stops_speech(""));
     }
 
     #[test]
