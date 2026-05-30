@@ -58,3 +58,7 @@ models/
 frontend/node_modules/
 frontend/build/
 frontend/.svelte-kit/
+
+# RAG chatbot index (deployed to HF Space, not tracked in git)
+sovereign-chatbot/chunks.json
+sovereign-chatbot/embeddings.npy
