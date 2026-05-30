@@ -2,12 +2,15 @@
 //! Deduplicates conversation/contact management logic common to email, signal, whatsapp.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+
 use sovereign_db::schema::{
     ChannelAddress, ChannelType, Contact, Conversation,
 };
 use sovereign_db::GraphDB;
 
 use crate::error::CommsError;
+use crate::pii_hook::ContactIngestHook;
 
 /// Get or create a conversation, using a local cache to avoid repeated DB loads.
 pub async fn get_or_create_conversation(
@@ -27,12 +30,17 @@ pub async fn get_or_create_conversation(
     Ok(created)
 }
 
-/// Resolve an address (email, phone, etc.) to a contact ID, creating a stub contact if needed.
+/// Resolve an address (email, phone, etc.) to a contact ID, creating a
+/// stub contact if needed.
+///
+/// `pii_hook` (when supplied) is invoked exactly once on freshly-created
+/// contacts — not on already-existing ones returned via the address index.
 pub async fn resolve_contact_id(
     db: &dyn GraphDB,
     channel: ChannelType,
     address: &str,
     display_name: Option<&str>,
+    pii_hook: Option<&Arc<dyn ContactIngestHook>>,
 ) -> Result<String, CommsError> {
     if let Some(contact) = db.find_contact_by_address(address).await? {
         return Ok(contact.id_string().unwrap_or_default());
@@ -49,5 +57,8 @@ pub async fn resolve_contact_id(
         is_primary: true,
     });
     let created = db.create_contact(contact).await?;
+    if let Some(hook) = pii_hook {
+        hook.after_contact_created(&created).await;
+    }
     Ok(created.id_string().unwrap_or_default())
 }

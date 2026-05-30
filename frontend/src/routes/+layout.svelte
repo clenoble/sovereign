@@ -15,7 +15,13 @@
 	import ModelPanel from '$lib/components/ModelPanel.svelte';
 	import InboxPanel from '$lib/components/InboxPanel.svelte';
 	import ContactPanel from '$lib/components/ContactPanel.svelte';
+	import PiiDashboardPanel from '$lib/components/PiiDashboardPanel.svelte';
+	import SignupCapturePrompt from '$lib/components/SignupCapturePrompt.svelte';
+	import AutofillPrompt from '$lib/components/AutofillPrompt.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
+	import { piiState } from '$lib/stores/pii.svelte';
+	import { listen } from '@tauri-apps/api/event';
+	import type { BrowserFormExtraction } from '$lib/api/commands';
 	import LoginScreen from '$lib/components/LoginScreen.svelte';
 	import OnboardingWizard from '$lib/components/OnboardingWizard.svelte';
 	import SettingsPanel from '$lib/components/SettingsPanel.svelte';
@@ -70,6 +76,10 @@
 				if (app.inboxVisible) { app.inboxVisible = false; return; }
 				if (app.contactPanelState) { app.contactPanelState = null; return; }
 				if (app.skillsPanelVisible) { app.skillsPanelVisible = false; return; }
+				// PII dashboard's Escape is handled by its focusTrap when
+				// focus is inside the panel; this fallback covers the case
+				// where focus escaped the panel (e.g. clicked outside).
+				if (app.piiDashboardVisible) { app.piiDashboardVisible = false; return; }
 				return;
 			}
 
@@ -94,11 +104,34 @@
 			if (e.key === 'i' || e.key === 'I') {
 				app.inboxVisible = !app.inboxVisible;
 			}
+
+			// P: toggle PII dashboard
+			if (e.key === 'p' || e.key === 'P') {
+				app.piiDashboardVisible = !app.piiDashboardVisible;
+			}
 		};
 		window.addEventListener('keydown', handleKeydown);
 
+		// Listen for the browser-form-extracted event triggered by
+		// the BrowserPanel's "Save credentials" / "Fill from vault"
+		// buttons. The dispatch is by the autofillRequested flag —
+		// both buttons share the same Tauri command + event but the
+		// flag tells us which dialog to open.
+		const unlistenSignup = await listen<BrowserFormExtraction>(
+			'browser-form-extracted',
+			(event) => {
+				if (piiState.autofillRequested) {
+					piiState.autofillExtraction = event.payload;
+					piiState.autofillRequested = false;
+				} else {
+					piiState.signupCapture = event.payload;
+				}
+			}
+		);
+
 		return () => {
 			unlisten();
+			unlistenSignup();
 			stopNowTimer();
 			window.removeEventListener('keydown', handleKeydown);
 		};
@@ -128,6 +161,17 @@
 		<ModelPanel />
 		<InboxPanel />
 		<ContactPanel />
+		<PiiDashboardPanel />
+		<SignupCapturePrompt
+			open={piiState.signupCapture !== null}
+			extraction={piiState.signupCapture}
+			onClose={() => (piiState.signupCapture = null)}
+		/>
+		<AutofillPrompt
+			open={piiState.autofillExtraction !== null}
+			extraction={piiState.autofillExtraction}
+			onClose={() => (piiState.autofillExtraction = null)}
+		/>
 		<ContextMenu />
 		<SettingsPanel />
 		<Taskbar />

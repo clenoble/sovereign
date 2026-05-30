@@ -3,9 +3,9 @@ use chrono::{DateTime, Utc};
 
 use crate::error::DbResult;
 use crate::schema::{
-    ChannelType, Commit, Contact, Conversation, Document, Message, Milestone,
-    ReadStatus, RelatedTo, RelationType, SuggestedLink, SuggestionSource,
-    SuggestionStatus, Thread,
+    ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, ShareRecord, SourceRef,
+    SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
 
 /// Core database abstraction for the Sovereign GE document graph.
@@ -300,4 +300,137 @@ pub trait GraphDB: Send + Sync {
         conversation_id: &str,
         thread_id: &str,
     ) -> DbResult<Conversation>;
+
+    // -- Entities (PII management) ---
+
+    /// Create a new business / personal entity. Used by the PII pipeline
+    /// to write disambiguator-proposed entities (`is_owned == false`)
+    /// and by the dashboard's "new entity" flow (`is_owned == true`).
+    async fn create_entity(&self, entity: Entity) -> DbResult<Entity>;
+
+    /// List all entities (excludes soft-deleted), ordered by name.
+    async fn list_entities(&self) -> DbResult<Vec<Entity>>;
+
+    // -- PII Records ---
+
+    /// Insert a new PiiRecord. Discovered findings (`stored_secret == false`)
+    /// arrive here from the ingest pipeline; vault entries
+    /// (`stored_secret == true`) arrive from the dashboard "new secret" flow.
+    async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord>;
+
+    /// Fetch a `PiiRecord` by ID. The returned record's `value_encrypted`
+    /// is still ciphertext — callers decrypt via `EncryptedBlob` and the
+    /// `DeviceKey`. Used by the resolution API (step 5) when expanding
+    /// `[pii:<record_id>]` tokens.
+    async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord>;
+
+    /// List PiiRecords with optional filters. Excludes soft-deleted
+    /// records. Order: most-recently-discovered first.
+    ///
+    /// All filter args are AND-combined: passing `entity_id = Some(...)`,
+    /// `review_state = Some(Confirmed)`, `stored_secret = Some(false)`
+    /// returns confirmed discovered findings for that entity.
+    async fn list_pii_records(
+        &self,
+        entity_id: Option<&str>,
+        review_state: Option<ReviewState>,
+        stored_secret: Option<bool>,
+    ) -> DbResult<Vec<PiiRecord>>;
+
+    /// Set a record's `review_state`. Used by the dashboard's review
+    /// queue when the user confirms or dismisses an Unreviewed finding.
+    async fn update_pii_record_review_state(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+    ) -> DbResult<()>;
+
+    /// Soft-delete a PiiRecord. Sets `deleted_at` so the record falls
+    /// out of `list_pii_records` but remains in the DB for audit / undo.
+    /// Used by the dashboard's redact (L5) action.
+    async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()>;
+
+    // -- Entity reads ---
+
+    /// Fetch an `Entity` by ID.
+    async fn get_entity(&self, id: &str) -> DbResult<Entity>;
+
+    // -- Share Records (PII sharing ledger) ---
+
+    /// Insert a new `ShareRecord` documenting that a `PiiRecord` was
+    /// disclosed to an `Entity` at a moment in time. Always outbound;
+    /// receiving PII isn't tracked here.
+    async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord>;
+
+    /// List share records where `to_entity_id == entity_id`. Used by
+    /// the dashboard's Shared tab on the entity-detail panel. Order:
+    /// most-recently-shared first.
+    async fn list_share_records_for_entity(
+        &self,
+        entity_id: &str,
+    ) -> DbResult<Vec<ShareRecord>>;
+
+    /// Replace a record's `sources` list. Used by the ingest hook after
+    /// canonical-body substitution to update spans from indexed
+    /// placeholders to the post-substitution placeholder spans.
+    async fn update_pii_record_sources(
+        &self,
+        id: &str,
+        sources: Vec<SourceRef>,
+    ) -> DbResult<()>;
+
+    /// Set `last_revealed_at` on a PiiRecord. Called by the resolution
+    /// API every time the user reveals a value (L3 Modify), so the
+    /// dashboard can show "this PII was last viewed N hours ago".
+    async fn update_pii_record_revealed_at(
+        &self,
+        id: &str,
+        last_revealed_at: chrono::DateTime<Utc>,
+    ) -> DbResult<()>;
+
+    /// Set the PII-pipeline-managed fields on a Document: encrypted raw
+    /// body + nonce, plus the scan timestamp. Caller is responsible for
+    /// updating `content` separately (via `update_document`) since the
+    /// ingest hook returns the canonical body for the same write path.
+    async fn update_document_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<chrono::DateTime<Utc>>,
+    ) -> DbResult<()>;
+
+    /// Replace a Message's `body` (and optionally `body_html`) — used
+    /// after PII ingest to rewrite the body in canonical form with
+    /// `[pii:<record_id>]` tokens. There is no general-purpose
+    /// `update_message` method because the body is the only field we
+    /// rewrite post-ingest; everything else is set at create time.
+    async fn update_message_body(
+        &self,
+        id: &str,
+        body: &str,
+        body_html: Option<&str>,
+    ) -> DbResult<()>;
+
+    /// Set the PII-pipeline-managed fields on a Message: encrypted raw
+    /// body + nonce, plus the scan timestamp. Mirrors
+    /// `update_document_pii_fields` for the Message table.
+    async fn update_message_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<chrono::DateTime<Utc>>,
+    ) -> DbResult<()>;
+
+    /// Set the PII-pipeline-managed fields on a Contact. Contact has no
+    /// `body_raw_encrypted` (notes are already encrypted via the per-doc
+    /// key by `EncryptedGraphDB`); only `pii_scanned_at` is set here.
+    /// Caller uses the existing `update_contact` method to rewrite
+    /// `notes` with canonical-form tokens.
+    async fn update_contact_pii_fields(
+        &self,
+        id: &str,
+        pii_scanned_at: Option<chrono::DateTime<Utc>>,
+    ) -> DbResult<()>;
 }

@@ -8,6 +8,7 @@ pub mod injection;
 pub mod intent;
 pub mod llm;
 pub mod orchestrator;
+pub mod pii;
 pub mod reliability;
 pub mod session_log;
 pub mod tools;

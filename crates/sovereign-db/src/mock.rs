@@ -22,6 +22,9 @@ pub struct MockGraphDB {
     commits: RwLock<HashMap<String, Vec<Commit>>>,
     relationships: RwLock<Vec<RelatedTo>>,
     suggested_links: RwLock<Vec<SuggestedLink>>,
+    entities: RwLock<HashMap<String, Entity>>,
+    pii_records: RwLock<HashMap<String, PiiRecord>>,
+    share_records: RwLock<HashMap<String, ShareRecord>>,
     next_id: AtomicU64,
 }
 
@@ -36,6 +39,9 @@ impl MockGraphDB {
             commits: RwLock::new(HashMap::new()),
             relationships: RwLock::new(Vec::new()),
             suggested_links: RwLock::new(Vec::new()),
+            entities: RwLock::new(HashMap::new()),
+            pii_records: RwLock::new(HashMap::new()),
+            share_records: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(1),
         }
     }
@@ -617,6 +623,216 @@ impl GraphDB for MockGraphDB {
         let conv = convs.get_mut(conversation_id).ok_or_else(|| DbError::NotFound(conversation_id.to_string()))?;
         conv.linked_thread_id = Some(thread_id.to_string());
         Ok(conv.clone())
+    }
+
+    async fn create_entity(&self, mut entity: Entity) -> DbResult<Entity> {
+        let key = self.next_key();
+        let thing = Self::make_thing("entity", &key);
+        let id_str = thing_to_raw(&thing);
+        entity.id = Some(thing);
+        self.entities.write().unwrap().insert(id_str, entity.clone());
+        Ok(entity)
+    }
+
+    async fn list_entities(&self) -> DbResult<Vec<Entity>> {
+        let entities = self.entities.read().unwrap();
+        let mut out: Vec<Entity> = entities
+            .values()
+            .filter(|e| e.deleted_at.is_none())
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    async fn create_pii_record(&self, mut record: PiiRecord) -> DbResult<PiiRecord> {
+        let key = self.next_key();
+        let thing = Self::make_thing("pii_record", &key);
+        let id_str = thing_to_raw(&thing);
+        record.id = Some(thing);
+        self.pii_records.write().unwrap().insert(id_str, record.clone());
+        Ok(record)
+    }
+
+    async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord> {
+        self.pii_records
+            .read()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn list_pii_records(
+        &self,
+        entity_id: Option<&str>,
+        review_state: Option<ReviewState>,
+        stored_secret: Option<bool>,
+    ) -> DbResult<Vec<PiiRecord>> {
+        let records = self.pii_records.read().unwrap();
+        let mut out: Vec<PiiRecord> = records
+            .values()
+            .filter(|r| r.deleted_at.is_none())
+            .filter(|r| match entity_id {
+                Some(eid) => r.entity_id.as_deref() == Some(eid),
+                None => true,
+            })
+            .filter(|r| match &review_state {
+                Some(rs) => &r.review_state == rs,
+                None => true,
+            })
+            .filter(|r| match stored_secret {
+                Some(ss) => r.stored_secret == ss,
+                None => true,
+            })
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| b.discovered_at.cmp(&a.discovered_at));
+        Ok(out)
+    }
+
+    async fn update_pii_record_review_state(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+    ) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.review_state = review_state;
+        Ok(())
+    }
+
+    async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.deleted_at = Some(Utc::now().to_rfc3339());
+        Ok(())
+    }
+
+    async fn get_entity(&self, id: &str) -> DbResult<Entity> {
+        self.entities
+            .read()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn create_share_record(&self, mut record: ShareRecord) -> DbResult<ShareRecord> {
+        let key = self.next_key();
+        let thing = Self::make_thing("share_record", &key);
+        let id_str = thing_to_raw(&thing);
+        record.id = Some(thing);
+        self.share_records.write().unwrap().insert(id_str, record.clone());
+        Ok(record)
+    }
+
+    async fn list_share_records_for_entity(
+        &self,
+        entity_id: &str,
+    ) -> DbResult<Vec<ShareRecord>> {
+        let records = self.share_records.read().unwrap();
+        let mut out: Vec<ShareRecord> = records
+            .values()
+            .filter(|r| r.to_entity_id == entity_id)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| b.shared_at.cmp(&a.shared_at));
+        Ok(out)
+    }
+
+    async fn update_pii_record_sources(
+        &self,
+        id: &str,
+        sources: Vec<SourceRef>,
+    ) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.sources = sources;
+        Ok(())
+    }
+
+    async fn update_pii_record_revealed_at(
+        &self,
+        id: &str,
+        last_revealed_at: DateTime<Utc>,
+    ) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.last_revealed_at = Some(last_revealed_at);
+        Ok(())
+    }
+
+    async fn update_document_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let mut docs = self.documents.write().unwrap();
+        let doc = docs
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        doc.body_raw_encrypted = body_raw_encrypted.map(str::to_string);
+        doc.body_raw_nonce = body_raw_nonce.map(str::to_string);
+        doc.pii_scanned_at = pii_scanned_at;
+        Ok(())
+    }
+
+    async fn update_message_body(
+        &self,
+        id: &str,
+        body: &str,
+        body_html: Option<&str>,
+    ) -> DbResult<()> {
+        let mut messages = self.messages.write().unwrap();
+        let msg = messages
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        msg.body = body.to_string();
+        if let Some(h) = body_html {
+            msg.body_html = Some(h.to_string());
+        }
+        Ok(())
+    }
+
+    async fn update_message_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let mut messages = self.messages.write().unwrap();
+        let msg = messages
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        msg.body_raw_encrypted = body_raw_encrypted.map(str::to_string);
+        msg.body_raw_nonce = body_raw_nonce.map(str::to_string);
+        msg.pii_scanned_at = pii_scanned_at;
+        Ok(())
+    }
+
+    async fn update_contact_pii_fields(
+        &self,
+        id: &str,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let mut contacts = self.contacts.write().unwrap();
+        let c = contacts
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        c.pii_scanned_at = pii_scanned_at;
+        Ok(())
     }
 }
 

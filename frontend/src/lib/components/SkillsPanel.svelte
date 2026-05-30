@@ -3,6 +3,7 @@
 	import { canvas } from '$lib/stores/canvas.svelte';
 	import { listAllSkills, executeSkill } from '$lib/api/commands';
 	import type { SkillInfo, SkillActionInfo } from '$lib/api/commands';
+	import { focusTrap } from '$lib/actions/focusTrap';
 
 	let skills = $state<SkillInfo[]>([]);
 	let loading = $state(false);
@@ -44,7 +45,16 @@
 {#if app.skillsPanelVisible}
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="skills-backdrop" onclick={close}></div>
-	<div class="skills-dropdown">
+	<div
+		class="skills-dropdown"
+		role="dialog"
+		aria-modal="true"
+		aria-label="Skills"
+		use:focusTrap={{
+			active: app.skillsPanelVisible,
+			onEscape: close
+		}}
+	>
 		{#if loading}
 			<div class="status">Loading...</div>
 		{:else if error}

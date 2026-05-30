@@ -1,6 +1,6 @@
 [package]
 name = "sovereign-app"
-version = "0.0.2"
+version = "0.0.4"
 edition = "2021"
 description = "Sovereign GE binary — CLI and GUI entry point"
 
@@ -11,10 +11,10 @@ path = "src/main.rs"
 [dependencies]
 sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
-sovereign-ui = { workspace = true, optional = true }
 sovereign-skills = { workspace = true }
 sovereign-ai = { workspace = true, default-features = false }
 tokio = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -25,8 +25,12 @@ chrono = { workspace = true }
 base64 = { workspace = true }
 url = { workspace = true }
 
-# Tauri (optional — web UI)
-tauri = { workspace = true, optional = true }
+# Tauri (Svelte 5 web UI — the only supported frontend)
+tauri = { workspace = true }
+
+# Cookie type used by tauri::Webview::cookies() / delete_cookie().
+# Tauri 2.10 depends on this crate but doesn't re-export it.
+cookie = "0.18"
 
 # Optional crypto / P2P deps
 sovereign-crypto = { workspace = true, optional = true }
@@ -45,15 +49,10 @@ reqwest = { workspace = true, optional = true }
 readability = { workspace = true, optional = true }
 
 [build-dependencies]
-tauri-build = { workspace = true, optional = true }
-
-[target.'cfg(target_os = "windows")'.build-dependencies]
-winresource = "0.1"
+tauri-build = { workspace = true }
 
 [features]
-default = ["encrypted-log", "iced-ui"]
-iced-ui = ["sovereign-ui"]
-tauri-ui = ["tauri", "tauri-build"]
+default = ["encrypted-log", "encryption"]
 cuda = ["sovereign-ai/cuda"]
 encrypted-log = ["sovereign-ai/encrypted-log", "hkdf", "sha2"]
 voice-stt = ["sovereign-ai/voice-stt"]

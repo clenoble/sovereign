@@ -496,3 +496,238 @@ export const saveWebPage = (
 		score: score ?? null,
 		assessmentJson: assessmentJson ?? null
 	});
+
+// ---------------------------------------------------------------------------
+// PII management & dashboard
+// ---------------------------------------------------------------------------
+
+export type PiiAccessLevel =
+	| 'preview'
+	| 'masked_sample'
+	| 'reveal'
+	| 'raw_original';
+
+export type EntityKindString = 'self' | 'org' | 'person' | 'service';
+
+export type ReviewStateString = 'unreviewed' | 'confirmed' | 'dismissed';
+
+export interface PiiEntity {
+	id: string;
+	name: string;
+	kind: EntityKindString;
+	domains: string[];
+	contact_ids: string[];
+	notes: string;
+	is_owned: boolean;
+	created_at: string;
+	modified_at: string;
+}
+
+export interface PiiSourceRef {
+	source_kind: 'document' | 'message' | 'contact' | 'session_log' | 'user_input';
+	source_id: string;
+	span_start: number;
+	span_end: number;
+}
+
+export interface PiiRecord {
+	id: string;
+	/** snake_case kind: "email" | "phone" | "ssn" | "credit_card" | "ipv4" | "avs"
+	 *  | "iban" | "passport" | "dob" | "address" | "person_name" | "org_name"
+	 *  | "password" | "api_token" | "bank_account" | "document_id" | "note" | "other" */
+	kind: string;
+	label: string | null;
+	entity_id: string | null;
+	stored_secret: boolean;
+	confidence: number;
+	review_state: ReviewStateString;
+	discovered_at: string;
+	last_revealed_at: string | null;
+	use_count: number;
+	sources: PiiSourceRef[];
+}
+
+export interface ResolvedBody {
+	body: string;
+	access_level: PiiAccessLevel;
+}
+
+/** Resolve every `[pii:<id>]` token in a Document or Message body. */
+export const resolvePiiTokens = (
+	sourceKind: 'document' | 'message',
+	sourceId: string,
+	accessLevel: PiiAccessLevel
+) =>
+	invoke<ResolvedBody>('resolve_pii_tokens', {
+		sourceKind,
+		sourceId,
+		accessLevel
+	});
+
+/** List all entities (excludes soft-deleted), ordered by name. */
+export const listPiiEntities = () => invoke<PiiEntity[]>('list_pii_entities');
+
+/** Fetch one entity by ID. */
+export const getPiiEntity = (id: string) =>
+	invoke<PiiEntity>('get_pii_entity', { id });
+
+/** List PiiRecords with optional filters. All AND-combined. */
+export const listPiiRecords = (
+	entityId?: string | null,
+	reviewState?: ReviewStateString | null,
+	storedSecret?: boolean | null
+) =>
+	invoke<PiiRecord[]>('list_pii_records', {
+		entityId: entityId ?? null,
+		reviewState: reviewState ?? null,
+		storedSecret: storedSecret ?? null
+	});
+
+/** Mark an Unreviewed record as Confirmed. L2 Annotate. */
+export const confirmPiiRecord = (id: string) =>
+	invoke<void>('confirm_pii_record', { id });
+
+/** Mark an Unreviewed record as Dismissed (false positive). L2 Annotate. */
+export const dismissPiiRecord = (id: string) =>
+	invoke<void>('dismiss_pii_record', { id });
+
+/** Soft-delete a PiiRecord. L5 Destruct — caller must confirm first. */
+export const redactPiiRecord = (id: string) =>
+	invoke<void>('redact_pii_record', { id });
+
+/** Reveal a single PiiRecord's plaintext value. L3 Modify — bumps
+ *  last_revealed_at server-side. */
+export const revealPiiRecord = (id: string) =>
+	invoke<string>('reveal_pii_record', { id });
+
+export interface VaultEntryInput {
+	/** snake_case PiiKind */
+	kind: string;
+	label?: string | null;
+	entity_id?: string | null;
+	value: string;
+}
+
+/** Create a vault entry — user-entered secret encrypted under DeviceKey. */
+export const createVaultEntry = (input: VaultEntryInput) =>
+	invoke<PiiRecord>('create_vault_entry', { input });
+
+export interface ShareRecord {
+	id: string;
+	pii_record_id: string;
+	to_entity_id: string;
+	via_message_id: string | null;
+	via_url: string | null;
+	shared_at: string;
+	/** lowercase channel: "email" | "signal" | "whatsapp" | "sms"
+	 *  | "matrix" | "phone" | "web" | "other" */
+	channel: string;
+}
+
+/** List sharing-ledger entries where the recipient is `entityId`,
+ *  most recent first. */
+export const listShareRecordsForEntity = (entityId: string) =>
+	invoke<ShareRecord[]>('list_share_records_for_entity', { entityId });
+
+// ---------------------------------------------------------------------------
+// Browser-PII (step 8) — signup capture, autofill, password gen, cookies
+// ---------------------------------------------------------------------------
+
+export interface PasswordPolicy {
+	length: number;
+	include_uppercase: boolean;
+	include_lowercase: boolean;
+	include_digits: boolean;
+	include_symbols: boolean;
+	exclude_ambiguous: boolean;
+}
+
+export const defaultPasswordPolicy = (): PasswordPolicy => ({
+	length: 24,
+	include_uppercase: true,
+	include_lowercase: true,
+	include_digits: true,
+	include_symbols: true,
+	exclude_ambiguous: true
+});
+
+/** Generate a password using the provided policy (or the default). */
+export const generatePassword = (policy?: PasswordPolicy) =>
+	invoke<string>('generate_password', { policy: policy ?? defaultPasswordPolicy() });
+
+/** Trigger a JS scan of the active browser webview for input fields.
+ *  Results arrive asynchronously as the `browser-form-extracted`
+ *  Tauri event. */
+export const extractFormFields = () =>
+	invoke<void>('extract_form_fields');
+
+export interface BrowserFormField {
+	/** snake_case kind: "password" | "email" | "phone" | "first_name"
+	 *  | "last_name" | "address" | "text" */
+	kind: string;
+	selector: string;
+	value: string;
+	placeholder: string;
+	label: string;
+}
+
+export interface BrowserFormExtraction {
+	url: string;
+	fields: BrowserFormField[];
+}
+
+export interface SignupFieldInput {
+	kind: string;
+	label?: string | null;
+	value: string;
+}
+
+export interface SignupCaptureInput {
+	url: string;
+	entity_id?: string | null;
+	fields: SignupFieldInput[];
+}
+
+export interface SignupCaptureResult {
+	entity_id: string;
+	record_ids: string[];
+	share_record_count: number;
+	entity_created: boolean;
+}
+
+/** Commit a signup capture: resolve/create entity, write one PiiRecord
+ *  per field, write one Web-channel ShareRecord per record. L4 Transmit. */
+export const commitSignupCapture = (input: SignupCaptureInput) =>
+	invoke<SignupCaptureResult>('commit_signup_capture', { input });
+
+/** Decrypt a vault entry's plaintext value and inject it into the
+ *  active browser webview's input matching `selector`. L3 Modify. */
+export const autofillPiiRecord = (recordId: string, selector: string) =>
+	invoke<void>('autofill_pii_record', { recordId, selector });
+
+export interface BrowserCookie {
+	name: string;
+	value: string;
+	domain: string;
+	path: string;
+	/** ISO-8601 string or null for session cookies. */
+	expires: string | null;
+	http_only: boolean;
+	secure: boolean;
+	/** "strict" | "lax" | "none" | "" */
+	same_site: string;
+}
+
+/** List cookies attributable to an entity via its `domains[]`. Returns
+ *  empty when the entity has no domains or the browser isn't open. */
+export const listCookiesForEntity = (entityId: string) =>
+	invoke<BrowserCookie[]>('list_cookies_for_entity', { entityId });
+
+/** Delete one cookie by (name, domain, path). L5 Destruct. */
+export const deleteCookie = (name: string, domain: string, path: string) =>
+	invoke<void>('delete_cookie', { name, domain, path });
+
+/** Bulk-delete every cookie matching one of the entity's domains.
+ *  Returns the count actually removed. L5 Destruct. */
+export const clearEntityCookies = (entityId: string) =>
+	invoke<number>('clear_entity_cookies', { entityId });

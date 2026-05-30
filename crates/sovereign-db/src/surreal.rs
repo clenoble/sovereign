@@ -7,8 +7,9 @@ use surrealdb::Surreal;
 use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, DocumentSnapshot,
-    Message, Milestone, ReadStatus, RelatedTo, RelationType, SuggestedLink,
-    SuggestionSource, SuggestionStatus, Thread,
+    Entity, Message, Milestone, PiiRecord, ReadStatus, RelatedTo, RelationType,
+    ReviewState, ShareRecord, SourceRef, SuggestedLink, SuggestionSource,
+    SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -90,6 +91,21 @@ impl GraphDB for SurrealGraphDB {
             DEFINE INDEX IF NOT EXISTS idx_doc_is_owned ON document FIELDS is_owned;\
             DEFINE INDEX IF NOT EXISTS idx_doc_deleted_at ON document FIELDS deleted_at;\
             DEFINE INDEX IF NOT EXISTS idx_thread_deleted_at ON thread FIELDS deleted_at;\
+            DEFINE INDEX IF NOT EXISTS idx_doc_pii_scanned ON document FIELDS pii_scanned_at;\
+            DEFINE INDEX IF NOT EXISTS idx_msg_pii_scanned ON message FIELDS pii_scanned_at;\
+            DEFINE INDEX IF NOT EXISTS idx_contact_entity ON contact FIELDS entity_id;\
+            DEFINE INDEX IF NOT EXISTS idx_contact_pii_scanned ON contact FIELDS pii_scanned_at;\
+            DEFINE INDEX IF NOT EXISTS idx_entity_name ON entity FIELDS name;\
+            DEFINE INDEX IF NOT EXISTS idx_entity_kind ON entity FIELDS kind;\
+            DEFINE INDEX IF NOT EXISTS idx_entity_deleted_at ON entity FIELDS deleted_at;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_entity ON pii_record FIELDS entity_id;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_kind ON pii_record FIELDS kind;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_stored_secret ON pii_record FIELDS stored_secret;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_review_state ON pii_record FIELDS review_state;\
+            DEFINE INDEX IF NOT EXISTS idx_pii_deleted_at ON pii_record FIELDS deleted_at;\
+            DEFINE INDEX IF NOT EXISTS idx_share_pii ON share_record FIELDS pii_record_id;\
+            DEFINE INDEX IF NOT EXISTS idx_share_entity ON share_record FIELDS to_entity_id;\
+            DEFINE INDEX IF NOT EXISTS idx_share_at ON share_record FIELDS shared_at;\
         ";
         self.db
             .query(schema)
@@ -1016,6 +1032,238 @@ impl GraphDB for SurrealGraphDB {
             .merge(serde_json::json!({ "linked_thread_id": thread_id }))
             .await?;
         updated.ok_or_else(|| DbError::NotFound(conversation_id.to_string()))
+    }
+
+    // -- Entities ---
+
+    async fn create_entity(&self, entity: Entity) -> DbResult<Entity> {
+        let created: Option<Entity> = self.db.create("entity").content(entity).await?;
+        created.ok_or_else(|| DbError::Query("Failed to create entity".into()))
+    }
+
+    async fn list_entities(&self) -> DbResult<Vec<Entity>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM entity WHERE deleted_at IS NONE ORDER BY name ASC")
+            .await?;
+        let entities: Vec<Entity> = result.take(0)?;
+        Ok(entities)
+    }
+
+    // -- PII Records ---
+
+    async fn create_pii_record(&self, record: PiiRecord) -> DbResult<PiiRecord> {
+        let created: Option<PiiRecord> = self.db.create("pii_record").content(record).await?;
+        created.ok_or_else(|| DbError::Query("Failed to create pii_record".into()))
+    }
+
+    async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let rec: Option<PiiRecord> = self.db.select((table, key)).await?;
+        rec.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn list_pii_records(
+        &self,
+        entity_id: Option<&str>,
+        review_state: Option<ReviewState>,
+        stored_secret: Option<bool>,
+    ) -> DbResult<Vec<PiiRecord>> {
+        // Build the WHERE clause dynamically: deleted_at IS NONE is
+        // always included, plus one clause per supplied filter.
+        let mut clauses: Vec<&str> = vec!["deleted_at IS NONE"];
+        if entity_id.is_some() {
+            clauses.push("entity_id = $entity_id");
+        }
+        if review_state.is_some() {
+            clauses.push("review_state = $review_state");
+        }
+        if stored_secret.is_some() {
+            clauses.push("stored_secret = $stored_secret");
+        }
+        let sql = format!(
+            "SELECT * FROM pii_record WHERE {} ORDER BY discovered_at DESC",
+            clauses.join(" AND ")
+        );
+
+        let mut q = self.db.query(sql);
+        if let Some(eid) = entity_id {
+            q = q.bind(("entity_id", eid.to_string()));
+        }
+        if let Some(rs) = review_state {
+            q = q.bind(("review_state", rs));
+        }
+        if let Some(ss) = stored_secret {
+            q = q.bind(("stored_secret", ss));
+        }
+        let mut result = q.await?;
+        let records: Vec<PiiRecord> = result.take(0)?;
+        Ok(records)
+    }
+
+    async fn update_pii_record_review_state(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "review_state": review_state }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn get_entity(&self, id: &str) -> DbResult<Entity> {
+        let (table, key) = parse_and_validate(id, "entity")?;
+        let entity: Option<Entity> = self.db.select((table, key)).await?;
+        entity.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> {
+        let created: Option<ShareRecord> = self
+            .db
+            .create("share_record")
+            .content(record)
+            .await?;
+        created.ok_or_else(|| DbError::Query("Failed to create share_record".into()))
+    }
+
+    async fn list_share_records_for_entity(
+        &self,
+        entity_id: &str,
+    ) -> DbResult<Vec<ShareRecord>> {
+        let eid = entity_id.to_string();
+        let mut result = self
+            .db
+            .query(
+                "SELECT * FROM share_record WHERE to_entity_id = $eid ORDER BY shared_at DESC",
+            )
+            .bind(("eid", eid))
+            .await?;
+        let records: Vec<ShareRecord> = result.take(0)?;
+        Ok(records)
+    }
+
+    async fn update_pii_record_sources(
+        &self,
+        id: &str,
+        sources: Vec<SourceRef>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "sources": sources }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn update_pii_record_revealed_at(
+        &self,
+        id: &str,
+        last_revealed_at: DateTime<Utc>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "last_revealed_at": last_revealed_at }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn update_document_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "document")?;
+        let patch = serde_json::json!({
+            "body_raw_encrypted": body_raw_encrypted,
+            "body_raw_nonce": body_raw_nonce,
+            "pii_scanned_at": pii_scanned_at,
+        });
+        let updated: Option<Document> = self.db.update((table, key)).merge(patch).await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn update_message_body(
+        &self,
+        id: &str,
+        body: &str,
+        body_html: Option<&str>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "message")?;
+        let patch = serde_json::json!({
+            "body": body,
+            "body_html": body_html,
+        });
+        let updated: Option<Message> = self.db.update((table, key)).merge(patch).await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn update_message_pii_fields(
+        &self,
+        id: &str,
+        body_raw_encrypted: Option<&str>,
+        body_raw_nonce: Option<&str>,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "message")?;
+        let patch = serde_json::json!({
+            "body_raw_encrypted": body_raw_encrypted,
+            "body_raw_nonce": body_raw_nonce,
+            "pii_scanned_at": pii_scanned_at,
+        });
+        let updated: Option<Message> = self.db.update((table, key)).merge(patch).await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn update_contact_pii_fields(
+        &self,
+        id: &str,
+        pii_scanned_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "contact")?;
+        let patch = serde_json::json!({
+            "pii_scanned_at": pii_scanned_at,
+        });
+        let updated: Option<Contact> = self.db.update((table, key)).merge(patch).await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
     }
 }
 
