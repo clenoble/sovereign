@@ -384,12 +384,15 @@ pub async fn create_vault_entry(
 
 // ---------------------------------------------------------------------------
 // Browser-PII (8b) — embedded-browser form extraction + autofill
+// Desktop-only: the embedded browser webview doesn't exist on mobile, so
+// these commands are gated alongside crate::browser / crate::browser_pii.
 // ---------------------------------------------------------------------------
 
 /// Trigger a JS scan of the active browser webview for input fields.
 /// Results arrive asynchronously via the `__browser_form_extracted`
 /// command, which re-emits them as the `browser-form-extracted` Tauri
 /// event for the frontend's SignupCapturePrompt.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn extract_form_fields(app: tauri::AppHandle) -> Result<(), String> {
     crate::browser_pii::trigger_form_extraction(&app)
@@ -399,6 +402,7 @@ pub async fn extract_form_fields(app: tauri::AppHandle) -> Result<(), String> {
 /// the frontend can subscribe to. The leading underscore in the name
 /// matches the existing `__browser_content_extracted` convention used
 /// by `browser.rs`'s extraction script.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn __browser_form_extracted(
@@ -416,7 +420,7 @@ pub async fn __browser_form_extracted(
 /// Bumps `last_revealed_at` and (per the plan) increments `use_count`
 /// — though use_count tracking lands separately when the
 /// successful-submit detector is wired.
-#[cfg(feature = "encryption")]
+#[cfg(all(feature = "encryption", not(any(target_os = "android", target_os = "ios"))))]
 #[tauri::command]
 pub async fn autofill_pii_record(
     state: State<'_, AppState>,
@@ -448,7 +452,9 @@ pub async fn autofill_pii_record(
     Ok(())
 }
 
-#[cfg(not(feature = "encryption"))]
+// Stub for builds where the real autofill is unavailable: no encryption,
+// or mobile (no embedded browser to inject into).
+#[cfg(any(not(feature = "encryption"), target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn autofill_pii_record(
     _state: State<'_, AppState>,
@@ -456,7 +462,7 @@ pub async fn autofill_pii_record(
     _record_id: String,
     _selector: String,
 ) -> Result<(), String> {
-    Err("Autofill requires the encryption feature to be enabled at build time".to_string())
+    Err("Autofill is only available on desktop builds with the encryption feature".to_string())
 }
 
 /// Generate a password according to the supplied policy. Stateless;
