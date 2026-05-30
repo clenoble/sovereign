@@ -101,16 +101,53 @@ class PiperTts:
             return b""
 
 
+def _bundled_piper_dir() -> str:
+    """The local jiminy-bridge/piper/ dir where the binary + voices are bundled."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "piper")
+
+
+def _autodetect_binary() -> Optional[str]:
+    base = _bundled_piper_dir()
+    candidates = [
+        os.path.join(base, "piper", "piper.exe"),  # Windows zip layout
+        os.path.join(base, "piper.exe"),
+        os.path.join(base, "piper", "piper"),       # Linux / macOS layout
+        os.path.join(base, "piper"),
+    ]
+    return next((c for c in candidates if os.path.isfile(c)), None)
+
+
+def _autodetect_model() -> Optional[str]:
+    """First *.onnx under piper/ that has a sibling *.onnx.json config."""
+    base = _bundled_piper_dir()
+    if not os.path.isdir(base):
+        return None
+    for root, _dirs, files in os.walk(base):
+        for f in sorted(files):
+            if f.endswith(".onnx") and os.path.isfile(os.path.join(root, f + ".json")):
+                return os.path.join(root, f)
+    return None
+
+
 def create_tts_engine() -> Optional[PiperTts]:
-    """Create a PiperTts from environment variables (returns None if not configured)."""
-    piper_bin = os.environ.get("PIPER_BINARY", "piper")
-    piper_model = os.environ.get("PIPER_MODEL", "")
-    piper_config = os.environ.get("PIPER_CONFIG", "")
+    """Create a PiperTts, preferring env vars then a bundled piper/ dir.
+
+    Resolution for binary / model / config:
+      1. PIPER_BINARY / PIPER_MODEL / PIPER_CONFIG env vars
+      2. auto-detected binary + first voice under jiminy-bridge/piper/
+    Returns None (→ /speak antenna-only fallback) if no model can be found.
+    """
+    piper_bin = os.environ.get("PIPER_BINARY") or _autodetect_binary() or "piper"
+    piper_model = os.environ.get("PIPER_MODEL") or _autodetect_model() or ""
+    piper_config = os.environ.get("PIPER_CONFIG") or (
+        piper_model + ".json" if piper_model else "")
 
     if not piper_model:
-        logger.info("TTS not configured (set PIPER_MODEL env). /speak will use fallback animation.")
+        logger.info(
+            "TTS not configured (no PIPER_MODEL env and no bundled voice under %s). "
+            "/speak will use fallback animation.", _bundled_piper_dir())
         return None
 
     engine = PiperTts(piper_bin, piper_model, piper_config)
-    logger.info("Piper TTS initialized: model=%s", piper_model)
+    logger.info("Piper TTS initialized: binary=%s model=%s", piper_bin, piper_model)
     return engine
