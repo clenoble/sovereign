@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from math import gcd
 from typing import Optional
 
 import numpy as np
@@ -20,6 +21,9 @@ logger = logging.getLogger("jiminy.tts")
 
 PIPER_SAMPLE_RATE = 22050
 REACHY_SAMPLE_RATE = 16000
+# Piper phoneme-duration scale: <1.0 speaks faster, >1.0 slower (default 1.0).
+# The en_US-amy-medium voice reads a touch slowly at 1.0.
+PIPER_LENGTH_SCALE = 0.9
 
 
 class PiperTts:
@@ -46,9 +50,19 @@ class PiperTts:
         # Decode S16_LE mono to float32 [-1, 1]
         samples_mono = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
 
-        # Resample 22050 -> 16000 Hz using polyphase filter (better than interp)
-        # GCD(22050, 16000) = 50 → up=320, down=441
-        resampled = resample_poly(samples_mono, up=320, down=441).astype(np.float32)
+        # Resample Piper's 22050 Hz to the robot speaker's ACTUAL output rate.
+        # The SoundDevice backend reports the output device's native rate
+        # (usually 44100/48000) from get_output_audio_samplerate() — resampling
+        # to a fixed 16000 made the speech play ~3x fast and high-pitched.
+        out_rate = int(mini.media_manager.get_output_audio_samplerate())
+        logger.info("TTS: resampling 22050 -> %d Hz (robot output rate)", out_rate)
+        if out_rate != PIPER_SAMPLE_RATE:
+            g = gcd(out_rate, PIPER_SAMPLE_RATE)
+            resampled = resample_poly(
+                samples_mono, up=out_rate // g, down=PIPER_SAMPLE_RATE // g
+            ).astype(np.float32)
+        else:
+            resampled = samples_mono.astype(np.float32)
 
         # Get output channel count from robot
         out_channels = mini.media_manager.get_output_channels()
@@ -59,17 +73,23 @@ class PiperTts:
         else:
             stereo = resampled.reshape(-1, 1).astype(np.float32)
 
-        duration = len(resampled) / REACHY_SAMPLE_RATE
+        duration = len(resampled) / out_rate
 
-        # Push to speaker in chunks (~100ms each)
-        chunk_size = REACHY_SAMPLE_RATE // 10  # 1600 samples = 100ms
+        # Push to speaker in chunks (~100ms each). Pace ~15% ahead of real-time
+        # so the device buffer never underruns.
+        chunk_size = max(1, out_rate // 10)
+        pace = 0.85
         mini.media_manager.start_playing()
         try:
             for i in range(0, len(stereo), chunk_size):
                 chunk = stereo[i : i + chunk_size]
                 mini.media_manager.push_audio_sample(chunk)
-                # Pace slightly ahead to avoid underrun
-                await asyncio.sleep(chunk_size / REACHY_SAMPLE_RATE * 0.85)
+                await asyncio.sleep(chunk_size / out_rate * pace)
+            # Pacing ahead means ~(1-pace) of the audio is still buffered when the
+            # loop ends; drain it (plus device latency) before stop_playing() or
+            # the tail of the sentence gets clipped. A barge-in /stop cancels this
+            # task mid-loop, so it jumps straight to the finally (no drain) — good.
+            await asyncio.sleep(duration * (1.0 - pace) + 0.3)
         finally:
             mini.media_manager.stop_playing()
 
@@ -82,6 +102,7 @@ class PiperTts:
             self.piper_binary,
             "--model", self.model_path,
             "--config", self.config_path,
+            "--length_scale", str(PIPER_LENGTH_SCALE),
             "--output-raw",
         ]
         try:

@@ -291,8 +291,10 @@ async def _cancel_speak() -> None:
 async def speak(req: SpeakRequest):
     """Speak text through the robot's speaker via Piper TTS (antenna-only fallback).
 
-    Interrupts any in-flight speech first, so a new utterance — or a /stop
-    (shush) barge-in — cleanly replaces the previous one.
+    Returns IMMEDIATELY and plays the speech in the background, so HTTP clients
+    (e.g. the orchestrator's JiminyBridge, which uses a short request timeout)
+    don't block for the whole utterance. Interrupts any in-flight speech first;
+    /stop (shush barge-in) cancels it.
     """
     global _speak_task
     if mini is None:
@@ -301,13 +303,7 @@ async def speak(req: SpeakRequest):
 
     await _cancel_speak()
     _speak_task = asyncio.create_task(_do_speak(req.text))
-    try:
-        duration = await _speak_task
-        return {"status": "ok", "duration_secs": duration}
-    except asyncio.CancelledError:
-        return {"status": "stopped", "duration_secs": 0.0}
-    finally:
-        _speak_task = None
+    return {"status": "speaking"}
 
 
 @app.post("/stop")
@@ -414,7 +410,14 @@ def main():
 
     logger.info("Starting Jiminy bridge on %s:%d (media_backend=%s, sim=%s)",
                 args.host, args.port, media_backend, use_sim)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    # The Rust app holds a long-lived reqwest client that pools idle sockets and
+    # reuses them well past the nominal ~90s (observed reuse at 145s). uvicorn's
+    # default keep-alive is only 5s, so a /speak sent minutes after the previous
+    # one reuses a socket the server already closed -> "error sending request"
+    # and a silent (text-only) reply. Hold server-side connections open far
+    # longer than any conversational gap so the pooled socket is never stale.
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info",
+                timeout_keep_alive=3600)
 
 
 if __name__ == "__main__":

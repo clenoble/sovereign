@@ -39,6 +39,15 @@ logger = logging.getLogger("jiminy.vision")
 
 DEFAULT_WINDOW_SECONDS = 300.0
 DEFAULT_VLM_INTERVAL = 4.0
+# A gesture must persist this many consecutive frames before it's committed to
+# the shared state. At ~15-20 fps this is ~250-350ms — long enough to reject
+# brief false positives (e.g. a hand passing the face read as "shush"), short
+# enough that a real held sign still triggers barge-in fast.
+GESTURE_STABLE_FRAMES = 5
+# A "shush" only counts if the index fingertip is within this normalized distance
+# of the mouth keypoint. Tight enough that a hand merely near the face doesn't
+# qualify (it must actually be at the lips).
+SHUSH_MAX_DIST = 0.10
 VLM_PROMPT = (
     "You are the eyes of an assistant. In one short sentence, describe the person "
     "in view and any gesture, hand sign, or facial expression they are making "
@@ -153,21 +162,62 @@ class GestureDetector:
             mouth = (kp.x, kp.y)
 
         return self.classify_gesture(
-            (lm[8].x, lm[8].y), (lm[6].x, lm[6].y), builtin, mouth)
+            (lm[8].x, lm[8].y), (lm[6].x, lm[6].y), builtin, mouth,
+            others_folded=self._others_folded(lm))
 
     @staticmethod
-    def classify_gesture(index_tip, index_pip, builtin, mouth):
+    def _others_folded(lm) -> bool:
+        """True when the middle, ring and pinky fingers are curled (tip below its
+        PIP joint in image space). A real 'quiet' sign is index-only; requiring
+        the other fingers folded rejects an open hand / wave passing the face."""
+        return (lm[12].y > lm[10].y    # middle folded
+                and lm[16].y > lm[14].y  # ring folded
+                and lm[20].y > lm[18].y)  # pinky folded
+
+    @staticmethod
+    def classify_gesture(index_tip, index_pip, builtin, mouth, others_folded=True):
         """Map hand landmarks + the built-in category to a gesture name.
 
-        `shush` (an extended index finger whose tip sits at the mouth) takes
-        priority over the built-in category; otherwise the built-in is mapped via
-        _MAP. Coordinates are normalized (x, y) in [0, 1]; `mouth` may be None.
+        `shush` takes priority over the built-in category but requires ALL of:
+        an extended index finger (tip above its PIP), the other fingers folded,
+        and the fingertip within `SHUSH_MAX_DIST` of the mouth keypoint — so a
+        hand merely near the face isn't misread as a quiet sign. Otherwise the
+        built-in is mapped via _MAP. Coordinates are normalized (x, y) in [0, 1];
+        `mouth` may be None.
         """
-        if mouth is not None and index_tip[1] < index_pip[1]:
+        if mouth is not None and others_folded and index_tip[1] < index_pip[1]:
             d = ((index_tip[0] - mouth[0]) ** 2 + (index_tip[1] - mouth[1]) ** 2) ** 0.5
-            if d < 0.12:
+            if d < SHUSH_MAX_DIST:
                 return "shush"
         return GestureDetector._MAP.get(builtin)
+
+
+class GestureDebouncer:
+    """Suppress flickery / single-frame gesture readings.
+
+    A raw per-frame detection is only *committed* once the same value has been
+    seen for `stable_frames` consecutive reads. Crucially this also applies to
+    ``None``: a sustained run of "no gesture" commits ``None``, clearing a
+    previously-held sign so it can't latch forever (the old bug where one stray
+    "shush" frame stuck in the shared state and silently stopped speech).
+    """
+
+    def __init__(self, stable_frames: int = GESTURE_STABLE_FRAMES) -> None:
+        self.stable_frames = max(1, stable_frames)
+        self._raw = None        # last raw value seen
+        self._streak = 0        # consecutive reads of self._raw
+        self.committed = None   # last value that reached the stability threshold
+
+    def update(self, raw: Optional[str]) -> Optional[str]:
+        """Feed one raw detection; return the currently committed gesture."""
+        if raw == self._raw:
+            self._streak += 1
+        else:
+            self._raw = raw
+            self._streak = 1
+        if self._streak >= self.stable_frames:
+            self.committed = raw
+        return self.committed
 
 
 # --------------------------------------------------------------------------- #
@@ -261,6 +311,7 @@ class VisionEngine:
         self.now = clock
         self.state = VisionState()
         self._frame: Optional[np.ndarray] = None
+        self._debounce = GestureDebouncer()
         self._lock = threading.Lock()
         self._stop = threading.Event()
 
@@ -324,13 +375,16 @@ class VisionEngine:
                 gesture = self.detector.detect(frame)
             except Exception as e:  # never let detection kill the loop
                 logger.debug("gesture detect error: %s", e)
+            # Debounce: only commit a gesture (or its absence) after it's stable
+            # for a few frames, so one stray frame can't latch or false-trigger.
+            committed = self._debounce.update(gesture)
             with self._lock:
                 self._frame = frame
                 self.state.camera_ok = True
                 self.state.last_frame_ts = t
-                if gesture is not None:
-                    self.state.gesture = gesture
-                    self.state.gesture_ts = t
+                self.state.gesture = committed
+                if committed is not None:
+                    self.state.gesture_ts = t  # refresh age while the sign is held
             time.sleep(0.05)  # ~20 fps cap
 
     def _vlm_loop(self) -> None:
