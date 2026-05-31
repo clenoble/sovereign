@@ -192,6 +192,11 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
     let config_for_setup = config.clone();
     let rt_handle = rt.handle().clone();
 
+    // jiminy-bridge URL for the goodnight (sleep) animation fired on app exit.
+    #[cfg(feature = "jiminy")]
+    let jiminy_sleep_url = std::env::var("JIMINY_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:9100".into());
+
     // Build Tauri app
     let mut builder = tauri::Builder::default();
 
@@ -726,10 +731,53 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error running Sovereign GE (Tauri)");
+        .build(tauri::generate_context!())
+        .expect("error building Sovereign GE (Tauri)")
+        .run(move |_app, event| {
+            // Goodnight: when the user quits, ask the bridge to play Jiminy's
+            // sleep animation before the process winds down.
+            #[cfg(feature = "jiminy")]
+            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                sleep_jiminy(&jiminy_sleep_url);
+            }
+            #[cfg(not(feature = "jiminy"))]
+            let _ = event;
+        });
 
     Ok(())
+}
+
+/// Best-effort goodnight: tell the jiminy-bridge to play Jiminy's sleep
+/// animation as the app exits. Uses a raw blocking TCP request because the async
+/// runtime is being torn down at this point; the bridge keeps running and plays
+/// the animation out after we're gone.
+#[cfg(feature = "jiminy")]
+fn sleep_jiminy(bridge_url: &str) {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+
+    let addr = bridge_url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
+    let sock: SocketAddr = match addr.parse() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if let Ok(mut stream) = TcpStream::connect_timeout(&sock, Duration::from_secs(2)) {
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+        let req = format!(
+            "POST /sleep HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        if stream.write_all(req.as_bytes()).is_ok() {
+            let _ = stream.flush();
+            let mut buf = [0u8; 128];
+            let _ = stream.read(&mut buf); // wait for the bridge to ack before exiting
+            tracing::info!("Jiminy: goodnight (sleep requested)");
+        }
+    }
 }
 
 /// Bundle of values produced by backend init that the Tauri setup() callback
