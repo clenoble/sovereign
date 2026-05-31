@@ -64,3 +64,6 @@ frontend/.svelte-kit/
 # RAG chatbot index (deployed to HF Space, not tracked in git)
 sovereign-chatbot/chunks.json
 sovereign-chatbot/embeddings.npy
+
+# Internal docs — must NOT reach the public github mirror
+website/marketing-plan.md
