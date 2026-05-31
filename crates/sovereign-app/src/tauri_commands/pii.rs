@@ -635,6 +635,7 @@ pub async fn commit_signup_capture(
             via_url: Some(input.url.clone()),
             shared_at: now,
             channel: ShareChannel::Web,
+            via_url_nonce: None,
         };
         match state.db.create_share_record(share).await {
             Ok(_) => share_count += 1,

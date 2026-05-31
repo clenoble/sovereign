@@ -42,9 +42,18 @@ pub struct Document {
     /// Soft-delete timestamp (ISO 8601). None means the document is active.
     #[serde(default)]
     pub deleted_at: Option<String>,
-    /// Base64-encoded encryption nonce. None means content is plaintext.
+    /// Base64-encoded XChaCha20 nonce paired with the encrypted `content`.
+    /// None means content is plaintext.
     #[serde(default)]
     pub encryption_nonce: Option<String>,
+    /// Base64-encoded XChaCha20 nonce paired with the encrypted `title`.
+    /// None means title is plaintext.
+    #[serde(default)]
+    pub title_nonce: Option<String>,
+    /// Per-DB HMAC hashes of title tokens, used for blind-index search via
+    /// `search_documents_by_title`. Empty when title is plaintext.
+    #[serde(default)]
+    pub title_token_hashes: Vec<String>,
     /// Source URL if this document was fetched from the web.
     #[serde(default)]
     pub source_url: Option<String>,
@@ -91,6 +100,16 @@ pub struct Thread {
     /// Soft-delete timestamp (ISO 8601). None means the thread is active.
     #[serde(default)]
     pub deleted_at: Option<String>,
+    /// Base64 XChaCha20 nonce paired with encrypted `name`. None = plaintext.
+    #[serde(default)]
+    pub name_nonce: Option<String>,
+    /// Base64 XChaCha20 nonce paired with encrypted `description`. None = plaintext.
+    #[serde(default)]
+    pub description_nonce: Option<String>,
+    /// Per-DB HMAC hashes of name tokens, used for blind-index lookup via
+    /// `find_thread_by_name`. Empty when name is plaintext.
+    #[serde(default)]
+    pub name_token_hashes: Vec<String>,
 }
 
 /// Relationship edge between documents
@@ -234,6 +253,8 @@ impl Document {
             head_commit: None,
             deleted_at: None,
             encryption_nonce: None,
+            title_nonce: None,
+            title_token_hashes: Vec::new(),
             source_url: None,
             reliability_classification: None,
             reliability_score: None,
@@ -293,6 +314,9 @@ impl Thread {
             created_at: now,
             modified_at: now,
             deleted_at: None,
+            name_nonce: None,
+            description_nonce: None,
+            name_token_hashes: Vec::new(),
         }
     }
 
@@ -379,8 +403,15 @@ pub struct Contact {
     pub modified_at: DateTime<Utc>,
     #[serde(default)]
     pub deleted_at: Option<String>,
+    /// Base64 XChaCha20 nonce paired with the encrypted `notes` field.
+    /// Predates Phase 2b; retained for backward compat. None = notes is
+    /// plaintext / empty.
     #[serde(default)]
     pub encryption_nonce: Option<String>,
+    /// Base64 XChaCha20 nonce paired with the encrypted `name` field.
+    /// None = name is plaintext.
+    #[serde(default)]
+    pub name_nonce: Option<String>,
     /// Entity this contact belongs to (e.g. an employee at an org).
     /// None means the contact is unassigned.
     #[serde(default)]
@@ -404,6 +435,7 @@ impl Contact {
             modified_at: now,
             deleted_at: None,
             encryption_nonce: None,
+            name_nonce: None,
             entity_id: None,
             pii_scanned_at: None,
         }
@@ -527,6 +559,9 @@ pub struct Conversation {
     pub deleted_at: Option<String>,
     #[serde(default)]
     pub linked_thread_id: Option<String>,
+    /// Base64 XChaCha20 nonce paired with encrypted `title`. None = plaintext.
+    #[serde(default)]
+    pub title_nonce: Option<String>,
 }
 
 impl Conversation {
@@ -541,6 +576,7 @@ impl Conversation {
             created_at: Utc::now(),
             deleted_at: None,
             linked_thread_id: None,
+            title_nonce: None,
         }
     }
 
@@ -783,6 +819,10 @@ pub struct ShareRecord {
     pub via_url: Option<String>,
     pub shared_at: DateTime<Utc>,
     pub channel: ShareChannel,
+    /// Base64 XChaCha20 nonce paired with encrypted `via_url`. None = via_url
+    /// is plaintext or absent.
+    #[serde(default)]
+    pub via_url_nonce: Option<String>,
 }
 
 impl ShareRecord {
@@ -930,6 +970,7 @@ mod tests {
             via_url: Some("https://acme.com/signup".into()),
             shared_at: Utc::now(),
             channel: ShareChannel::Web,
+            via_url_nonce: None,
         };
         let json = serde_json::to_string(&rec).unwrap();
         let back: ShareRecord = serde_json::from_str(&json).unwrap();

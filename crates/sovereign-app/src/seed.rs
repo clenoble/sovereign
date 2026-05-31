@@ -576,6 +576,7 @@ pub async fn seed_pii_if_empty(db: &SurrealGraphDB, account_key: &Arc<AccountKey
             via_url: via_url.map(|s| s.to_string()),
             shared_at,
             channel: channel.clone(),
+            via_url_nonce: None,
         };
         db.create_share_record(record).await?;
     }

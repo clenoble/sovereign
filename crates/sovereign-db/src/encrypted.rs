@@ -30,24 +30,44 @@ const MESSAGE_TOKEN_CAP: usize = 256;
 ///
 /// Per-entity-type key databases (separate `KeyDatabase` files, separate
 /// `RwLock`s) keep message and document encryption paths from contending for
-/// the same lock. See handover for Phase 2a design.
+/// the same lock. After Phase 2b, threads/conversations/contacts/share_records
+/// each have their own KeyDatabase as well.
 pub struct EncryptedGraphDB {
     inner: Arc<dyn GraphDB>,
     key_db: Arc<RwLock<KeyDatabase>>,
     messages_key_db: Arc<RwLock<KeyDatabase>>,
+    threads_key_db: Arc<RwLock<KeyDatabase>>,
+    conversations_key_db: Arc<RwLock<KeyDatabase>>,
+    contacts_key_db: Arc<RwLock<KeyDatabase>>,
+    share_records_key_db: Arc<RwLock<KeyDatabase>>,
     kek: Arc<Kek>,
     index_key: Arc<IndexKey>,
 }
 
 impl EncryptedGraphDB {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         inner: Arc<dyn GraphDB>,
         key_db: Arc<RwLock<KeyDatabase>>,
         messages_key_db: Arc<RwLock<KeyDatabase>>,
+        threads_key_db: Arc<RwLock<KeyDatabase>>,
+        conversations_key_db: Arc<RwLock<KeyDatabase>>,
+        contacts_key_db: Arc<RwLock<KeyDatabase>>,
+        share_records_key_db: Arc<RwLock<KeyDatabase>>,
         kek: Arc<Kek>,
         index_key: Arc<IndexKey>,
     ) -> Self {
-        Self { inner, key_db, messages_key_db, kek, index_key }
+        Self {
+            inner,
+            key_db,
+            messages_key_db,
+            threads_key_db,
+            conversations_key_db,
+            contacts_key_db,
+            share_records_key_db,
+            kek,
+            index_key,
+        }
     }
 
     /// Encrypt content under a per-entity key from the given key DB. Generates
@@ -162,15 +182,22 @@ impl EncryptedGraphDB {
         tokens.iter().map(|t| self.index_key.hash_token(t.as_bytes())).collect()
     }
 
-    /// Decrypt a document's content if it has an encryption nonce.
+    /// Decrypt a document's content and title (if encrypted). Idempotent on
+    /// rows with no nonces set (treated as plaintext / legacy).
     async fn decrypt_document(&self, mut doc: Document) -> DbResult<Document> {
-        if let Some(nonce) = &doc.encryption_nonce {
-            let doc_id = doc.id.as_ref()
-                .map(|t| crate::schema::thing_to_raw(t))
-                .unwrap_or_default();
-            doc.content = self.decrypt_content(&doc_id, &doc.content, nonce).await?;
-            doc.encryption_nonce = None;
+        let doc_id = doc.id.as_ref()
+            .map(|t| crate::schema::thing_to_raw(t))
+            .unwrap_or_default();
+        if doc_id.is_empty() {
+            return Ok(doc);
         }
+        if let Some(nonce) = doc.encryption_nonce.take() {
+            doc.content = self.decrypt_content(&doc_id, &doc.content, &nonce).await?;
+        }
+        if let Some(nonce) = doc.title_nonce.take() {
+            doc.title = self.decrypt_content(&doc_id, &doc.title, &nonce).await?;
+        }
+        doc.title_token_hashes.clear();
         Ok(doc)
     }
 
@@ -181,6 +208,110 @@ impl EncryptedGraphDB {
             result.push(self.decrypt_document(doc).await?);
         }
         Ok(result)
+    }
+
+    // -- Thread helpers --
+
+    async fn decrypt_thread(&self, mut thread: Thread) -> DbResult<Thread> {
+        let id = thread.id.as_ref()
+            .map(|t| crate::schema::thing_to_raw(t))
+            .unwrap_or_default();
+        if id.is_empty() {
+            return Ok(thread);
+        }
+        if let Some(nonce) = thread.name_nonce.take() {
+            thread.name = self.decrypt_with(&self.threads_key_db, &id, &thread.name, &nonce).await?;
+        }
+        if let Some(nonce) = thread.description_nonce.take() {
+            thread.description = self.decrypt_with(&self.threads_key_db, &id, &thread.description, &nonce).await?;
+        }
+        thread.name_token_hashes.clear();
+        Ok(thread)
+    }
+
+    async fn decrypt_threads(&self, threads: Vec<Thread>) -> DbResult<Vec<Thread>> {
+        let mut out = Vec::with_capacity(threads.len());
+        for t in threads {
+            out.push(self.decrypt_thread(t).await?);
+        }
+        Ok(out)
+    }
+
+    // -- Conversation helpers --
+
+    async fn decrypt_conversation(&self, mut conv: Conversation) -> DbResult<Conversation> {
+        let id = conv.id.as_ref()
+            .map(|t| crate::schema::thing_to_raw(t))
+            .unwrap_or_default();
+        if id.is_empty() {
+            return Ok(conv);
+        }
+        if let Some(nonce) = conv.title_nonce.take() {
+            conv.title = self.decrypt_with(&self.conversations_key_db, &id, &conv.title, &nonce).await?;
+        }
+        Ok(conv)
+    }
+
+    async fn decrypt_conversations(&self, convs: Vec<Conversation>) -> DbResult<Vec<Conversation>> {
+        let mut out = Vec::with_capacity(convs.len());
+        for c in convs {
+            out.push(self.decrypt_conversation(c).await?);
+        }
+        Ok(out)
+    }
+
+    // -- Contact helpers --
+
+    async fn decrypt_contact(&self, mut contact: Contact) -> DbResult<Contact> {
+        let id = contact.id.as_ref()
+            .map(|t| crate::schema::thing_to_raw(t))
+            .unwrap_or_default();
+        if id.is_empty() {
+            return Ok(contact);
+        }
+        if let Some(nonce) = contact.name_nonce.take() {
+            contact.name = self.decrypt_with(&self.contacts_key_db, &id, &contact.name, &nonce).await?;
+        }
+        // Notes encryption pre-dated Phase 2b under the documents key DB; from
+        // 2b onward notes are encrypted under the contacts key DB. Until the
+        // wiring slice migrates desktop rows, neither path produces ciphertext
+        // in practice (EncryptedGraphDB isn't instantiated at runtime). Tests
+        // exercise the contacts-key-DB path.
+        if let Some(nonce) = contact.encryption_nonce.take() {
+            contact.notes = self.decrypt_with(&self.contacts_key_db, &id, &contact.notes, &nonce).await?;
+        }
+        Ok(contact)
+    }
+
+    async fn decrypt_contacts(&self, contacts: Vec<Contact>) -> DbResult<Vec<Contact>> {
+        let mut out = Vec::with_capacity(contacts.len());
+        for c in contacts {
+            out.push(self.decrypt_contact(c).await?);
+        }
+        Ok(out)
+    }
+
+    // -- ShareRecord helpers --
+
+    async fn decrypt_share_record(&self, mut rec: ShareRecord) -> DbResult<ShareRecord> {
+        let id = rec.id.as_ref()
+            .map(|t| crate::schema::thing_to_raw(t))
+            .unwrap_or_default();
+        if id.is_empty() {
+            return Ok(rec);
+        }
+        if let (Some(url_ct), Some(nonce)) = (rec.via_url.take(), rec.via_url_nonce.take()) {
+            rec.via_url = Some(self.decrypt_with(&self.share_records_key_db, &id, &url_ct, &nonce).await?);
+        }
+        Ok(rec)
+    }
+
+    async fn decrypt_share_records(&self, recs: Vec<ShareRecord>) -> DbResult<Vec<ShareRecord>> {
+        let mut out = Vec::with_capacity(recs.len());
+        for r in recs {
+            out.push(self.decrypt_share_record(r).await?);
+        }
+        Ok(out)
     }
 }
 
@@ -195,18 +326,27 @@ impl GraphDB for EncryptedGraphDB {
     }
 
     async fn create_document(&self, doc: Document) -> DbResult<Document> {
-        // Create first (DB assigns ID), then encrypt and update
+        // Compute title hashes from plaintext before we lose them.
+        let title_hashes = self.token_hashes(&doc.title);
+
         let created = self.inner.create_document(doc).await?;
         let doc_id = created.id.as_ref()
             .map(|t| crate::schema::thing_to_raw(t))
             .unwrap_or_default();
 
-        let (encrypted_content, _nonce) = self.encrypt_content(&doc_id, &created.content).await?;
-
-        // Update the inner DB with encrypted content
+        // Encrypt content and update via update_document (same as v0.0.5 path).
+        let (encrypted_content, _content_nonce) = self.encrypt_content(&doc_id, &created.content).await?;
         self.inner.update_document(&doc_id, None, Some(&encrypted_content)).await?;
 
-        // Return plaintext document to the caller
+        // Encrypt title separately and write through the dedicated setter, which
+        // also stores the blind-index token hashes for search.
+        let (title_ct, title_nonce) = self.encrypt_with(
+            &self.key_db, &doc_id, created.title.as_bytes(),
+        ).await?;
+        self.inner.set_document_title_encryption(
+            &doc_id, &title_ct, &title_nonce, &title_hashes,
+        ).await?;
+
         Ok(created)
     }
 
@@ -233,11 +373,23 @@ impl GraphDB for EncryptedGraphDB {
             None
         };
 
-        let doc = self.inner.update_document(
+        // Update content first (does not touch title fields if `title` is None).
+        let mut doc = self.inner.update_document(
             id,
-            title,
+            None,
             encrypted_content.as_deref(),
         ).await?;
+
+        // If the caller passed a new title, encrypt + update token hashes via the dedicated setter.
+        if let Some(plaintext_title) = title {
+            let hashes = self.token_hashes(plaintext_title);
+            let (title_ct, title_nonce) = self.encrypt_with(
+                &self.key_db, id, plaintext_title.as_bytes(),
+            ).await?;
+            self.inner.set_document_title_encryption(id, &title_ct, &title_nonce, &hashes).await?;
+            // Refresh — the doc we hold above pre-dates the title setter.
+            doc = self.inner.get_document(id).await?;
+        }
 
         self.decrypt_document(doc).await
     }
@@ -251,8 +403,35 @@ impl GraphDB for EncryptedGraphDB {
     }
 
     async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>> {
-        let docs = self.inner.search_documents_by_title(query).await?;
+        // Phase 2b: titles are encrypted, so the plaintext CONTAINS path can no
+        // longer hit anything. Tokenize the query and route through the
+        // blind-index lookup on `title_token_hashes`.
+        let hashes = self.token_hashes(query);
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let docs = self.inner.search_documents_by_title_token_hashes(&hashes).await?;
         self.decrypt_documents(docs).await
+    }
+
+    async fn search_documents_by_title_token_hashes(
+        &self,
+        hashes: &[String],
+    ) -> DbResult<Vec<Document>> {
+        let docs = self.inner.search_documents_by_title_token_hashes(hashes).await?;
+        self.decrypt_documents(docs).await
+    }
+
+    async fn set_document_title_encryption(
+        &self,
+        id: &str,
+        title_ciphertext: &str,
+        title_nonce: &str,
+        title_token_hashes: &[String],
+    ) -> DbResult<()> {
+        self.inner.set_document_title_encryption(
+            id, title_ciphertext, title_nonce, title_token_hashes,
+        ).await
     }
 
     async fn update_document_reliability(
@@ -269,21 +448,61 @@ impl GraphDB for EncryptedGraphDB {
         self.decrypt_document(doc).await
     }
 
-    // Thread operations pass through unchanged
+    // -- Threads: encrypt name + description, blind-index on name --
+
     async fn create_thread(&self, thread: Thread) -> DbResult<Thread> {
-        self.inner.create_thread(thread).await
+        let name_hashes = self.token_hashes(&thread.name);
+
+        let created = self.inner.create_thread(thread).await?;
+        let id = created.id.as_ref()
+            .map(|t| crate::schema::thing_to_raw(t))
+            .unwrap_or_default();
+
+        let (name_ct, name_nonce) = self.encrypt_with(
+            &self.threads_key_db, &id, created.name.as_bytes(),
+        ).await?;
+        let (desc_ct, desc_nonce) = self.encrypt_with(
+            &self.threads_key_db, &id, created.description.as_bytes(),
+        ).await?;
+
+        self.inner.set_thread_encryption(
+            &id, &name_ct, &name_nonce, &desc_ct, &desc_nonce, &name_hashes,
+        ).await?;
+
+        Ok(created)
     }
 
     async fn get_thread(&self, id: &str) -> DbResult<Thread> {
-        self.inner.get_thread(id).await
+        let thread = self.inner.get_thread(id).await?;
+        self.decrypt_thread(thread).await
     }
 
     async fn list_threads(&self) -> DbResult<Vec<Thread>> {
-        self.inner.list_threads().await
+        let threads = self.inner.list_threads().await?;
+        self.decrypt_threads(threads).await
     }
 
     async fn find_thread_by_name(&self, name: &str) -> DbResult<Option<Thread>> {
-        self.inner.find_thread_by_name(name).await
+        let hashes = self.token_hashes(name);
+        if hashes.is_empty() {
+            return Ok(None);
+        }
+        let thread = self.inner.find_thread_by_name_token_hashes(&hashes).await?;
+        match thread {
+            Some(t) => Ok(Some(self.decrypt_thread(t).await?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn find_thread_by_name_token_hashes(
+        &self,
+        hashes: &[String],
+    ) -> DbResult<Option<Thread>> {
+        let thread = self.inner.find_thread_by_name_token_hashes(hashes).await?;
+        match thread {
+            Some(t) => Ok(Some(self.decrypt_thread(t).await?)),
+            None => Ok(None),
+        }
     }
 
     async fn update_thread(
@@ -292,11 +511,69 @@ impl GraphDB for EncryptedGraphDB {
         name: Option<&str>,
         description: Option<&str>,
     ) -> DbResult<Thread> {
-        self.inner.update_thread(id, name, description).await
+        // Fetch the existing row in raw form so we can preserve whichever
+        // ciphertext field the caller isn't replacing.
+        let raw = self.inner.get_thread(id).await?;
+
+        // Determine the plaintext name (either new or existing-decrypted) for hash recomputation.
+        let plaintext_name: String = match name {
+            Some(n) => n.to_string(),
+            None => {
+                if let Some(nonce) = &raw.name_nonce {
+                    self.decrypt_with(&self.threads_key_db, id, &raw.name, nonce).await?
+                } else {
+                    raw.name.clone()
+                }
+            }
+        };
+
+        let (name_ct, name_nonce) = self.encrypt_with(
+            &self.threads_key_db, id, plaintext_name.as_bytes(),
+        ).await?;
+
+        let (desc_ct, desc_nonce) = match description {
+            Some(d) => self.encrypt_with(&self.threads_key_db, id, d.as_bytes()).await?,
+            None => {
+                // Re-encrypt the existing description under a fresh nonce. (Cheap;
+                // keeps the row's nonce-policy uniform across UPDATEs.)
+                let plain = if let Some(nonce) = &raw.description_nonce {
+                    self.decrypt_with(&self.threads_key_db, id, &raw.description, nonce).await?
+                } else {
+                    raw.description.clone()
+                };
+                self.encrypt_with(&self.threads_key_db, id, plain.as_bytes()).await?
+            }
+        };
+
+        let hashes = self.token_hashes(&plaintext_name);
+
+        self.inner.set_thread_encryption(
+            id, &name_ct, &name_nonce, &desc_ct, &desc_nonce, &hashes,
+        ).await?;
+
+        // The inner update_thread is the place that bumps modified_at — call it
+        // with no field changes (None, None) so it just touches the timestamp.
+        let updated = self.inner.update_thread(id, None, None).await?;
+        self.decrypt_thread(updated).await
     }
 
     async fn delete_thread(&self, id: &str) -> DbResult<()> {
         self.inner.delete_thread(id).await
+    }
+
+    async fn set_thread_encryption(
+        &self,
+        id: &str,
+        name_ciphertext: &str,
+        name_nonce: &str,
+        description_ciphertext: &str,
+        description_nonce: &str,
+        name_token_hashes: &[String],
+    ) -> DbResult<()> {
+        self.inner.set_thread_encryption(
+            id, name_ciphertext, name_nonce,
+            description_ciphertext, description_nonce, name_token_hashes,
+        ).await
     }
 
     async fn move_document_to_thread(&self, doc_id: &str, new_thread_id: &str) -> DbResult<Document> {
@@ -439,44 +716,43 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.delete_milestone(id).await
     }
 
-    // -- Contacts: encrypt notes field ---
+    // -- Contacts: encrypt name (new in 2b) + notes (existed pre-2b, now under contacts key DB) ---
 
     async fn create_contact(&self, contact: Contact) -> DbResult<Contact> {
-        // Create first, then encrypt notes if non-empty
         let created = self.inner.create_contact(contact).await?;
+        let id = created.id.as_ref()
+            .map(|t| crate::schema::thing_to_raw(t))
+            .unwrap_or_default();
+
+        // Always encrypt the name (no plaintext fallback in the 2b model).
+        let (name_ct, name_nonce) = self.encrypt_with(
+            &self.contacts_key_db, &id, created.name.as_bytes(),
+        ).await?;
+        self.inner.set_contact_name_encryption(&id, &name_ct, &name_nonce).await?;
+
+        // Notes: only encrypt if non-empty, mirroring the pre-2b behaviour.
+        // Going forward this is done under the contacts key DB (not the documents key DB
+        // — pre-2b had a latent bug here: notes ciphertext landed in the row but the
+        // nonce companion was never written, so subsequent reads returned the ciphertext
+        // as plaintext. set_contact_notes_encryption writes both atomically.
         if !created.notes.is_empty() {
-            let contact_id = created.id.as_ref()
-                .map(|t| crate::schema::thing_to_raw(t))
-                .unwrap_or_default();
-            let (enc_notes, _nonce) = self.encrypt_content(&contact_id, &created.notes).await?;
-            self.inner.update_contact(&contact_id, None, Some(&enc_notes), None).await?;
+            let (notes_ct, notes_nonce) = self.encrypt_with(
+                &self.contacts_key_db, &id, created.notes.as_bytes(),
+            ).await?;
+            self.inner.set_contact_notes_encryption(&id, &notes_ct, &notes_nonce).await?;
         }
+
         Ok(created)
     }
 
     async fn get_contact(&self, id: &str) -> DbResult<Contact> {
-        let mut contact = self.inner.get_contact(id).await?;
-        if let Some(nonce) = &contact.encryption_nonce {
-            contact.notes = self.decrypt_content(id, &contact.notes, nonce).await?;
-            contact.encryption_nonce = None;
-        }
-        Ok(contact)
+        let contact = self.inner.get_contact(id).await?;
+        self.decrypt_contact(contact).await
     }
 
     async fn list_contacts(&self) -> DbResult<Vec<Contact>> {
         let contacts = self.inner.list_contacts().await?;
-        let mut result = Vec::with_capacity(contacts.len());
-        for mut c in contacts {
-            if let Some(nonce) = &c.encryption_nonce {
-                let id = c.id.as_ref()
-                    .map(|t| crate::schema::thing_to_raw(t))
-                    .unwrap_or_default();
-                c.notes = self.decrypt_content(&id, &c.notes, nonce).await?;
-                c.encryption_nonce = None;
-            }
-            result.push(c);
-        }
-        Ok(result)
+        self.decrypt_contacts(contacts).await
     }
 
     async fn update_contact(
@@ -486,18 +762,29 @@ impl GraphDB for EncryptedGraphDB {
         notes: Option<&str>,
         avatar: Option<&str>,
     ) -> DbResult<Contact> {
-        let enc_notes = if let Some(n) = notes {
-            let (ct, _nonce) = self.encrypt_content(id, n).await?;
-            Some(ct)
-        } else {
-            None
-        };
-        let mut contact = self.inner.update_contact(id, name, enc_notes.as_deref(), avatar).await?;
-        if let Some(nonce) = &contact.encryption_nonce {
-            contact.notes = self.decrypt_content(id, &contact.notes, nonce).await?;
-            contact.encryption_nonce = None;
+        // Update avatar (and only avatar) through the inner update path. Name and
+        // notes are encrypted and routed through dedicated setters below so the
+        // ciphertext/nonce pairs land atomically.
+        if avatar.is_some() {
+            self.inner.update_contact(id, None, None, avatar).await?;
         }
-        Ok(contact)
+
+        if let Some(n) = name {
+            let (name_ct, name_nonce) = self.encrypt_with(
+                &self.contacts_key_db, id, n.as_bytes(),
+            ).await?;
+            self.inner.set_contact_name_encryption(id, &name_ct, &name_nonce).await?;
+        }
+
+        if let Some(n) = notes {
+            let (notes_ct, notes_nonce) = self.encrypt_with(
+                &self.contacts_key_db, id, n.as_bytes(),
+            ).await?;
+            self.inner.set_contact_notes_encryption(id, &notes_ct, &notes_nonce).await?;
+        }
+
+        let fresh = self.inner.get_contact(id).await?;
+        self.decrypt_contact(fresh).await
     }
 
     async fn delete_contact(&self, id: &str) -> DbResult<()> {
@@ -509,17 +796,10 @@ impl GraphDB for EncryptedGraphDB {
     }
 
     async fn find_contact_by_address(&self, address: &str) -> DbResult<Option<Contact>> {
+        // Address lookup goes through plaintext addresses field, which is not
+        // encrypted in 2b (Vec<ChannelAddress> per-element encryption is deferred).
         match self.inner.find_contact_by_address(address).await? {
-            Some(mut c) => {
-                if let Some(nonce) = &c.encryption_nonce {
-                    let id = c.id.as_ref()
-                        .map(|t| crate::schema::thing_to_raw(t))
-                        .unwrap_or_default();
-                    c.notes = self.decrypt_content(&id, &c.notes, nonce).await?;
-                    c.encryption_nonce = None;
-                }
-                Ok(Some(c))
-            }
+            Some(c) => Ok(Some(self.decrypt_contact(c).await?)),
             None => Ok(None),
         }
     }
@@ -529,12 +809,26 @@ impl GraphDB for EncryptedGraphDB {
         contact_id: &str,
         address: crate::schema::ChannelAddress,
     ) -> DbResult<Contact> {
-        let mut contact = self.inner.add_contact_address(contact_id, address).await?;
-        if let Some(nonce) = &contact.encryption_nonce {
-            contact.notes = self.decrypt_content(contact_id, &contact.notes, nonce).await?;
-            contact.encryption_nonce = None;
-        }
-        Ok(contact)
+        let contact = self.inner.add_contact_address(contact_id, address).await?;
+        self.decrypt_contact(contact).await
+    }
+
+    async fn set_contact_name_encryption(
+        &self,
+        id: &str,
+        name_ciphertext: &str,
+        name_nonce: &str,
+    ) -> DbResult<()> {
+        self.inner.set_contact_name_encryption(id, name_ciphertext, name_nonce).await
+    }
+
+    async fn set_contact_notes_encryption(
+        &self,
+        id: &str,
+        notes_ciphertext: &str,
+        notes_nonce: &str,
+    ) -> DbResult<()> {
+        self.inner.set_contact_notes_encryption(id, notes_ciphertext, notes_nonce).await
     }
 
     // -- Messages: encrypt body, subject, body_html with per-field nonces ---
@@ -676,21 +970,33 @@ impl GraphDB for EncryptedGraphDB {
         ).await
     }
 
-    // -- Conversations: pass through (title is not encrypted) ---
+    // -- Conversations: encrypt title (no search trait method exists) --
 
     async fn create_conversation(&self, conversation: Conversation) -> DbResult<Conversation> {
-        self.inner.create_conversation(conversation).await
+        let created = self.inner.create_conversation(conversation).await?;
+        let id = created.id.as_ref()
+            .map(|t| crate::schema::thing_to_raw(t))
+            .unwrap_or_default();
+
+        let (title_ct, title_nonce) = self.encrypt_with(
+            &self.conversations_key_db, &id, created.title.as_bytes(),
+        ).await?;
+        self.inner.set_conversation_title_encryption(&id, &title_ct, &title_nonce).await?;
+
+        Ok(created)
     }
 
     async fn get_conversation(&self, id: &str) -> DbResult<Conversation> {
-        self.inner.get_conversation(id).await
+        let conv = self.inner.get_conversation(id).await?;
+        self.decrypt_conversation(conv).await
     }
 
     async fn list_conversations(
         &self,
         channel: Option<&ChannelType>,
     ) -> DbResult<Vec<Conversation>> {
-        self.inner.list_conversations(channel).await
+        let convs = self.inner.list_conversations(channel).await?;
+        self.decrypt_conversations(convs).await
     }
 
     async fn update_conversation_unread(
@@ -698,7 +1004,8 @@ impl GraphDB for EncryptedGraphDB {
         id: &str,
         unread_count: u32,
     ) -> DbResult<Conversation> {
-        self.inner.update_conversation_unread(id, unread_count).await
+        let conv = self.inner.update_conversation_unread(id, unread_count).await?;
+        self.decrypt_conversation(conv).await
     }
 
     async fn update_conversation_last_message_at(
@@ -706,7 +1013,8 @@ impl GraphDB for EncryptedGraphDB {
         id: &str,
         at: chrono::DateTime<chrono::Utc>,
     ) -> DbResult<Conversation> {
-        self.inner.update_conversation_last_message_at(id, at).await
+        let conv = self.inner.update_conversation_last_message_at(id, at).await?;
+        self.decrypt_conversation(conv).await
     }
 
     async fn delete_conversation(&self, id: &str) -> DbResult<()> {
@@ -718,7 +1026,17 @@ impl GraphDB for EncryptedGraphDB {
         conversation_id: &str,
         thread_id: &str,
     ) -> DbResult<Conversation> {
-        self.inner.link_conversation_to_thread(conversation_id, thread_id).await
+        let conv = self.inner.link_conversation_to_thread(conversation_id, thread_id).await?;
+        self.decrypt_conversation(conv).await
+    }
+
+    async fn set_conversation_title_encryption(
+        &self,
+        id: &str,
+        title_ciphertext: &str,
+        title_nonce: &str,
+    ) -> DbResult<()> {
+        self.inner.set_conversation_title_encryption(id, title_ciphertext, title_nonce).await
     }
 
     // -- Entities and PII records pass through unencrypted by this
@@ -783,22 +1101,49 @@ impl GraphDB for EncryptedGraphDB {
     }
 
     async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> {
-        self.inner.create_share_record(record).await
+        // Capture the plaintext via_url before the create, so we can re-encrypt
+        // afterward (the DB-assigned ID is needed to mint the per-record key).
+        let plain_url = record.via_url.clone();
+        let created = self.inner.create_share_record(record).await?;
+
+        if let Some(url) = plain_url {
+            let id = created.id.as_ref()
+                .map(|t| crate::schema::thing_to_raw(t))
+                .unwrap_or_default();
+            let (url_ct, url_nonce) = self.encrypt_with(
+                &self.share_records_key_db, &id, url.as_bytes(),
+            ).await?;
+            self.inner.set_share_record_via_url_encryption(&id, &url_ct, &url_nonce).await?;
+        }
+
+        Ok(created)
     }
 
     async fn list_share_records_for_entity(
         &self,
         entity_id: &str,
     ) -> DbResult<Vec<ShareRecord>> {
-        self.inner.list_share_records_for_entity(entity_id).await
+        let recs = self.inner.list_share_records_for_entity(entity_id).await?;
+        self.decrypt_share_records(recs).await
     }
 
     async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>> {
-        self.inner.list_all_share_records().await
+        let recs = self.inner.list_all_share_records().await?;
+        self.decrypt_share_records(recs).await
     }
 
     async fn get_share_record(&self, id: &str) -> DbResult<ShareRecord> {
-        self.inner.get_share_record(id).await
+        let rec = self.inner.get_share_record(id).await?;
+        self.decrypt_share_record(rec).await
+    }
+
+    async fn set_share_record_via_url_encryption(
+        &self,
+        id: &str,
+        via_url_ciphertext: &str,
+        via_url_nonce: &str,
+    ) -> DbResult<()> {
+        self.inner.set_share_record_via_url_encryption(id, via_url_ciphertext, via_url_nonce).await
     }
 
     async fn update_pii_record_sources(
@@ -934,6 +1279,10 @@ mod tests {
             inner: Arc::new(MockDb),
             key_db: key_db.clone(),
             messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-msgkeys.db")))),
+            threads_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-thrkeys-a.db")))),
+            conversations_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-convkeys-a.db")))),
+            contacts_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-conkeys-a.db")))),
+            share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-shrkeys-a.db")))),
             kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
             index_key: Arc::new(IndexKey::generate()),
         };
@@ -957,6 +1306,10 @@ mod tests {
             inner: Arc::new(MockDb),
             key_db,
             messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-msgkeys2.db")))),
+            threads_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-thrkeys-b.db")))),
+            conversations_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-convkeys-b.db")))),
+            contacts_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-conkeys-b.db")))),
+            share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-shrkeys-b.db")))),
             kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
             index_key: Arc::new(IndexKey::generate()),
         };
@@ -974,10 +1327,18 @@ mod tests {
         let key_db = Arc::new(RwLock::new(test_key_db()));
 
         let msg_db1 = Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-msgkeys3.db"))));
+        let thr_db1 = Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-thrkeys-c.db"))));
+        let conv_db1 = Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-convkeys-c.db"))));
+        let con_db1 = Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-conkeys-c.db"))));
+        let shr_db1 = Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-shrkeys-c.db"))));
         let db1 = EncryptedGraphDB {
             inner: Arc::new(MockDb),
             key_db: key_db.clone(),
             messages_key_db: msg_db1.clone(),
+            threads_key_db: thr_db1.clone(),
+            conversations_key_db: conv_db1.clone(),
+            contacts_key_db: con_db1.clone(),
+            share_records_key_db: shr_db1.clone(),
             kek: Arc::new(Kek::from_bytes(*kek1.as_bytes())),
             index_key: Arc::new(IndexKey::generate()),
         };
@@ -989,6 +1350,10 @@ mod tests {
             inner: Arc::new(MockDb),
             key_db: key_db.clone(), // same key_db but different KEK
             messages_key_db: msg_db1.clone(),
+            threads_key_db: thr_db1.clone(),
+            conversations_key_db: conv_db1.clone(),
+            contacts_key_db: con_db1.clone(),
+            share_records_key_db: shr_db1.clone(),
             kek: Arc::new(Kek::from_bytes(*kek2.as_bytes())),
             index_key: Arc::new(IndexKey::generate()),
         };
@@ -1011,6 +1376,8 @@ mod tests {
         async fn delete_document(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn update_document_position(&self, _id: &str, _x: f32, _y: f32) -> DbResult<()> { Ok(()) }
         async fn search_documents_by_title(&self, _query: &str) -> DbResult<Vec<Document>> { Ok(vec![]) }
+        async fn search_documents_by_title_token_hashes(&self, _hashes: &[String]) -> DbResult<Vec<Document>> { Ok(vec![]) }
+        async fn set_document_title_encryption(&self, _id: &str, _title_ciphertext: &str, _title_nonce: &str, _title_token_hashes: &[String]) -> DbResult<()> { Ok(()) }
         async fn update_document_reliability(&self, _id: &str, _source_url: Option<&str>, _classification: Option<&str>, _score: Option<f32>, _assessment_json: Option<&str>) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn create_suggested_link(&self, _from_id: &str, _to_id: &str, _relation_type: RelationType, _strength: f32, _rationale: &str, _source: SuggestionSource) -> DbResult<SuggestedLink> { Err(DbError::NotFound("mock".into())) }
         async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> { Ok(vec![]) }
@@ -1023,6 +1390,8 @@ mod tests {
         async fn update_thread(&self, _id: &str, _name: Option<&str>, _description: Option<&str>) -> DbResult<Thread> { Err(DbError::NotFound("mock".into())) }
         async fn delete_thread(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn find_thread_by_name(&self, _name: &str) -> DbResult<Option<Thread>> { Ok(None) }
+        async fn find_thread_by_name_token_hashes(&self, _hashes: &[String]) -> DbResult<Option<Thread>> { Ok(None) }
+        async fn set_thread_encryption(&self, _id: &str, _name_ciphertext: &str, _name_nonce: &str, _description_ciphertext: &str, _description_nonce: &str, _name_token_hashes: &[String]) -> DbResult<()> { Ok(()) }
         async fn move_document_to_thread(&self, _doc_id: &str, _new_thread_id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn create_relationship(&self, _from_id: &str, _to_id: &str, _relation_type: RelationType, _strength: f32) -> DbResult<RelatedTo> { Err(DbError::NotFound("mock".into())) }
         async fn list_outgoing_relationships(&self, _doc_id: &str) -> DbResult<Vec<RelatedTo>> { Ok(vec![]) }
@@ -1054,6 +1423,8 @@ mod tests {
         async fn soft_delete_contact(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn find_contact_by_address(&self, _address: &str) -> DbResult<Option<Contact>> { Ok(None) }
         async fn add_contact_address(&self, _contact_id: &str, _address: crate::schema::ChannelAddress) -> DbResult<Contact> { Err(DbError::NotFound("mock".into())) }
+        async fn set_contact_name_encryption(&self, _id: &str, _name_ciphertext: &str, _name_nonce: &str) -> DbResult<()> { Ok(()) }
+        async fn set_contact_notes_encryption(&self, _id: &str, _notes_ciphertext: &str, _notes_nonce: &str) -> DbResult<()> { Ok(()) }
         // Messages
         async fn create_message(&self, message: Message) -> DbResult<Message> { Ok(message) }
         async fn get_message(&self, _id: &str) -> DbResult<Message> { Err(DbError::NotFound("mock".into())) }
@@ -1083,6 +1454,7 @@ mod tests {
         async fn update_conversation_last_message_at(&self, _id: &str, _at: chrono::DateTime<chrono::Utc>) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
         async fn delete_conversation(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn link_conversation_to_thread(&self, _conversation_id: &str, _thread_id: &str) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
+        async fn set_conversation_title_encryption(&self, _id: &str, _title_ciphertext: &str, _title_nonce: &str) -> DbResult<()> { Ok(()) }
         // Entities + PII records
         async fn create_entity(&self, entity: Entity) -> DbResult<Entity> { Ok(entity) }
         async fn list_entities(&self) -> DbResult<Vec<Entity>> { Ok(vec![]) }
@@ -1094,6 +1466,7 @@ mod tests {
         async fn soft_delete_pii_record(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn get_entity(&self, _id: &str) -> DbResult<Entity> { Err(DbError::NotFound("mock".into())) }
         async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> { Ok(record) }
+        async fn set_share_record_via_url_encryption(&self, _id: &str, _via_url_ciphertext: &str, _via_url_nonce: &str) -> DbResult<()> { Ok(()) }
         async fn list_share_records_for_entity(&self, _entity_id: &str) -> DbResult<Vec<ShareRecord>> { Ok(vec![]) }
         async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>> { Ok(vec![]) }
         async fn get_share_record(&self, _id: &str) -> DbResult<ShareRecord> { Err(DbError::NotFound("mock".into())) }
@@ -1115,19 +1488,21 @@ mod tests {
     fn build_encrypted_db(tag: &str) -> (Arc<MockGraphDB>, EncryptedGraphDB) {
         let inner = Arc::new(MockGraphDB::new());
         let kek = Kek::generate();
-        let key_db = Arc::new(RwLock::new(KeyDatabase::new(
-            std::env::temp_dir().join(format!("test-{tag}-doc-keys.db")),
-        )));
-        let msg_key_db = Arc::new(RwLock::new(KeyDatabase::new(
-            std::env::temp_dir().join(format!("test-{tag}-msg-keys.db")),
-        )));
-        let index_key = Arc::new(IndexKey::generate());
+        let mk_kdb = |suffix: &str| {
+            Arc::new(RwLock::new(KeyDatabase::new(
+                std::env::temp_dir().join(format!("test-{tag}-{suffix}-keys.db")),
+            )))
+        };
         let edb = EncryptedGraphDB {
             inner: inner.clone(),
-            key_db,
-            messages_key_db: msg_key_db,
+            key_db: mk_kdb("doc"),
+            messages_key_db: mk_kdb("msg"),
+            threads_key_db: mk_kdb("thr"),
+            conversations_key_db: mk_kdb("conv"),
+            contacts_key_db: mk_kdb("con"),
+            share_records_key_db: mk_kdb("shr"),
             kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
-            index_key,
+            index_key: Arc::new(IndexKey::generate()),
         };
         (inner, edb)
     }
@@ -1274,5 +1649,223 @@ mod tests {
             // Plaintext bodies are short ASCII words — never base64.
             assert!(!m.body.contains('='), "no base64 padding leaked through");
         }
+    }
+
+    // ── Phase 2b: Thread / Conversation / Contact / ShareRecord / Document.title ──
+
+    use crate::schema::{Conversation, Document, ShareChannel, ShareRecord, Thread};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn document_title_roundtrip_and_search() {
+        let (inner, edb) = build_encrypted_db("doc-title");
+        let d1 = edb.create_document(Document::new("Quarterly Budget Report".into(), "thread:1".into(), true)).await.unwrap();
+        let _ = edb.create_document(Document::new("Holiday Plans".into(), "thread:1".into(), true)).await.unwrap();
+
+        // Read returns plaintext title; ciphertext lives in the inner row.
+        let got = edb.get_document(&d1.id_string().unwrap()).await.unwrap();
+        assert_eq!(got.title, "Quarterly Budget Report");
+        let raw = inner.get_document(&d1.id_string().unwrap()).await.unwrap();
+        assert_ne!(raw.title, "Quarterly Budget Report", "title at rest must be ciphertext");
+        assert!(raw.title_nonce.is_some());
+        assert!(!raw.title_token_hashes.is_empty());
+
+        // Search hits via token blind-index.
+        let hits = edb.search_documents_by_title("budget").await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Quarterly Budget Report");
+
+        let miss = edb.search_documents_by_title("submarine").await.unwrap();
+        assert!(miss.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn document_update_rewrites_title_hashes() {
+        let (_, edb) = build_encrypted_db("doc-update");
+        let d = edb.create_document(Document::new("alpha beta".into(), "thread:1".into(), true)).await.unwrap();
+        let id = d.id_string().unwrap();
+
+        edb.update_document(&id, Some("gamma delta"), None).await.unwrap();
+
+        // Old tokens no longer match; new ones do.
+        assert!(edb.search_documents_by_title("alpha").await.unwrap().is_empty());
+        let hits = edb.search_documents_by_title("gamma").await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "gamma delta");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn thread_name_and_description_roundtrip_and_lookup() {
+        let (inner, edb) = build_encrypted_db("thread");
+        let t = edb.create_thread(Thread::new("Operations 2026".into(), "logistics + ops".into())).await.unwrap();
+        let id = t.id_string().unwrap();
+
+        let got = edb.get_thread(&id).await.unwrap();
+        assert_eq!(got.name, "Operations 2026");
+        assert_eq!(got.description, "logistics + ops");
+
+        // Ciphertext at rest, nonces populated, blind-index emitted.
+        let raw = inner.get_thread(&id).await.unwrap();
+        assert_ne!(raw.name, "Operations 2026");
+        assert_ne!(raw.description, "logistics + ops");
+        assert!(raw.name_nonce.is_some());
+        assert!(raw.description_nonce.is_some());
+        assert!(!raw.name_token_hashes.is_empty());
+
+        // find_thread_by_name traverses the blind-index.
+        let found = edb.find_thread_by_name("operations").await.unwrap().unwrap();
+        assert_eq!(found.name, "Operations 2026");
+
+        let missing = edb.find_thread_by_name("submarine").await.unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn thread_update_rewrites_name_hashes() {
+        let (_, edb) = build_encrypted_db("thread-update");
+        let t = edb.create_thread(Thread::new("first name".into(), "desc".into())).await.unwrap();
+        let id = t.id_string().unwrap();
+
+        edb.update_thread(&id, Some("renamed thing"), None).await.unwrap();
+
+        assert!(edb.find_thread_by_name("first").await.unwrap().is_none());
+        let found = edb.find_thread_by_name("renamed").await.unwrap().unwrap();
+        assert_eq!(found.name, "renamed thing");
+        // description should still decrypt correctly even though we didn't change it.
+        assert_eq!(found.description, "desc");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conversation_title_roundtrip() {
+        let (inner, edb) = build_encrypted_db("conv");
+        let conv = edb.create_conversation(Conversation::new(
+            "Tax planning with accountant".into(),
+            ChannelType::Email,
+            vec!["contact:a".into(), "contact:b".into()],
+        )).await.unwrap();
+        let id = conv.id_string().unwrap();
+
+        let got = edb.get_conversation(&id).await.unwrap();
+        assert_eq!(got.title, "Tax planning with accountant");
+        let raw = inner.get_conversation(&id).await.unwrap();
+        assert_ne!(raw.title, "Tax planning with accountant");
+        assert!(raw.title_nonce.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn contact_name_and_notes_roundtrip() {
+        let (inner, edb) = build_encrypted_db("contact");
+        let mut c = Contact::new("Alice Example".into(), false);
+        c.notes = "private debrief notes".into();
+        let created = edb.create_contact(c).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        let got = edb.get_contact(&id).await.unwrap();
+        assert_eq!(got.name, "Alice Example");
+        assert_eq!(got.notes, "private debrief notes");
+
+        // Both fields ciphertext at rest with paired nonces.
+        let raw = inner.get_contact(&id).await.unwrap();
+        assert_ne!(raw.name, "Alice Example", "name at rest must be ciphertext");
+        assert_ne!(raw.notes, "private debrief notes", "notes at rest must be ciphertext");
+        assert!(raw.name_nonce.is_some());
+        assert!(raw.encryption_nonce.is_some(), "notes nonce companion must be set (pre-2b bug fix)");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn contact_update_re_encrypts_fields() {
+        let (_, edb) = build_encrypted_db("contact-update");
+        let c = edb.create_contact(Contact::new("Original Name".into(), false)).await.unwrap();
+        let id = c.id_string().unwrap();
+
+        let after = edb.update_contact(&id, Some("New Name"), Some("now with notes"), None).await.unwrap();
+        assert_eq!(after.name, "New Name");
+        assert_eq!(after.notes, "now with notes");
+
+        // Notes field can be empty if cleared (passing Some("") at the trait layer).
+        let cleared = edb.update_contact(&id, None, Some(""), None).await.unwrap();
+        assert_eq!(cleared.notes, "");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn contact_create_with_empty_notes_no_notes_nonce() {
+        // Notes empty at create time: we skip the encryption write, so the
+        // encryption_nonce stays None and reads see the empty plaintext.
+        let (inner, edb) = build_encrypted_db("contact-empty-notes");
+        let c = edb.create_contact(Contact::new("No Notes".into(), false)).await.unwrap();
+        let id = c.id_string().unwrap();
+
+        let raw = inner.get_contact(&id).await.unwrap();
+        assert_eq!(raw.notes, "", "no ciphertext written when notes was empty");
+        assert!(raw.encryption_nonce.is_none());
+        // But name IS encrypted unconditionally.
+        assert!(raw.name_nonce.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn share_record_via_url_roundtrip() {
+        let (inner, edb) = build_encrypted_db("share");
+        let rec = ShareRecord {
+            id: None,
+            pii_record_id: "pii_record:abc".into(),
+            to_entity_id: "entity:acme".into(),
+            via_message_id: None,
+            via_url: Some("https://acme.com/signup".into()),
+            shared_at: chrono::Utc::now(),
+            channel: ShareChannel::Web,
+            via_url_nonce: None,
+        };
+        let created = edb.create_share_record(rec).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        let got = edb.get_share_record(&id).await.unwrap();
+        assert_eq!(got.via_url.as_deref(), Some("https://acme.com/signup"));
+
+        let raw = inner.get_share_record(&id).await.unwrap();
+        assert!(raw.via_url.is_some());
+        assert_ne!(raw.via_url.as_deref(), Some("https://acme.com/signup"), "url at rest must be ciphertext");
+        assert!(raw.via_url_nonce.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn share_record_without_via_url_passes_through() {
+        // Common case for IM/email channels: pii_record_id + via_message_id only;
+        // no via_url to encrypt.
+        let (inner, edb) = build_encrypted_db("share-nourl");
+        let rec = ShareRecord {
+            id: None,
+            pii_record_id: "pii_record:abc".into(),
+            to_entity_id: "entity:acme".into(),
+            via_message_id: Some("message:1".into()),
+            via_url: None,
+            shared_at: chrono::Utc::now(),
+            channel: ShareChannel::Email,
+            via_url_nonce: None,
+        };
+        let created = edb.create_share_record(rec).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        let raw = inner.get_share_record(&id).await.unwrap();
+        assert!(raw.via_url.is_none());
+        assert!(raw.via_url_nonce.is_none(), "no nonce written when via_url was None");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn search_documents_skips_soft_deleted() {
+        let (inner, edb) = build_encrypted_db("doc-deleted");
+        let d = edb.create_document(Document::new("secret document".into(), "thread:1".into(), true)).await.unwrap();
+        let id = d.id_string().unwrap();
+        inner.soft_delete_document(&id).await.unwrap();
+        let hits = edb.search_documents_by_title("secret").await.unwrap();
+        assert!(hits.is_empty(), "soft-deleted rows must be excluded from blind-index search");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn find_thread_skips_soft_deleted() {
+        let (inner, edb) = build_encrypted_db("thread-deleted");
+        let t = edb.create_thread(Thread::new("Confidential project".into(), "d".into())).await.unwrap();
+        let id = t.id_string().unwrap();
+        inner.soft_delete_thread(&id).await.unwrap();
+        let found = edb.find_thread_by_name("confidential").await.unwrap();
+        assert!(found.is_none());
     }
 }

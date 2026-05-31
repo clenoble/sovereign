@@ -185,6 +185,48 @@ impl GraphDB for SurrealGraphDB {
         Ok(docs)
     }
 
+    async fn search_documents_by_title_token_hashes(
+        &self,
+        hashes: &[String],
+    ) -> DbResult<Vec<Document>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let hashes_vec: Vec<String> = hashes.to_vec();
+        let mut result = self
+            .db
+            .query("SELECT * FROM document WHERE deleted_at IS NONE AND title_token_hashes CONTAINSALL $hashes ORDER BY created_at DESC LIMIT 20")
+            .bind(("hashes", hashes_vec))
+            .await?;
+        let docs: Vec<Document> = result.take(0)?;
+        Ok(docs)
+    }
+
+    async fn set_document_title_encryption(
+        &self,
+        id: &str,
+        title_ciphertext: &str,
+        title_nonce: &str,
+        title_token_hashes: &[String],
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "document")?;
+        let _: Option<Document> = self
+            .db
+            .query(
+                "UPDATE type::thing($table, $key) SET \
+                 title = $title, title_nonce = $title_nonce, \
+                 title_token_hashes = $hashes",
+            )
+            .bind(("table", table.to_string()))
+            .bind(("key", key.to_string()))
+            .bind(("title", title_ciphertext.to_string()))
+            .bind(("title_nonce", title_nonce.to_string()))
+            .bind(("hashes", title_token_hashes.to_vec()))
+            .await?
+            .take(0)?;
+        Ok(())
+    }
+
     async fn update_document(
         &self,
         id: &str,
@@ -290,6 +332,53 @@ impl GraphDB for SurrealGraphDB {
             .await?;
         let threads: Vec<Thread> = result.take(0)?;
         Ok(threads.into_iter().next())
+    }
+
+    async fn find_thread_by_name_token_hashes(
+        &self,
+        hashes: &[String],
+    ) -> DbResult<Option<Thread>> {
+        if hashes.is_empty() {
+            return Ok(None);
+        }
+        let hashes_vec: Vec<String> = hashes.to_vec();
+        let mut result = self
+            .db
+            .query("SELECT * FROM thread WHERE deleted_at IS NONE AND name_token_hashes CONTAINSALL $hashes LIMIT 1")
+            .bind(("hashes", hashes_vec))
+            .await?;
+        let threads: Vec<Thread> = result.take(0)?;
+        Ok(threads.into_iter().next())
+    }
+
+    async fn set_thread_encryption(
+        &self,
+        id: &str,
+        name_ciphertext: &str,
+        name_nonce: &str,
+        description_ciphertext: &str,
+        description_nonce: &str,
+        name_token_hashes: &[String],
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "thread")?;
+        let _: Option<Thread> = self
+            .db
+            .query(
+                "UPDATE type::thing($table, $key) SET \
+                 name = $name, name_nonce = $name_nonce, \
+                 description = $description, description_nonce = $description_nonce, \
+                 name_token_hashes = $hashes",
+            )
+            .bind(("table", table.to_string()))
+            .bind(("key", key.to_string()))
+            .bind(("name", name_ciphertext.to_string()))
+            .bind(("name_nonce", name_nonce.to_string()))
+            .bind(("description", description_ciphertext.to_string()))
+            .bind(("description_nonce", description_nonce.to_string()))
+            .bind(("hashes", name_token_hashes.to_vec()))
+            .await?
+            .take(0)?;
+        Ok(())
     }
 
     async fn update_thread(
@@ -836,6 +925,44 @@ impl GraphDB for SurrealGraphDB {
         Ok(())
     }
 
+    async fn set_contact_name_encryption(
+        &self,
+        id: &str,
+        name_ciphertext: &str,
+        name_nonce: &str,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "contact")?;
+        let _: Option<Contact> = self
+            .db
+            .query("UPDATE type::thing($table, $key) SET name = $name, name_nonce = $name_nonce")
+            .bind(("table", table.to_string()))
+            .bind(("key", key.to_string()))
+            .bind(("name", name_ciphertext.to_string()))
+            .bind(("name_nonce", name_nonce.to_string()))
+            .await?
+            .take(0)?;
+        Ok(())
+    }
+
+    async fn set_contact_notes_encryption(
+        &self,
+        id: &str,
+        notes_ciphertext: &str,
+        notes_nonce: &str,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "contact")?;
+        let _: Option<Contact> = self
+            .db
+            .query("UPDATE type::thing($table, $key) SET notes = $notes, encryption_nonce = $nonce")
+            .bind(("table", table.to_string()))
+            .bind(("key", key.to_string()))
+            .bind(("notes", notes_ciphertext.to_string()))
+            .bind(("nonce", notes_nonce.to_string()))
+            .await?
+            .take(0)?;
+        Ok(())
+    }
+
     async fn soft_delete_contact(&self, id: &str) -> DbResult<()> {
         let (table, key) = parse_and_validate(id, "contact")?;
         let result: Option<Contact> = self.db
@@ -1100,6 +1227,25 @@ impl GraphDB for SurrealGraphDB {
         Ok(())
     }
 
+    async fn set_conversation_title_encryption(
+        &self,
+        id: &str,
+        title_ciphertext: &str,
+        title_nonce: &str,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "conversation")?;
+        let _: Option<Conversation> = self
+            .db
+            .query("UPDATE type::thing($table, $key) SET title = $title, title_nonce = $title_nonce")
+            .bind(("table", table.to_string()))
+            .bind(("key", key.to_string()))
+            .bind(("title", title_ciphertext.to_string()))
+            .bind(("title_nonce", title_nonce.to_string()))
+            .await?
+            .take(0)?;
+        Ok(())
+    }
+
     async fn link_conversation_to_thread(
         &self,
         conversation_id: &str,
@@ -1241,6 +1387,25 @@ impl GraphDB for SurrealGraphDB {
             .content(record)
             .await?;
         created.ok_or_else(|| DbError::Query("Failed to create share_record".into()))
+    }
+
+    async fn set_share_record_via_url_encryption(
+        &self,
+        id: &str,
+        via_url_ciphertext: &str,
+        via_url_nonce: &str,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "share_record")?;
+        let _: Option<ShareRecord> = self
+            .db
+            .query("UPDATE type::thing($table, $key) SET via_url = $url, via_url_nonce = $nonce")
+            .bind(("table", table.to_string()))
+            .bind(("key", key.to_string()))
+            .bind(("url", via_url_ciphertext.to_string()))
+            .bind(("nonce", via_url_nonce.to_string()))
+            .await?
+            .take(0)?;
+        Ok(())
     }
 
     async fn list_all_share_records(&self) -> DbResult<Vec<ShareRecord>> {

@@ -142,6 +142,42 @@ impl GraphDB for MockGraphDB {
         Ok(result)
     }
 
+    async fn search_documents_by_title_token_hashes(
+        &self,
+        hashes: &[String],
+    ) -> DbResult<Vec<Document>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let docs = self.documents.read().unwrap();
+        let mut result: Vec<Document> = docs.values()
+            .filter(|d| {
+                d.deleted_at.is_none()
+                    && hashes.iter().all(|h| d.title_token_hashes.contains(h))
+            })
+            .cloned()
+            .collect();
+        result.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        if result.len() > 20 { result.truncate(20); }
+        Ok(result)
+    }
+
+    async fn set_document_title_encryption(
+        &self,
+        id: &str,
+        title_ciphertext: &str,
+        title_nonce: &str,
+        title_token_hashes: &[String],
+    ) -> DbResult<()> {
+        let mut docs = self.documents.write().unwrap();
+        let doc = docs.get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        doc.title = title_ciphertext.to_string();
+        doc.title_nonce = Some(title_nonce.to_string());
+        doc.title_token_hashes = title_token_hashes.to_vec();
+        Ok(())
+    }
+
     async fn create_thread(&self, mut thread: Thread) -> DbResult<Thread> {
         let key = self.next_key();
         let thing = Self::make_thing("thread", &key);
@@ -186,6 +222,42 @@ impl GraphDB for MockGraphDB {
         Ok(threads.values()
             .find(|t| t.deleted_at.is_none() && t.name.to_lowercase().contains(&n))
             .cloned())
+    }
+
+    async fn find_thread_by_name_token_hashes(
+        &self,
+        hashes: &[String],
+    ) -> DbResult<Option<Thread>> {
+        if hashes.is_empty() {
+            return Ok(None);
+        }
+        let threads = self.threads.read().unwrap();
+        Ok(threads.values()
+            .find(|t| {
+                t.deleted_at.is_none()
+                    && hashes.iter().all(|h| t.name_token_hashes.contains(h))
+            })
+            .cloned())
+    }
+
+    async fn set_thread_encryption(
+        &self,
+        id: &str,
+        name_ciphertext: &str,
+        name_nonce: &str,
+        description_ciphertext: &str,
+        description_nonce: &str,
+        name_token_hashes: &[String],
+    ) -> DbResult<()> {
+        let mut threads = self.threads.write().unwrap();
+        let t = threads.get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        t.name = name_ciphertext.to_string();
+        t.name_nonce = Some(name_nonce.to_string());
+        t.description = description_ciphertext.to_string();
+        t.description_nonce = Some(description_nonce.to_string());
+        t.name_token_hashes = name_token_hashes.to_vec();
+        Ok(())
     }
 
     async fn move_document_to_thread(&self, doc_id: &str, new_thread_id: &str) -> DbResult<Document> {
@@ -482,6 +554,34 @@ impl GraphDB for MockGraphDB {
         Ok(())
     }
 
+    async fn set_contact_name_encryption(
+        &self,
+        id: &str,
+        name_ciphertext: &str,
+        name_nonce: &str,
+    ) -> DbResult<()> {
+        let mut contacts = self.contacts.write().unwrap();
+        let c = contacts.get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        c.name = name_ciphertext.to_string();
+        c.name_nonce = Some(name_nonce.to_string());
+        Ok(())
+    }
+
+    async fn set_contact_notes_encryption(
+        &self,
+        id: &str,
+        notes_ciphertext: &str,
+        notes_nonce: &str,
+    ) -> DbResult<()> {
+        let mut contacts = self.contacts.write().unwrap();
+        let c = contacts.get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        c.notes = notes_ciphertext.to_string();
+        c.encryption_nonce = Some(notes_nonce.to_string());
+        Ok(())
+    }
+
     async fn soft_delete_contact(&self, id: &str) -> DbResult<()> {
         let mut contacts = self.contacts.write().unwrap();
         if let Some(c) = contacts.get_mut(id) {
@@ -660,6 +760,20 @@ impl GraphDB for MockGraphDB {
         Ok(())
     }
 
+    async fn set_conversation_title_encryption(
+        &self,
+        id: &str,
+        title_ciphertext: &str,
+        title_nonce: &str,
+    ) -> DbResult<()> {
+        let mut convs = self.conversations.write().unwrap();
+        let c = convs.get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        c.title = title_ciphertext.to_string();
+        c.title_nonce = Some(title_nonce.to_string());
+        Ok(())
+    }
+
     async fn link_conversation_to_thread(&self, conversation_id: &str, thread_id: &str) -> DbResult<Conversation> {
         let mut convs = self.conversations.write().unwrap();
         let conv = convs.get_mut(conversation_id).ok_or_else(|| DbError::NotFound(conversation_id.to_string()))?;
@@ -786,6 +900,20 @@ impl GraphDB for MockGraphDB {
         record.id = Some(thing);
         self.share_records.write().unwrap().insert(id_str, record.clone());
         Ok(record)
+    }
+
+    async fn set_share_record_via_url_encryption(
+        &self,
+        id: &str,
+        via_url_ciphertext: &str,
+        via_url_nonce: &str,
+    ) -> DbResult<()> {
+        let mut records = self.share_records.write().unwrap();
+        let r = records.get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        r.via_url = Some(via_url_ciphertext.to_string());
+        r.via_url_nonce = Some(via_url_nonce.to_string());
+        Ok(())
     }
 
     async fn list_share_records_for_entity(

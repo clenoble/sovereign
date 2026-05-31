@@ -36,7 +36,27 @@ pub trait GraphDB: Send + Sync {
     async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()>;
 
     /// Search documents by title (case-insensitive substring match).
+    /// On `EncryptedGraphDB`, tokenizes + hashes the query and delegates to
+    /// `search_documents_by_title_token_hashes`. On raw `SurrealGraphDB`,
+    /// does a SurrealQL `string::lowercase(title) CONTAINS …` query.
     async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>>;
+
+    /// Blind-index lookup over `document.title_token_hashes` (CONTAINSALL).
+    async fn search_documents_by_title_token_hashes(
+        &self,
+        hashes: &[String],
+    ) -> DbResult<Vec<Document>>;
+
+    /// Internal setter used by `EncryptedGraphDB::create_document` /
+    /// `update_document` to write back encrypted title fields. The id-passed-in
+    /// must already exist in the DB.
+    async fn set_document_title_encryption(
+        &self,
+        id: &str,
+        title_ciphertext: &str,
+        title_nonce: &str,
+        title_token_hashes: &[String],
+    ) -> DbResult<()>;
 
     /// Update a document's reliability assessment fields.
     async fn update_document_reliability(
@@ -62,7 +82,28 @@ pub trait GraphDB: Send + Sync {
     async fn delete_thread(&self, id: &str) -> DbResult<()>;
 
     /// Find a thread by name (case-insensitive substring match). Returns first match.
+    /// On `EncryptedGraphDB`, tokenizes + hashes the name and delegates to
+    /// `find_thread_by_name_token_hashes`.
     async fn find_thread_by_name(&self, name: &str) -> DbResult<Option<Thread>>;
+
+    /// Blind-index lookup over `thread.name_token_hashes` (CONTAINSALL).
+    /// Returns first matching active thread, or None.
+    async fn find_thread_by_name_token_hashes(
+        &self,
+        hashes: &[String],
+    ) -> DbResult<Option<Thread>>;
+
+    /// Internal setter used by `EncryptedGraphDB` after `create_thread` /
+    /// `update_thread`. Writes encrypted name + description and name token hashes.
+    async fn set_thread_encryption(
+        &self,
+        id: &str,
+        name_ciphertext: &str,
+        name_nonce: &str,
+        description_ciphertext: &str,
+        description_nonce: &str,
+        name_token_hashes: &[String],
+    ) -> DbResult<()>;
 
     async fn move_document_to_thread(
         &self,
@@ -208,6 +249,27 @@ pub trait GraphDB: Send + Sync {
     /// Hard-delete a contact.
     async fn delete_contact(&self, id: &str) -> DbResult<()>;
 
+    /// Internal setter for the encrypted `name` field on Contact. Writes
+    /// ciphertext and the paired nonce; leaves `notes` and its nonce untouched.
+    async fn set_contact_name_encryption(
+        &self,
+        id: &str,
+        name_ciphertext: &str,
+        name_nonce: &str,
+    ) -> DbResult<()>;
+
+    /// Internal setter for the encrypted `notes` field on Contact. Writes
+    /// ciphertext and the paired `encryption_nonce`. Fixes a pre-Phase-2b path
+    /// where notes ciphertext landed in the row but the nonce never did
+    /// (`update_contact` doesn't write `encryption_nonce`), so subsequent
+    /// reads returned ciphertext as plaintext.
+    async fn set_contact_notes_encryption(
+        &self,
+        id: &str,
+        notes_ciphertext: &str,
+        notes_nonce: &str,
+    ) -> DbResult<()>;
+
     /// Soft-delete a contact.
     async fn soft_delete_contact(&self, id: &str) -> DbResult<()>;
 
@@ -299,6 +361,14 @@ pub trait GraphDB: Send + Sync {
 
     /// Create a new conversation.
     async fn create_conversation(&self, conversation: Conversation) -> DbResult<Conversation>;
+
+    /// Internal setter for the encrypted `title` field on Conversation.
+    async fn set_conversation_title_encryption(
+        &self,
+        id: &str,
+        title_ciphertext: &str,
+        title_nonce: &str,
+    ) -> DbResult<()>;
 
     /// Get a conversation by ID.
     async fn get_conversation(&self, id: &str) -> DbResult<Conversation>;
@@ -404,6 +474,15 @@ pub trait GraphDB: Send + Sync {
     /// disclosed to an `Entity` at a moment in time. Always outbound;
     /// receiving PII isn't tracked here.
     async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord>;
+
+    /// Internal setter for the encrypted `via_url` field on ShareRecord.
+    /// No-op when `via_url` was None at create time (nothing to encrypt).
+    async fn set_share_record_via_url_encryption(
+        &self,
+        id: &str,
+        via_url_ciphertext: &str,
+        via_url_nonce: &str,
+    ) -> DbResult<()>;
 
     /// List share records where `to_entity_id == entity_id`. Used by
     /// the dashboard's Shared tab on the entity-detail panel. Order:

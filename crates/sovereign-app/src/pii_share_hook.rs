@@ -85,6 +85,7 @@ impl PiiShareHook {
                     via_url: None,
                     shared_at,
                     channel: share_channel.clone(),
+                    via_url_nonce: None,
                 };
                 if let Err(e) = self.db.create_share_record(share).await {
                     tracing::warn!(
