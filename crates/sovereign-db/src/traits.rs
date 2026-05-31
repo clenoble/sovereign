@@ -261,7 +261,39 @@ pub trait GraphDB: Send + Sync {
     ) -> DbResult<Vec<Message>>;
 
     /// Search messages by body or subject text.
+    ///
+    /// On an `EncryptedGraphDB`, this tokenizes the query, hashes the tokens
+    /// against the per-DB index key, and delegates to
+    /// `search_messages_by_token_hashes` on the inner DB. On a raw `SurrealGraphDB`
+    /// it does a plaintext CONTAINS query against body/subject (used for tests
+    /// against unencrypted DBs and for any inner DB whose data is still plaintext).
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>>;
+
+    /// Search messages by precomputed blind-index token hashes (CONTAINSALL semantics).
+    ///
+    /// All supplied hashes must be present in a row's `body_token_hashes` for it
+    /// to match. An empty `hashes` slice matches nothing (callers should short-circuit).
+    async fn search_messages_by_token_hashes(
+        &self,
+        hashes: &[String],
+    ) -> DbResult<Vec<Message>>;
+
+    /// Internal setter used by `EncryptedGraphDB` to write back the ciphertext
+    /// fields after a message is created. Updates body, subject, body_html and
+    /// their nonces, plus the body_token_hashes index array. The id-passed-in
+    /// must already exist in the DB. Not intended to be called by application
+    /// code — use `create_message` / `EncryptedGraphDB::create_message`.
+    async fn set_message_encryption(
+        &self,
+        id: &str,
+        body_ciphertext: &str,
+        body_nonce: &str,
+        subject_ciphertext: Option<&str>,
+        subject_nonce: Option<&str>,
+        body_html_ciphertext: Option<&str>,
+        body_html_nonce: Option<&str>,
+        body_token_hashes: &[String],
+    ) -> DbResult<()>;
 
     // -- Conversations ---
 

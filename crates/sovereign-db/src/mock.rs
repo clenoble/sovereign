@@ -575,6 +575,47 @@ impl GraphDB for MockGraphDB {
             .collect())
     }
 
+    async fn search_messages_by_token_hashes(
+        &self,
+        hashes: &[String],
+    ) -> DbResult<Vec<Message>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let msgs = self.messages.read().unwrap();
+        Ok(msgs.values()
+            .filter(|m| {
+                m.deleted_at.is_none()
+                    && hashes.iter().all(|h| m.body_token_hashes.contains(h))
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn set_message_encryption(
+        &self,
+        id: &str,
+        body_ciphertext: &str,
+        body_nonce: &str,
+        subject_ciphertext: Option<&str>,
+        subject_nonce: Option<&str>,
+        body_html_ciphertext: Option<&str>,
+        body_html_nonce: Option<&str>,
+        body_token_hashes: &[String],
+    ) -> DbResult<()> {
+        let mut msgs = self.messages.write().unwrap();
+        let msg = msgs.get_mut(id)
+            .ok_or_else(|| crate::error::DbError::NotFound(id.to_string()))?;
+        msg.body = body_ciphertext.to_string();
+        msg.body_nonce = Some(body_nonce.to_string());
+        msg.subject = subject_ciphertext.map(|s| s.to_string());
+        msg.subject_nonce = subject_nonce.map(|s| s.to_string());
+        msg.body_html = body_html_ciphertext.map(|s| s.to_string());
+        msg.body_html_nonce = body_html_nonce.map(|s| s.to_string());
+        msg.body_token_hashes = body_token_hashes.to_vec();
+        Ok(())
+    }
+
     async fn create_conversation(&self, mut conv: Conversation) -> DbResult<Conversation> {
         let key = self.next_key();
         let thing = Self::make_thing("conversation", &key);

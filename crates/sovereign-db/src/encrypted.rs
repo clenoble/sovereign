@@ -9,6 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use base64::Engine;
 use sovereign_crypto::aead;
+use sovereign_crypto::index_key::{self, IndexKey};
 use sovereign_crypto::kek::Kek;
 use sovereign_crypto::key_db::KeyDatabase;
 use tokio::sync::RwLock;
@@ -21,46 +22,71 @@ use crate::schema::{
 };
 use crate::traits::GraphDB;
 
-/// A GraphDB wrapper that encrypts/decrypts document content transparently.
+/// Cap on tokens emitted per message into the blind-index. Bounds storage cost
+/// on pathological inputs; chosen wide enough not to truncate normal chat.
+const MESSAGE_TOKEN_CAP: usize = 256;
+
+/// A GraphDB wrapper that encrypts/decrypts content transparently.
+///
+/// Per-entity-type key databases (separate `KeyDatabase` files, separate
+/// `RwLock`s) keep message and document encryption paths from contending for
+/// the same lock. See handover for Phase 2a design.
 pub struct EncryptedGraphDB {
     inner: Arc<dyn GraphDB>,
     key_db: Arc<RwLock<KeyDatabase>>,
+    messages_key_db: Arc<RwLock<KeyDatabase>>,
     kek: Arc<Kek>,
+    index_key: Arc<IndexKey>,
 }
 
 impl EncryptedGraphDB {
     pub fn new(
         inner: Arc<dyn GraphDB>,
         key_db: Arc<RwLock<KeyDatabase>>,
+        messages_key_db: Arc<RwLock<KeyDatabase>>,
         kek: Arc<Kek>,
+        index_key: Arc<IndexKey>,
     ) -> Self {
-        Self { inner, key_db, kek }
+        Self { inner, key_db, messages_key_db, kek, index_key }
     }
 
-    /// Encrypt document content, returning the encrypted content string and nonce.
-    async fn encrypt_content(&self, doc_id: &str, plaintext: &str) -> DbResult<(String, String)> {
-        let mut key_db = self.key_db.write().await;
-        let doc_key = if key_db.contains(doc_id) {
-            key_db.unwrap_current(doc_id, &self.kek)
+    /// Encrypt content under a per-entity key from the given key DB. Generates
+    /// a fresh nonce per call (safe with random nonces under XChaCha20-Poly1305).
+    async fn encrypt_with(
+        &self,
+        key_db: &Arc<RwLock<KeyDatabase>>,
+        entity_id: &str,
+        plaintext: &[u8],
+    ) -> DbResult<(String, String)> {
+        let mut kdb = key_db.write().await;
+        let entity_key = if kdb.contains(entity_id) {
+            kdb.unwrap_current(entity_id, &self.kek)
                 .map_err(|e| DbError::Query(format!("key unwrap failed: {e}")))?
         } else {
-            let epoch = key_db
-                .get_all(doc_id)
+            let epoch = kdb
+                .get_all(entity_id)
                 .map(|keys| keys.len() as u32 + 1)
                 .unwrap_or(1);
-            key_db.create_document_key(doc_id, &self.kek, epoch)
+            kdb.create_document_key(entity_id, &self.kek, epoch)
                 .map_err(|e| DbError::Query(format!("key creation failed: {e}")))?
         };
 
-        let (ciphertext, nonce) = aead::encrypt(plaintext.as_bytes(), doc_key.as_bytes())
+        let (ciphertext, nonce) = aead::encrypt(plaintext, entity_key.as_bytes())
             .map_err(|e| DbError::Query(format!("encryption failed: {e}")))?;
 
         let b64 = base64::engine::general_purpose::STANDARD;
         Ok((b64.encode(&ciphertext), b64.encode(&nonce)))
     }
 
-    /// Decrypt document content using the stored key.
-    async fn decrypt_content(&self, doc_id: &str, ciphertext_b64: &str, nonce_b64: &str) -> DbResult<String> {
+    /// Decrypt content with the given key DB. `nonce_b64` must be a 24-byte
+    /// XChaCha20 nonce. Returns the plaintext as a UTF-8 String.
+    async fn decrypt_with(
+        &self,
+        key_db: &Arc<RwLock<KeyDatabase>>,
+        entity_id: &str,
+        ciphertext_b64: &str,
+        nonce_b64: &str,
+    ) -> DbResult<String> {
         let b64 = base64::engine::general_purpose::STANDARD;
         let ciphertext = b64.decode(ciphertext_b64)
             .map_err(|e| DbError::Query(format!("base64 decode ciphertext: {e}")))?;
@@ -76,15 +102,64 @@ impl EncryptedGraphDB {
         let mut nonce = [0u8; 24];
         nonce.copy_from_slice(&nonce_bytes);
 
-        let key_db = self.key_db.read().await;
-        let doc_key = key_db.unwrap_current(doc_id, &self.kek)
+        let kdb = key_db.read().await;
+        let entity_key = kdb.unwrap_current(entity_id, &self.kek)
             .map_err(|e| DbError::Query(format!("key unwrap failed: {e}")))?;
 
-        let plaintext = aead::decrypt(&ciphertext, &nonce, doc_key.as_bytes())
+        let plaintext = aead::decrypt(&ciphertext, &nonce, entity_key.as_bytes())
             .map_err(|e| DbError::Query(format!("decryption failed: {e}")))?;
 
         String::from_utf8(plaintext)
             .map_err(|e| DbError::Query(format!("UTF-8 decode failed: {e}")))
+    }
+
+    // -- Document key-db shims (preserve existing call sites) --
+
+    async fn encrypt_content(&self, doc_id: &str, plaintext: &str) -> DbResult<(String, String)> {
+        self.encrypt_with(&self.key_db, doc_id, plaintext.as_bytes()).await
+    }
+
+    async fn decrypt_content(&self, doc_id: &str, ciphertext_b64: &str, nonce_b64: &str) -> DbResult<String> {
+        self.decrypt_with(&self.key_db, doc_id, ciphertext_b64, nonce_b64).await
+    }
+
+    // -- Message helpers --
+
+    /// Decrypt a message's encrypted fields in-place. Idempotent on rows with
+    /// no body_nonce (treated as plaintext / unencrypted legacy rows).
+    async fn decrypt_message(&self, mut msg: Message) -> DbResult<Message> {
+        let msg_id = msg.id.as_ref()
+            .map(|t| crate::schema::thing_to_raw(t))
+            .unwrap_or_default();
+        if msg_id.is_empty() {
+            return Ok(msg);
+        }
+        if let Some(nonce) = msg.body_nonce.take() {
+            msg.body = self.decrypt_with(&self.messages_key_db, &msg_id, &msg.body, &nonce).await?;
+        }
+        if let (Some(subject_ct), Some(nonce)) = (msg.subject.take(), msg.subject_nonce.take()) {
+            msg.subject = Some(self.decrypt_with(&self.messages_key_db, &msg_id, &subject_ct, &nonce).await?);
+        }
+        if let (Some(html_ct), Some(nonce)) = (msg.body_html.take(), msg.body_html_nonce.take()) {
+            msg.body_html = Some(self.decrypt_with(&self.messages_key_db, &msg_id, &html_ct, &nonce).await?);
+        }
+        // body_token_hashes are not user-visible — clear so callers can't accidentally re-emit them.
+        msg.body_token_hashes.clear();
+        Ok(msg)
+    }
+
+    async fn decrypt_messages(&self, msgs: Vec<Message>) -> DbResult<Vec<Message>> {
+        let mut out = Vec::with_capacity(msgs.len());
+        for m in msgs {
+            out.push(self.decrypt_message(m).await?);
+        }
+        Ok(out)
+    }
+
+    /// Hash the (lowercased, deduped) tokens in `text` using the per-DB index key.
+    fn token_hashes(&self, text: &str) -> Vec<String> {
+        let tokens = index_key::tokenize(text, MESSAGE_TOKEN_CAP);
+        tokens.iter().map(|t| self.index_key.hash_token(t.as_bytes())).collect()
     }
 
     /// Decrypt a document's content if it has an encryption nonce.
@@ -462,23 +537,64 @@ impl GraphDB for EncryptedGraphDB {
         Ok(contact)
     }
 
-    // -- Messages: encrypt body and body_html ---
+    // -- Messages: encrypt body, subject, body_html with per-field nonces ---
 
     async fn create_message(&self, message: Message) -> DbResult<Message> {
-        // Pass through — message body encryption deferred to when an update_message method exists.
-        self.inner.create_message(message).await
+        // Compute blind-index hashes from plaintext before we lose them.
+        let mut combined = String::with_capacity(
+            message.body.len() + message.subject.as_deref().map(|s| s.len() + 1).unwrap_or(0),
+        );
+        if let Some(s) = &message.subject {
+            combined.push_str(s);
+            combined.push(' ');
+        }
+        combined.push_str(&message.body);
+        let token_hashes = self.token_hashes(&combined);
+
+        // Create first so the DB assigns an ID; that ID is the key-DB entry name.
+        let created = self.inner.create_message(message).await?;
+        let msg_id = created.id.as_ref()
+            .map(|t| crate::schema::thing_to_raw(t))
+            .unwrap_or_default();
+
+        // Encrypt each field with a fresh nonce under the per-message key.
+        let (body_ct, body_nonce) = self.encrypt_with(
+            &self.messages_key_db, &msg_id, created.body.as_bytes(),
+        ).await?;
+        let subject_enc = if let Some(s) = &created.subject {
+            let (ct, n) = self.encrypt_with(
+                &self.messages_key_db, &msg_id, s.as_bytes(),
+            ).await?;
+            Some((ct, n))
+        } else {
+            None
+        };
+        let body_html_enc = if let Some(h) = &created.body_html {
+            let (ct, n) = self.encrypt_with(
+                &self.messages_key_db, &msg_id, h.as_bytes(),
+            ).await?;
+            Some((ct, n))
+        } else {
+            None
+        };
+
+        self.inner.set_message_encryption(
+            &msg_id,
+            &body_ct, &body_nonce,
+            subject_enc.as_ref().map(|(ct, _)| ct.as_str()),
+            subject_enc.as_ref().map(|(_, n)| n.as_str()),
+            body_html_enc.as_ref().map(|(ct, _)| ct.as_str()),
+            body_html_enc.as_ref().map(|(_, n)| n.as_str()),
+            &token_hashes,
+        ).await?;
+
+        // Return plaintext to the caller (created already has plaintext fields).
+        Ok(created)
     }
 
     async fn get_message(&self, id: &str) -> DbResult<Message> {
-        let mut msg = self.inner.get_message(id).await?;
-        if let Some(nonce) = &msg.encryption_nonce {
-            msg.body = self.decrypt_content(id, &msg.body, nonce).await?;
-            if let Some(ref html) = msg.body_html {
-                msg.body_html = Some(self.decrypt_content(id, html, nonce).await?);
-            }
-            msg.encryption_nonce = None;
-        }
-        Ok(msg)
+        let msg = self.inner.get_message(id).await?;
+        self.decrypt_message(msg).await
     }
 
     async fn list_messages(
@@ -488,21 +604,7 @@ impl GraphDB for EncryptedGraphDB {
         limit: u32,
     ) -> DbResult<Vec<Message>> {
         let msgs = self.inner.list_messages(conversation_id, before, limit).await?;
-        let mut result = Vec::with_capacity(msgs.len());
-        for mut m in msgs {
-            if let Some(nonce) = &m.encryption_nonce {
-                let id = m.id.as_ref()
-                    .map(|t| crate::schema::thing_to_raw(t))
-                    .unwrap_or_default();
-                m.body = self.decrypt_content(&id, &m.body, nonce).await?;
-                if let Some(ref html) = m.body_html {
-                    m.body_html = Some(self.decrypt_content(&id, html, nonce).await?);
-                }
-                m.encryption_nonce = None;
-            }
-            result.push(m);
-        }
-        Ok(result)
+        self.decrypt_messages(msgs).await
     }
 
     async fn update_message_read_status(
@@ -510,7 +612,8 @@ impl GraphDB for EncryptedGraphDB {
         id: &str,
         status: ReadStatus,
     ) -> DbResult<Message> {
-        self.inner.update_message_read_status(id, status).await
+        let msg = self.inner.update_message_read_status(id, status).await?;
+        self.decrypt_message(msg).await
     }
 
     async fn delete_message(&self, id: &str) -> DbResult<()> {
@@ -519,21 +622,7 @@ impl GraphDB for EncryptedGraphDB {
 
     async fn list_all_messages(&self) -> DbResult<Vec<Message>> {
         let msgs = self.inner.list_all_messages().await?;
-        let mut result = Vec::with_capacity(msgs.len());
-        for mut m in msgs {
-            if let Some(nonce) = &m.encryption_nonce {
-                let id = m.id.as_ref()
-                    .map(|t| crate::schema::thing_to_raw(t))
-                    .unwrap_or_default();
-                m.body = self.decrypt_content(&id, &m.body, nonce).await?;
-                if let Some(ref html) = m.body_html {
-                    m.body_html = Some(self.decrypt_content(&id, html, nonce).await?);
-                }
-                m.encryption_nonce = None;
-            }
-            result.push(m);
-        }
-        Ok(result)
+        self.decrypt_messages(msgs).await
     }
 
     async fn list_messages_in_time_range(
@@ -543,26 +632,48 @@ impl GraphDB for EncryptedGraphDB {
         limit: u32,
     ) -> DbResult<Vec<Message>> {
         let msgs = self.inner.list_messages_in_time_range(after, before, limit).await?;
-        let mut result = Vec::with_capacity(msgs.len());
-        for mut m in msgs {
-            if let Some(nonce) = &m.encryption_nonce {
-                let id = m.id.as_ref()
-                    .map(|t| crate::schema::thing_to_raw(t))
-                    .unwrap_or_default();
-                m.body = self.decrypt_content(&id, &m.body, nonce).await?;
-                if let Some(ref html) = m.body_html {
-                    m.body_html = Some(self.decrypt_content(&id, html, nonce).await?);
-                }
-                m.encryption_nonce = None;
-            }
-            result.push(m);
-        }
-        Ok(result)
+        self.decrypt_messages(msgs).await
     }
 
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>> {
-        // Search operates on stored (potentially encrypted) content
-        self.inner.search_messages(query).await
+        // Tokenize the query, HMAC the tokens, and delegate to the blind-index lookup.
+        // Empty hash list short-circuits (no tokens => no match).
+        let hashes = self.token_hashes(query);
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let msgs = self.inner.search_messages_by_token_hashes(&hashes).await?;
+        self.decrypt_messages(msgs).await
+    }
+
+    async fn search_messages_by_token_hashes(
+        &self,
+        hashes: &[String],
+    ) -> DbResult<Vec<Message>> {
+        // Direct pass-through: caller already hashed under our index key.
+        let msgs = self.inner.search_messages_by_token_hashes(hashes).await?;
+        self.decrypt_messages(msgs).await
+    }
+
+    async fn set_message_encryption(
+        &self,
+        id: &str,
+        body_ciphertext: &str,
+        body_nonce: &str,
+        subject_ciphertext: Option<&str>,
+        subject_nonce: Option<&str>,
+        body_html_ciphertext: Option<&str>,
+        body_html_nonce: Option<&str>,
+        body_token_hashes: &[String],
+    ) -> DbResult<()> {
+        // Encrypted DB is the only legitimate caller; forward unchanged.
+        self.inner.set_message_encryption(
+            id,
+            body_ciphertext, body_nonce,
+            subject_ciphertext, subject_nonce,
+            body_html_ciphertext, body_html_nonce,
+            body_token_hashes,
+        ).await
     }
 
     // -- Conversations: pass through (title is not encrypted) ---
@@ -724,25 +835,50 @@ impl GraphDB for EncryptedGraphDB {
         body: &str,
         body_html: Option<&str>,
     ) -> DbResult<()> {
-        // Encrypt the rewritten canonical body just like create_message
-        // would have, so subsequent reads decrypt correctly. Reuse the
-        // existing per-doc key for this message ID.
-        let (encrypted_body, _nonce) = self
-            .encrypt_content(id, body)
-            .await
-            .map_err(|e| DbError::Query(format!("update_message_body encrypt: {e}")))?;
-        let encrypted_html = match body_html {
-            Some(h) => Some(
-                self.encrypt_content(id, h)
-                    .await
-                    .map(|(ct, _)| ct)
-                    .map_err(|e| DbError::Query(format!("update_message_body encrypt html: {e}")))?,
+        // PII pipeline rewrites the canonical body in place. To preserve the
+        // Phase-2a invariants we must: (a) re-encrypt the new plaintext body
+        // and body_html under the existing per-message key with fresh nonces,
+        // (b) recompute the blind-index hashes from the new plaintext body
+        // plus the unchanged plaintext subject, and (c) leave the subject
+        // ciphertext+nonce on disk unchanged.
+        let raw = self.inner.get_message(id).await?;
+        let plaintext_subject = match (&raw.subject, &raw.subject_nonce) {
+            (Some(ct), Some(nonce)) => Some(
+                self.decrypt_with(&self.messages_key_db, id, ct, nonce).await?,
             ),
-            None => None,
+            (Some(plain), None) => Some(plain.clone()), // legacy plaintext row
+            _ => None,
         };
-        self.inner
-            .update_message_body(id, &encrypted_body, encrypted_html.as_deref())
-            .await
+
+        let (body_ct, body_nonce) = self.encrypt_with(
+            &self.messages_key_db, id, body.as_bytes(),
+        ).await?;
+        let html_enc = if let Some(h) = body_html {
+            let (ct, n) = self.encrypt_with(
+                &self.messages_key_db, id, h.as_bytes(),
+            ).await?;
+            Some((ct, n))
+        } else {
+            None
+        };
+
+        let mut combined = String::new();
+        if let Some(s) = &plaintext_subject {
+            combined.push_str(s);
+            combined.push(' ');
+        }
+        combined.push_str(body);
+        let token_hashes = self.token_hashes(&combined);
+
+        self.inner.set_message_encryption(
+            id,
+            &body_ct, &body_nonce,
+            raw.subject.as_deref(),
+            raw.subject_nonce.as_deref(),
+            html_enc.as_ref().map(|(ct, _)| ct.as_str()),
+            html_enc.as_ref().map(|(_, n)| n.as_str()),
+            &token_hashes,
+        ).await
     }
 
     async fn update_message_pii_fields(
@@ -797,7 +933,9 @@ mod tests {
         let encrypted_db = EncryptedGraphDB {
             inner: Arc::new(MockDb),
             key_db: key_db.clone(),
+            messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-msgkeys.db")))),
             kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
+            index_key: Arc::new(IndexKey::generate()),
         };
 
         let plaintext = r#"{"body":"Hello, encrypted world!","images":[]}"#;
@@ -818,7 +956,9 @@ mod tests {
         let encrypted_db = EncryptedGraphDB {
             inner: Arc::new(MockDb),
             key_db,
+            messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-msgkeys2.db")))),
             kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
+            index_key: Arc::new(IndexKey::generate()),
         };
 
         let doc = Document::new("test".into(), "thread:1".into(), true);
@@ -833,10 +973,13 @@ mod tests {
         let kek2 = Kek::generate();
         let key_db = Arc::new(RwLock::new(test_key_db()));
 
+        let msg_db1 = Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-msgkeys3.db"))));
         let db1 = EncryptedGraphDB {
             inner: Arc::new(MockDb),
             key_db: key_db.clone(),
+            messages_key_db: msg_db1.clone(),
             kek: Arc::new(Kek::from_bytes(*kek1.as_bytes())),
+            index_key: Arc::new(IndexKey::generate()),
         };
 
         let (ct, nonce) = db1.encrypt_content("document:wrongkey", "secret").await.unwrap();
@@ -845,7 +988,9 @@ mod tests {
         let db2 = EncryptedGraphDB {
             inner: Arc::new(MockDb),
             key_db: key_db.clone(), // same key_db but different KEK
+            messages_key_db: msg_db1.clone(),
             kek: Arc::new(Kek::from_bytes(*kek2.as_bytes())),
+            index_key: Arc::new(IndexKey::generate()),
         };
 
         let result = db2.decrypt_content("document:wrongkey", &ct, &nonce).await;
@@ -918,6 +1063,18 @@ mod tests {
         async fn list_all_messages(&self) -> DbResult<Vec<Message>> { Ok(vec![]) }
         async fn list_messages_in_time_range(&self, _after: chrono::DateTime<chrono::Utc>, _before: chrono::DateTime<chrono::Utc>, _limit: u32) -> DbResult<Vec<Message>> { Ok(vec![]) }
         async fn search_messages(&self, _query: &str) -> DbResult<Vec<Message>> { Ok(vec![]) }
+        async fn search_messages_by_token_hashes(&self, _hashes: &[String]) -> DbResult<Vec<Message>> { Ok(vec![]) }
+        async fn set_message_encryption(
+            &self,
+            _id: &str,
+            _body_ciphertext: &str,
+            _body_nonce: &str,
+            _subject_ciphertext: Option<&str>,
+            _subject_nonce: Option<&str>,
+            _body_html_ciphertext: Option<&str>,
+            _body_html_nonce: Option<&str>,
+            _body_token_hashes: &[String],
+        ) -> DbResult<()> { Ok(()) }
         // Conversations
         async fn create_conversation(&self, conversation: Conversation) -> DbResult<Conversation> { Ok(conversation) }
         async fn get_conversation(&self, _id: &str) -> DbResult<Conversation> { Err(DbError::NotFound("mock".into())) }
@@ -946,5 +1103,176 @@ mod tests {
         async fn update_message_body(&self, _id: &str, _body: &str, _body_html: Option<&str>) -> DbResult<()> { Ok(()) }
         async fn update_message_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
         async fn update_contact_pii_fields(&self, _id: &str, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
+    }
+
+    // ── Phase 2a behavioural tests: Message.body + subject encryption + blind-index search ──
+
+    use crate::mock::MockGraphDB;
+    use crate::schema::{ChannelType, Message, MessageDirection};
+
+    /// Builder: an EncryptedGraphDB wrapping a fresh MockGraphDB with unique
+    /// scratch paths for the per-entity key DBs. Per-test isolation.
+    fn build_encrypted_db(tag: &str) -> (Arc<MockGraphDB>, EncryptedGraphDB) {
+        let inner = Arc::new(MockGraphDB::new());
+        let kek = Kek::generate();
+        let key_db = Arc::new(RwLock::new(KeyDatabase::new(
+            std::env::temp_dir().join(format!("test-{tag}-doc-keys.db")),
+        )));
+        let msg_key_db = Arc::new(RwLock::new(KeyDatabase::new(
+            std::env::temp_dir().join(format!("test-{tag}-msg-keys.db")),
+        )));
+        let index_key = Arc::new(IndexKey::generate());
+        let edb = EncryptedGraphDB {
+            inner: inner.clone(),
+            key_db,
+            messages_key_db: msg_key_db,
+            kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
+            index_key,
+        };
+        (inner, edb)
+    }
+
+    fn sample_message(conv: &str, body: &str, subject: Option<&str>) -> Message {
+        let mut m = Message::new(
+            conv.to_string(),
+            ChannelType::Email,
+            MessageDirection::Inbound,
+            "contact:from".to_string(),
+            vec!["contact:to".to_string()],
+            body.to_string(),
+        );
+        m.subject = subject.map(|s| s.to_string());
+        m
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn message_body_and_subject_roundtrip() {
+        let (inner, edb) = build_encrypted_db("roundtrip");
+        let msg = sample_message(
+            "conv:1",
+            "The quarterly numbers landed and they look strong.",
+            Some("Q4 results"),
+        );
+        let created = edb.create_message(msg.clone()).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        // Caller sees plaintext
+        let got = edb.get_message(&id).await.unwrap();
+        assert_eq!(got.body, msg.body);
+        assert_eq!(got.subject.as_deref(), Some("Q4 results"));
+        assert!(got.body_nonce.is_none(), "decrypted view exposes no body_nonce");
+        assert!(got.subject_nonce.is_none());
+        assert!(got.body_token_hashes.is_empty(), "decrypted view clears index hashes");
+
+        // Inner row is ciphertext
+        let raw = inner.get_message(&id).await.unwrap();
+        assert_ne!(raw.body, msg.body, "body at rest must be ciphertext");
+        assert_ne!(raw.subject.as_deref(), Some("Q4 results"), "subject at rest must be ciphertext");
+        assert!(raw.body_nonce.is_some(), "body_nonce must be set after encryption");
+        assert!(raw.subject_nonce.is_some(), "subject_nonce must be set after encryption");
+        assert!(!raw.body_token_hashes.is_empty(), "token hashes must populate for search");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn search_returns_messages_with_matching_tokens() {
+        let (_, edb) = build_encrypted_db("search-hit");
+        edb.create_message(sample_message("conv:1", "let us discuss the budget tomorrow", None)).await.unwrap();
+        edb.create_message(sample_message("conv:1", "weather is nice today", None)).await.unwrap();
+        edb.create_message(sample_message("conv:1", "budget approval needed", Some("urgent"))).await.unwrap();
+
+        let hits = edb.search_messages("budget").await.unwrap();
+        assert_eq!(hits.len(), 2);
+        for hit in &hits {
+            assert!(hit.body.contains("budget"), "got plaintext body containing match");
+            assert!(hit.body_nonce.is_none(), "search results are decrypted");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn search_subject_only_match() {
+        let (_, edb) = build_encrypted_db("search-subj");
+        edb.create_message(sample_message(
+            "conv:1",
+            "see attached",
+            Some("invoice from supplier"),
+        )).await.unwrap();
+
+        let hits = edb.search_messages("invoice").await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].subject.as_deref(), Some("invoice from supplier"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn search_miss_returns_empty() {
+        let (_, edb) = build_encrypted_db("search-miss");
+        edb.create_message(sample_message("conv:1", "lunch tomorrow", None)).await.unwrap();
+        let hits = edb.search_messages("zebrafish").await.unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn search_empty_query_returns_empty() {
+        let (_, edb) = build_encrypted_db("search-empty");
+        edb.create_message(sample_message("conv:1", "anything at all", None)).await.unwrap();
+        let hits = edb.search_messages("").await.unwrap();
+        assert!(hits.is_empty(), "empty query has no tokens, must not return the world");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn search_requires_all_tokens() {
+        // CONTAINSALL semantics: every query token must appear.
+        let (_, edb) = build_encrypted_db("search-all");
+        edb.create_message(sample_message("conv:1", "alpha beta gamma", None)).await.unwrap();
+        edb.create_message(sample_message("conv:1", "alpha delta", None)).await.unwrap();
+
+        let both = edb.search_messages("alpha beta").await.unwrap();
+        assert_eq!(both.len(), 1, "only the alpha+beta row should match");
+        assert!(both[0].body.contains("beta"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn search_skips_soft_deleted_messages() {
+        let (inner, edb) = build_encrypted_db("search-deleted");
+        let created = edb.create_message(sample_message("conv:1", "secret plan", None)).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        // soft-delete via the inner DB (sets deleted_at on the row)
+        inner.delete_message(&id).await.unwrap();
+
+        let hits = edb.search_messages("secret").await.unwrap();
+        assert!(hits.is_empty(), "deleted_at IS NOT NONE rows must be excluded");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn different_index_keys_produce_different_hashes_on_disk() {
+        let (inner_a, edb_a) = build_encrypted_db("idx-a");
+        let (inner_b, edb_b) = build_encrypted_db("idx-b");
+        edb_a.create_message(sample_message("conv:1", "shared text here", None)).await.unwrap();
+        edb_b.create_message(sample_message("conv:1", "shared text here", None)).await.unwrap();
+
+        let a_rows = inner_a.list_all_messages().await.unwrap();
+        let b_rows = inner_b.list_all_messages().await.unwrap();
+        assert_eq!(a_rows.len(), 1);
+        assert_eq!(b_rows.len(), 1);
+        assert_ne!(
+            a_rows[0].body_token_hashes,
+            b_rows[0].body_token_hashes,
+            "same plaintext under different index keys must hash differently",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn list_messages_decrypts_all() {
+        let (_, edb) = build_encrypted_db("list");
+        for body in ["one", "two three four", "five six seven eight"] {
+            edb.create_message(sample_message("conv:1", body, None)).await.unwrap();
+        }
+        let listed = edb.list_messages("conv:1", None, 100).await.unwrap();
+        assert_eq!(listed.len(), 3);
+        for m in &listed {
+            assert!(m.body_nonce.is_none(), "list_messages returns decrypted views");
+            // Plaintext bodies are short ASCII words — never base64.
+            assert!(!m.body.contains('='), "no base64 padding leaked through");
+        }
     }
 }

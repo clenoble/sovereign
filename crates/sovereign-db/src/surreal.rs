@@ -975,6 +975,60 @@ impl GraphDB for SurrealGraphDB {
         Ok(msgs)
     }
 
+    async fn search_messages_by_token_hashes(
+        &self,
+        hashes: &[String],
+    ) -> DbResult<Vec<Message>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        // CONTAINSALL: every supplied hash must be present in body_token_hashes.
+        // SurrealDB infers the array element type from the bound value.
+        let hashes_vec: Vec<String> = hashes.to_vec();
+        let mut result = self
+            .db
+            .query("SELECT * FROM message WHERE deleted_at IS NONE AND body_token_hashes CONTAINSALL $hashes ORDER BY sent_at DESC LIMIT 50")
+            .bind(("hashes", hashes_vec))
+            .await?;
+        let msgs: Vec<Message> = result.take(0)?;
+        Ok(msgs)
+    }
+
+    async fn set_message_encryption(
+        &self,
+        id: &str,
+        body_ciphertext: &str,
+        body_nonce: &str,
+        subject_ciphertext: Option<&str>,
+        subject_nonce: Option<&str>,
+        body_html_ciphertext: Option<&str>,
+        body_html_nonce: Option<&str>,
+        body_token_hashes: &[String],
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "message")?;
+        let _: Option<Message> = self
+            .db
+            .query(
+                "UPDATE type::thing($table, $key) SET \
+                 body = $body, body_nonce = $body_nonce, \
+                 subject = $subject, subject_nonce = $subject_nonce, \
+                 body_html = $body_html, body_html_nonce = $body_html_nonce, \
+                 body_token_hashes = $hashes",
+            )
+            .bind(("table", table.to_string()))
+            .bind(("key", key.to_string()))
+            .bind(("body", body_ciphertext.to_string()))
+            .bind(("body_nonce", body_nonce.to_string()))
+            .bind(("subject", subject_ciphertext.map(|s| s.to_string())))
+            .bind(("subject_nonce", subject_nonce.map(|s| s.to_string())))
+            .bind(("body_html", body_html_ciphertext.map(|s| s.to_string())))
+            .bind(("body_html_nonce", body_html_nonce.map(|s| s.to_string())))
+            .bind(("hashes", body_token_hashes.to_vec()))
+            .await?
+            .take(0)?;
+        Ok(())
+    }
+
     // -- Conversations ---
 
     async fn create_conversation(&self, conversation: Conversation) -> DbResult<Conversation> {

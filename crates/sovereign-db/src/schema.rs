@@ -442,8 +442,19 @@ pub struct Message {
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub deleted_at: Option<String>,
+    // --- At-rest encryption (Phase 2a). Each ciphertext field gets its own nonce. ---
+    /// Base64 XChaCha20 nonce paired with `body` ciphertext. None = plaintext.
     #[serde(default)]
-    pub encryption_nonce: Option<String>,
+    pub body_nonce: Option<String>,
+    /// Base64 XChaCha20 nonce paired with `subject` ciphertext. None = plaintext / absent.
+    #[serde(default)]
+    pub subject_nonce: Option<String>,
+    /// Base64 XChaCha20 nonce paired with `body_html` ciphertext. None = plaintext / absent.
+    #[serde(default)]
+    pub body_html_nonce: Option<String>,
+    /// Per-DB HMAC hashes of body+subject tokens, used for blind-index search.
+    #[serde(default)]
+    pub body_token_hashes: Vec<String>,
     // --- PII pipeline fields ---
     /// Base64-encoded ciphertext of the original (pre-tokenization) body.
     /// `body` holds the canonical (tokenized) form.
@@ -485,7 +496,10 @@ impl Message {
             headers: None,
             created_at: now,
             deleted_at: None,
-            encryption_nonce: None,
+            body_nonce: None,
+            subject_nonce: None,
+            body_html_nonce: None,
+            body_token_hashes: Vec::new(),
             body_raw_encrypted: None,
             body_raw_nonce: None,
             pii_scanned_at: None,

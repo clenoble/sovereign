@@ -6,6 +6,7 @@ pub mod device_key;
 pub mod pair_payload;
 pub mod document_key;
 pub mod error;
+pub mod index_key;
 pub mod kek;
 pub mod key_db;
 pub mod keystroke;
