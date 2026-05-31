@@ -84,6 +84,13 @@ pub fn gesture_stops_speech(gesture: &str) -> bool {
     matches!(gesture, "shush")
 }
 
+/// Whether a detected gesture should open the mic / start listening. Currently
+/// `talking_hand` (the chatterbox mime — see jiminy-vision); mirrors
+/// `gesture_stops_speech`. The app wires this to the voice pipeline.
+pub fn gesture_starts_listening(gesture: &str) -> bool {
+    matches!(gesture, "talking_hand")
+}
+
 /// Spawn a background thread that polls `GET /vision/state` at ~5 Hz, updates
 /// `vision`, calls `on_gesture(name)` once per fresh, distinct gesture, and —
 /// when `bridge_url` is set — POSTs `/stop` to the jiminy-bridge sidecar for any
@@ -190,6 +197,14 @@ mod tests {
         assert!(!gesture_stops_speech("open_palm"));
         assert!(!gesture_stops_speech("point"));
         assert!(!gesture_stops_speech(""));
+    }
+
+    #[test]
+    fn talking_hand_starts_listening_others_do_not() {
+        assert!(gesture_starts_listening("talking_hand"));
+        assert!(!gesture_starts_listening("shush"));
+        assert!(!gesture_starts_listening("open_palm"));
+        assert!(!gesture_starts_listening(""));
     }
 
     #[test]

@@ -5,6 +5,8 @@
  * so the mic button (Taskbar / Bubble) can show live feedback.
  */
 
+import { pushUser } from './chat.svelte';
+
 export const voice = $state({
 	listening: false,
 	transcribing: false,
@@ -52,7 +54,10 @@ export function applyVoiceEvent(kind: string, text?: string) {
 			voice.listening = false;
 			voice.transcribing = false;
 			voice.speaking = false;
-			if (text) voice.lastTranscript = text;
+			if (text) {
+				voice.lastTranscript = text;
+				pushUser(text); // surface the spoken text in the chat window
+			}
 			break;
 		case 'speaking':
 			voice.listening = false;

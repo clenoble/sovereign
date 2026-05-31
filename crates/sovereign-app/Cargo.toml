@@ -84,7 +84,8 @@ comms-whatsapp = ["comms", "sovereign-comms/whatsapp"]
 wasm-plugins = ["sovereign-skills/wasm-plugins"]
 web-browse = ["reqwest", "readability"]
 jiminy = ["sovereign-ai/jiminy"]
-vision = ["sovereign-ai/vision"]
+# reqwest: the gesture-listen trigger POSTs /listen to the jiminy-bridge.
+vision = ["sovereign-ai/vision", "reqwest"]
 wake-word = ["sovereign-ai/wake-word"]
 haptics = ["tauri-plugin-haptics"]
 

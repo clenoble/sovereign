@@ -527,11 +527,80 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                     .unwrap_or_else(|_| "http://127.0.0.1:9101".into());
                 let bridge_url = std::env::var("JIMINY_URL")
                     .unwrap_or_else(|_| "http://127.0.0.1:9100".into());
+
+                // Gesture-driven voice input: the 'talking_hand' mime opens the
+                // robot mic by POSTing /listen to the bridge (out-of-process STT —
+                // in-process whisper clashes with the LLM's bundled ggml). The
+                // recognized text is fed to the orchestrator, which replies (and,
+                // on jiminy builds, speaks it through Jiminy).
+                let (listen_tx, mut listen_rx) = tokio::sync::mpsc::channel::<()>(2);
+                if let Some(orch) = backend.orchestrator.clone() {
+                    let listen_url = format!("{}/listen", bridge_url.trim_end_matches('/'));
+                    let app_handle = app.handle().clone();
+                    let query_cb = setup::orch_callback(&orch, "Gesture-listen error", |o, t| {
+                        Box::pin(o.handle_query(t))
+                    });
+                    tauri::async_runtime::spawn(async move {
+                        use tauri::Emitter;
+                        // Surface listening / heard text to the Svelte mic button +
+                        // chat window (mirrors the voice-pipeline forwarder).
+                        let voice_evt = |kind: &str, text: Option<String>| {
+                            let _ = app_handle.emit(
+                                "voice-event",
+                                tauri_events::VoiceEventPayload { kind: kind.into(), text },
+                            );
+                        };
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(30))
+                            .build()
+                            .unwrap_or_default();
+                        while listen_rx.recv().await.is_some() {
+                            tracing::info!("Gesture-listen: recording a turn…");
+                            voice_evt("listening", None);
+                            match client.post(&listen_url).send().await {
+                                Ok(resp) => match resp.json::<serde_json::Value>().await {
+                                    Ok(v) => {
+                                        let text = v
+                                            .get("text")
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or("")
+                                            .trim()
+                                            .to_string();
+                                        if text.is_empty() {
+                                            tracing::info!("Gesture-listen: nothing heard");
+                                            voice_evt("idle", None);
+                                        } else {
+                                            tracing::info!("Gesture-listen heard: {text}");
+                                            voice_evt("transcription", Some(text.clone()));
+                                            query_cb(text);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Gesture-listen parse failed: {e}");
+                                        voice_evt("idle", None);
+                                    }
+                                },
+                                Err(e) => {
+                                    tracing::warn!("Gesture-listen /listen failed: {e}");
+                                    voice_evt("idle", None);
+                                }
+                            }
+                        }
+                    });
+                }
+
+                let on_gesture = move |g: String| {
+                    if sovereign_ai::jiminy_vision::gesture_starts_listening(&g) {
+                        // Signal the listen task; drop if one is already queued.
+                        let _ = listen_tx.try_send(());
+                    }
+                };
+
                 let _vision_handle = sovereign_ai::jiminy_vision::spawn_poller(
                     &vision_url,
                     backend.vision,
                     Some(bridge_url.clone()),
-                    |_g| {},
+                    on_gesture,
                     1.5,
                 );
                 tracing::info!(

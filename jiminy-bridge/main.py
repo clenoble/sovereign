@@ -39,6 +39,8 @@ from audio_stream import audio_ws_handler
 from emotions import EmotionLibrary
 from tts_engine import PiperTts, create_tts_engine
 
+import stt_listen
+
 logger = logging.getLogger("jiminy")
 
 # --- Request models ---
@@ -137,6 +139,16 @@ async def lifespan(app: FastAPI):
     # Initialize TTS engine (optional — needs PIPER_MODEL env)
     global tts_engine
     tts_engine = create_tts_engine()
+
+    # Warm up the STT model in the background so the first /listen isn't slowed
+    # by the (one-time) faster-whisper download + load.
+    def _stt_warmup():
+        try:
+            stt_listen.load_model()
+        except Exception as e:
+            logger.warning("STT warmup failed (retries on first /listen): %s", e)
+    import threading
+    threading.Thread(target=_stt_warmup, name="stt-warmup", daemon=True).start()
 
     yield
 
@@ -311,6 +323,30 @@ async def stop():
     """Stop the robot mid-speech (barge-in) — driven by the shush gesture."""
     await _cancel_speak()
     return {"status": "stopped"}
+
+
+@app.post("/listen")
+async def listen():
+    """Record from the robot mic until silence and return the transcription.
+
+    Driven by the 'talking_hand' gesture: the app POSTs here, we capture a turn
+    from the robot mic (via the SDK media_manager) and transcribe it with
+    faster-whisper. Blocking work runs in a thread so the event loop stays free.
+    Returns {"text": "..."} ("" if nothing was recognized).
+    """
+    if mini is None:
+        raise HTTPException(503, "Robot not connected")
+    loop = asyncio.get_event_loop()
+    # Quick "I'm listening" cue so the user knows the gesture registered and when
+    # to speak. Played to completion BEFORE recording so the servo motion isn't
+    # captured by the mic.
+    if library is not None:
+        try:
+            await loop.run_in_executor(None, library.play_emotion, mini, "attentive1")
+        except Exception as e:
+            logger.debug("listen cue failed: %s", e)
+    text = await loop.run_in_executor(None, stt_listen.listen_and_transcribe, mini)
+    return {"text": text}
 
 
 @app.post("/look_at")
