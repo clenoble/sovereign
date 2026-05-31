@@ -325,6 +325,32 @@ async def stop():
     return {"status": "stopped"}
 
 
+async def _do_sleep() -> None:
+    """Stop any speech and actually put Jiminy to sleep — `goto_sleep()` lowers
+    the head, folds the antennas into the sleep pose and holds it (unlike the
+    transient `sleep1` emotion, which springs back to neutral)."""
+    loop = asyncio.get_event_loop()
+    try:
+        await _cancel_speak()
+        await loop.run_in_executor(None, mini.goto_sleep)
+        logger.info("Jiminy is asleep")
+    except Exception as e:
+        logger.debug("sleep failed: %s", e)
+
+
+@app.post("/sleep")
+async def sleep_robot():
+    """Goodnight: play Jiminy's sleep animation when the user quits the app.
+
+    Fire-and-forget (returns immediately) so the exiting app doesn't block; the
+    bridge keeps running and plays the animation out.
+    """
+    if mini is None:
+        return {"status": "no robot"}
+    asyncio.create_task(_do_sleep())
+    return {"status": "sleeping"}
+
+
 @app.post("/listen")
 async def listen():
     """Record from the robot mic until silence and return the transcription.
