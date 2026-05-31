@@ -28,6 +28,25 @@ class TestResolveMediaBackend:
         assert resolve_media_backend(None, False, {}) == "default"
 
 
+class TestStripMarkdownForSpeech:
+    s = staticmethod(tts_engine.strip_markdown_for_speech)
+
+    def test_bold_and_italic_unwrapped(self):
+        assert self.s("This is **bold** and *italic*.") == "This is bold and italic."
+
+    def test_inline_code_and_links(self):
+        assert self.s("Run `make` then see [docs](http://x).") == "Run make then see docs."
+
+    def test_headings_lists_quotes_removed(self):
+        assert self.s("# Title\n- one\n- two\n> note") == "Title one two note"
+
+    def test_stray_asterisks_dropped(self):
+        assert "*" not in self.s("Use **a** and a lone * here")
+
+    def test_plain_text_unchanged(self):
+        assert self.s("Hello Alex, how are you?") == "Hello Alex, how are you?"
+
+
 def _fake_bundle(tmp_path, monkeypatch):
     (tmp_path / "piper").mkdir()
     binexe = tmp_path / "piper" / "piper.exe"

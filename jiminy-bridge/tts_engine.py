@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from math import gcd
 from typing import Optional
 
@@ -25,6 +26,34 @@ REACHY_SAMPLE_RATE = 16000
 # The en_US-amy-medium voice reads a touch slowly at 1.0.
 PIPER_LENGTH_SCALE = 0.9
 
+# Markdown -> speech: the LLM replies in Markdown, and Piper would otherwise read
+# the syntax aloud ("asterisk asterisk bold..."). Strip the common bits so Jiminy
+# speaks clean prose.
+_MD_IMG = re.compile(r"!\[[^\]]*\]\([^)]*\)")               # ![alt](url)
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")             # [text](url) -> text
+_MD_CODE = re.compile(r"`+([^`]*)`+")                       # `code` -> code
+_MD_EMPH = re.compile(r"(\*\*|\*|__|_)(.+?)\1")             # **x**/*x*/__x__/_x_ -> x
+_MD_HEAD = re.compile(r"(?m)^\s{0,3}#{1,6}\s*")            # # heading markers
+_MD_LIST = re.compile(r"(?m)^\s*(?:[-*+]|\d+\.)\s+")        # -, *, 1. list markers
+_MD_QUOTE = re.compile(r"(?m)^\s*>\s?")                     # > blockquote
+
+
+def strip_markdown_for_speech(text: str) -> str:
+    """Remove common Markdown so the TTS doesn't pronounce the syntax."""
+    text = _MD_IMG.sub("", text)
+    text = _MD_LINK.sub(r"\1", text)
+    text = _MD_CODE.sub(r"\1", text)
+    text = _MD_EMPH.sub(r"\2", text)   # twice to unwrap nested ***x***
+    text = _MD_EMPH.sub(r"\2", text)
+    text = _MD_HEAD.sub("", text)
+    text = _MD_LIST.sub("", text)
+    text = _MD_QUOTE.sub("", text)
+    # Drop any leftover formatting chars, collapse whitespace, paragraph -> pause.
+    text = text.replace("`", "").replace("*", "")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{2,}", ". ", text).replace("\n", " ")
+    return text.strip()
+
 
 class PiperTts:
     """Wraps the Piper TTS binary and streams output to Reachy Mini's speaker."""
@@ -40,6 +69,10 @@ class PiperTts:
         Returns the duration in seconds (0.0 if no audio was generated).
         """
         if not text.strip():
+            return 0.0
+
+        text = strip_markdown_for_speech(text)
+        if not text:
             return 0.0
 
         pcm_data = await self._run_piper(text)
