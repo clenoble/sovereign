@@ -18,7 +18,11 @@ use sovereign_crypto::account_key::AccountKey;
 
 /// Populate the database with sample data when it's empty.
 /// Provides a visual baseline for testing the canvas.
-pub async fn seed_if_empty(db: &SurrealGraphDB) -> Result<()> {
+///
+/// Generic over `T: GraphDB` so it can be called against the raw
+/// `SurrealGraphDB` at boot (pre-login plaintext seed) or against the
+/// `LayeredGraphDB` post-login (writes flow through encryption).
+pub async fn seed_if_empty<T: sovereign_db::GraphDB + ?Sized>(db: &T) -> Result<()> {
     use chrono::{Duration, Utc};
 
     let threads = db.list_threads().await?;
@@ -447,7 +451,7 @@ pub fn seed_profile_and_history(profile_dir: &Path) -> Result<()> {
 /// Requires the `encryption` feature because vault entries need a real
 /// AccountKey for the encrypt → reveal round-trip to work in the dashboard.
 #[cfg(feature = "encryption")]
-pub async fn seed_pii_if_empty(db: &SurrealGraphDB, account_key: &Arc<AccountKey>) -> Result<()> {
+pub async fn seed_pii_if_empty<T: sovereign_db::GraphDB + ?Sized>(db: &T, account_key: &Arc<AccountKey>) -> Result<()> {
     use chrono::{Duration, Utc};
     use sovereign_crypto::vault::EncryptedBlob;
     use sovereign_db::schema::{

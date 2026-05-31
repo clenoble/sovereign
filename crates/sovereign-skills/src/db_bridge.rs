@@ -2,14 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use sovereign_db::schema::thing_to_raw;
-use sovereign_db::surreal::SurrealGraphDB;
 use sovereign_db::GraphDB;
 
 use crate::traits::SkillDbAccess;
 
-/// Implements [`SkillDbAccess`] for [`SurrealGraphDB`], bridging the async DB
-/// into the synchronous skill interface via `block_in_place`.
-impl SkillDbAccess for SurrealGraphDB {
+/// Implements [`SkillDbAccess`] for any [`GraphDB`] impl, bridging the async
+/// DB into the synchronous skill interface via `block_in_place`. Generic so
+/// it works for both raw `SurrealGraphDB` and the `LayeredGraphDB` indirection
+/// used at runtime to swap in `EncryptedGraphDB` post-login.
+impl<T: GraphDB + Send + Sync> SkillDbAccess for T {
     fn search_documents(&self, query: &str) -> anyhow::Result<Vec<(String, String, String)>> {
         let query_lower = query.to_lowercase();
         let docs: Vec<sovereign_db::schema::Document> = tokio::task::block_in_place(|| {
@@ -159,7 +160,8 @@ impl SkillDbAccess for SurrealGraphDB {
     }
 }
 
-/// Helper to wrap a `SurrealGraphDB` as `Arc<dyn SkillDbAccess>`.
-pub fn wrap_db(db: Arc<SurrealGraphDB>) -> Arc<dyn SkillDbAccess> {
+/// Helper to coerce any `Arc<T: GraphDB>` into `Arc<dyn SkillDbAccess>`.
+/// Used by sovereign-app to hand the LayeredGraphDB to the skill registry.
+pub fn wrap_db<T: GraphDB + Send + Sync + 'static>(db: Arc<T>) -> Arc<dyn SkillDbAccess> {
     db
 }

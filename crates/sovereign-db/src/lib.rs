@@ -1,4 +1,5 @@
 pub mod error;
+pub mod layered;
 pub mod schema;
 pub mod surreal;
 pub mod traits;

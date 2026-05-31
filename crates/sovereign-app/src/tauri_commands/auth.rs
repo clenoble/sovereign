@@ -41,6 +41,43 @@ async fn install_session(
         tracing::warn!("complete_auth side-effect failed: {e}");
     }
 
+    // 2a. Wire EncryptedGraphDB into the runtime DB stack.
+    //
+    // The app boots with the raw SurrealGraphDB wrapped in a LayeredGraphDB
+    // (see lib.rs::init_backend). Here we build the encryption decorator
+    // around a fresh raw reference and swap it in atomically. After this
+    // returns, every consumer that calls through `state.db` — orchestrator,
+    // skill registry, all 60+ tauri commands — automatically goes through
+    // EncryptedGraphDB. Mixed-row tolerance is built into the decrypt paths
+    // (each `*_nonce` field guards a per-field decrypt branch), so pre-login
+    // plaintext rows (seed data, v0.0.5 desktop state) continue to read
+    // correctly; new writes from this point on are encrypted.
+    //
+    // Best-effort: a failure here would mean encryption is OFF for this
+    // session (the raw inner stays). Logged but does not fail the login —
+    // the user can still use the app, just without at-rest encryption.
+    {
+        let kek_arc = std::sync::Arc::new(sovereign_crypto::kek::Kek::from_bytes(
+            *auth_result.kek.as_bytes(),
+        ));
+        // Wrap the *raw* inner (the bootstrap SurrealGraphDB), not the layer
+        // itself — otherwise EncryptedGraphDB.inner would be the layer whose
+        // current points back at us, looping on every DB call. raw_inner()
+        // is the bootstrap reference held since init_backend.
+        let raw_inner = state.db.raw_inner();
+        match crate::setup::build_encrypted_db(raw_inner, &device_key_arc, kek_arc) {
+            Ok(encrypted) => {
+                state.db.swap(encrypted);
+                tracing::info!("EncryptedGraphDB installed for this session");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to install EncryptedGraphDB (continuing with plaintext inner): {e}"
+                );
+            }
+        }
+    }
+
     // 3. Wire orchestrator: inline PII tokenization in chat I/O uses
     //    the account_key now (was device_key in v0.0.4).
     if let Some(ref orch) = state.orchestrator {
@@ -261,7 +298,7 @@ pub async fn complete_onboarding(
 
     // Seed sample data if requested
     if data.seed_sample_data {
-        crate::seed::seed_if_empty(&state.db)
+        crate::seed::seed_if_empty(state.db.as_ref())
             .await
             .str_err()?;
 
@@ -270,7 +307,7 @@ pub async fn complete_onboarding(
         // install_session has populated AppState.account_key.
         #[cfg(feature = "encryption")]
         if let Some(ak) = state.account_key().await {
-            crate::seed::seed_pii_if_empty(&state.db, &ak)
+            crate::seed::seed_pii_if_empty(state.db.as_ref(), &ak)
                 .await
                 .str_err()?;
         }

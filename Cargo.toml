@@ -82,6 +82,10 @@ wasmtime = { version = "42", features = ["component-model"] }
 sha2 = "0.10"
 base64 = "0.22"
 
+# Lock-free atomic Arc swap, used by sovereign-db's LayeredGraphDB to
+# replace the inner GraphDB after login (raw SurrealGraphDB → EncryptedGraphDB).
+arc-swap = "1.9.1"
+
 # UUID
 uuid = { version = "1.20", features = ["v4"] }
 

@@ -4,7 +4,7 @@ use sovereign_core::config::AppConfig;
 use sovereign_core::interfaces::OrchestratorEvent;
 use sovereign_core::security::ActionDecision;
 use sovereign_core::interfaces::FeedbackEvent;
-use sovereign_db::surreal::SurrealGraphDB;
+use sovereign_db::layered::LayeredGraphDB;
 
 /// Runtime model assignment (router + reasoning filenames).
 pub struct ModelAssignments {
@@ -18,7 +18,11 @@ pub struct ModelAssignments {
 /// `tauri::State<'_, AppState>`. Interior mutability is handled by
 /// Arc + Mutex on the individual subsystems.
 pub struct AppState {
-    pub db: Arc<SurrealGraphDB>,
+    /// `LayeredGraphDB` indirection so the DB can be swapped from raw
+    /// `SurrealGraphDB` to `EncryptedGraphDB` at login. Trait calls go through
+    /// the current inner via an atomic Arc swap; consumers don't observe the
+    /// transition. See `crates/sovereign-db/src/layered.rs`.
+    pub db: Arc<LayeredGraphDB>,
     pub orchestrator: Option<Arc<sovereign_ai::Orchestrator>>,
     pub config: AppConfig,
     pub skill_registry: Arc<sovereign_skills::SkillRegistry>,

@@ -3,6 +3,9 @@ use sovereign_core::config::AppConfig;
 use sovereign_db::GraphDB;
 use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
 
+#[cfg(feature = "encryption")]
+use std::sync::Arc;
+
 pub async fn create_db(config: &AppConfig) -> Result<SurrealGraphDB> {
     let mode = match config.database.mode.as_str() {
         "memory" => StorageMode::Memory,
@@ -197,6 +200,72 @@ pub fn complete_auth(
         std::sync::Arc::new(tokio::sync::Mutex::new(key_db)),
         std::sync::Arc::new(kek_copy),
     ))
+}
+
+/// Construct an `EncryptedGraphDB` wrapping `raw_db`, loading or creating the
+/// six per-entity `KeyDatabase` files and the per-DB `IndexKey` from
+/// `crypto_dir()`. Generic across desktop (RocksDB) and mobile (SurrealKV)
+/// inner backends — the only platform-dependent thing is which feature flag
+/// compiled which `SurrealGraphDB` storage path.
+///
+/// File layout (all under `crypto_dir()`):
+///   - `keys.db`              — documents (existing, predates 2b)
+///   - `keys.messages.db`     — messages (Phase 2a)
+///   - `keys.threads.db`      — threads (Phase 2b)
+///   - `keys.conversations.db`— conversations (Phase 2b)
+///   - `keys.contacts.db`     — contacts (Phase 2b)
+///   - `keys.share_records.db`— share records (Phase 2b)
+///   - `index.key`            — single 32-byte HMAC-SHA256 blind-index key
+#[cfg(feature = "encryption")]
+pub fn build_encrypted_db(
+    raw_db: Arc<dyn sovereign_db::GraphDB>,
+    device_key: &sovereign_crypto::device_key::DeviceKey,
+    kek: Arc<sovereign_crypto::kek::Kek>,
+) -> Result<Arc<sovereign_db::encrypted::EncryptedGraphDB>> {
+    use sovereign_crypto::index_key::IndexKey;
+    use sovereign_crypto::key_db::KeyDatabase;
+    use tokio::sync::RwLock;
+
+    let dir = crypto_dir();
+    std::fs::create_dir_all(&dir)?;
+
+    // Load-or-create each per-entity-type KeyDatabase. `KeyDatabase::load`
+    // returns an existing file decrypted under DeviceKey; absent files start
+    // empty and are persisted on first key creation by EncryptedGraphDB.
+    let load_or_new = |filename: &str| -> Result<KeyDatabase> {
+        let path = dir.join(filename);
+        Ok(if path.exists() {
+            KeyDatabase::load(&path, device_key)?
+        } else {
+            KeyDatabase::new(path)
+        })
+    };
+
+    let documents_kdb = load_or_new("keys.db")?;
+    let messages_kdb = load_or_new("keys.messages.db")?;
+    let threads_kdb = load_or_new("keys.threads.db")?;
+    let conversations_kdb = load_or_new("keys.conversations.db")?;
+    let contacts_kdb = load_or_new("keys.contacts.db")?;
+    let share_records_kdb = load_or_new("keys.share_records.db")?;
+
+    // Single per-DB blind-index key, used uniformly across the six entity
+    // types. Same plaintext token hashes to the same value across all entity
+    // tables under this DB, but cross-table search isn't a feature so this
+    // leakage is bounded.
+    let index_key_path = dir.join("index.key");
+    let index_key = IndexKey::load_or_create(index_key_path, device_key, kek.as_ref())?;
+
+    Ok(Arc::new(sovereign_db::encrypted::EncryptedGraphDB::new(
+        raw_db,
+        Arc::new(RwLock::new(documents_kdb)),
+        Arc::new(RwLock::new(messages_kdb)),
+        Arc::new(RwLock::new(threads_kdb)),
+        Arc::new(RwLock::new(conversations_kdb)),
+        Arc::new(RwLock::new(contacts_kdb)),
+        Arc::new(RwLock::new(share_records_kdb)),
+        kek,
+        Arc::new(index_key),
+    )))
 }
 
 /// Get the persona-specific DB path.

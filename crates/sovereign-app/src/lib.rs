@@ -580,7 +580,7 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
 struct BackendInit {
     config: AppConfig,
     profile_dir: std::path::PathBuf,
-    db: Arc<sovereign_db::surreal::SurrealGraphDB>,
+    db: Arc<sovereign_db::layered::LayeredGraphDB>,
     orchestrator: Option<Arc<sovereign_ai::Orchestrator>>,
     skill_registry: Arc<sovereign_skills::SkillRegistry>,
     skill_db: Arc<dyn sovereign_skills::SkillDbAccess>,
@@ -624,7 +624,14 @@ async fn init_backend(
         tracing::warn!("Profile/history seed failed: {e}");
     }
 
-    let db_arc: Arc<sovereign_db::surreal::SurrealGraphDB> = Arc::new(db);
+    // Wrap the raw SurrealGraphDB in a LayeredGraphDB. Boot uses the raw
+    // inner; install_session() in tauri_commands/auth.rs swaps in an
+    // EncryptedGraphDB after login (KEK is not unlocked until then). All
+    // consumers (skills, orchestrator, tauri_commands::*) hold the same
+    // LayeredGraphDB Arc; trait calls flow through the current inner.
+    let raw_db_arc: Arc<dyn sovereign_db::GraphDB> = Arc::new(db);
+    let db_arc: Arc<sovereign_db::layered::LayeredGraphDB> =
+        Arc::new(sovereign_db::layered::LayeredGraphDB::new(raw_db_arc));
 
     // Skill registry
     let mut registry = sovereign_skills::SkillRegistry::new();
