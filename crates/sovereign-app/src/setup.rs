@@ -219,7 +219,7 @@ pub fn complete_auth(
 #[cfg(feature = "encryption")]
 pub fn build_encrypted_db(
     raw_db: Arc<dyn sovereign_db::GraphDB>,
-    device_key: &sovereign_crypto::device_key::DeviceKey,
+    device_key: Arc<sovereign_crypto::device_key::DeviceKey>,
     kek: Arc<sovereign_crypto::kek::Kek>,
 ) -> Result<Arc<sovereign_db::encrypted::EncryptedGraphDB>> {
     use sovereign_crypto::index_key::IndexKey;
@@ -235,7 +235,7 @@ pub fn build_encrypted_db(
     let load_or_new = |filename: &str| -> Result<KeyDatabase> {
         let path = dir.join(filename);
         Ok(if path.exists() {
-            KeyDatabase::load(&path, device_key)?
+            KeyDatabase::load(&path, &device_key)?
         } else {
             KeyDatabase::new(path)
         })
@@ -253,7 +253,7 @@ pub fn build_encrypted_db(
     // tables under this DB, but cross-table search isn't a feature so this
     // leakage is bounded.
     let index_key_path = dir.join("index.key");
-    let index_key = IndexKey::load_or_create(index_key_path, device_key, kek.as_ref())?;
+    let index_key = IndexKey::load_or_create(index_key_path, &device_key, kek.as_ref())?;
 
     Ok(Arc::new(sovereign_db::encrypted::EncryptedGraphDB::new(
         raw_db,
@@ -265,6 +265,7 @@ pub fn build_encrypted_db(
         Arc::new(RwLock::new(share_records_kdb)),
         kek,
         Arc::new(index_key),
+        device_key,
     )))
 }
 

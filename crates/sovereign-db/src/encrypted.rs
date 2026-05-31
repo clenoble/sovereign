@@ -9,6 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use base64::Engine;
 use sovereign_crypto::aead;
+use sovereign_crypto::device_key::DeviceKey;
 use sovereign_crypto::index_key::{self, IndexKey};
 use sovereign_crypto::kek::Kek;
 use sovereign_crypto::key_db::KeyDatabase;
@@ -42,6 +43,11 @@ pub struct EncryptedGraphDB {
     share_records_key_db: Arc<RwLock<KeyDatabase>>,
     kek: Arc<Kek>,
     index_key: Arc<IndexKey>,
+    /// Needed to persist `KeyDatabase` files: each key DB is encrypted at rest
+    /// under the DeviceKey on every save. Without this, keys minted at runtime
+    /// would only live in memory and any encrypted row would become unreadable
+    /// after app restart.
+    device_key: Arc<DeviceKey>,
 }
 
 impl EncryptedGraphDB {
@@ -56,6 +62,7 @@ impl EncryptedGraphDB {
         share_records_key_db: Arc<RwLock<KeyDatabase>>,
         kek: Arc<Kek>,
         index_key: Arc<IndexKey>,
+        device_key: Arc<DeviceKey>,
     ) -> Self {
         Self {
             inner,
@@ -67,11 +74,18 @@ impl EncryptedGraphDB {
             share_records_key_db,
             kek,
             index_key,
+            device_key,
         }
     }
 
     /// Encrypt content under a per-entity key from the given key DB. Generates
     /// a fresh nonce per call (safe with random nonces under XChaCha20-Poly1305).
+    ///
+    /// When a new entity key is minted, the key DB is persisted to disk before
+    /// returning. Otherwise restart loses the key and the encrypted row
+    /// becomes permanently unreadable. Save failure is logged and falls
+    /// through — the row is still encryptable in this session; recovery is
+    /// the next time the same entity gets touched (which will re-mint).
     async fn encrypt_with(
         &self,
         key_db: &Arc<RwLock<KeyDatabase>>,
@@ -79,17 +93,32 @@ impl EncryptedGraphDB {
         plaintext: &[u8],
     ) -> DbResult<(String, String)> {
         let mut kdb = key_db.write().await;
-        let entity_key = if kdb.contains(entity_id) {
-            kdb.unwrap_current(entity_id, &self.kek)
-                .map_err(|e| DbError::Query(format!("key unwrap failed: {e}")))?
+        let (entity_key, minted) = if kdb.contains(entity_id) {
+            (
+                kdb.unwrap_current(entity_id, &self.kek)
+                    .map_err(|e| DbError::Query(format!("key unwrap failed: {e}")))?,
+                false,
+            )
         } else {
             let epoch = kdb
                 .get_all(entity_id)
                 .map(|keys| keys.len() as u32 + 1)
                 .unwrap_or(1);
-            kdb.create_document_key(entity_id, &self.kek, epoch)
-                .map_err(|e| DbError::Query(format!("key creation failed: {e}")))?
+            (
+                kdb.create_document_key(entity_id, &self.kek, epoch)
+                    .map_err(|e| DbError::Query(format!("key creation failed: {e}")))?,
+                true,
+            )
         };
+
+        if minted {
+            if let Err(e) = kdb.save(&self.device_key) {
+                tracing::warn!(
+                    "key DB save failed after minting key for {entity_id}: {e}. \
+                     Row will encrypt in this session but is at risk on restart."
+                );
+            }
+        }
 
         let (ciphertext, nonce) = aead::encrypt(plaintext, entity_key.as_bytes())
             .map_err(|e| DbError::Query(format!("encryption failed: {e}")))?;
@@ -1263,6 +1292,12 @@ mod tests {
         KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-keys.db"))
     }
 
+    fn test_device_key() -> sovereign_crypto::device_key::DeviceKey {
+        use sovereign_crypto::master_key::MasterKey;
+        let mk = MasterKey::from_passphrase(b"test", b"salt").unwrap();
+        sovereign_crypto::device_key::DeviceKey::derive(&mk, "test-device").unwrap()
+    }
+
     #[test]
     fn encrypted_graph_db_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
@@ -1285,6 +1320,7 @@ mod tests {
             share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-shrkeys-a.db")))),
             kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
             index_key: Arc::new(IndexKey::generate()),
+            device_key: Arc::new(test_device_key()),
         };
 
         let plaintext = r#"{"body":"Hello, encrypted world!","images":[]}"#;
@@ -1312,6 +1348,7 @@ mod tests {
             share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-shrkeys-b.db")))),
             kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
             index_key: Arc::new(IndexKey::generate()),
+            device_key: Arc::new(test_device_key()),
         };
 
         let doc = Document::new("test".into(), "thread:1".into(), true);
@@ -1341,6 +1378,7 @@ mod tests {
             share_records_key_db: shr_db1.clone(),
             kek: Arc::new(Kek::from_bytes(*kek1.as_bytes())),
             index_key: Arc::new(IndexKey::generate()),
+            device_key: Arc::new(test_device_key()),
         };
 
         let (ct, nonce) = db1.encrypt_content("document:wrongkey", "secret").await.unwrap();
@@ -1356,6 +1394,7 @@ mod tests {
             share_records_key_db: shr_db1.clone(),
             kek: Arc::new(Kek::from_bytes(*kek2.as_bytes())),
             index_key: Arc::new(IndexKey::generate()),
+            device_key: Arc::new(test_device_key()),
         };
 
         let result = db2.decrypt_content("document:wrongkey", &ct, &nonce).await;
@@ -1503,6 +1542,7 @@ mod tests {
             share_records_key_db: mk_kdb("shr"),
             kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
             index_key: Arc::new(IndexKey::generate()),
+            device_key: Arc::new(test_device_key()),
         };
         (inner, edb)
     }
@@ -1867,5 +1907,121 @@ mod tests {
         inner.soft_delete_thread(&id).await.unwrap();
         let found = edb.find_thread_by_name("confidential").await.unwrap();
         assert!(found.is_none());
+    }
+
+    // ── Key-DB persistence guard ───────────────────────────────────────
+    //
+    // Regression for the Phase 2c on-device finding: encrypt_with mints a
+    // per-entity key into the in-memory KeyDatabase, but used to never call
+    // KeyDatabase::save(). Without persistence, the key vanished on app
+    // restart and any encrypted row became permanently unreadable. These
+    // tests pin the post-fix behaviour: minting a key persists the
+    // KeyDatabase file to disk, and a fresh layer reading that file can
+    // decrypt the row.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mint_persists_key_db_to_disk() {
+        // Use a unique dir so we own the keys.threads.db file.
+        let tag = "persist-keydb";
+        let dir = std::env::temp_dir().join(format!("test-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let threads_kdb_path = dir.join("keys.threads.db");
+
+        let inner = Arc::new(crate::mock::MockGraphDB::new());
+        let kek = Kek::generate();
+        let dk = test_device_key();
+        let dk_arc = Arc::new(test_device_key()); // same secret (deterministic from "test"/"salt"/"test-device")
+        assert_eq!(dk.as_bytes(), dk_arc.as_bytes());
+
+        let edb = EncryptedGraphDB {
+            inner: inner.clone(),
+            key_db: Arc::new(RwLock::new(KeyDatabase::new(dir.join("keys.db")))),
+            messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(dir.join("keys.messages.db")))),
+            threads_key_db: Arc::new(RwLock::new(KeyDatabase::new(threads_kdb_path.clone()))),
+            conversations_key_db: Arc::new(RwLock::new(KeyDatabase::new(dir.join("keys.conv.db")))),
+            contacts_key_db: Arc::new(RwLock::new(KeyDatabase::new(dir.join("keys.contacts.db")))),
+            share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(dir.join("keys.shares.db")))),
+            kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
+            index_key: Arc::new(IndexKey::generate()),
+            device_key: dk_arc,
+        };
+
+        // Sanity: file does not exist before any write.
+        assert!(!threads_kdb_path.exists());
+
+        // Create a thread — this mints a per-thread key and should persist.
+        edb.create_thread(Thread::new("any thread".into(), "x".into())).await.unwrap();
+
+        // The threads key DB file now lives on disk under the device key.
+        assert!(threads_kdb_path.exists(), "keys.threads.db must be persisted after a key is minted");
+        let bytes_on_disk = std::fs::metadata(&threads_kdb_path).unwrap().len();
+        assert!(bytes_on_disk > 0, "persisted key DB must be non-empty");
+
+        // And the wire format is recoverable by another reader with the same DeviceKey.
+        let recovered = KeyDatabase::load(&threads_kdb_path, &dk).unwrap();
+        assert!(!recovered.is_empty(), "loaded key DB must contain the minted thread key");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restart_simulation_recovers_encrypted_thread() {
+        // Full "create on session A → reload on session B with the same keys"
+        // simulation. The MockGraphDB is shared across both sessions to
+        // simulate the underlying SurrealDB persisting rows; the KeyDatabase
+        // file IS the only encryption-state bridge.
+        let tag = "persist-restart";
+        let dir = std::env::temp_dir().join(format!("test-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let inner = Arc::new(crate::mock::MockGraphDB::new());
+        let kek = Kek::generate();
+        let kek_bytes = *kek.as_bytes();
+        let dk_bytes = *test_device_key().as_bytes();
+        let _ = dk_bytes; // (DeviceKey::derive is deterministic from passphrase + device_id, so we just rebuild)
+
+        let mk_layer = || EncryptedGraphDB {
+            inner: inner.clone(),
+            key_db: Arc::new(RwLock::new(
+                if dir.join("keys.db").exists() {
+                    KeyDatabase::load(&dir.join("keys.db"), &test_device_key()).unwrap()
+                } else { KeyDatabase::new(dir.join("keys.db")) }
+            )),
+            messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(dir.join("keys.messages.db")))),
+            threads_key_db: Arc::new(RwLock::new(
+                if dir.join("keys.threads.db").exists() {
+                    KeyDatabase::load(&dir.join("keys.threads.db"), &test_device_key()).unwrap()
+                } else { KeyDatabase::new(dir.join("keys.threads.db")) }
+            )),
+            conversations_key_db: Arc::new(RwLock::new(KeyDatabase::new(dir.join("keys.conv.db")))),
+            contacts_key_db: Arc::new(RwLock::new(KeyDatabase::new(dir.join("keys.contacts.db")))),
+            share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(dir.join("keys.shares.db")))),
+            kek: Arc::new(Kek::from_bytes(kek_bytes)),
+            index_key: Arc::new(IndexKey::generate()), // index key is irrelevant for raw decrypt
+            device_key: Arc::new(test_device_key()),
+        };
+
+        // Session A: create the thread, verify it round-trips.
+        let id = {
+            let edb_a = mk_layer();
+            let created = edb_a.create_thread(Thread::new("Secret Plan".into(), "private".into())).await.unwrap();
+            let id = created.id_string().unwrap();
+            let got = edb_a.get_thread(&id).await.unwrap();
+            assert_eq!(got.name, "Secret Plan");
+            assert_eq!(got.description, "private");
+            id
+            // edb_a goes out of scope: simulates the app being killed.
+        };
+
+        // Session B: brand new layer, reloading the keys from disk. The
+        // underlying MockGraphDB row still holds ciphertext + nonces.
+        let edb_b = mk_layer();
+        let recovered = edb_b.get_thread(&id).await.unwrap();
+        assert_eq!(recovered.name, "Secret Plan", "session B must decrypt name with the persisted key");
+        assert_eq!(recovered.description, "private");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

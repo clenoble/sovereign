@@ -65,7 +65,7 @@ async fn install_session(
         // current points back at us, looping on every DB call. raw_inner()
         // is the bootstrap reference held since init_backend.
         let raw_inner = state.db.raw_inner();
-        match crate::setup::build_encrypted_db(raw_inner, &device_key_arc, kek_arc) {
+        match crate::setup::build_encrypted_db(raw_inner, device_key_arc.clone(), kek_arc) {
             Ok(encrypted) => {
                 state.db.swap(encrypted);
                 tracing::info!("EncryptedGraphDB installed for this session");
