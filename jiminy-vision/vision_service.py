@@ -48,6 +48,19 @@ GESTURE_STABLE_FRAMES = 5
 # of the mouth keypoint. Tight enough that a hand merely near the face doesn't
 # qualify (it must actually be at the lips).
 SHUSH_MAX_DIST = 0.10
+# "Talking hand" (chatterbox) trigger — a hand miming a speaking mouth, the thumb
+# opening/closing against the four fingers. Detected dynamically from the
+# normalized thumb-to-fingertips gap ("openness"). Because that gap's absolute
+# range depends heavily on hand orientation (open/close along the camera's depth
+# axis barely moves in 2D), we detect *relative* oscillation: count direction
+# reversals whose size exceeds TALK_MIN_AMPLITUDE; fire on >= TALK_MIN_TOGGLES
+# within TALK_WINDOW_S, then stay "active" for TALK_HOLD_S so the frame-debounce
+# can commit it. This adapts to whatever swing magnitude the hand produces while
+# still rejecting small mid-range jitter.
+TALK_MIN_AMPLITUDE = 0.22
+TALK_MIN_TOGGLES = 3
+TALK_WINDOW_S = 2.5
+TALK_HOLD_S = 0.8
 VLM_PROMPT = (
     "You are the eyes of an assistant. In one short sentence, describe the person "
     "in view and any gesture, hand sign, or facial expression they are making "
@@ -144,14 +157,24 @@ class GestureDetector:
         self._face = mp_vision.FaceDetector.create_from_options(
             mp_vision.FaceDetectorOptions(
                 base_options=mp_python.BaseOptions(model_asset_path=fpath)))
+        self._talking = TalkingHandDetector()
+        self.last_openness: Optional[float] = None  # debug/tuning aid
 
-    def detect(self, frame_bgr: np.ndarray) -> Optional[str]:
+    def detect(self, frame_bgr: np.ndarray, now: float) -> Optional[str]:
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         img = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
         grec = self._rec.recognize(img)
         if not grec.hand_landmarks:
+            self.last_openness = None
             return None
         lm = grec.hand_landmarks[0]
+
+        # Dynamic 'talking hand' trigger takes priority while actively miming.
+        openness = self._hand_openness(lm)
+        self.last_openness = openness
+        if self._talking.update(openness, now):
+            return "talking_hand"
+
         builtin = (grec.gestures[0][0].category_name
                    if grec.gestures and grec.gestures[0] else None)
 
@@ -164,6 +187,17 @@ class GestureDetector:
         return self.classify_gesture(
             (lm[8].x, lm[8].y), (lm[6].x, lm[6].y), builtin, mouth,
             others_folded=self._others_folded(lm))
+
+    @staticmethod
+    def _hand_openness(lm) -> float:
+        """Normalized gap between the thumb tip and the four-fingertip centroid
+        (the 'mouth' opening of a talking hand), scaled by hand size (wrist →
+        middle-finger MCP) so it's invariant to distance from the camera."""
+        fx = (lm[8].x + lm[12].x + lm[16].x + lm[20].x) / 4.0
+        fy = (lm[8].y + lm[12].y + lm[16].y + lm[20].y) / 4.0
+        gap = ((lm[4].x - fx) ** 2 + (lm[4].y - fy) ** 2) ** 0.5
+        scale = ((lm[0].x - lm[9].x) ** 2 + (lm[0].y - lm[9].y) ** 2) ** 0.5
+        return gap / scale if scale > 1e-6 else 0.0
 
     @staticmethod
     def _others_folded(lm) -> bool:
@@ -218,6 +252,64 @@ class GestureDebouncer:
         if self._streak >= self.stable_frames:
             self.committed = raw
         return self.committed
+
+
+class TalkingHandDetector:
+    """Detects the 'talking hand' / chatterbox gesture — a hand miming a mouth,
+    the thumb repeatedly opening and closing against the four fingers.
+
+    Fed the normalized thumb-to-fingertips gap (the 'mouth' opening) each frame,
+    it tracks *relative* oscillation: it follows the running extreme and registers
+    a direction reversal whenever the signal turns back by at least
+    `min_amplitude`. On `min_toggles` reversals within `window_s` it fires, then
+    reports active for `hold_s` so the frame-debounce can commit a "talking_hand"
+    gesture. Using relative amplitude (not absolute thresholds) makes it robust to
+    the gap's orientation-dependent scale, while still rejecting small jitter and
+    a static hand (which never reverses).
+    """
+
+    def __init__(self, min_amplitude: float = TALK_MIN_AMPLITUDE,
+                 min_toggles: int = TALK_MIN_TOGGLES,
+                 window_s: float = TALK_WINDOW_S, hold_s: float = TALK_HOLD_S) -> None:
+        self.min_amplitude = min_amplitude
+        self.min_toggles = max(1, min_toggles)
+        self.window_s = window_s
+        self.hold_s = hold_s
+        self._pivot: Optional[float] = None  # running extreme in the current direction
+        self._rising: Optional[bool] = None  # True=rising, False=falling, None=undecided
+        self._toggles: list[float] = []      # timestamps of recent reversals
+        self._active_until = 0.0
+
+    def update(self, openness: float, now: float) -> bool:
+        """Feed one frame's openness; return whether 'talking' is currently active."""
+        if self._pivot is None:
+            self._pivot = openness
+        elif self._rising is None:
+            # Establish a direction once the signal moves >= min_amplitude from
+            # the starting pivot (no reversal counted for the first move).
+            if openness - self._pivot >= self.min_amplitude:
+                self._rising, self._pivot = True, openness
+            elif self._pivot - openness >= self.min_amplitude:
+                self._rising, self._pivot = False, openness
+        elif self._rising:
+            if openness > self._pivot:
+                self._pivot = openness                      # extend the rise
+            elif self._pivot - openness >= self.min_amplitude:
+                self._toggles.append(now)                   # peak -> reverse down
+                self._rising, self._pivot = False, openness
+        else:  # falling
+            if openness < self._pivot:
+                self._pivot = openness                      # extend the fall
+            elif openness - self._pivot >= self.min_amplitude:
+                self._toggles.append(now)                   # trough -> reverse up
+                self._rising, self._pivot = True, openness
+
+        # Keep only reversals within the sliding window.
+        self._toggles = [t for t in self._toggles if now - t <= self.window_s]
+        if len(self._toggles) >= self.min_toggles:
+            self._active_until = now + self.hold_s
+            self._toggles.clear()  # require fresh oscillation before firing again
+        return now < self._active_until
 
 
 # --------------------------------------------------------------------------- #
@@ -298,6 +390,7 @@ class VisionState:
     window_until: float = 0.0
     camera_ok: bool = False
     last_frame_ts: float = 0.0
+    hand_openness: Optional[float] = None  # latest talking-hand openness (tuning aid)
 
 
 class VisionEngine:
@@ -343,6 +436,7 @@ class VisionEngine:
                 "window_remaining_s": round(remaining, 1),
                 "camera_ok": s.camera_ok,
                 "frame_age_s": round(self.now() - s.last_frame_ts, 2) if s.last_frame_ts else None,
+                "hand_openness": round(s.hand_openness, 3) if s.hand_openness is not None else None,
             }
 
     def latest_jpeg(self, quality: int = 70) -> Optional[bytes]:
@@ -372,7 +466,7 @@ class VisionEngine:
                 continue
             gesture = None
             try:
-                gesture = self.detector.detect(frame)
+                gesture = self.detector.detect(frame, t)
             except Exception as e:  # never let detection kill the loop
                 logger.debug("gesture detect error: %s", e)
             # Debounce: only commit a gesture (or its absence) after it's stable
@@ -383,6 +477,7 @@ class VisionEngine:
                 self.state.camera_ok = True
                 self.state.last_frame_ts = t
                 self.state.gesture = committed
+                self.state.hand_openness = getattr(self.detector, "last_openness", None)
                 if committed is not None:
                     self.state.gesture_ts = t  # refresh age while the sign is held
             time.sleep(0.05)  # ~20 fps cap

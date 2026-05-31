@@ -14,6 +14,7 @@ from PIL import Image  # noqa: E402
 from vision_service import (  # noqa: E402
     GestureDebouncer,
     GestureDetector,
+    TalkingHandDetector,
     VisionEngine,
     _extract_answer,
     _resize_max,
@@ -23,9 +24,23 @@ cg = GestureDetector.classify_gesture  # (index_tip, index_pip, builtin, mouth, 
 
 
 class _LM:
-    """Minimal stand-in for a MediaPipe landmark (only .y is used here)."""
-    def __init__(self, y):
+    """Minimal stand-in for a MediaPipe landmark (x defaults; many tests use .y)."""
+    def __init__(self, y, x=0.5):
         self.y = y
+        self.x = x
+
+
+def _talking_hand(gap):
+    """21 landmarks with the thumb (4) sitting `gap` below the four-fingertip
+    centroid (at y=0.30) and a fixed hand scale of 0.40 (wrist 0 -> middle MCP 9)
+    -> openness == gap / 0.40."""
+    lm = [_LM(0.5, 0.5) for _ in range(21)]
+    for i in (8, 12, 16, 20):
+        lm[i] = _LM(0.30, 0.50)
+    lm[4] = _LM(0.30 + gap, 0.50)
+    lm[0] = _LM(0.90, 0.50)
+    lm[9] = _LM(0.50, 0.50)
+    return lm
 
 
 def _hand(index_ext=True, others_folded=True):
@@ -74,6 +89,62 @@ class TestOthersFolded:
 
     def test_false_when_a_finger_is_extended(self):
         assert GestureDetector._others_folded(_hand(others_folded=False)) is False
+
+
+class TestHandOpenness:
+    def test_openness_is_gap_over_scale(self):
+        # gap 0.20, hand scale 0.40 -> openness 0.5
+        assert abs(GestureDetector._hand_openness(_talking_hand(0.20)) - 0.5) < 1e-6
+
+    def test_openness_grows_with_gap(self):
+        small = GestureDetector._hand_openness(_talking_hand(0.10))
+        large = GestureDetector._hand_openness(_talking_hand(0.30))
+        assert large > small
+
+
+class TestTalkingHandDetector:
+    @staticmethod
+    def _fired(d, seq):
+        return any(d.update(o, t) for (t, o) in seq)
+
+    def test_oscillation_fires(self):
+        d = TalkingHandDetector(min_amplitude=0.3, min_toggles=3, window_s=1.5, hold_s=0.8)
+        seq = [(0.0, 0.2), (0.1, 0.8), (0.2, 0.2), (0.3, 0.8), (0.4, 0.2)]
+        assert self._fired(d, seq)
+
+    def test_narrow_swing_still_fires(self):
+        # amplitude ~0.48 (the orientation that fixed thresholds missed)
+        d = TalkingHandDetector(min_amplitude=0.25, min_toggles=3)
+        seq = [(0.0, 0.37), (0.1, 0.85), (0.2, 0.37), (0.3, 0.85), (0.4, 0.37)]
+        assert self._fired(d, seq)
+
+    def test_static_open_hand_never_fires(self):
+        d = TalkingHandDetector(min_amplitude=0.3)
+        seq = [(i * 0.1, 0.9) for i in range(20)]  # held open, no oscillation
+        assert not self._fired(d, seq)
+
+    def test_small_jitter_below_amplitude_does_not_fire(self):
+        d = TalkingHandDetector(min_amplitude=0.3, min_toggles=3)
+        # alternates +/-0.075 around 0.5 -> no reversal ever reaches 0.3
+        seq = [(i * 0.1, 0.5 + (0.075 if i % 2 else -0.075)) for i in range(30)]
+        assert not self._fired(d, seq)
+
+    def test_below_min_toggles_does_not_fire(self):
+        d = TalkingHandDetector(min_amplitude=0.3, min_toggles=3)
+        seq = [(0.0, 0.2), (0.1, 0.8), (0.2, 0.2)]  # establish + only 1 reversal
+        assert not self._fired(d, seq)
+
+    def test_reversals_expire_outside_window(self):
+        d = TalkingHandDetector(min_amplitude=0.3, min_toggles=3, window_s=1.0)
+        seq = [(0.0, 0.2), (0.6, 0.8), (1.2, 0.2), (1.8, 0.8), (2.4, 0.2)]  # too slow
+        assert not self._fired(d, seq)
+
+    def test_active_holds_then_clears(self):
+        d = TalkingHandDetector(min_amplitude=0.3, min_toggles=3, hold_s=0.5)
+        for (t, o) in [(0.0, 0.2), (0.1, 0.8), (0.2, 0.2), (0.3, 0.8), (0.4, 0.2)]:
+            d.update(o, t)  # 3rd reversal at t=0.4 -> active until 0.9
+        assert d.update(0.5, 0.7) is True    # within hold window
+        assert d.update(0.5, 1.2) is False   # past hold window
 
     def test_builtin_mapping(self):
         assert cg((0, 0), (0, 1), "Open_Palm", None) == "open_palm"
