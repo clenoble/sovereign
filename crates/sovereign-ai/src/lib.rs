@@ -6,6 +6,12 @@ pub mod encrypted_log;
 pub mod events;
 pub mod injection;
 pub mod intent;
+#[cfg(feature = "jiminy")]
+pub mod jiminy;
+#[cfg(feature = "jiminy")]
+pub mod jiminy_camera;
+#[cfg(feature = "vision")]
+pub mod jiminy_vision;
 pub mod llm;
 pub mod orchestrator;
 pub mod pii;

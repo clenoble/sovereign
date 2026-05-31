@@ -54,6 +54,7 @@ jiminy-bridge/
 # Model files
 models/
 *.gguf
+jiminy-bridge/.venv/
 
 # Frontend (SvelteKit / Tauri)
 frontend/node_modules/

@@ -443,3 +443,50 @@ pub fn spawn_event_forwarder(
         tracing::info!("Event forwarder stopped (channel closed)");
     });
 }
+
+// ---------------------------------------------------------------------------
+// Voice event forwarder
+// ---------------------------------------------------------------------------
+
+/// Payload for the `voice-event` Tauri event. `kind` is one of
+/// `listening` | `transcription` | `speaking` | `idle`; `text` carries the
+/// transcript (for `transcription`) or the spoken reply (for `speaking`).
+#[derive(Debug, Clone, Serialize)]
+pub struct VoiceEventPayload {
+    pub kind: String,
+    pub text: Option<String>,
+}
+
+/// Spawn a background thread that forwards `VoiceEvent`s from the voice
+/// pipeline to the Tauri frontend via `app_handle.emit("voice-event", ..)`.
+/// Mirrors `spawn_event_forwarder`; surfaces voice-pipeline state to the
+/// Taskbar mic button.
+pub fn spawn_voice_forwarder(
+    app_handle: tauri::AppHandle,
+    voice_rx: std::sync::mpsc::Receiver<sovereign_ai::VoiceEvent>,
+) {
+    use sovereign_ai::VoiceEvent;
+    std::thread::spawn(move || {
+        while let Ok(event) = voice_rx.recv() {
+            let payload = match event {
+                VoiceEvent::WakeWordDetected | VoiceEvent::ListeningStarted => {
+                    VoiceEventPayload { kind: "listening".into(), text: None }
+                }
+                VoiceEvent::TranscriptionReady(text) => {
+                    VoiceEventPayload { kind: "transcription".into(), text: Some(text) }
+                }
+                VoiceEvent::ListeningStopped => {
+                    VoiceEventPayload { kind: "idle".into(), text: None }
+                }
+                VoiceEvent::TtsSpeaking(text) => {
+                    VoiceEventPayload { kind: "speaking".into(), text: Some(text) }
+                }
+                VoiceEvent::TtsDone => {
+                    VoiceEventPayload { kind: "idle".into(), text: None }
+                }
+            };
+            let _ = app_handle.emit("voice-event", payload);
+        }
+        tracing::info!("Voice forwarder stopped (channel closed)");
+    });
+}

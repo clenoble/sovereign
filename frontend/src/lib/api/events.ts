@@ -17,6 +17,7 @@ import {
 import { closeBrowserCmd } from '$lib/api/commands';
 import { addSuggestion, removeSuggestion, type LinkSuggestion } from '$lib/stores/suggestions.svelte';
 import { piiState, loadPii } from '$lib/stores/pii.svelte';
+import { applyVoiceEvent, markSpeaking } from '$lib/stores/voice.svelte';
 import {
 	onDeviceDiscovered,
 	onSyncCompleted,
@@ -133,6 +134,11 @@ interface OpenPanelPayload {
 	/** "pii_dashboard" | "models" | "inbox" | "browser" | "settings" */
 	name: string;
 }
+interface VoiceEventPayload {
+	/** "listening" | "transcription" | "speaking" | "idle" */
+	kind: string;
+	text?: string | null;
+}
 interface ShareReceivedPayload {
 	content_type: 'text' | 'url';
 	text?: string;
@@ -164,6 +170,9 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	unlisteners.push(
 		await listen<ChatResponsePayload>('chat-response', (e) => {
 			pushAssistant(e.payload.text);
+			// The robot speaks the reply via the Jiminy sidecar; light the mic
+			// "speaking" indicator for the duration of delivery.
+			markSpeaking(e.payload.text);
 		})
 	);
 
@@ -359,6 +368,13 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 				default:
 					console.warn('open-panel: unknown panel name', e.payload.name);
 			}
+		})
+	);
+
+	// Voice pipeline state (listening / transcription / speaking / idle)
+	unlisteners.push(
+		await listen<VoiceEventPayload>('voice-event', (e) => {
+			applyVoiceEvent(e.payload.kind, e.payload.text ?? undefined);
 		})
 	);
 

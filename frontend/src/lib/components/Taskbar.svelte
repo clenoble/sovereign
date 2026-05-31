@@ -9,6 +9,9 @@
 	import { browser, openBrowser as openBrowserStore, closeBrowser as closeBrowserStore } from '$lib/stores/browser.svelte';
 	import { openBrowser as openBrowserCmd, closeBrowserCmd } from '$lib/api/commands';
 	import { piiState, loadPii, unreviewedCount } from '$lib/stores/pii.svelte';
+	import { voice } from '$lib/stores/voice.svelte';
+	import { vision, toggleVisionPanel } from '$lib/stores/vision.svelte';
+	import { startListening, stopListening } from '$lib/api/commands';
 	import { sync, syncStatus, clearError } from '$lib/stores/sync.svelte';
 	import SkillsPanel from './SkillsPanel.svelte';
 
@@ -45,6 +48,20 @@
 
 	function handleChat() {
 		toggleChat();
+	}
+
+	async function handleMic() {
+		// Toggle push-to-talk. The actual STT loop is wake-word driven on the
+		// backend; these commands drive the listening/idle UI state.
+		try {
+			if (voice.listening) {
+				await stopListening();
+			} else {
+				await startListening();
+			}
+		} catch {
+			/* ignore — sidecar/pipeline may be unavailable */
+		}
 	}
 
 	function handleInbox() {
@@ -247,6 +264,35 @@
 			</svg>
 		</button>
 
+		<button
+			class="tb-btn"
+			class:active={voice.listening}
+			class:speaking={voice.speaking}
+			onclick={handleMic}
+			title={voice.listening ? 'Listening… (click to stop)' : voice.speaking ? 'Speaking…' : 'Voice (push-to-talk)'}
+		>
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<rect x="6" y="2" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.5" />
+				<path d="M4 8 A4 4 0 0 0 12 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+				<line x1="8" y1="12" x2="8" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+			</svg>
+			{#if voice.listening || voice.speaking}
+				<span class="unread-dot"></span>
+			{/if}
+		</button>
+
+		<button
+			class="tb-btn"
+			class:active={vision.open}
+			onclick={toggleVisionPanel}
+			title="Jiminy vision (camera)"
+		>
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<rect x="1" y="4" width="11" height="8" rx="1.5" stroke="currentColor" stroke-width="1.5" />
+				<path d="M12 7 L15 5 V11 L12 9 Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+			</svg>
+		</button>
+
 		<button class="tb-btn" onclick={handleChat} title="Chat">
 			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 				<rect x="1" y="2" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.5" />
@@ -407,6 +453,10 @@
 
 	.tb-btn.active {
 		color: var(--accent);
+	}
+
+	.tb-btn.speaking {
+		color: var(--prov-owned, var(--accent));
 	}
 
 	.unread-dot {

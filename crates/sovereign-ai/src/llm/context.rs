@@ -84,6 +84,19 @@ pub fn format_workspace_context(ctx: &WorkspaceContext) -> String {
     out
 }
 
+/// Format the latest vision scene caption as a system-prompt block. Returns ""
+/// when there is no scene (or it is blank), so callers can append it
+/// unconditionally.
+pub fn format_vision_context(scene: Option<&str>) -> String {
+    match scene {
+        Some(s) if !s.trim().is_empty() => format!(
+            "\nVISION — what you currently see through the camera: {}\n",
+            s.trim()
+        ),
+        _ => String::new(),
+    }
+}
+
 /// Convert session log entries into chat turns for prompt injection.
 ///
 /// Only `user_input` entries with mode "chat" and `chat_response` entries
@@ -271,6 +284,15 @@ mod tests {
         assert!(text.contains("2 unread"));
         assert!(text.contains("Research, Development"));
         assert!(text.contains("Project Plan, Budget"));
+    }
+
+    #[test]
+    fn format_vision_context_present_and_absent() {
+        assert_eq!(format_vision_context(None), "");
+        assert_eq!(format_vision_context(Some("   ")), "");
+        let s = format_vision_context(Some("a person making a shush sign"));
+        assert!(s.contains("VISION"));
+        assert!(s.contains("a person making a shush sign"));
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub mod pairing;
 pub mod pii;
 pub mod suggestions;
 pub mod threads;
+pub mod voice;
 
 use std::collections::HashSet;
 

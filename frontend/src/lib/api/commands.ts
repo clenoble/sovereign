@@ -732,6 +732,12 @@ export const deleteCookie = (name: string, domain: string, path: string) =>
 export const clearEntityCookies = (entityId: string) =>
 	invoke<number>('clear_entity_cookies', { entityId });
 
+// Voice (push-to-talk). The STT loop itself is wake-word driven on the
+// backend; these signal the UI listening/idle state via a synthetic
+// `voice-event` emit.
+export const startListening = () => invoke<void>('start_listening');
+export const stopListening = () => invoke<void>('stop_listening');
+
 // ---------------------------------------------------------------------------
 // Phase 3c — P2P sync (pairing UI lands in Phase 5)
 // ---------------------------------------------------------------------------

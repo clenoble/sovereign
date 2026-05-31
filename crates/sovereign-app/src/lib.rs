@@ -333,6 +333,9 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::mobile::receive_shared_content,
             tauri_commands::mobile::set_connectivity_state,
             tauri_commands::mobile::get_connectivity_state,
+            // Voice: push-to-talk control surface
+            tauri_commands::voice::start_listening,
+            tauri_commands::voice::stop_listening,
         ])
         .setup(move |app| -> std::result::Result<(), Box<dyn std::error::Error>> {
             use tauri::Manager;
@@ -379,10 +382,14 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 format!("Backend init failed: {e:#}").into()
             })?;
 
-            // Voice pipeline (gated at compile time + runtime)
+            // Voice pipeline (gated at compile time + runtime). Unlike the
+            // upstream desktop path this KEEPS the receiver so the voice-event
+            // forwarder (below) can drain it and surface listening/speaking/
+            // idle state to the Svelte Taskbar mic button. Returns Some(vrx)
+            // only when the pipeline actually spawned.
             #[cfg(feature = "voice-stt")]
-            if backend.config.voice.enabled {
-                let (vtx, _vrx) = mpsc::channel();
+            let voice_rx = if backend.config.voice.enabled {
+                let (vtx, vrx) = mpsc::channel();
                 let voice_query_cb: Box<dyn Fn(String) + Send + 'static> =
                     if let Some(ref orch) = backend.orchestrator {
                         setup::orch_callback(orch, "Voice query error", |o, t| {
@@ -399,12 +406,19 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                     vtx,
                     voice_query_cb,
                 ) {
-                    Ok(_handle) => tracing::info!("Voice pipeline started"),
-                    Err(e) => tracing::warn!("Voice pipeline unavailable: {e}"),
+                    Ok(_handle) => {
+                        tracing::info!("Voice pipeline started");
+                        std::sync::Mutex::new(Some(vrx))
+                    }
+                    Err(e) => {
+                        tracing::warn!("Voice pipeline unavailable: {e}");
+                        std::sync::Mutex::new(None)
+                    }
                 }
             } else {
                 tracing::info!("Voice pipeline disabled in config");
-            }
+                std::sync::Mutex::new(None)
+            };
             #[cfg(not(feature = "voice-stt"))]
             tracing::info!("Voice pipeline omitted (voice-stt feature disabled)");
 
@@ -453,8 +467,151 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 }
             }
 
-            // Event forwarder
-            tauri_events::spawn_event_forwarder(app.handle().clone(), backend.orch_rx);
+            // Event forwarder. On `jiminy` builds the orchestrator stream is
+            // fanned out to BOTH the Tauri forwarder AND the JiminyBridge
+            // (robot head/antenna/emotions + ChatResponse -> sidecar /speak),
+            // so `orch_rx` is rebound to the UI receiver below.
+            let orch_rx = backend.orch_rx;
+
+            // Jiminy embodiment (BODY): fan-out every orchestrator event to BOTH
+            // the Tauri event forwarder AND the JiminyBridge. Rebind orch_rx to
+            // the UI receiver so spawn_event_forwarder consumes the fanned-out
+            // stream.
+            #[cfg(feature = "jiminy")]
+            let orch_rx = {
+                let (ui_tx, ui_rx) = mpsc::channel::<OrchestratorEvent>();
+                let (jiminy_tx, jiminy_rx) = mpsc::channel::<OrchestratorEvent>();
+                std::thread::Builder::new()
+                    .name("jiminy-fanout".into())
+                    .spawn(move || {
+                        while let Ok(event) = orch_rx.recv() {
+                            let _ = ui_tx.send(event.clone());
+                            let _ = jiminy_tx.send(event);
+                        }
+                    })
+                    .expect("Failed to spawn jiminy-fanout thread");
+                let jiminy_url = std::env::var("JIMINY_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:9100".into());
+                let _jiminy_handle =
+                    sovereign_ai::jiminy::JiminyBridge::new(&jiminy_url).spawn(jiminy_rx);
+                tracing::info!("Jiminy bridge started (sidecar at {jiminy_url})");
+                ui_rx
+            };
+
+            // Jiminy camera poller (keep-compiling only — no Tauri consumer yet).
+            #[cfg(feature = "jiminy")]
+            {
+                let jiminy_url = std::env::var("JIMINY_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:9100".into());
+                let frame = sovereign_ai::jiminy_camera::shared_frame();
+                let _camera_handle = sovereign_ai::jiminy_camera::spawn_poller(
+                    &jiminy_url,
+                    frame.clone(),
+                    70,
+                    640,
+                );
+                let _ = frame;
+                tracing::info!("Jiminy camera poller started");
+            }
+
+            // Jiminy vision: poll the vision sidecar for gestures + scene; react
+            // to shush by POSTing /stop to the jiminy-bridge (speech barge-in).
+            // `vision` is the same store the orchestrator reads for scene context.
+            #[cfg(feature = "vision")]
+            {
+                let vision_url = std::env::var("JIMINY_VISION_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:9101".into());
+                let bridge_url = std::env::var("JIMINY_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:9100".into());
+
+                // Gesture-driven voice input: the 'talking_hand' mime opens the
+                // robot mic by POSTing /listen to the bridge (out-of-process STT —
+                // in-process whisper clashes with the LLM's bundled ggml). The
+                // recognized text is fed to the orchestrator, which replies (and,
+                // on jiminy builds, speaks it through Jiminy).
+                let (listen_tx, mut listen_rx) = tokio::sync::mpsc::channel::<()>(2);
+                if let Some(orch) = backend.orchestrator.clone() {
+                    let listen_url = format!("{}/listen", bridge_url.trim_end_matches('/'));
+                    let app_handle = app.handle().clone();
+                    let query_cb = setup::orch_callback(&orch, "Gesture-listen error", |o, t| {
+                        Box::pin(o.handle_query(t))
+                    });
+                    tauri::async_runtime::spawn(async move {
+                        use tauri::Emitter;
+                        // Surface listening / heard text to the Svelte mic button +
+                        // chat window (mirrors the voice-pipeline forwarder).
+                        let voice_evt = |kind: &str, text: Option<String>| {
+                            let _ = app_handle.emit(
+                                "voice-event",
+                                tauri_events::VoiceEventPayload { kind: kind.into(), text },
+                            );
+                        };
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(30))
+                            .build()
+                            .unwrap_or_default();
+                        while listen_rx.recv().await.is_some() {
+                            tracing::info!("Gesture-listen: recording a turn…");
+                            voice_evt("listening", None);
+                            match client.post(&listen_url).send().await {
+                                Ok(resp) => match resp.json::<serde_json::Value>().await {
+                                    Ok(v) => {
+                                        let text = v
+                                            .get("text")
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or("")
+                                            .trim()
+                                            .to_string();
+                                        if text.is_empty() {
+                                            tracing::info!("Gesture-listen: nothing heard");
+                                            voice_evt("idle", None);
+                                        } else {
+                                            tracing::info!("Gesture-listen heard: {text}");
+                                            voice_evt("transcription", Some(text.clone()));
+                                            query_cb(text);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Gesture-listen parse failed: {e}");
+                                        voice_evt("idle", None);
+                                    }
+                                },
+                                Err(e) => {
+                                    tracing::warn!("Gesture-listen /listen failed: {e}");
+                                    voice_evt("idle", None);
+                                }
+                            }
+                        }
+                    });
+                }
+
+                let on_gesture = move |g: String| {
+                    if sovereign_ai::jiminy_vision::gesture_starts_listening(&g) {
+                        // Signal the listen task; drop if one is already queued.
+                        let _ = listen_tx.try_send(());
+                    }
+                };
+
+                let _vision_handle = sovereign_ai::jiminy_vision::spawn_poller(
+                    &vision_url,
+                    backend.vision,
+                    Some(bridge_url.clone()),
+                    on_gesture,
+                    1.5,
+                );
+                tracing::info!(
+                    "Jiminy vision poller started ({vision_url}; reactions -> {bridge_url})"
+                );
+            }
+
+            tauri_events::spawn_event_forwarder(app.handle().clone(), orch_rx);
+
+            // Voice-event forwarder: drains the voice pipeline rx and emits
+            // "voice-event" to the Svelte frontend (listening / speaking / idle).
+            #[cfg(feature = "voice-stt")]
+            if let Some(vrx) = voice_rx.lock().unwrap().take() {
+                tauri_events::spawn_voice_forwarder(app.handle().clone(), vrx);
+            }
 
             // Periodic auto-commit (30s)
             let autocommit = backend.autocommit;
@@ -593,6 +750,8 @@ struct BackendInit {
     model_assignments: tauri_state::ModelAssignments,
     #[cfg(feature = "voice-stt")]
     stt_engine: Option<Arc<tokio::sync::Mutex<sovereign_ai::voice::stt::SttEngine>>>,
+    #[cfg(feature = "vision")]
+    vision: sovereign_ai::jiminy_vision::SharedVision,
 }
 
 /// Backend init: crypto, DB, seeding, skills, orchestrator, channels.
@@ -668,6 +827,11 @@ async fn init_backend(
     let (decision_tx, decision_rx) = tokio::sync::mpsc::channel::<ActionDecision>(32);
     let (feedback_tx, feedback_rx) = tokio::sync::mpsc::channel::<FeedbackEvent>(32);
 
+    // Shared vision state: written by the vision poller (in .setup() below),
+    // read by the orchestrator's chat context — one store shared by both.
+    #[cfg(feature = "vision")]
+    let vision = sovereign_ai::jiminy_vision::shared_vision();
+
     // Orchestrator
     let db_dyn: Arc<dyn sovereign_db::GraphDB> = db_arc.clone();
     let orchestrator = match sovereign_ai::Orchestrator::new(
@@ -680,6 +844,8 @@ async fn init_backend(
         Ok(mut o) => {
             o.set_decision_rx(decision_rx);
             o.set_feedback_rx(feedback_rx);
+            #[cfg(feature = "vision")]
+            o.set_vision(vision.clone());
 
             // Session-log encryption + PII tokenization for the
             // orchestrator are installed after login by
@@ -746,5 +912,7 @@ async fn init_backend(
         model_assignments,
         #[cfg(feature = "voice-stt")]
         stt_engine,
+        #[cfg(feature = "vision")]
+        vision,
     })
 }

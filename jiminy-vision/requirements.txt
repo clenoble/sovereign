@@ -1,0 +1,23 @@
+# Jiminy Vision service dependencies.
+#
+# torch + torchvision must come from the CUDA wheel index for GPU acceleration
+# (CPU-only otherwise). Install order:
+#   python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#   python -m pip install -r requirements.txt
+#
+# Verified set (Windows, GTX 1660, CUDA 12.4): torch 2.6.0+cu124,
+# torchvision 0.21.0+cu124, transformers 4.57.x, mediapipe 0.10.35, numpy 2.4.x.
+#
+# NOTE: transformers must be 4.x — 5.x dropped SmolVLMImageProcessor and fails to
+# load SmolVLM2. torchvision is required by SmolVLM2's video/image processor.
+torch>=2.6
+torchvision>=0.21
+transformers>=4.50,<5
+accelerate>=1.0
+mediapipe>=0.10.18
+opencv-python>=4.10
+pillow>=10.0
+numpy>=2.0
+fastapi>=0.115
+uvicorn[standard]>=0.30
+requests>=2.31

@@ -96,7 +96,7 @@ pub async fn seed_if_empty<T: sovereign_db::GraphDB + ?Sized>(db: &T) -> Result<
         ("Budget Overview", "# Budget 2026\n\n| Item | Cost |\n|------|------|\n| Infrastructure | $500 |\n| Tools | $200 |", 3),
         ("Meeting Notes Q1", "# Meeting Notes — Q1 2026\n\n## Jan 15\n- Discussed architecture\n- Agreed on Rust + GTK4 stack", 3),
         ("Design Document", "# Design System\n\n## Colors\n- Background: #0e0e10\n- Accent: #5a9fd4\n\n## Typography\n- System font, 13-16px", 2),
-        ("Test Results", "# Test Results\n\n- sovereign-db: 12 pass\n- sovereign-canvas: 12 pass\n- sovereign-ai: 8 pass", 1),
+        ("Test Results", "# Test Results\n\n- sovereign-db: 12 pass\n- sovereign-app: 12 pass\n- sovereign-ai: 8 pass", 1),
     ];
 
     let external_docs: Vec<(&str, &str, usize)> = vec![

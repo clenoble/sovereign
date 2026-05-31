@@ -1,0 +1,7 @@
+reachy-mini>=1.2.0
+fastapi>=0.129.0
+uvicorn[standard]>=0.34.0
+datasets>=3.0.0
+huggingface_hub>=0.28.0
+scipy>=1.14.0
+opencv-python-headless>=4.10.0

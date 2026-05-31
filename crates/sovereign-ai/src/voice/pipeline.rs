@@ -84,8 +84,38 @@ fn run_pipeline(
 
     const TARGET_SAMPLE_RATE: u32 = 16000;
 
-    // Initialize components
-    let (_capture, mut audio_cons, actual_rate) = AudioCapture::start(TARGET_SAMPLE_RATE)?;
+    // Initialize audio source — cpal (PC mic) or jiminy (Reachy Mini mic via WebSocket)
+    #[allow(unused_assignments)]
+    let mut _cpal_capture: Option<AudioCapture> = None;
+    #[cfg(feature = "jiminy")]
+    let mut _jiminy_capture: Option<super::jiminy_capture::JiminyAudioCapture> = None;
+
+    #[cfg(feature = "jiminy")]
+    let use_jiminy = config.voice_source == "jiminy";
+    #[cfg(not(feature = "jiminy"))]
+    let use_jiminy = false;
+
+    let (mut audio_cons, actual_rate) = if use_jiminy {
+        #[cfg(feature = "jiminy")]
+        {
+            let (capture, cons, rate) =
+                super::jiminy_capture::JiminyAudioCapture::start(&config.jiminy_ws_url)?;
+            _jiminy_capture = Some(capture);
+            tracing::info!(
+                "Audio source: Jiminy mic (WebSocket {})",
+                config.jiminy_ws_url
+            );
+            (cons, rate)
+        }
+        #[cfg(not(feature = "jiminy"))]
+        unreachable!()
+    } else {
+        let (capture, cons, rate) = AudioCapture::start(TARGET_SAMPLE_RATE)?;
+        _cpal_capture = Some(capture);
+        tracing::info!("Audio source: PC mic (cpal)");
+        (cons, rate)
+    };
+
     tracing::info!("Audio capture started at {actual_rate}Hz");
 
     let mut wake_detector = WakeWordDetector::new(&config.wake_word_model, actual_rate as usize)?;

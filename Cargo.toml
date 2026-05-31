@@ -102,8 +102,14 @@ cpal = "0.17"
 rustpotter = "3.0"
 ringbuf = "0.4"
 
+# WebSocket client (for Jiminy audio streaming)
+tokio-tungstenite = "0.28"
+futures-util = "0.3"
+
+# HTTP client (Jiminy bridge needs "json" POST bodies; web browsing needs "rustls" TLS)
+reqwest = { version = "0.13", features = ["json", "rustls"] }
+
 # Web browsing
-reqwest = { version = "0.13", features = ["rustls"] }
 readability = "0.3"
 url = "2.5"
 

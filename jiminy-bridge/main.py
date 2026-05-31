@@ -1,0 +1,460 @@
+"""Jiminy Bridge — FastAPI sidecar connecting Sovereign OS to Reachy Mini.
+
+Sovereign OS (Rust) sends HTTP commands here, and this server translates
+them into Reachy Mini SDK calls. Supports both simulation (MuJoCo) and
+real hardware.
+
+Usage:
+    pip install -r requirements.txt
+    python main.py                    # Auto-detect (sim or hardware)
+    python main.py --sim              # Force simulation mode
+    python main.py --port 9100        # Custom port
+
+Simulation:
+    Start daemon with gold-themed scene:
+        reachy-mini-daemon --sim --scene sovereign
+    (Install scene first: copy scenes/sovereign.xml into
+     .venv/Lib/site-packages/reachy_mini/descriptions/reachy_mini/mjcf/scenes/)
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import os
+from contextlib import asynccontextmanager
+from typing import Optional
+
+import numpy as np
+import uvicorn
+from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi.responses import Response
+from pydantic import BaseModel
+
+from reachy_mini import ReachyMini
+from reachy_mini.utils import create_head_pose
+
+from audio_stream import audio_ws_handler
+from emotions import EmotionLibrary
+from tts_engine import PiperTts, create_tts_engine
+
+import stt_listen
+
+logger = logging.getLogger("jiminy")
+
+# --- Request models ---
+
+
+class EmotionRequest(BaseModel):
+    name: str
+
+
+class DanceRequest(BaseModel):
+    name: str
+
+
+class SpeakRequest(BaseModel):
+    text: str
+
+
+class PoseRequest(BaseModel):
+    head_roll: float = 0.0
+    head_pitch: float = 0.0
+    head_yaw: float = 0.0
+    antenna_left: float = 0.0
+    antenna_right: float = 0.0
+    body_yaw: float = 0.0
+    duration: float = 0.5
+
+
+class LookAtRequest(BaseModel):
+    x: float
+    y: float
+    z: float
+
+
+# --- Global state ---
+
+mini: Optional[ReachyMini] = None
+library: Optional[EmotionLibrary] = None
+tts_engine: Optional[PiperTts] = None
+_idle_task: Optional[asyncio.Task] = None
+_speak_task: Optional[asyncio.Task] = None
+
+# Media backend + sim mode, resolved from env / CLI in main() before startup.
+# In headless --sim there is no physical camera, so the "default" backend (which
+# opens one via OpenCV) hangs ~30s and aborts the whole connection. Override with
+# --media-backend / JIMINY_MEDIA_BACKEND; --sim picks a camera-free default.
+# Values: default | default_no_video | no_media | gstreamer |
+# gstreamer_no_video | webrtc.
+media_backend: str = os.environ.get("JIMINY_MEDIA_BACKEND", "default")
+use_sim: bool = False
+
+
+def resolve_media_backend(explicit: Optional[str], sim: bool, env) -> str:
+    """Choose the Reachy Mini media backend.
+
+    Priority: explicit CLI flag > JIMINY_MEDIA_BACKEND env var > sim-aware default
+    ('default_no_video' under --sim, since headless sim has no camera) > 'default'.
+    """
+    if explicit:
+        return explicit
+    if "JIMINY_MEDIA_BACKEND" in env:
+        return env["JIMINY_MEDIA_BACKEND"]
+    return "default_no_video" if sim else "default"
+
+
+# --- Lifespan ---
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global mini, library
+    logger.info("Starting Jiminy bridge...")
+
+    # Connect to robot (daemon must be running separately)
+    # Start daemon first: reachy-mini-daemon        (USB hardware)
+    #                   or reachy-mini-daemon --sim  (MuJoCo simulation)
+    try:
+        logger.info(
+            "Connecting to Reachy Mini (media_backend=%s, sim=%s)...",
+            media_backend, use_sim,
+        )
+        mini = ReachyMini(media_backend=media_backend, use_sim=use_sim)
+        mini.__enter__()
+        logger.info("Connected to Reachy Mini")
+    except Exception as e:
+        logger.error("Failed to connect to Reachy Mini: %s", e)
+        logger.info("Continuing without robot — status endpoint will report disconnected")
+        mini = None
+
+    # Load emotion/dance libraries
+    library = EmotionLibrary()
+    try:
+        library.load()
+    except Exception as e:
+        logger.warning("Failed to load emotion libraries: %s", e)
+
+    # Initialize TTS engine (optional — needs PIPER_MODEL env)
+    global tts_engine
+    tts_engine = create_tts_engine()
+
+    # Warm up the STT model in the background so the first /listen isn't slowed
+    # by the (one-time) faster-whisper download + load.
+    def _stt_warmup():
+        try:
+            stt_listen.load_model()
+        except Exception as e:
+            logger.warning("STT warmup failed (retries on first /listen): %s", e)
+    import threading
+    threading.Thread(target=_stt_warmup, name="stt-warmup", daemon=True).start()
+
+    yield
+
+    # Shutdown
+    if mini is not None:
+        try:
+            mini.__exit__(None, None, None)
+        except Exception:
+            pass
+    logger.info("Jiminy bridge stopped")
+
+
+app = FastAPI(title="Jiminy Bridge", version="0.1.0", lifespan=lifespan)
+
+
+# --- Endpoints ---
+
+
+@app.get("/status")
+async def status():
+    """Check robot connection health."""
+    emotions = library.list_emotions() if library else []
+    dances = library.list_dances() if library else []
+    return {
+        "connected": mini is not None,
+        "emotions_loaded": len(emotions),
+        "dances_loaded": len(dances),
+        "available_emotions": emotions[:10],
+        "available_dances": dances[:10],
+    }
+
+
+@app.post("/emotion")
+async def play_emotion(req: EmotionRequest):
+    """Play a named emotion animation."""
+    if mini is None:
+        raise HTTPException(503, "Robot not connected")
+    if library is None:
+        raise HTTPException(503, "Emotion library not loaded")
+    loop = asyncio.get_event_loop()
+    played = await loop.run_in_executor(None, library.play_emotion, mini, req.name)
+    if not played:
+        available = library.list_emotions()
+        raise HTTPException(
+            404,
+            f"Emotion '{req.name}' not found. Available: {available[:10]}",
+        )
+    return {"status": "ok", "emotion": req.name}
+
+
+@app.post("/dance")
+async def play_dance(req: DanceRequest):
+    """Play a named dance animation."""
+    if mini is None:
+        raise HTTPException(503, "Robot not connected")
+    if library is None:
+        raise HTTPException(503, "Dance library not loaded")
+    loop = asyncio.get_event_loop()
+    played = await loop.run_in_executor(None, library.play_dance, mini, req.name)
+    if not played:
+        available = library.list_dances()
+        raise HTTPException(
+            404,
+            f"Dance '{req.name}' not found. Available: {available[:10]}",
+        )
+    return {"status": "ok", "dance": req.name}
+
+
+@app.post("/pose")
+async def set_pose(req: PoseRequest):
+    """Move to a specific pose with interpolation."""
+    if mini is None:
+        raise HTTPException(503, "Robot not connected")
+    head = create_head_pose(
+        roll=np.deg2rad(req.head_roll),
+        pitch=np.deg2rad(req.head_pitch),
+        yaw=np.deg2rad(req.head_yaw),
+        degrees=False,
+        mm=False,
+    )
+    mini.goto_target(
+        head=head,
+        antennas=[req.antenna_left, req.antenna_right],
+        body_yaw=np.deg2rad(req.body_yaw),
+        duration=req.duration,
+    )
+    return {"status": "ok"}
+
+
+@app.post("/idle")
+async def idle():
+    """Return to neutral idle position."""
+    if mini is None:
+        raise HTTPException(503, "Robot not connected")
+    head = create_head_pose(roll=0.0, pitch=0.0, yaw=0.0, degrees=False, mm=False)
+    mini.goto_target(head=head, antennas=[0.0, 0.0], body_yaw=0.0, duration=1.0)
+    return {"status": "ok"}
+
+
+async def _do_speak(text: str) -> float:
+    """Render `text` to the robot speaker (Piper TTS, else antenna-only)."""
+    if tts_engine is not None:
+        # Real TTS: generate speech + animate antennas concurrently.
+        async def animate_antennas():
+            try:
+                while True:
+                    mini.set_target(antennas=[0.3, 0.3])
+                    await asyncio.sleep(0.2)
+                    mini.set_target(antennas=[0.0, 0.0])
+                    await asyncio.sleep(0.15)
+            except asyncio.CancelledError:
+                mini.set_target(antennas=[0.0, 0.0])
+
+        anim_task = asyncio.create_task(animate_antennas())
+        try:
+            return await tts_engine.speak_to_robot(mini, text)
+        finally:
+            anim_task.cancel()
+            try:
+                await anim_task
+            except asyncio.CancelledError:
+                pass
+    else:
+        # Fallback: antenna animation only (no audio).
+        for _ in range(max(1, len(text) // 20)):
+            mini.set_target(antennas=[0.3, 0.3])
+            await asyncio.sleep(0.15)
+            mini.set_target(antennas=[0.0, 0.0])
+            await asyncio.sleep(0.15)
+        return 0.0
+
+
+async def _cancel_speak() -> None:
+    """Cancel any in-flight speech (barge-in) and halt the robot's audio."""
+    global _speak_task
+    task = _speak_task
+    _speak_task = None
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    if mini is not None:
+        try:
+            mini.media_manager.stop_playing()
+        except Exception:
+            pass
+
+
+@app.post("/speak")
+async def speak(req: SpeakRequest):
+    """Speak text through the robot's speaker via Piper TTS (antenna-only fallback).
+
+    Returns IMMEDIATELY and plays the speech in the background, so HTTP clients
+    (e.g. the orchestrator's JiminyBridge, which uses a short request timeout)
+    don't block for the whole utterance. Interrupts any in-flight speech first;
+    /stop (shush barge-in) cancels it.
+    """
+    global _speak_task
+    if mini is None:
+        raise HTTPException(503, "Robot not connected")
+    logger.info("Speaking: %s", req.text[:80])
+
+    await _cancel_speak()
+    _speak_task = asyncio.create_task(_do_speak(req.text))
+    return {"status": "speaking"}
+
+
+@app.post("/stop")
+async def stop():
+    """Stop the robot mid-speech (barge-in) — driven by the shush gesture."""
+    await _cancel_speak()
+    return {"status": "stopped"}
+
+
+@app.post("/listen")
+async def listen():
+    """Record from the robot mic until silence and return the transcription.
+
+    Driven by the 'talking_hand' gesture: the app POSTs here, we capture a turn
+    from the robot mic (via the SDK media_manager) and transcribe it with
+    faster-whisper. Blocking work runs in a thread so the event loop stays free.
+    Returns {"text": "..."} ("" if nothing was recognized).
+    """
+    if mini is None:
+        raise HTTPException(503, "Robot not connected")
+    loop = asyncio.get_event_loop()
+    # Quick "I'm listening" cue so the user knows the gesture registered and when
+    # to speak. Played to completion BEFORE recording so the servo motion isn't
+    # captured by the mic.
+    if library is not None:
+        try:
+            await loop.run_in_executor(None, library.play_emotion, mini, "attentive1")
+        except Exception as e:
+            logger.debug("listen cue failed: %s", e)
+    text = await loop.run_in_executor(None, stt_listen.listen_and_transcribe, mini)
+    return {"text": text}
+
+
+@app.post("/look_at")
+async def look_at(req: LookAtRequest):
+    """Look at a world-space position."""
+    if mini is None:
+        raise HTTPException(503, "Robot not connected")
+    # Convert world position to head angles (simplified)
+    yaw = np.arctan2(req.x, req.z)
+    pitch = np.arctan2(-req.y, np.sqrt(req.x**2 + req.z**2))
+    head = create_head_pose(roll=0.0, pitch=pitch, yaw=yaw, degrees=False, mm=False)
+    mini.goto_target(head=head, duration=0.5)
+    return {"status": "ok"}
+
+
+@app.websocket("/ws/audio")
+async def ws_audio(ws: WebSocket):
+    """Stream mic audio from Reachy Mini's ReSpeaker array."""
+    await audio_ws_handler(ws, mini)
+
+
+@app.get("/camera/status")
+async def camera_status():
+    """Check whether the camera is available."""
+    if mini is None:
+        return {"available": False, "reason": "Robot not connected"}
+    try:
+        loop = asyncio.get_event_loop()
+        frame = await loop.run_in_executor(None, mini.media_manager.get_frame)
+        if frame is None:
+            return {"available": False, "reason": "No frame returned"}
+        return {"available": True, "width": frame.shape[1], "height": frame.shape[0]}
+    except Exception as e:
+        return {"available": False, "reason": str(e)}
+
+
+@app.get("/camera/frame")
+async def camera_frame(quality: int = 70, max_width: int = 640):
+    """Capture a single JPEG frame from the robot's camera."""
+    if mini is None:
+        raise HTTPException(503, "Robot not connected")
+
+    try:
+        import cv2
+    except ImportError:
+        raise HTTPException(501, "opencv-python-headless not installed")
+
+    loop = asyncio.get_event_loop()
+    frame = await loop.run_in_executor(None, mini.media_manager.get_frame)
+    if frame is None:
+        raise HTTPException(503, "No frame from camera")
+
+    # Resize if wider than max_width
+    h, w = frame.shape[:2]
+    if w > max_width:
+        scale = max_width / w
+        new_w = max_width
+        new_h = int(h * scale)
+        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    # Encode as JPEG
+    ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise HTTPException(500, "JPEG encoding failed")
+
+    return Response(content=jpeg.tobytes(), media_type="image/jpeg")
+
+
+# --- Main ---
+
+
+def main():
+    global media_backend, use_sim
+    parser = argparse.ArgumentParser(description="Jiminy Bridge for Sovereign OS")
+    parser.add_argument("--port", type=int, default=9100, help="Server port (default: 9100)")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Bind address")
+    parser.add_argument("--sim", action="store_true",
+                        help="Connect to a simulation daemon (camera-free media default)")
+    parser.add_argument(
+        "--media-backend",
+        choices=["default", "default_no_video", "no_media",
+                 "gstreamer", "gstreamer_no_video", "webrtc"],
+        default=None,
+        help="Reachy Mini media backend. Default: env JIMINY_MEDIA_BACKEND or "
+             "'default'; --sim defaults to 'default_no_video' (headless sim has "
+             "no camera).",
+    )
+    args = parser.parse_args()
+
+    use_sim = args.sim
+    media_backend = resolve_media_backend(args.media_backend, args.sim, os.environ)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+    logger.info("Starting Jiminy bridge on %s:%d (media_backend=%s, sim=%s)",
+                args.host, args.port, media_backend, use_sim)
+    # The Rust app holds a long-lived reqwest client that pools idle sockets and
+    # reuses them well past the nominal ~90s (observed reuse at 145s). uvicorn's
+    # default keep-alive is only 5s, so a /speak sent minutes after the previous
+    # one reuses a socket the server already closed -> "error sending request"
+    # and a silent (text-only) reply. Hold server-side connections open far
+    # longer than any conversational gap so the pooled socket is never stale.
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info",
+                timeout_keep_alive=3600)
+
+
+if __name__ == "__main__":
+    main()
