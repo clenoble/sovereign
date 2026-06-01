@@ -117,7 +117,7 @@ pub async fn generate_pair_qr(
         pp::PAIR_TTL_SECONDS,
     );
 
-    let pin = pp::generate_pin();
+    let pin = pp::generate_pairing_code();
     let encrypted = payload.encrypt(&pin).str_err()?;
     let qr_payload_b64 = encrypted.encode().str_err()?;
     let expires_at = payload.expires_at;
@@ -274,6 +274,7 @@ pub async fn complete_onboarding_paired(
 pub async fn list_paired_devices(
     state: State<'_, AppState>,
 ) -> Result<Vec<PairedDeviceDto>, String> {
+    state.require_unlocked().await?;
     #[cfg(feature = "p2p")]
     {
         if let Some(ref manager) = *state.pairing_manager.read().await {
@@ -298,15 +299,21 @@ pub async fn forget_paired_device(
     state: State<'_, AppState>,
     peer_id: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     #[cfg(feature = "p2p")]
     {
-        let mut guard = state.pairing_manager.write().await;
-        if let Some(manager) = guard.as_mut() {
-            manager.remove_device(&peer_id);
-            manager
-                .save()
-                .map_err(|e| format!("save paired_devices.json: {e}"))?;
-        }
+        {
+            let mut guard = state.pairing_manager.write().await;
+            if let Some(manager) = guard.as_mut() {
+                manager.remove_device(&peer_id);
+                manager
+                    .save()
+                    .map_err(|e| format!("save paired_devices.json: {e}"))?;
+            }
+        } // drop the write guard before refreshing (which read-locks it)
+          // P2P-001: push the shrunken allow-list to the running node so
+          // the forgotten device can no longer sync this session.
+        crate::sync_startup::refresh_paired_peers(&state).await;
         return Ok(());
     }
     #[allow(unreachable_code)]
@@ -323,6 +330,7 @@ pub async fn forget_paired_device(
 /// running, or the user has no paired peers).
 #[tauri::command]
 pub async fn trigger_sync_now(state: State<'_, AppState>) -> Result<u32, String> {
+    state.require_unlocked().await?;
     #[cfg(feature = "p2p")]
     {
         return Ok(crate::sync_startup::trigger_sync_for_all_paired(&state).await);
@@ -339,6 +347,7 @@ pub async fn trigger_sync_now(state: State<'_, AppState>) -> Result<u32, String>
 /// build doesn't include the p2p feature.
 #[tauri::command]
 pub async fn get_local_peer_id(state: State<'_, AppState>) -> Result<String, String> {
+    state.require_unlocked().await?;
     Ok(peer_id_from_state(&state).await)
 }
 

@@ -87,7 +87,16 @@ pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
     let device_id = crate::setup::load_or_create_device_id()
         .map_err(|e| format!("device id: {e}"))?;
     let db_dyn: Arc<dyn sovereign_db::GraphDB> = state.db.clone();
-    let sync_service = Arc::new(SyncService::new(db_dyn, device_id));
+    // P2P-002: every sync envelope is AEAD-sealed under a transport key
+    // derived from the shared AccountKey (all paired devices derive the
+    // same one). Without the account key we can't sync securely, so refuse
+    // to start P2P rather than fall back to plaintext.
+    let transport_key = state
+        .account_key()
+        .await
+        .ok_or_else(|| "p2p start requires the account key (sync transport key)".to_string())?
+        .derive_transport_key();
+    let sync_service = Arc::new(SyncService::new(db_dyn, device_id, transport_key));
 
     // Derive libp2p keypair from the per-device identity key.
     let keypair = sovereign_p2p::identity::derive_keypair(&p2p_identity_key)
@@ -132,6 +141,7 @@ pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
 
     // Install the command sender on AppState + orchestrator.
     state.set_p2p_command_tx(command_tx.clone()).await;
+    let cmd_for_pairing = command_tx.clone();
     if let Some(ref orch) = state.orchestrator {
         orch.set_p2p_command_tx(command_tx);
     }
@@ -148,9 +158,42 @@ pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
     } else {
         PairingManager::new(paired_path)
     };
+    // P2P-001: seed the node's paired-peer allow-list from the persisted
+    // pairing list. Until this arrives the node's allow-list is empty, so
+    // it fails CLOSED — no peer is served sync data before we've told it
+    // which devices are actually paired.
+    let paired_ids: Vec<String> = manager
+        .list_devices()
+        .iter()
+        .map(|d| d.peer_id.clone())
+        .collect();
+    let _ = cmd_for_pairing
+        .send(P2pCommand::UpdatePairedPeers { peer_ids: paired_ids })
+        .await;
     *state.pairing_manager.write().await = Some(manager);
 
     Ok(())
+}
+
+/// Re-push the current paired-peer allow-list to the running P2P node.
+/// Call this whenever the pairing list changes at runtime (a device is
+/// paired or forgotten) so the node's [`P2P-001`] gate stays in sync
+/// without requiring an app restart. No-op if P2P isn't running.
+pub async fn refresh_paired_peers(state: &AppState) {
+    let cmd_tx = match state.p2p_command_tx().await {
+        Some(tx) => tx,
+        None => return,
+    };
+    let peer_ids: Vec<String> = {
+        let guard = state.pairing_manager.read().await;
+        match guard.as_ref() {
+            Some(m) => m.list_devices().iter().map(|d| d.peer_id.clone()).collect(),
+            None => Vec::new(),
+        }
+    };
+    let _ = cmd_tx
+        .send(P2pCommand::UpdatePairedPeers { peer_ids })
+        .await;
 }
 
 /// Translate `P2pEvent`s into `OrchestratorEvent`s for the UI bridge,

@@ -10,6 +10,7 @@ pub async fn list_documents(
     state: State<'_, AppState>,
     thread_id: Option<String>,
 ) -> Result<Vec<DocSummary>, String> {
+    state.require_unlocked().await?;
     let docs = state
         .db
         .list_documents(thread_id.as_deref())
@@ -35,6 +36,7 @@ pub async fn list_documents(
 /// List all threads.
 #[tauri::command]
 pub async fn list_threads(state: State<'_, AppState>) -> Result<Vec<ThreadSummary>, String> {
+    state.require_unlocked().await?;
     let threads = state.db.list_threads().await.str_err()?;
 
     Ok(threads
@@ -133,6 +135,7 @@ pub async fn get_document(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<FullDocument, String> {
+    state.require_unlocked().await?;
     let doc = state.db.get_document(&id).await.str_err()?;
     Ok(to_full_document(doc))
 }
@@ -147,10 +150,12 @@ pub async fn save_document(
     images: Vec<ContentImageDto>,
     videos: Vec<ContentVideoDto>,
 ) -> Result<(), String> {
-    // PII ingest on the body before persisting. The helper short-circuits
-    // when crypto isn't initialized or the document was already scanned —
-    // see `pii_ingest::maybe_ingest_document_body` for the policy.
-    #[cfg(feature = "encryption")]
+    state.require_unlocked().await?;
+    // PII-002: PII ingest on the body before persisting — runs regardless of
+    // the `encryption` feature so PII is tokenized in non-encryption builds
+    // too. The helper short-circuits gracefully when no account_key is
+    // available or the document was already scanned — see
+    // `pii_ingest::maybe_ingest_document_body` for the policy.
     let body = crate::pii_ingest::maybe_ingest_document_body(&state, &id, &body).await?;
 
     let fields = ContentFields {
@@ -189,6 +194,7 @@ pub async fn create_document(
     title: String,
     thread_id: String,
 ) -> Result<String, String> {
+    state.require_unlocked().await?;
     let doc = Document::new(title, thread_id, true);
     let created = state
         .db
@@ -208,6 +214,7 @@ pub async fn close_document(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     state.autocommit.lock().await.commit_on_close(&id).await;
     Ok(())
 }
@@ -222,6 +229,7 @@ pub async fn list_commits(
     state: State<'_, AppState>,
     doc_id: String,
 ) -> Result<Vec<CommitSummaryDto>, String> {
+    state.require_unlocked().await?;
     let commits = state
         .db
         .list_document_commits(&doc_id)
@@ -258,6 +266,7 @@ pub async fn restore_commit(
     doc_id: String,
     commit_id: String,
 ) -> Result<FullDocument, String> {
+    state.require_unlocked().await?;
     let doc = state
         .db
         .restore_document(&doc_id, &commit_id)
@@ -276,6 +285,7 @@ pub async fn list_skills_for_doc(
     state: State<'_, AppState>,
     doc_title: String,
 ) -> Result<Vec<SkillInfo>, String> {
+    state.require_unlocked().await?;
     let ext = doc_title
         .rsplit('.')
         .next()
@@ -306,6 +316,7 @@ pub async fn execute_skill(
     doc_id: String,
     params: String,
 ) -> Result<SkillResultDto, String> {
+    state.require_unlocked().await?;
     let doc = state.db.get_document(&doc_id).await.str_err()?;
     let fields = ContentFields::parse(&doc.content);
     let skill_doc = SkillDocument {
@@ -402,6 +413,7 @@ pub async fn execute_skill(
 /// List all registered skills and their actions.
 #[tauri::command]
 pub async fn list_all_skills(state: State<'_, AppState>) -> Result<Vec<SkillInfo>, String> {
+    state.require_unlocked().await?;
     let skills = state.skill_registry.all_skills();
     Ok(skills
         .iter()
@@ -425,6 +437,7 @@ pub async fn delete_document(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     state
         .db
         .soft_delete_document(&id)
@@ -444,10 +457,29 @@ pub async fn import_file(
     file_path: String,
     thread_id: Option<String>,
 ) -> Result<CanvasDocDto, String> {
-    let path = std::path::Path::new(&file_path);
-    if !path.exists() {
-        return Err(format!("File not found: {file_path}"));
+    state.require_unlocked().await?;
+
+    // IPC-001: contain the import path. Canonicalize the requested path
+    // (resolving symlinks + `..`) and reject anything that escapes the
+    // user's home directory. `std::fs::canonicalize` errors if the path
+    // doesn't exist, which also covers the previous existence check.
+    let canonical = std::fs::canonicalize(&file_path)
+        .map_err(|e| format!("File not found or inaccessible: {file_path}: {e}"))?;
+    // Default-deny: only allow imports from the user's standard document
+    // folders. Confining to $HOME is NOT enough — auth.store, salt
+    // (~/.sovereign/crypto), ~/.ssh keys, and other dotfile secrets all
+    // live under $HOME; Documents/Downloads/Desktop excludes every dotdir.
+    let home = sovereign_core::home_dir();
+    let allowed_roots: Vec<std::path::PathBuf> = ["Documents", "Downloads", "Desktop"]
+        .iter()
+        .filter_map(|d| std::fs::canonicalize(home.join(d)).ok())
+        .collect();
+    if !allowed_roots.iter().any(|root| canonical.starts_with(root)) {
+        return Err(format!(
+            "Import rejected: '{file_path}' is outside the allowed import folders (Documents, Downloads, Desktop)"
+        ));
     }
+    let path = canonical.as_path();
 
     let title = path
         .file_stem()
@@ -467,10 +499,10 @@ pub async fn import_file(
         .map(sovereign_db::schema::thing_to_raw)
         .unwrap_or_default();
 
-    // PII ingest on the imported content. With crypto disabled this is a
-    // pass-through; with crypto enabled the body is rewritten with
-    // `[pii:<record_id>]` tokens and the original is preserved encrypted.
-    #[cfg(feature = "encryption")]
+    // PII-002: PII ingest on the imported content — runs regardless of the
+    // `encryption` feature. The body is rewritten with `[pii:<record_id>]`
+    // tokens (and the original preserved encrypted) whenever an account_key is
+    // available; otherwise it's a graceful pass-through.
     let content = crate::pii_ingest::maybe_ingest_document_body(&state, &id, &content).await?;
 
     // Save the content

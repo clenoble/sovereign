@@ -291,7 +291,18 @@ impl CommunicationChannel for EmailChannel {
                         .map(|h| h.get_value())
                         .unwrap_or_else(|| "(no subject)".into());
 
-                    let from_addr = extract_email_address(&from_header);
+                    // COMMS-001: a malformed From: header must not abort the
+                    // whole sync — skip that one message and keep going.
+                    let from_addr = match extract_email_address(&from_header) {
+                        Some(addr) => addr,
+                        None => {
+                            tracing::warn!(
+                                "skipping message with unparseable From header: {:?}",
+                                from_header
+                            );
+                            continue;
+                        }
+                    };
                     let from_name = extract_display_name(&from_header);
                     let from_id = self.resolve_contact_id(&from_addr, from_name.as_deref()).await?;
 
@@ -498,13 +509,30 @@ async fn imap_connect(
 }
 
 /// Extract the email address from a "Display Name <email>" string.
-fn extract_email_address(header: &str) -> String {
-    if let Some(start) = header.find('<') {
-        if let Some(end) = header.find('>') {
-            return header[start + 1..end].to_string();
+///
+/// Returns `None` when the header is malformed and yields no usable address.
+/// A crafted `From:` header where `>` precedes `<` (e.g. `>attacker<evil`)
+/// previously caused a slice-out-of-order panic that crashed the whole sync
+/// (COMMS-001); we now guard `start < end` and reject such headers.
+fn extract_email_address(header: &str) -> Option<String> {
+    if let (Some(start), Some(end)) = (header.find('<'), header.find('>')) {
+        // Only trust angle-bracketed form when the brackets are ordered.
+        if start < end {
+            let addr = header[start + 1..end].trim();
+            if !addr.is_empty() {
+                return Some(addr.to_string());
+            }
         }
+        // Malformed bracketing (e.g. ">x<y") — no usable address.
+        return None;
     }
-    header.trim().to_string()
+    // No angle brackets: treat the whole trimmed header as the address.
+    let trimmed = header.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// Extract the display name from a "Display Name <email>" string.
@@ -524,14 +552,17 @@ mod tests {
 
     #[test]
     fn extract_email_simple() {
-        assert_eq!(extract_email_address("alice@example.com"), "alice@example.com");
+        assert_eq!(
+            extract_email_address("alice@example.com"),
+            Some("alice@example.com".to_string())
+        );
     }
 
     #[test]
     fn extract_email_with_name() {
         assert_eq!(
             extract_email_address("Alice Smith <alice@example.com>"),
-            "alice@example.com"
+            Some("alice@example.com".to_string())
         );
     }
 
@@ -539,8 +570,20 @@ mod tests {
     fn extract_email_quoted_name() {
         assert_eq!(
             extract_email_address("\"Alice Smith\" <alice@example.com>"),
-            "alice@example.com"
+            Some("alice@example.com".to_string())
         );
+    }
+
+    #[test]
+    fn extract_email_malformed_brackets_no_panic() {
+        // COMMS-001: '>' before '<' must not panic; it yields None.
+        assert_eq!(extract_email_address(">attacker<evil"), None);
+    }
+
+    #[test]
+    fn extract_email_empty_header() {
+        assert_eq!(extract_email_address("   "), None);
+        assert_eq!(extract_email_address("Name <>"), None);
     }
 
     #[test]

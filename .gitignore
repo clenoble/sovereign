@@ -67,3 +67,11 @@ sovereign-chatbot/embeddings.npy
 
 # Internal docs — must NOT reach the public github mirror
 website/marketing-plan.md
+
+# Local-only security tooling — red-team workflow + its reports (never publish)
+.claude/workflows/
+.claude/security-audits/
+# Safety net: red-team scratch artifacts must never be committed
+**/zz_scratch_*.rs
+**/zzz_scratch_*.rs
+*_probe_out.txt

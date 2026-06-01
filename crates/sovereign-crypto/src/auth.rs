@@ -6,7 +6,7 @@ use crate::aead::{self, NONCE_SIZE};
 use crate::device_key::DeviceKey;
 use crate::error::{CryptoError, CryptoResult};
 use crate::kek::{Kek, WrappedKek};
-use crate::master_key::MasterKey;
+use crate::master_key::{Kdf, MasterKey};
 
 /// Tagged probe plaintexts — embedded in each persona entry so we can
 /// identify which persona a passphrase unlocks after decryption.
@@ -95,6 +95,13 @@ pub enum PersonaKind {
 pub struct AuthStore {
     pub salt: Vec<u8>,
     pub device_id: String,
+    /// KDF used to stretch the passphrase into the MasterKey. Recorded so
+    /// the store always unlocks with the KDF it was created under. Stores
+    /// written before this field existed (v<=0.0.6, all HKDF) deserialize
+    /// to [`Kdf::LegacyHkdf`] via the serde default and still open; new
+    /// stores use [`Kdf::current`] (Argon2id). See CRYPTO-001.
+    #[serde(default = "Kdf::legacy")]
+    pub kdf: Kdf,
     /// Always exactly 2 entries, randomized order.
     pub personas: Vec<PersonaEntry>,
 }
@@ -137,10 +144,11 @@ impl AuthStore {
         salt: &[u8],
         device_id: &str,
     ) -> CryptoResult<Self> {
+        let kdf = Kdf::current();
         let primary_entry =
-            Self::build_entry(primary_passphrase, salt, device_id, PRIMARY_PROBE)?;
+            Self::build_entry(primary_passphrase, salt, device_id, PRIMARY_PROBE, &kdf)?;
         let duress_entry =
-            Self::build_entry(duress_passphrase, salt, device_id, DURESS_PROBE)?;
+            Self::build_entry(duress_passphrase, salt, device_id, DURESS_PROBE, &kdf)?;
 
         // Randomize order so file inspection can't correlate position with kind.
         let mut personas = vec![primary_entry, duress_entry];
@@ -151,6 +159,7 @@ impl AuthStore {
         Ok(Self {
             salt: salt.to_vec(),
             device_id: device_id.to_string(),
+            kdf,
             personas,
         })
     }
@@ -159,7 +168,7 @@ impl AuthStore {
     /// Derives keys, tries each persona probe. Returns the matching persona,
     /// DeviceKey, and unwrapped KEK on success.
     pub fn authenticate(&self, passphrase: &[u8]) -> CryptoResult<AuthSuccess> {
-        let master = MasterKey::from_passphrase(passphrase, &self.salt)?;
+        let master = MasterKey::derive(passphrase, &self.salt, &self.kdf)?;
         let device_key = DeviceKey::derive(&master, &self.device_id)?;
         // Fallback AccountKey: user-scoped, derived from MasterKey alone.
         // Used when the persona has no `wrapped_account_key` (v0.0.4
@@ -218,13 +227,21 @@ impl AuthStore {
         salt: &[u8],
         device_id: &str,
         probe_plaintext: &[u8],
+        kdf: &Kdf,
     ) -> CryptoResult<PersonaEntry> {
         // Default new-store entry derives the AccountKey locally from
         // the MasterKey. Pairing flows pass an imported AccountKey via
         // `build_entry_with_account_key`.
-        let master = MasterKey::from_passphrase(passphrase, salt)?;
+        let master = MasterKey::derive(passphrase, salt, kdf)?;
         let account_key = AccountKey::derive(&master)?;
-        Self::build_entry_with_account_key(passphrase, salt, device_id, probe_plaintext, &account_key)
+        Self::build_entry_with_account_key(
+            passphrase,
+            salt,
+            device_id,
+            probe_plaintext,
+            &account_key,
+            kdf,
+        )
     }
 
     fn build_entry_with_account_key(
@@ -233,8 +250,9 @@ impl AuthStore {
         device_id: &str,
         probe_plaintext: &[u8],
         account_key: &AccountKey,
+        kdf: &Kdf,
     ) -> CryptoResult<PersonaEntry> {
-        let master = MasterKey::from_passphrase(passphrase, salt)?;
+        let master = MasterKey::derive(passphrase, salt, kdf)?;
         let device_key = DeviceKey::derive(&master, device_id)?;
         let kek = Kek::generate();
         let wrapped_kek = kek.wrap(&device_key)?;
@@ -269,14 +287,17 @@ impl AuthStore {
         device_id: &str,
         imported_account_key: &AccountKey,
     ) -> CryptoResult<Self> {
+        let kdf = Kdf::current();
         let primary_entry = Self::build_entry_with_account_key(
             primary_passphrase,
             salt,
             device_id,
             PRIMARY_PROBE,
             imported_account_key,
+            &kdf,
         )?;
-        let duress_entry = Self::build_entry(duress_passphrase, salt, device_id, DURESS_PROBE)?;
+        let duress_entry =
+            Self::build_entry(duress_passphrase, salt, device_id, DURESS_PROBE, &kdf)?;
 
         let mut personas = vec![primary_entry, duress_entry];
         if rand::rng().random_bool(0.5) {
@@ -286,6 +307,7 @@ impl AuthStore {
         Ok(Self {
             salt: salt.to_vec(),
             device_id: device_id.to_string(),
+            kdf,
             personas,
         })
     }
@@ -499,16 +521,33 @@ mod tests {
 
     #[test]
     fn legacy_v04_store_without_wrapped_account_key_still_works() {
-        // Simulate a v0.0.4 file: build the entries by hand, then strip
-        // out wrapped_account_key. authenticate() must fall back to the
-        // MasterKey-derived AccountKey.
-        let mut store = AuthStore::create(
-            b"Primary!Pass1234",
-            b"Duress!Pass5678",
-            TEST_SALT,
-            TEST_DEVICE,
-        )
-        .unwrap();
+        // Simulate a TRUE v0.0.4 file: HKDF KDF (LegacyHkdf) AND no
+        // wrapped_account_key. authenticate() must re-derive the MasterKey
+        // with HKDF and fall back to the MasterKey-derived AccountKey.
+        let kdf = Kdf::LegacyHkdf;
+        let mut store = AuthStore {
+            salt: TEST_SALT.to_vec(),
+            device_id: TEST_DEVICE.to_string(),
+            kdf,
+            personas: vec![
+                AuthStore::build_entry(
+                    b"Primary!Pass1234",
+                    TEST_SALT,
+                    TEST_DEVICE,
+                    PRIMARY_PROBE,
+                    &Kdf::LegacyHkdf,
+                )
+                .unwrap(),
+                AuthStore::build_entry(
+                    b"Duress!Pass5678",
+                    TEST_SALT,
+                    TEST_DEVICE,
+                    DURESS_PROBE,
+                    &Kdf::LegacyHkdf,
+                )
+                .unwrap(),
+            ],
+        };
         for entry in store.personas.iter_mut() {
             entry.wrapped_account_key = None;
         }
@@ -555,6 +594,70 @@ mod tests {
             auth_a.account_key.as_bytes(),
             auth_b.account_key.as_bytes(),
             "AccountKey must be stable across device_id changes — this is the v0.0.5 sync invariant"
+        );
+    }
+
+    #[test]
+    fn new_store_uses_argon2id() {
+        // CRYPTO-001: every freshly-created store must stretch with Argon2id.
+        let store = AuthStore::create(
+            b"Primary!Pass1234",
+            b"Duress!Pass5678",
+            TEST_SALT,
+            TEST_DEVICE,
+        )
+        .unwrap();
+        assert!(matches!(store.kdf, Kdf::Argon2id { .. }));
+    }
+
+    #[test]
+    fn legacy_hkdf_store_still_unlocks() {
+        // A pre-v0.0.7 store: personas built under HKDF, kdf=LegacyHkdf.
+        // authenticate() must re-derive with HKDF and open it.
+        let kdf = Kdf::LegacyHkdf;
+        let primary =
+            AuthStore::build_entry(b"Primary!Pass1234", TEST_SALT, TEST_DEVICE, PRIMARY_PROBE, &kdf)
+                .unwrap();
+        let duress =
+            AuthStore::build_entry(b"Duress!Pass5678", TEST_SALT, TEST_DEVICE, DURESS_PROBE, &kdf)
+                .unwrap();
+        let store = AuthStore {
+            salt: TEST_SALT.to_vec(),
+            device_id: TEST_DEVICE.to_string(),
+            kdf,
+            personas: vec![primary, duress],
+        };
+        assert_eq!(
+            store.authenticate(b"Primary!Pass1234").unwrap().persona,
+            PersonaKind::Primary
+        );
+    }
+
+    #[test]
+    fn missing_kdf_field_defaults_to_legacy_and_opens() {
+        // Old on-disk JSON has no "kdf" key. It must deserialize to
+        // LegacyHkdf (serde default) and still authenticate.
+        let kdf = Kdf::LegacyHkdf;
+        let primary =
+            AuthStore::build_entry(b"Primary!Pass1234", TEST_SALT, TEST_DEVICE, PRIMARY_PROBE, &kdf)
+                .unwrap();
+        let duress =
+            AuthStore::build_entry(b"Duress!Pass5678", TEST_SALT, TEST_DEVICE, DURESS_PROBE, &kdf)
+                .unwrap();
+        let store = AuthStore {
+            salt: TEST_SALT.to_vec(),
+            device_id: TEST_DEVICE.to_string(),
+            kdf,
+            personas: vec![primary, duress],
+        };
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&store).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("kdf"); // simulate a pre-field store
+        let reparsed: AuthStore = serde_json::from_value(json).unwrap();
+        assert_eq!(reparsed.kdf, Kdf::LegacyHkdf);
+        assert_eq!(
+            reparsed.authenticate(b"Primary!Pass1234").unwrap().persona,
+            PersonaKind::Primary
         );
     }
 

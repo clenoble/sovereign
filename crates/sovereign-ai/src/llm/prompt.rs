@@ -118,11 +118,16 @@ pub fn build_chat_system_prompt(
     let mut prompt = String::from(SOVEREIGN_IDENTITY);
     prompt.push_str("\n\n");
 
-    // AI identity
+    // AI identity. designation/nickname/display_name are user-supplied free
+    // text — treat them as untrusted data so a crafted profile field can't
+    // smuggle instructions into the system prompt. fence_external redacts any
+    // high-severity injection and wraps the value as low-authority data.
     if let Some(desig) = designation {
-        prompt.push_str(&format!("Your designation is {desig}. "));
+        let (fenced, _) = crate::injection::fence_external("designation", desig);
+        prompt.push_str(&format!("Your designation is:\n{fenced}\n"));
         if let Some(nick) = nickname {
-            prompt.push_str(&format!("The user calls you {nick}.\n"));
+            let (fenced, _) = crate::injection::fence_external("nickname", nick);
+            prompt.push_str(&format!("The user calls you:\n{fenced}\n"));
         } else {
             prompt.push_str("The user may call you by a short nickname.\n");
         }
@@ -138,7 +143,8 @@ pub fn build_chat_system_prompt(
     }
 
     if let Some(name) = user_name {
-        prompt.push_str(&format!("The user's name is {name}.\n"));
+        let (fenced, _) = crate::injection::fence_external("user display name", name);
+        prompt.push_str(&format!("The user's name is:\n{fenced}\n"));
     }
 
     // Condensed UX principles

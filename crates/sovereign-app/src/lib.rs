@@ -6,6 +6,10 @@ mod llm_bridge;
 #[cfg(feature = "duress")]
 mod duress;
 mod err;
+// Server-side login lockout (CRYPTO-002). Only the encryption build's
+// `validate_password` enforces it; gating avoids dead-code warnings elsewhere.
+#[cfg(feature = "encryption")]
+mod login_throttle;
 mod seed;
 mod setup;
 
@@ -13,7 +17,6 @@ mod tauri_commands;
 mod tauri_events;
 #[cfg(feature = "p2p")]
 mod sync_startup;
-#[cfg(feature = "encryption")]
 mod pii_ingest;
 #[cfg(all(feature = "comms", feature = "encryption"))]
 mod pii_contact_hook;
@@ -25,7 +28,10 @@ mod pii_share_hook;
 mod pii_sweep;
 mod tauri_state;
 
-#[cfg(feature = "web-browse")]
+// `web` hosts the SSRF URL validator (always needed by the embedded browser
+// on desktop) plus the reqwest/readability fetch path (gated inside the module
+// behind `web-browse`).
+#[cfg(any(feature = "web-browse", not(any(target_os = "android", target_os = "ios"))))]
 mod web;
 // Embedded browser uses Tauri Webview multi-window APIs (set_position/set_size/
 // show/hide) that only exist on desktop. Mobile (Android/iOS) has one WebView
@@ -963,4 +969,310 @@ async fn init_backend(
         #[cfg(feature = "vision")]
         vision,
     })
+}
+
+// ---------------------------------------------------------------------------
+// IPC-004 classification guard
+// ---------------------------------------------------------------------------
+//
+// Every Tauri command registered in the `generate_handler!` above must be
+// explicitly classified as either BOOTSTRAP (allowed pre-login — onboarding,
+// auth, theme, connectivity, voice, paired-onboarding, password generation)
+// or GATED (requires an unlocked session, either via `state.require_unlocked()`
+// or via the `state.account_key()` reveal-path gate).
+//
+// `ALL_COMMANDS` mirrors the `tauri::generate_handler!` registration EXACTLY.
+// The test below asserts BOOTSTRAP ∪ GATED == ALL and BOOTSTRAP ∩ GATED == ∅,
+// so adding a new command to the handler without classifying it (or
+// double-classifying one) breaks the build's test target — forcing a
+// deliberate decision about whether the new IPC surface needs the auth gate.
+#[cfg(test)]
+mod ipc_classification_guard {
+    /// Commands callable before a session is unlocked. Do NOT call
+    /// `require_unlocked()` in these.
+    const BOOTSTRAP_COMMANDS: &[&str] = &[
+        "greet",
+        "get_status",
+        "scan_models",
+        "assign_model_role",
+        "delete_model",
+        "toggle_theme",
+        "get_theme",
+        "check_auth_state",
+        "validate_password",
+        "validate_password_policy",
+        "complete_onboarding",
+        "get_profile",
+        "save_profile",
+        "get_config",
+        "generate_password",
+        "consume_pair_qr_preview",
+        "complete_onboarding_paired",
+        "voice_transcribe_buffer",
+        "receive_shared_content",
+        "set_connectivity_state",
+        "get_connectivity_state",
+        "start_listening",
+        "stop_listening",
+    ];
+
+    /// Commands that require an unlocked session. Either gated with an
+    /// explicit `state.require_unlocked().await?` (Bundle 1) or already
+    /// protected by the `state.account_key().await.ok_or_else(..)?` path
+    /// (reveal_pii_record, create_vault_entry, autofill_pii_record,
+    /// commit_signup_capture, resolve_pii_tokens, generate_pair_qr).
+    const GATED_COMMANDS: &[&str] = &[
+        // ai
+        "chat_message",
+        "search_documents",
+        "search_query",
+        "approve_action",
+        "reject_action",
+        "accept_suggestion",
+        "dismiss_suggestion",
+        "get_trust_entries",
+        "reset_trust_action",
+        "reset_trust_all",
+        // documents
+        "list_documents",
+        "list_threads",
+        "get_document",
+        "save_document",
+        "create_document",
+        "close_document",
+        "delete_document",
+        "list_commits",
+        "restore_commit",
+        "list_skills_for_doc",
+        "execute_skill",
+        "list_all_skills",
+        "import_file",
+        // canvas
+        "canvas_load",
+        "update_document_position",
+        "canvas_load_messages",
+        // threads
+        "create_thread",
+        "update_thread",
+        "delete_thread",
+        "move_document_to_thread",
+        // contacts
+        "list_contacts",
+        "get_contact_detail",
+        "list_conversations",
+        "list_messages",
+        "mark_message_read",
+        "create_relationship",
+        // browser / web / comms
+        "get_comms_config",
+        "save_comms_config",
+        "open_browser",
+        "close_browser",
+        "navigate_browser",
+        "browser_back",
+        "browser_forward",
+        "browser_refresh",
+        "set_browser_bounds",
+        "set_browser_visible",
+        "fetch_web_page",
+        "save_web_page",
+        "assess_reliability",
+        "reassess_reliability",
+        // suggestions
+        "list_pending_suggestions",
+        "accept_link_suggestion",
+        "dismiss_link_suggestion",
+        "trigger_consolidation",
+        // pii (account_key-gated ones included)
+        "resolve_pii_tokens",
+        "list_pii_entities",
+        "get_pii_entity",
+        "list_pii_records",
+        "confirm_pii_record",
+        "dismiss_pii_record",
+        "redact_pii_record",
+        "reveal_pii_record",
+        "create_vault_entry",
+        "list_share_records_for_entity",
+        "extract_form_fields",
+        "__browser_form_extracted",
+        "autofill_pii_record",
+        "list_cookies_for_entity",
+        "delete_cookie",
+        "clear_entity_cookies",
+        "commit_signup_capture",
+        // pairing (generate_pair_qr is account_key-gated)
+        "generate_pair_qr",
+        "list_paired_devices",
+        "forget_paired_device",
+        "get_local_peer_id",
+        "trigger_sync_now",
+    ];
+
+    /// Mirrors the `tauri::generate_handler!` registration in `run_tauri`
+    /// EXACTLY (same order, same names). When a command is added/removed
+    /// there, mirror it here AND classify it above — the test enforces that
+    /// the classification stays complete and non-overlapping.
+    const ALL_COMMANDS: &[&str] = &[
+        // ai
+        "greet",
+        "get_status",
+        "chat_message",
+        "search_documents",
+        "search_query",
+        "approve_action",
+        "reject_action",
+        "accept_suggestion",
+        "dismiss_suggestion",
+        "scan_models",
+        "assign_model_role",
+        "delete_model",
+        "get_trust_entries",
+        "reset_trust_action",
+        "reset_trust_all",
+        // documents
+        "list_documents",
+        "list_threads",
+        "toggle_theme",
+        "get_theme",
+        "get_document",
+        "save_document",
+        "create_document",
+        "close_document",
+        "delete_document",
+        "list_commits",
+        "restore_commit",
+        "list_skills_for_doc",
+        "execute_skill",
+        "list_all_skills",
+        "import_file",
+        // canvas
+        "canvas_load",
+        "update_document_position",
+        "canvas_load_messages",
+        // threads
+        "create_thread",
+        "update_thread",
+        "delete_thread",
+        "move_document_to_thread",
+        // contacts
+        "list_contacts",
+        "get_contact_detail",
+        "list_conversations",
+        "list_messages",
+        "mark_message_read",
+        "create_relationship",
+        // auth
+        "check_auth_state",
+        "validate_password",
+        "validate_password_policy",
+        "complete_onboarding",
+        "get_profile",
+        "save_profile",
+        "get_config",
+        // browser / web / comms
+        "get_comms_config",
+        "save_comms_config",
+        "open_browser",
+        "close_browser",
+        "navigate_browser",
+        "browser_back",
+        "browser_forward",
+        "browser_refresh",
+        "set_browser_bounds",
+        "set_browser_visible",
+        "fetch_web_page",
+        "save_web_page",
+        "assess_reliability",
+        "reassess_reliability",
+        // suggestions
+        "list_pending_suggestions",
+        "accept_link_suggestion",
+        "dismiss_link_suggestion",
+        "trigger_consolidation",
+        // pii
+        "resolve_pii_tokens",
+        "list_pii_entities",
+        "get_pii_entity",
+        "list_pii_records",
+        "confirm_pii_record",
+        "dismiss_pii_record",
+        "redact_pii_record",
+        "reveal_pii_record",
+        "create_vault_entry",
+        "list_share_records_for_entity",
+        "extract_form_fields",
+        "__browser_form_extracted",
+        "autofill_pii_record",
+        "generate_password",
+        "list_cookies_for_entity",
+        "delete_cookie",
+        "clear_entity_cookies",
+        "commit_signup_capture",
+        // pairing
+        "generate_pair_qr",
+        "consume_pair_qr_preview",
+        "complete_onboarding_paired",
+        "list_paired_devices",
+        "forget_paired_device",
+        "get_local_peer_id",
+        "trigger_sync_now",
+        // mobile
+        "voice_transcribe_buffer",
+        "receive_shared_content",
+        "set_connectivity_state",
+        "get_connectivity_state",
+        // voice
+        "start_listening",
+        "stop_listening",
+    ];
+
+    #[test]
+    fn classification_is_complete_and_disjoint() {
+        use std::collections::HashSet;
+
+        let bootstrap: HashSet<&str> = BOOTSTRAP_COMMANDS.iter().copied().collect();
+        let gated: HashSet<&str> = GATED_COMMANDS.iter().copied().collect();
+        let all: HashSet<&str> = ALL_COMMANDS.iter().copied().collect();
+
+        // No duplicates within each list (catches copy-paste mistakes).
+        assert_eq!(
+            bootstrap.len(),
+            BOOTSTRAP_COMMANDS.len(),
+            "BOOTSTRAP_COMMANDS has duplicates"
+        );
+        assert_eq!(
+            gated.len(),
+            GATED_COMMANDS.len(),
+            "GATED_COMMANDS has duplicates"
+        );
+        assert_eq!(
+            all.len(),
+            ALL_COMMANDS.len(),
+            "ALL_COMMANDS has duplicates"
+        );
+
+        // (a) disjoint: a command is bootstrap OR gated, never both.
+        let overlap: Vec<&str> = bootstrap.intersection(&gated).copied().collect();
+        assert!(
+            overlap.is_empty(),
+            "commands classified as BOTH bootstrap and gated: {overlap:?}"
+        );
+
+        // (b) union == ALL: every registered command is classified, and no
+        //     classification names a command that isn't registered.
+        let union: HashSet<&str> = bootstrap.union(&gated).copied().collect();
+        let unclassified: Vec<&str> = all.difference(&union).copied().collect();
+        assert!(
+            unclassified.is_empty(),
+            "registered commands missing a bootstrap/gated classification \
+             (IPC-004 guard — classify them in lib.rs): {unclassified:?}"
+        );
+        let phantom: Vec<&str> = union.difference(&all).copied().collect();
+        assert!(
+            phantom.is_empty(),
+            "classified commands that are NOT in the generate_handler! \
+             registration (stale entry?): {phantom:?}"
+        );
+    }
 }

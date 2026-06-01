@@ -21,6 +21,31 @@ pub fn check_plane_violation(intent: &UserIntent) -> Option<String> {
     None
 }
 
+/// GATING-002: decide whether a write tool must be forced through user
+/// confirmation because EXTERNAL (data-plane) content was ingested earlier in
+/// the same turn. Returns the plane-violation reason (to surface to the user)
+/// when confirmation must be forced, or `None` when normal gating applies.
+///
+/// When `ingested_data_plane` is true the write is modeled as a data-plane
+/// intent and run through [`check_plane_violation`]; a violation means the
+/// write is at Modify+ level and must never auto-approve regardless of trust.
+pub fn force_confirmation_after_data_plane(
+    tool_name: &str,
+    ingested_data_plane: bool,
+) -> Option<String> {
+    if !ingested_data_plane {
+        return None;
+    }
+    let data_intent = UserIntent {
+        action: tool_name.to_string(),
+        target: None,
+        confidence: 1.0,
+        entities: vec![],
+        origin: Plane::Data,
+    };
+    check_plane_violation(&data_intent)
+}
+
 /// Wrap a classified intent into a ProposedAction with computed level.
 pub fn build_proposal(intent: &UserIntent) -> ProposedAction {
     let level = action_level(&intent.action);
@@ -139,5 +164,28 @@ mod tests {
     fn data_plane_transmit_violation() {
         let intent = make_intent("export", Plane::Data);
         assert!(check_plane_violation(&intent).is_some());
+    }
+
+    // --- GATING-002 ---
+
+    #[test]
+    fn force_confirmation_disarmed_without_data_plane_read() {
+        // No external data read this turn → normal gating, never forced.
+        assert!(force_confirmation_after_data_plane("create_document", false).is_none());
+    }
+
+    #[test]
+    fn force_confirmation_armed_for_write_after_data_plane_read() {
+        // A Modify-level write after external data was read → forced.
+        let reason = force_confirmation_after_data_plane("create_document", true);
+        assert!(reason.is_some(), "write should be forced to confirmation");
+        assert!(reason.unwrap().contains("Data-plane"));
+    }
+
+    #[test]
+    fn force_confirmation_not_triggered_for_observe_action() {
+        // A read-level action stays auto-approvable even after a data-plane
+        // read (it's not Modify+), so no violation reason is returned.
+        assert!(force_confirmation_after_data_plane("search", true).is_none());
     }
 }

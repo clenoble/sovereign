@@ -93,6 +93,16 @@ pub struct AppState {
     pub stt_engine: Option<Arc<tokio::sync::Mutex<sovereign_ai::voice::stt::SttEngine>>>,
 }
 
+// Without the encryption feature there is no login/account-key concept, so
+// the authorization gate is a no-op (keeps the ~65 gated commands compiling
+// in all feature configurations). The shipped builds always enable encryption.
+#[cfg(not(feature = "encryption"))]
+impl AppState {
+    pub async fn require_unlocked(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 #[cfg(feature = "encryption")]
 impl AppState {
     /// Snapshot the account key. Cheap (one Arc::clone) and the read
@@ -100,6 +110,20 @@ impl AppState {
     /// result without blocking other readers / writers.
     pub async fn account_key(&self) -> Option<Arc<sovereign_crypto::account_key::AccountKey>> {
         self.account_key.read().await.clone()
+    }
+
+    /// Authorization gate for data/IPC commands (IPC-004). Rejects unless a
+    /// session is unlocked — i.e. `install_session` has installed the account
+    /// key and swapped in the EncryptedGraphDB. Bootstrap commands
+    /// (onboarding, auth, theme, connectivity, voice, paired-onboarding) must
+    /// NOT call this; every other command must call it first so the plaintext
+    /// bootstrap DB is never readable pre-login.
+    pub async fn require_unlocked(&self) -> Result<(), String> {
+        if self.account_key.read().await.is_some() {
+            Ok(())
+        } else {
+            Err("Not authenticated: log in first.".to_string())
+        }
     }
 
     /// Install a freshly-derived account key (called post-authentication).

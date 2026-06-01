@@ -204,6 +204,16 @@ When launching `sovereign.exe` in the background (e.g. `./sovereign.exe &`), the
 
 **Test-as-you-go.** Build a feature's tests in the same change as the feature, not afterward — extract pure logic into testable functions and add unit tests alongside. Run the FULL suite before claiming green: `cargo test` (NOT just `cargo check` — check is lib-only and never compiles test targets, so broken/stale tests stay hidden), `vitest` for the frontend, and `pytest` for the Python sidecars (`jiminy-bridge`, `jiminy-vision`).
 
+### Pre-release security audit (local-only)
+
+Before every release, run the adversarial red-team workflow:
+`Workflow({ name: "pre-release-security-audit", args: { version: "X.Y.Z" } })`. It
+static-audits, fuzz/adversarial-tests, dependency-CVE-audits, and sandbox-attacks the whole
+app across ~9 dimensions, adversarially verifies each finding to drop false positives, and
+emits a severity-ranked report + release verdict (find-only — it never edits source). The
+workflow script and its reports live under `.claude/` and are **gitignored — never published
+to the github mirror**; see `.claude/workflows/README.md` for the playbook.
+
 ### WSL2 / Linux
 ```bash
 cargo test -j 4

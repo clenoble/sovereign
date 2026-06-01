@@ -382,6 +382,23 @@ impl Orchestrator {
         self.handle_query(message).await
     }
 
+    /// Emit an `InjectionDetected` event for the highest-severity match in
+    /// `matches` (if any), using the same mechanism as the tool-output scan.
+    /// `source` labels where the untrusted text came from. No-op on empty.
+    fn emit_injection_if_any(&self, source: &str, matches: &[injection::InjectionMatch]) {
+        if matches.is_empty() {
+            return;
+        }
+        let max_severity = matches.iter().map(|m| m.severity).max().unwrap_or(0);
+        let indicators: Vec<String> = matches.iter().map(|m| m.pattern_name.clone()).collect();
+        let _ = self.event_tx.send(OrchestratorEvent::InjectionDetected {
+            source: source.to_string(),
+            pattern: indicators.first().cloned().unwrap_or_default(),
+            indicators,
+            severity: max_severity,
+        });
+    }
+
     /// Multi-turn chat agent loop with tool calling and conversation history.
     /// Called from execute_action when the classified intent is "chat" or "unknown".
     async fn run_chat_agent_loop(&self, message: &str) -> Result<()> {
@@ -426,13 +443,28 @@ impl Orchestrator {
             nickname.as_deref(),
             Some(&*formatter),
         );
+
+        // Scan the untrusted external sections of the system prompt (thread
+        // names + recent doc titles) for injection and surface any matches to
+        // the user. The prompt itself was already fenced inside
+        // build_chat_system_prompt → format_workspace_context; this re-scan
+        // only exists to emit the InjectionDetected event (Principle 7).
+        let (_, ctx_matches) =
+            crate::llm::context::format_workspace_context_scanned(&workspace_ctx);
+        self.emit_injection_if_any("workspace context", &ctx_matches);
+
         // Inject what Jiminy currently sees (vision scene) into the system prompt.
         #[cfg(feature = "vision")]
         let system_prompt = {
             let mut sp = system_prompt;
-            sp.push_str(&crate::llm::context::format_vision_context(
-                self.current_scene().as_deref(),
-            ));
+            let (vision_block, vision_match) =
+                crate::llm::context::format_vision_context_scanned(
+                    self.current_scene().as_deref(),
+                );
+            if let Some(m) = vision_match {
+                self.emit_injection_if_any("camera scene caption", std::slice::from_ref(&m));
+            }
+            sp.push_str(&vision_block);
             sp
         };
 
@@ -442,7 +474,13 @@ impl Orchestrator {
             content: message.to_string(),
         });
 
-        // 7. Agent loop
+        // 7. Agent loop.
+        // GATING-002: track whether this turn has ingested any EXTERNAL
+        // (data-plane) content via a read tool. Once it has, no write tool may
+        // auto-approve for the rest of the turn — every write is forced through
+        // the user-confirmation path so data-plane content can't silently
+        // trigger control-plane mutations.
+        let mut loop_ingested_data_plane = false;
         let mut iterations = 0;
         loop {
             iterations += 1;
@@ -503,7 +541,30 @@ impl Orchestrator {
                             }
                         };
 
-                        if !action_gate::requires_confirmation(level) || trusted {
+                        // GATING-002: if EXTERNAL data was read earlier this
+                        // turn, treat this write as a data-plane-originated
+                        // action and force confirmation — never auto-approve.
+                        // The helper supplies the human-readable reason.
+                        let plane_violation = action_gate::force_confirmation_after_data_plane(
+                            &call.name,
+                            loop_ingested_data_plane,
+                        );
+                        if let Some(ref reason) = plane_violation {
+                            tracing::warn!(
+                                "GATING-002: forcing confirmation for write tool '{}' — {reason}",
+                                call.name
+                            );
+                            self.log_action(
+                                "plane_violation",
+                                &format!("forced confirmation: {reason}"),
+                            );
+                        }
+
+                        // A plane violation overrides both the level check and
+                        // the trust auto-approval: the write is always proposed.
+                        if plane_violation.is_none()
+                            && (!action_gate::requires_confirmation(level) || trusted)
+                        {
                             // Auto-execute (Observe/Annotate or trusted)
                             let result = crate::tools::execute_write_tool(call, self.db.as_ref()).await;
                             if let Some(event) = result.event {
@@ -515,7 +576,11 @@ impl Orchestrator {
                             let proposal = security::ProposedAction {
                                 action: call.name.clone(),
                                 level,
-                                plane: security::Plane::Control,
+                                plane: if plane_violation.is_some() {
+                                    security::Plane::Data
+                                } else {
+                                    security::Plane::Control
+                                },
                                 doc_id: None,
                                 thread_id: None,
                                 description: format_tool_proposal(
@@ -523,11 +588,16 @@ impl Orchestrator {
                                     &call.arguments,
                                 ),
                             };
-                            // Conversational confirmation: send a natural-language question first
-                            let confirm_text = format_confirmation_message(
-                                &call.name,
-                                &call.arguments,
-                            );
+                            // Conversational confirmation: send a natural-language question first.
+                            // When forced by a plane violation, prepend the reason so the user
+                            // understands WHY confirmation is required even for a trusted action.
+                            let confirm_text = match &plane_violation {
+                                Some(reason) => format!(
+                                    "Heads up — this action follows reading external content, so I need your OK first ({reason}).\n\n{}",
+                                    format_confirmation_message(&call.name, &call.arguments)
+                                ),
+                                None => format_confirmation_message(&call.name, &call.arguments),
+                            };
                             let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
                                 text: confirm_text,
                             });
@@ -576,6 +646,17 @@ impl Orchestrator {
                     } else {
                         // Read-only tool — execute immediately
                         let result = crate::tools::execute_tool(call, self.db.as_ref()).await;
+                        // GATING-002: detect ingestion of EXTERNAL (not-owned)
+                        // content. Read tools label provenance as "(external)"
+                        // (vs "(owned)") in their output; the "contact" label
+                        // from list_contacts is likewise non-owned. Seeing any
+                        // such marker arms the data-plane gate for the rest of
+                        // this turn.
+                        if result.output.contains("(external)")
+                            || result.output.contains("(contact,")
+                        {
+                            loop_ingested_data_plane = true;
+                        }
                         format!("[{}] {}", result.tool_name, result.output)
                     };
 

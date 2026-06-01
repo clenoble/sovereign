@@ -63,7 +63,22 @@ pub async fn gather_workspace_context(db: &dyn GraphDB) -> WorkspaceContext {
 }
 
 /// Format workspace context as a concise text block for the system prompt.
+///
+/// Thread names and recent document titles are user-data (external w.r.t.
+/// the trusted system prompt) and may carry injected instructions, so they
+/// are wrapped in a low-authority fence via [`crate::injection::fence_external`].
+/// Use [`format_workspace_context_scanned`] when you also need the injection
+/// matches to surface to the user.
 pub fn format_workspace_context(ctx: &WorkspaceContext) -> String {
+    format_workspace_context_scanned(ctx).0
+}
+
+/// Like [`format_workspace_context`] but also returns any injection matches
+/// detected in the fenced external sections (thread names + doc titles), so
+/// the caller can emit `InjectionDetected` events.
+pub fn format_workspace_context_scanned(
+    ctx: &WorkspaceContext,
+) -> (String, Vec<crate::injection::InjectionMatch>) {
     let mut out = format!(
         "Workspace: {} threads, {} documents, {} contacts",
         ctx.thread_count, ctx.doc_count, ctx.contact_count
@@ -72,28 +87,51 @@ pub fn format_workspace_context(ctx: &WorkspaceContext) -> String {
         out.push_str(&format!(", {} unread conversations", ctx.unread_conversations));
     }
     out.push('\n');
+
+    let mut matches = Vec::new();
     if !ctx.thread_names.is_empty() {
-        out.push_str(&format!("Threads: {}\n", ctx.thread_names.join(", ")));
+        let (fenced, m) =
+            crate::injection::fence_external("thread names", &ctx.thread_names.join(", "));
+        if let Some(m) = m {
+            matches.push(m);
+        }
+        out.push_str(&fenced);
+        out.push('\n');
     }
     if !ctx.recent_doc_titles.is_empty() {
-        out.push_str(&format!(
-            "Recent documents: {}\n",
-            ctx.recent_doc_titles.join(", ")
-        ));
+        let (fenced, m) = crate::injection::fence_external(
+            "recent document titles",
+            &ctx.recent_doc_titles.join(", "),
+        );
+        if let Some(m) = m {
+            matches.push(m);
+        }
+        out.push_str(&fenced);
+        out.push('\n');
     }
-    out
+    (out, matches)
 }
 
 /// Format the latest vision scene caption as a system-prompt block. Returns ""
 /// when there is no scene (or it is blank), so callers can append it
 /// unconditionally.
 pub fn format_vision_context(scene: Option<&str>) -> String {
+    format_vision_context_scanned(scene).0
+}
+
+/// Like [`format_vision_context`] but also returns any injection match found
+/// in the (untrusted) VLM caption. The caption is model-generated from camera
+/// input an attacker can control (a sign held up to the lens), so it's fenced
+/// as low-authority data.
+pub fn format_vision_context_scanned(
+    scene: Option<&str>,
+) -> (String, Option<crate::injection::InjectionMatch>) {
     match scene {
-        Some(s) if !s.trim().is_empty() => format!(
-            "\nVISION — what you currently see through the camera: {}\n",
-            s.trim()
-        ),
-        _ => String::new(),
+        Some(s) if !s.trim().is_empty() => {
+            let (fenced, m) = crate::injection::fence_external("camera scene caption", s.trim());
+            (format!("\nVISION — what you currently see through the camera:\n{fenced}\n"), m)
+        }
+        _ => (String::new(), None),
     }
 }
 

@@ -47,6 +47,22 @@ impl AccountKey {
         Self { bytes }
     }
 
+    /// Derive the P2P sync **transport key** from this AccountKey.
+    ///
+    /// All of a user's paired devices share the same AccountKey (imported
+    /// out-of-band during pairing), so they all derive the *same* transport
+    /// key and can encrypt/decrypt each other's sync envelopes without an
+    /// interactive key exchange. Domain-separated (`:v1` info string) from
+    /// the at-rest material so the transport key is independent of the
+    /// vault/body/session keys. See P2P-002.
+    pub fn derive_transport_key(&self) -> [u8; KEY_SIZE] {
+        let hk = Hkdf::<Sha256>::new(None, &self.bytes);
+        let mut out = [0u8; KEY_SIZE];
+        hk.expand(b"sovereign-p2p-transport-key:v1", &mut out)
+            .expect("32 bytes is within HKDF output limit");
+        out
+    }
+
     /// Access the raw key bytes.
     pub fn as_bytes(&self) -> &[u8; KEY_SIZE] {
         &self.bytes
@@ -141,5 +157,30 @@ mod tests {
         let raw = [0xAB; KEY_SIZE];
         let ak = AccountKey::from_bytes(raw);
         assert_eq!(ak.as_bytes(), &raw);
+    }
+
+    #[test]
+    fn transport_key_deterministic_shared_distinct_from_account_key() {
+        // P2P-002: two paired devices share the AccountKey → same transport
+        // key (so they can decrypt each other's sync envelopes), and the
+        // transport key is domain-separated from the AccountKey itself.
+        let mk = MasterKey::from_passphrase(b"test", b"shared-salt").unwrap();
+        let ak_a = AccountKey::derive(&mk).unwrap();
+        let ak_b = AccountKey::derive(&mk).unwrap();
+        assert_eq!(
+            ak_a.derive_transport_key(),
+            ak_b.derive_transport_key(),
+            "paired devices must derive the same transport key"
+        );
+        assert_ne!(
+            &ak_a.derive_transport_key(),
+            ak_a.as_bytes(),
+            "transport key must be domain-separated from the AccountKey"
+        );
+
+        // A different account → different transport key.
+        let mk2 = MasterKey::from_passphrase(b"other", b"shared-salt").unwrap();
+        let ak2 = AccountKey::derive(&mk2).unwrap();
+        assert_ne!(ak_a.derive_transport_key(), ak2.derive_transport_key());
     }
 }

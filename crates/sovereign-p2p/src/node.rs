@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,6 +38,11 @@ pub enum P2pEvent {
 pub enum P2pCommand {
     StartSync { peer_id: String },
     PairDevice { peer_id: String },
+    /// Replace the node's paired-peer allow-list. The app sends this at
+    /// P2P startup (from the persisted PairingManager) and whenever a
+    /// device is paired/unpaired. Only peers in this set may be served
+    /// sync data or be sync-initiated against — see P2P-001.
+    UpdatePairedPeers { peer_ids: Vec<String> },
     DistributeShard { peer_id: String, shard_data: String, shard_id: String },
     SendRequest { peer_id: PeerId, request: SovereignRequest },
     /// Dial a peer's multiaddr directly (bypassing mDNS discovery).
@@ -95,6 +100,14 @@ pub struct SovereignNode {
     inflight: HashMap<OutboundRequestId, (PeerId, InflightKind)>,
     /// Per-peer aggregate counters for the active sync session.
     sessions: HashMap<PeerId, PeerSyncState>,
+    /// Allow-list of paired peer-id strings. A code-level HARD BARRIER
+    /// (P2P-001): inbound sync requests from peers NOT in this set are
+    /// rejected, and `StartSync` against an unpaired peer is dropped — so
+    /// a random LAN peer can neither read nor poison the DB even though
+    /// mDNS discovers it and the app may auto-trigger sync. Mutated only
+    /// from the single-threaded event loop via `UpdatePairedPeers`, so a
+    /// plain `HashSet` (no lock) is sufficient.
+    paired_peers: HashSet<String>,
 }
 
 impl SovereignNode {
@@ -160,6 +173,7 @@ impl SovereignNode {
             sync_service,
             inflight: HashMap::new(),
             sessions: HashMap::new(),
+            paired_peers: HashSet::new(),
         })
     }
 
@@ -265,7 +279,27 @@ impl SovereignNode {
                 match message {
                     Message::Request { request, channel, .. } => {
                         info!("Request from {}: {:?}", peer, std::mem::discriminant(&request));
-                        let response = process_request(request, &self.event_tx, &self.sync_service).await;
+                        // P2P-001 hard barrier: only serve sync data to PAIRED
+                        // peers. An unpaired peer (any random device on the LAN
+                        // that mDNS surfaced) is refused before process_request
+                        // ever touches the DB — no manifest, commits, rows, or
+                        // PII leave this node, and no PushCommits/PushRows can
+                        // poison it. Pairing-handshake requests are allowed
+                        // through so a new device can still pair.
+                        let response = if self.is_sync_request(&request)
+                            && !self.paired_peers.contains(&peer.to_string())
+                        {
+                            warn!(
+                                "Rejecting {:?} from UNPAIRED peer {} (P2P-001)",
+                                std::mem::discriminant(&request),
+                                peer
+                            );
+                            SovereignResponse::Error {
+                                message: "peer not paired".into(),
+                            }
+                        } else {
+                            process_request(request, &self.event_tx, &self.sync_service).await
+                        };
                         if self.swarm.behaviour_mut().request_response.send_response(channel, response).is_err() {
                             warn!("Failed to send response to {}", peer);
                         }
@@ -372,13 +406,13 @@ impl SovereignNode {
         peer_id: PeerId,
         encrypted: EncryptedManifest,
     ) {
-        // Phase 3 ships plaintext-marker manifests; pair-key encryption
-        // arrives alongside the orchestrator's post-login p2p start in
-        // v0.0.5.x.
-        let remote = match SyncManifest::from_plaintext(&encrypted) {
-            Some(m) => m,
-            None => {
-                warn!("Failed to decode manifest from {peer_id}");
+        // P2P-002: manifests are AEAD-sealed under the per-account transport
+        // key. A peer that can't produce a manifest under our key (or sends
+        // the old plaintext shape) fails to decrypt and is dropped.
+        let remote = match SyncManifest::decrypt(&encrypted, self.sync_service.transport_key()) {
+            Ok(m) => m,
+            Err(e) => {
+                warn!("Failed to decrypt manifest from {peer_id}: {e}");
                 return;
             }
         };
@@ -559,7 +593,18 @@ impl SovereignNode {
                     warn!("Invalid peer ID: {}", peer_id);
                 }
             }
+            P2pCommand::UpdatePairedPeers { peer_ids } => {
+                let n = peer_ids.len();
+                self.paired_peers = peer_ids.into_iter().collect();
+                info!("Paired-peer allow-list updated: {n} peer(s)");
+            }
             P2pCommand::StartSync { peer_id } => {
+                // P2P-001: never initiate sync against an unpaired peer,
+                // even if the app auto-triggered on mDNS discovery.
+                if !self.paired_peers.contains(&peer_id) {
+                    tracing::debug!("Skipping StartSync for unpaired peer {peer_id} (P2P-001)");
+                    return;
+                }
                 let pid = match peer_id.parse::<PeerId>() {
                     Ok(p) => p,
                     Err(_) => {
@@ -603,6 +648,22 @@ impl SovereignNode {
     pub fn local_peer_id(&self) -> PeerId {
         *self.swarm.local_peer_id()
     }
+
+    /// Whether a request reads or writes synced DB state, and so must be
+    /// gated behind pairing (P2P-001). Pairing-handshake and guardian
+    /// shard requests are intentionally allowed pre-pairing so a new
+    /// device can still pair / a guardian can deliver a recovery shard.
+    fn is_sync_request(&self, request: &SovereignRequest) -> bool {
+        matches!(
+            request,
+            SovereignRequest::GetManifest
+                | SovereignRequest::GetCommits { .. }
+                | SovereignRequest::PushCommits { .. }
+                | SovereignRequest::GetRows { .. }
+                | SovereignRequest::PushRows { .. }
+                | SovereignRequest::PushManifest(_)
+        )
+    }
 }
 
 /// Process a request without borrowing the node (avoids Send issues with Swarm).
@@ -613,7 +674,16 @@ async fn process_request(
 ) -> SovereignResponse {
     match request {
         SovereignRequest::GetManifest => match sync_service.build_manifest().await {
-            Ok(manifest) => SovereignResponse::Manifest(manifest.to_plaintext()),
+            // P2P-002: seal the manifest under the per-account transport key.
+            Ok(manifest) => match manifest.encrypt(sync_service.transport_key()) {
+                Ok(em) => SovereignResponse::Manifest(em),
+                Err(e) => {
+                    warn!("Failed to encrypt manifest: {e}");
+                    SovereignResponse::Error {
+                        message: format!("manifest encrypt failed: {e}"),
+                    }
+                }
+            },
             Err(e) => {
                 warn!("Failed to build manifest: {e}");
                 SovereignResponse::Error {

@@ -152,29 +152,61 @@ impl EncryptedPairPayload {
     }
 }
 
-/// Argon2id with t=2, m=64 MiB, p=1. Stretches a low-entropy PIN
-/// (typically 6 digits ≈ 20 bits) to a 256-bit AEAD key. Calibrated
-/// to take ~250–500 ms on a desktop; brute-forcing 1 million PINs
-/// against a captured QR is therefore measured in days, not seconds.
-fn derive_pin_key(pin: &str, salt: &[u8]) -> CryptoResult<[u8; KEY_SIZE]> {
+/// Pairing-code alphabet: Crockford-style base32 minus the ambiguous
+/// letters I, L, O, U. 32 symbols → 5 bits each.
+const CODE_ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/// Number of random symbols in a pairing code. 10 × 5 bits = 50 bits of
+/// entropy — at the Argon2id cost below (~250–500 ms/guess) an offline
+/// brute-force of a captured QR is ~9 million years on average, vs the
+/// old 6-digit PIN (20 bits ≈ crackable in days). See CRYPTO-003.
+const CODE_LEN: usize = 10;
+
+/// Normalize a user-typed pairing code before key derivation: uppercase
+/// and drop separators/whitespace, so "abcde-fghjk" and "ABCDEFGHJK" are
+/// equivalent. Derivation always runs on the normalized form on BOTH the
+/// generating and consuming sides.
+fn normalize_code(code: &str) -> String {
+    code.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// Argon2id with t=2, m=64 MiB, p=1. Stretches the (now high-entropy)
+/// pairing code to a 256-bit AEAD key. Input is normalized first so the
+/// code is case- and separator-insensitive.
+fn derive_pin_key(code: &str, salt: &[u8]) -> CryptoResult<[u8; KEY_SIZE]> {
     use argon2::{Algorithm, Argon2, Params, Version};
 
+    let normalized = normalize_code(code);
     let params = Params::new(64 * 1024, 2, 1, Some(KEY_SIZE))
         .map_err(|e| CryptoError::PairPayload(format!("argon2 params: {e}")))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut out = [0u8; KEY_SIZE];
     argon
-        .hash_password_into(pin.as_bytes(), salt, &mut out)
+        .hash_password_into(normalized.as_bytes(), salt, &mut out)
         .map_err(|e| CryptoError::PairPayload(format!("argon2: {e}")))?;
     Ok(out)
 }
 
-/// Generate a fresh 6-digit PIN. Cryptographically random across
-/// 000000–999999. Single-use; the existing device discards after a
-/// successful consume or after `PAIR_TTL_SECONDS`.
-pub fn generate_pin() -> String {
-    let n: u32 = rand::rng().random_range(0..1_000_000);
-    format!("{n:06}")
+/// Generate a fresh high-entropy pairing code (50 bits). Returned grouped
+/// as `XXXXX-XXXXX` for readability; the dash is cosmetic
+/// (`normalize_code` strips it). Single-use; the existing device discards
+/// it after a successful consume or after `PAIR_TTL_SECONDS`.
+pub fn generate_pairing_code() -> String {
+    let mut rng = rand::rng();
+    let chars: Vec<char> = (0..CODE_LEN)
+        .map(|_| {
+            let idx = rng.random_range(0..CODE_ALPHABET.len());
+            CODE_ALPHABET[idx] as char
+        })
+        .collect();
+    let mid = CODE_LEN / 2;
+    format!(
+        "{}-{}",
+        chars[..mid].iter().collect::<String>(),
+        chars[mid..].iter().collect::<String>()
+    )
 }
 
 #[cfg(test)]
@@ -226,12 +258,28 @@ mod tests {
     }
 
     #[test]
-    fn generate_pin_is_six_digits() {
+    fn generate_pairing_code_is_high_entropy() {
         for _ in 0..100 {
-            let pin = generate_pin();
-            assert_eq!(pin.len(), 6);
-            assert!(pin.chars().all(|c| c.is_ascii_digit()));
+            let code = generate_pairing_code();
+            // "XXXXX-XXXXX": 10 symbols after normalization (dash stripped).
+            let norm = normalize_code(&code);
+            assert_eq!(norm.len(), 10, "10 symbols => 50 bits of entropy");
+            assert!(norm.chars().all(|c| c.is_ascii_alphanumeric()));
+            // Ambiguous letters excluded from the alphabet.
+            assert!(!norm.contains(['I', 'L', 'O', 'U']));
         }
+        // Two fresh codes overwhelmingly differ.
+        assert_ne!(generate_pairing_code(), generate_pairing_code());
+    }
+
+    #[test]
+    fn pairing_code_is_case_and_separator_insensitive() {
+        // CRYPTO-003: derivation normalizes, so the user can type the code
+        // lowercase / without the dash and still decrypt.
+        let payload = sample_payload();
+        let encrypted = payload.encrypt("ABCDE-FGHJK").unwrap();
+        let decrypted = encrypted.decrypt("abcdefghjk").unwrap();
+        assert_eq!(decrypted.account_key_bytes, payload.account_key_bytes);
     }
 
     #[test]

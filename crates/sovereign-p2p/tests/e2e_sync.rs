@@ -40,11 +40,12 @@ struct Harness {
     listen_addr: libp2p::Multiaddr,
 }
 
-async fn spawn_node(device_id: &str, seed: [u8; 32]) -> Harness {
+async fn spawn_node(device_id: &str, seed: [u8; 32], transport_key: [u8; 32]) -> Harness {
     let db = Arc::new(MockGraphDB::new());
     let svc = Arc::new(SyncService::new(
         db.clone() as Arc<dyn GraphDB>,
         device_id.into(),
+        transport_key,
     ));
 
     let (event_tx, event_rx) = mpsc::channel::<P2pEvent>(64);
@@ -114,8 +115,28 @@ async fn two_nodes_sync_doc_entity_and_pii_record() {
         .with_test_writer()
         .try_init();
 
-    let a = spawn_node("device-A", [0xA1; 32]).await;
-    let mut b = spawn_node("device-B", [0xB2; 32]).await;
+    // Same transport key on both: paired devices share the AccountKey and
+    // therefore derive the same sync transport key (P2P-002).
+    let a = spawn_node("device-A", [0xA1; 32], [0x5A; 32]).await;
+    let mut b = spawn_node("device-B", [0xB2; 32], [0x5A; 32]).await;
+
+    // ---- Pair the two nodes both ways (P2P-001) ----
+    // The responder now refuses sync requests from unpaired peers and the
+    // initiator won't dispatch StartSync against one, so each side must
+    // know the other before any data can flow.
+    a.cmd_tx
+        .send(P2pCommand::UpdatePairedPeers {
+            peer_ids: vec![b.peer_id.to_string()],
+        })
+        .await
+        .unwrap();
+    b.cmd_tx
+        .send(P2pCommand::UpdatePairedPeers {
+            peer_ids: vec![a.peer_id.to_string()],
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // ---- Seed A with content B doesn't have ----
     // Thread (so the document has somewhere to live).
@@ -233,13 +254,88 @@ async fn two_nodes_sync_doc_entity_and_pii_record() {
     // sync); the receiver stores the same ciphertext.
     assert_eq!(pii_records[0].value_encrypted, "ZmFrZS1jaXBoZXJ0ZXh0");
 
-    // PairingManager isn't actually used by this test — the test runs
-    // pre-pairing (or, equivalently, "any LAN peer is treated as paired"
-    // per the v0.0.5 plain-LAN trust model). Just keep the import alive
-    // so future tests can exercise the paired path without re-importing.
+    // Keep the import alive (used by the rejection test below).
     let _ = PairingManager::derive_pair_key(b"unused");
 
     // We hold doc_id / pii_id in scope for clarity — silence the unused
     // warnings.
     let _ = (doc_id, pii_id);
+}
+
+/// P2P-001: a peer that the responder has NOT paired must be refused —
+/// it cannot read the responder's DB even though it connects and asks.
+/// Here B believes it is paired with A (so it dispatches the request),
+/// but A's allow-list is empty, so A returns an Error and B syncs nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unpaired_peer_is_refused() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info,libp2p_swarm=warn")
+        .with_test_writer()
+        .try_init();
+
+    let a = spawn_node("device-A", [0xC3; 32], [0x6B; 32]).await;
+    let mut b = spawn_node("device-B", [0xD4; 32], [0x6B; 32]).await;
+
+    // B is told A is paired (so B will send the request); A is told
+    // NOTHING (its allow-list stays empty -> it must refuse B).
+    b.cmd_tx
+        .send(P2pCommand::UpdatePairedPeers {
+            peer_ids: vec![a.peer_id.to_string()],
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Seed A with a document B must NOT be able to pull.
+    let thread = a
+        .db
+        .create_thread(Thread::new("Secret".into(), String::new()))
+        .await
+        .unwrap();
+    let tid = thread.id_string().unwrap();
+    let doc = a
+        .db
+        .create_document(Document::new("Top-Secret".into(), tid, true))
+        .await
+        .unwrap();
+    let doc_id = doc.id_string().unwrap();
+    a.db
+        .update_document(&doc_id, Some("Top-Secret"), Some("classified"))
+        .await
+        .unwrap();
+    a.db.commit_document(&doc_id, "initial").await.unwrap();
+
+    // Connect B -> A and attempt to sync.
+    let dial_addr = format!("{}/p2p/{}", a.listen_addr, a.peer_id);
+    b.cmd_tx
+        .send(P2pCommand::Dial { address: dial_addr })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    b.cmd_tx
+        .send(P2pCommand::StartSync {
+            peer_id: a.peer_id.to_string(),
+        })
+        .await
+        .unwrap();
+
+    // The session still finalizes (A's Error decrements B's pending), so
+    // SyncCompleted arrives — but with zero items.
+    let completed = wait_for_event(
+        &mut b.event_rx,
+        Duration::from_secs(15),
+        "B SyncCompleted (refused)",
+        |e| matches!(e, P2pEvent::SyncCompleted { .. }),
+    )
+    .await;
+    if let P2pEvent::SyncCompleted { docs_synced, .. } = completed {
+        assert_eq!(docs_synced, 0, "unpaired peer must receive nothing");
+    }
+
+    // Hard assertion: B's DB never received A's secret document.
+    let docs = b.db.list_documents(None).await.unwrap();
+    assert!(
+        docs.is_empty(),
+        "B must NOT have pulled any document from an unpairing responder"
+    );
 }

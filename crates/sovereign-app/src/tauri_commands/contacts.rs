@@ -7,6 +7,7 @@ use super::*;
 /// List all non-owned contacts with unread counts.
 #[tauri::command]
 pub async fn list_contacts(state: State<'_, AppState>) -> Result<Vec<ContactSummaryDto>, String> {
+    state.require_unlocked().await?;
     let contacts = state.db.list_contacts().await.str_err()?;
     let agg = aggregate_conversations(state.db.as_ref()).await?;
     let unread_by_contact = agg.unread_by_contact;
@@ -39,6 +40,7 @@ pub async fn get_contact_detail(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<ContactDetailDto, String> {
+    state.require_unlocked().await?;
     let contact = state.db.get_contact(&id).await.str_err()?;
     let all_convs = state.db.list_conversations(None).await.str_err()?;
 
@@ -84,6 +86,7 @@ pub async fn list_conversations(
     state: State<'_, AppState>,
     contact_id: Option<String>,
 ) -> Result<Vec<ConversationDto>, String> {
+    state.require_unlocked().await?;
     let convs = state.db.list_conversations(None).await.str_err()?;
 
     Ok(convs
@@ -116,6 +119,7 @@ pub async fn list_messages(
     before: Option<String>,
     limit: u32,
 ) -> Result<Vec<MessageDto>, String> {
+    state.require_unlocked().await?;
     let before_dt = before
         .as_ref()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
@@ -151,6 +155,7 @@ pub async fn mark_message_read(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     state
         .db
         .update_message_read_status(&id, ReadStatus::Read)
@@ -168,6 +173,7 @@ pub async fn create_relationship(
     relation_type: String,
     strength: f32,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     let rel_type = match relation_type.to_lowercase().as_str() {
         "references" => RelationType::References,
         "derivedfrom" => RelationType::DerivedFrom,

@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Top-level communications configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CommsConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -33,7 +33,7 @@ impl Default for CommsConfig {
 
 /// Email account configuration.
 /// Password is NOT stored here — use KeyDatabase or environment variable.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EmailAccountConfig {
     pub imap_host: String,
     #[serde(default = "default_imap_port")]
@@ -58,7 +58,7 @@ fn default_smtp_port() -> u16 {
 /// Signal linked-device configuration.
 /// Connects as a secondary device (like Signal Desktop).
 /// Password/credentials are handled by the Signal protocol key store.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SignalAccountConfig {
     /// Phone number registered with Signal (e.g., "+15551234567").
     pub phone_number: String,
@@ -79,7 +79,7 @@ fn default_signal_store_path() -> String {
 
 /// WhatsApp Cloud API configuration.
 /// Uses Meta's official Business API (requires a Business account + access token).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WhatsAppAccountConfig {
     /// Phone number ID from the WhatsApp Business dashboard.
     pub phone_number_id: String,

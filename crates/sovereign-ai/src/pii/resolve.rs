@@ -103,6 +103,36 @@ pub fn preview_label_for_kind(kind: &PiiKind) -> &'static str {
     }
 }
 
+/// PII-002: replace every `[pii:<record_id>]` token in `body` with the
+/// type-only preview label of the matching record (e.g. `[Email]`). Tokens
+/// whose record isn't in `records` become a generic `[pii]`.
+///
+/// Purely string-level: no DB access, no decryption — safe to call from the
+/// read tools before handing content to the model so the LLM never sees the
+/// underlying PII ciphertext or plaintext.
+pub fn resolve_to_preview(body: &str, records: &[sovereign_db::schema::PiiRecord]) -> String {
+    let tokens = parse_tokens(body);
+    if tokens.is_empty() {
+        return body.to_string();
+    }
+
+    let mut out = String::with_capacity(body.len());
+    let mut cursor = 0;
+    for token in &tokens {
+        out.push_str(&body[cursor..token.start]);
+        let label = records
+            .iter()
+            .find(|r| r.id_string().as_deref() == Some(token.record_id.as_str()))
+            .map(|r| preview_label_for_kind(&r.kind))
+            // Unknown / not-loaded token: generic placeholder, never the raw id.
+            .unwrap_or("[pii]");
+        out.push_str(label);
+        cursor = token.end;
+    }
+    out.push_str(&body[cursor..]);
+    out
+}
+
 /// Apply a kind-specific masking transform to a plaintext PII value.
 /// Length-preserving where it makes sense; redacts everything for the
 /// catch-all kinds.
@@ -527,6 +557,50 @@ mod tests {
         assert_eq!(preview_label_for_kind(&PiiKind::Email), "[Email]");
         assert_eq!(preview_label_for_kind(&PiiKind::Phone), "[Phone]");
         assert_eq!(preview_label_for_kind(&PiiKind::Iban), "[IBAN]");
+    }
+
+    // --- resolve_to_preview ---
+
+    fn make_record(id: &str, kind: PiiKind, ciphertext: &str) -> PiiRecord {
+        PiiRecord {
+            id: sovereign_db::schema::raw_to_thing(id),
+            kind,
+            value_encrypted: ciphertext.to_string(),
+            value_nonce: "nonce".to_string(),
+            label: None,
+            entity_id: None,
+            stored_secret: false,
+            confidence: 1.0,
+            sources: vec![],
+            discovered_at: Utc::now(),
+            last_revealed_at: None,
+            use_count: 0,
+            review_state: ReviewState::Confirmed,
+            deleted_at: None,
+        }
+    }
+
+    #[test]
+    fn resolve_to_preview_matches_record() {
+        let rec = make_record("pii_record:rec1", PiiKind::Email, "SECRET_CIPHERTEXT");
+        let body = "Contact: [pii:pii_record:rec1] done";
+        let out = resolve_to_preview(body, std::slice::from_ref(&rec));
+        assert_eq!(out, "Contact: [Email] done");
+        // Never leaks the ciphertext (or plaintext) into the resolved form.
+        assert!(!out.contains("SECRET_CIPHERTEXT"));
+        assert!(!out.contains("rec1"));
+    }
+
+    #[test]
+    fn resolve_to_preview_unknown_token_generic() {
+        let body = "x [pii:pii_record:absent] y";
+        let out = resolve_to_preview(body, &[]);
+        assert_eq!(out, "x [pii] y");
+    }
+
+    #[test]
+    fn resolve_to_preview_no_tokens_passthrough() {
+        assert_eq!(resolve_to_preview("plain text", &[]), "plain text");
     }
 
     // --- resolve_body ---

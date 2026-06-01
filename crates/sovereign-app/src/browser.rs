@@ -63,6 +63,9 @@ pub fn create_browser_webview(
     url: &str,
     bounds: LogicalRect,
 ) -> Result<(), String> {
+    // SSRF guard (WEB-002): refuse to point the embedded webview at
+    // internal/non-public targets (loopback, cloud metadata, RFC1918, ...).
+    crate::web::validate_public_url(url)?;
     let parsed: url::Url = url.parse().map_err(|e| format!("Invalid URL: {e}"))?;
 
     // If browser already exists, just navigate
@@ -104,6 +107,8 @@ pub fn create_browser_webview(
 
 /// Navigate the existing browser webview to a new URL.
 pub fn navigate_browser(app: &AppHandle, url: &str) -> Result<(), String> {
+    // SSRF guard (WEB-002): re-validate on every navigate.
+    crate::web::validate_public_url(url)?;
     let webview = app
         .get_webview(BROWSER_LABEL)
         .ok_or_else(|| "Browser webview not open".to_string())?;

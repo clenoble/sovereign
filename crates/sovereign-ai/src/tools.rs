@@ -517,8 +517,15 @@ async fn execute_get_document(call: &ToolCall, db: &dyn GraphDB) -> String {
     let docs = db.search_documents_by_title(title).await.unwrap_or_default();
     if let Some(doc) = docs.first() {
         let ownership = if doc.is_owned { "owned" } else { "external" };
-        let body = &doc.content;
-        let truncated = if body.len() > 500 { &body[..500] } else { body };
+        // PII-002: replace any `[pii:<id>]` tokens with type-only labels
+        // (`[Email]`, …) before the content reaches the model — no decryption.
+        let records = db
+            .list_pii_records(None, None, None)
+            .await
+            .unwrap_or_default();
+        let preview = crate::pii::resolve::resolve_to_preview(&doc.content, &records);
+        // Char-safe truncation: never slice mid-codepoint.
+        let truncated: String = preview.chars().take(500).collect();
         format!(
             "Title: {} ({})\nContent:\n{}",
             doc.title, ownership, truncated
@@ -567,15 +574,20 @@ async fn execute_search_messages(call: &ToolCall, db: &dyn GraphDB) -> String {
 
     match db.search_messages(query).await {
         Ok(msgs) => {
+            // PII-002: resolve `[pii:<id>]` tokens to type-only labels before
+            // any message body reaches the model (no decryption).
+            let records = db
+                .list_pii_records(None, None, None)
+                .await
+                .unwrap_or_default();
             let lines: Vec<String> = msgs
                 .iter()
                 .take(5)
                 .map(|m| {
-                    let body_preview = if m.body.len() > 100 {
-                        &m.body[..100]
-                    } else {
-                        &m.body
-                    };
+                    let preview = crate::pii::resolve::resolve_to_preview(&m.body, &records);
+                    // COMMS-002: char-safe truncation — `&m.body[..100]` could
+                    // panic by slicing mid-codepoint. Take 100 chars instead.
+                    let body_preview: String = preview.chars().take(100).collect();
                     format!("- [{}] {}", m.sent_at.format("%Y-%m-%d"), body_preview)
                 })
                 .collect();

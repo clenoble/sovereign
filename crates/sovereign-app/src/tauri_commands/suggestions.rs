@@ -22,6 +22,7 @@ pub struct SuggestionDto {
 pub async fn list_pending_suggestions(
     state: State<'_, AppState>,
 ) -> Result<Vec<SuggestionDto>, String> {
+    state.require_unlocked().await?;
     let suggestions = state
         .db
         .list_pending_suggestions()
@@ -58,6 +59,7 @@ pub async fn accept_link_suggestion(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     state
         .db
         .resolve_suggestion(&id, sovereign_db::schema::SuggestionStatus::Accepted)
@@ -77,6 +79,7 @@ pub async fn dismiss_link_suggestion(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     state
         .db
         .resolve_suggestion(&id, sovereign_db::schema::SuggestionStatus::Dismissed)
@@ -95,6 +98,7 @@ pub async fn dismiss_link_suggestion(
 pub async fn trigger_consolidation(
     state: State<'_, AppState>,
 ) -> Result<u32, String> {
+    state.require_unlocked().await?;
     let orch = state
         .orchestrator
         .as_ref()

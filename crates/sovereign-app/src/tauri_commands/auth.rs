@@ -157,13 +157,72 @@ pub async fn validate_password(
     #[cfg(feature = "encryption")]
     {
         let _ = &keystrokes; // keystroke comparison deferred to future phase
-        let auth_path = state.profile_dir.join("crypto/auth.store");
+        let crypto_dir = state.profile_dir.join("crypto");
+        let auth_path = crypto_dir.join("auth.store");
         let store = sovereign_crypto::auth::AuthStore::load(&auth_path)
             .str_err()?;
-        let persona = install_session(&state, &store, password.as_bytes()).await?;
-        match persona {
-            sovereign_crypto::auth::PersonaKind::Primary => Ok("primary".into()),
-            sovereign_crypto::auth::PersonaKind::Duress => Ok("duress".into()),
+
+        // --- CRYPTO-002: server-side login lockout ---------------------------
+        // The login command historically forwarded max_login_attempts /
+        // lockout_seconds to the UI but enforced nothing in Rust, so scripted
+        // IPC could guess passwords unthrottled, amplifying the at-rest
+        // brute-force surface. We now enforce the lockout here, BEFORE touching
+        // the auth store.
+        //
+        // The tracker (`crypto/login_attempts.json`) is a plaintext file that
+        // defends against online/scripted guessing via IPC. An attacker with
+        // filesystem access already holds auth.store and attacks it directly
+        // (covered by the Argon2id at-rest fix CRYPTO-001), so FS-tamper of the
+        // counter is out of scope — clearing it only resets the online throttle.
+        let max = state.config.crypto.max_login_attempts;
+        let lockout_secs = state.config.crypto.lockout_seconds;
+        let mut attempts = crate::login_throttle::LoginAttempts::load(&crypto_dir);
+
+        match attempts.is_locked(max, lockout_secs) {
+            Some(remaining) => {
+                return Err(format!(
+                    "Too many failed login attempts — locked for {remaining} seconds"
+                ));
+            }
+            None if max > 0 && attempts.failed_count >= max => {
+                // We hit the limit on a previous window, but that window has
+                // now fully elapsed (is_locked returned None). Clear the stale
+                // window so a fresh count starts on the next failure.
+                attempts.reset();
+                if let Err(e) = attempts.save(&crypto_dir) {
+                    tracing::warn!("login_throttle: failed to persist window reset: {e}");
+                }
+            }
+            None => {}
+        }
+
+        // Constant per-attempt delay to throttle scripted guessing regardless
+        // of outcome.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+        // authenticate (via install_session) returns Ok for BOTH the primary
+        // AND the duress persona — both are "success" and must reset the
+        // counter identically. The only difference is the downstream persona
+        // string we return; the throttle path must NOT leak which one unlocked.
+        match install_session(&state, &store, password.as_bytes()).await {
+            Ok(persona) => {
+                attempts.reset();
+                if let Err(e) = attempts.save(&crypto_dir) {
+                    tracing::warn!("login_throttle: failed to persist reset on success: {e}");
+                }
+                match persona {
+                    sovereign_crypto::auth::PersonaKind::Primary => Ok("primary".into()),
+                    sovereign_crypto::auth::PersonaKind::Duress => Ok("duress".into()),
+                }
+            }
+            Err(e) => {
+                attempts.record_failure();
+                if let Err(save_err) = attempts.save(&crypto_dir) {
+                    tracing::warn!("login_throttle: failed to persist failure: {save_err}");
+                }
+                // Return the existing auth error UNCHANGED.
+                Err(e)
+            }
         }
     }
     #[cfg(not(feature = "encryption"))]

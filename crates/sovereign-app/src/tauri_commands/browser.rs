@@ -19,7 +19,8 @@ pub struct CommsConfigDto {
 
 /// Return the current comms configuration.
 #[tauri::command]
-pub async fn get_comms_config(_state: State<'_, AppState>) -> Result<CommsConfigDto, String> {
+pub async fn get_comms_config(state: State<'_, AppState>) -> Result<CommsConfigDto, String> {
+    state.require_unlocked().await?;
     #[cfg(feature = "comms")]
     {
         // Load comms config from disk
@@ -97,50 +98,92 @@ pub struct SaveCommsConfigDto {
 /// Save comms configuration to disk.
 #[tauri::command]
 pub async fn save_comms_config(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
     data: SaveCommsConfigDto,
 ) -> Result<(), String> {
-    let config_dir = sovereign_core::sovereign_dir();
-    std::fs::create_dir_all(&config_dir).str_err()?;
+    state.require_unlocked().await?;
+    #[cfg(feature = "comms")]
+    {
+        let config_dir = sovereign_core::sovereign_dir();
+        std::fs::create_dir_all(&config_dir).str_err()?;
 
-    let mut lines = Vec::new();
-    lines.push("enabled = true".to_string());
-    lines.push(String::new());
+        // IPC-002: build a typed CommsConfig and serialize it with the toml
+        // crate instead of hand-formatting strings (which let unescaped quotes
+        // / newlines forge arbitrary config keys). Validate hosts + ports first.
+        let mut cfg = sovereign_comms::config::CommsConfig {
+            enabled: true,
+            ..Default::default()
+        };
 
-    // Email section
-    if let Some(ref host) = data.email_imap_host {
-        if !host.is_empty() {
-            lines.push("[email]".to_string());
-            lines.push(format!("imap_host = \"{}\"", host));
-            lines.push(format!(
-                "imap_port = {}",
-                data.email_imap_port.unwrap_or(993)
-            ));
-            if let Some(ref smtp) = data.email_smtp_host {
-                lines.push(format!("smtp_host = \"{}\"", smtp));
+        if let Some(ref host) = data.email_imap_host {
+            if !host.is_empty() {
+                validate_host(host)?;
+                let imap_port = data.email_imap_port.unwrap_or(993);
+                validate_port(imap_port)?;
+                let smtp_host = data.email_smtp_host.clone().unwrap_or_default();
+                if !smtp_host.is_empty() {
+                    validate_host(&smtp_host)?;
+                }
+                let smtp_port = data.email_smtp_port.unwrap_or(587);
+                validate_port(smtp_port)?;
+                cfg.email = Some(sovereign_comms::config::EmailAccountConfig {
+                    imap_host: host.clone(),
+                    imap_port,
+                    smtp_host,
+                    smtp_port,
+                    username: data.email_username.clone().unwrap_or_default(),
+                    display_name: None,
+                });
             }
-            lines.push(format!(
-                "smtp_port = {}",
-                data.email_smtp_port.unwrap_or(587)
-            ));
-            if let Some(ref user) = data.email_username {
-                lines.push(format!("username = \"{}\"", user));
+        }
+
+        if let Some(ref phone) = data.signal_phone {
+            if !phone.is_empty() {
+                validate_host(phone)?; // reject quotes/newlines/control chars
+                cfg.signal = Some(sovereign_comms::config::SignalAccountConfig {
+                    phone_number: phone.clone(),
+                    store_path: sovereign_core::sovereign_dir()
+                        .join("signal")
+                        .to_string_lossy()
+                        .into_owned(),
+                    device_name: None,
+                });
             }
-            lines.push(String::new());
         }
-    }
 
-    // Signal section
-    if let Some(ref phone) = data.signal_phone {
-        if !phone.is_empty() {
-            lines.push("[signal]".to_string());
-            lines.push(format!("phone_number = \"{}\"", phone));
-            lines.push(String::new());
-        }
+        let serialized = toml::to_string(&cfg).str_err()?;
+        let config_path = config_dir.join("comms.toml");
+        std::fs::write(&config_path, serialized).str_err()?;
+        return Ok(());
     }
+    #[cfg(not(feature = "comms"))]
+    {
+        let _ = data;
+        Err("Comms feature not enabled".into())
+    }
+}
 
-    let config_path = config_dir.join("comms.toml");
-    std::fs::write(&config_path, lines.join("\n")).str_err()?;
+/// Reject host-like strings containing quotes, newlines, or other control
+/// characters — these would let a forged value break out of the TOML
+/// string and inject arbitrary keys (IPC-002).
+#[cfg(feature = "comms")]
+fn validate_host(value: &str) -> Result<(), String> {
+    if value
+        .chars()
+        .any(|c| c == '"' || c == '\'' || c == '\n' || c == '\r' || c.is_control())
+    {
+        return Err("Invalid host/identifier: contains quotes, newlines, or control characters".to_string());
+    }
+    Ok(())
+}
+
+/// Reject out-of-range ports. u16 already bounds the upper end; this
+/// rejects port 0 to satisfy the documented 1..=65535 range (IPC-002).
+#[cfg(feature = "comms")]
+fn validate_port(port: u16) -> Result<(), String> {
+    if !(1..=65535).contains(&port) {
+        return Err(format!("Invalid port: {port} (must be 1..=65535)"));
+    }
     Ok(())
 }
 
@@ -153,10 +196,12 @@ pub async fn save_comms_config(
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn open_browser(
+    state: State<'_, AppState>,
     app: tauri::AppHandle,
     url: String,
     bounds: crate::browser::LogicalRect,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     // Must spawn on a separate thread to avoid deadlock on Windows
     let handle = app.clone();
     tokio::task::spawn_blocking(move || {
@@ -169,35 +214,56 @@ pub async fn open_browser(
 /// Close the embedded browser webview.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub async fn close_browser(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn close_browser(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    state.require_unlocked().await?;
     crate::browser::destroy_browser(&app)
 }
 
 /// Navigate the browser to a new URL.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub async fn navigate_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
+pub async fn navigate_browser(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    url: String,
+) -> Result<(), String> {
+    state.require_unlocked().await?;
     crate::browser::navigate_browser(&app, &url)
 }
 
 /// Go back in browser history.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub async fn browser_back(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn browser_back(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    state.require_unlocked().await?;
     crate::browser::browser_back(&app)
 }
 
 /// Go forward in browser history.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub async fn browser_forward(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn browser_forward(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    state.require_unlocked().await?;
     crate::browser::browser_forward(&app)
 }
 
 /// Reload the browser page.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub async fn browser_refresh(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn browser_refresh(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    state.require_unlocked().await?;
     crate::browser::browser_refresh(&app)
 }
 
@@ -205,9 +271,11 @@ pub async fn browser_refresh(app: tauri::AppHandle) -> Result<(), String> {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn set_browser_bounds(
+    state: State<'_, AppState>,
     app: tauri::AppHandle,
     bounds: crate::browser::LogicalRect,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     crate::browser::set_browser_bounds(&app, bounds)
 }
 
@@ -215,9 +283,11 @@ pub async fn set_browser_bounds(
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn set_browser_visible(
+    state: State<'_, AppState>,
     app: tauri::AppHandle,
     visible: bool,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     crate::browser::set_browser_visible(&app, visible)
 }
 
@@ -249,7 +319,11 @@ pub struct RubricScoreDto {
 
 /// Fetch a web page and extract readable content (server-side).
 #[tauri::command]
-pub async fn fetch_web_page(url: String) -> Result<FetchedPageDto, String> {
+pub async fn fetch_web_page(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<FetchedPageDto, String> {
+    state.require_unlocked().await?;
     #[cfg(feature = "web-browse")]
     {
         let page = crate::web::fetch_and_extract(&url)
@@ -275,6 +349,7 @@ pub async fn assess_reliability(
     state: State<'_, AppState>,
     text: String,
 ) -> Result<ReliabilityResultDto, String> {
+    state.require_unlocked().await?;
     let orch = state.orchestrator.as_ref()
         .ok_or_else(|| "AI orchestrator not available".to_string())?;
     let result = orch
@@ -308,6 +383,7 @@ pub async fn save_web_page(
     score: Option<f32>,
     assessment_json: Option<String>,
 ) -> Result<CanvasDocDto, String> {
+    state.require_unlocked().await?;
     let tid = match thread_id {
         Some(t) if !t.is_empty() => t,
         _ => {
@@ -374,6 +450,7 @@ pub async fn reassess_reliability(
     state: State<'_, AppState>,
     doc_id: String,
 ) -> Result<ReliabilityResultDto, String> {
+    state.require_unlocked().await?;
     let doc = state.db.get_document(&doc_id).await.str_err()?;
 
     // Parse content JSON to extract body text

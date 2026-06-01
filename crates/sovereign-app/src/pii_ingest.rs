@@ -12,14 +12,34 @@
 //! a `pii_scanned_at` marker. The plan's idle sweep mechanism handles
 //! re-scans for taxonomy changes.
 
+use crate::tauri_state::AppState;
+
+/// PII-002: pass-through used when the `encryption` feature is disabled.
+/// PII ingest requires the account key (to encrypt findings + preserved raw
+/// bodies), which only exists under `encryption`. Keeping the symbol present
+/// in both configurations lets the document save/import commands call it
+/// unconditionally (no `#[cfg]` at the call site) — the scan still runs in
+/// every shipped build (encryption is in the default feature set).
+#[cfg(not(feature = "encryption"))]
+pub async fn maybe_ingest_document_body(
+    _state: &AppState,
+    _doc_id: &str,
+    body: &str,
+) -> Result<String, String> {
+    Ok(body.to_string())
+}
+
+#[cfg(feature = "encryption")]
 use std::sync::Arc;
 
+#[cfg(feature = "encryption")]
 use sovereign_ai::pii::ingest::{ingest_text, GraphDbPiiSink};
+#[cfg(feature = "encryption")]
 use sovereign_ai::pii::pipeline::PipelineConfig;
+#[cfg(feature = "encryption")]
 use sovereign_db::schema::SourceKind;
+#[cfg(feature = "encryption")]
 use sovereign_db::traits::GraphDB;
-
-use crate::tauri_state::AppState;
 
 /// Run PII ingest over `body` if all preconditions hold; otherwise
 /// return `body` unchanged. The returned string is the canonical body
@@ -36,6 +56,7 @@ use crate::tauri_state::AppState;
 /// Side effects when ingest runs: PiiRecords + proposed Entities
 /// written via `state.db`; document's `body_raw_encrypted` /
 /// `body_raw_nonce` / `pii_scanned_at` fields updated.
+#[cfg(feature = "encryption")]
 pub async fn maybe_ingest_document_body(
     state: &AppState,
     doc_id: &str,

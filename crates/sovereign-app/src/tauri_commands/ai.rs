@@ -36,6 +36,7 @@ pub async fn get_status(state: State<'_, AppState>) -> Result<AppStatus, String>
 /// processing and returns immediately.
 #[tauri::command]
 pub async fn chat_message(state: State<'_, AppState>, message: String) -> Result<(), String> {
+    state.require_unlocked().await?;
     let orch = state
         .orchestrator
         .as_ref()
@@ -55,6 +56,7 @@ pub async fn search_documents(
     state: State<'_, AppState>,
     query: String,
 ) -> Result<Vec<SearchHit>, String> {
+    state.require_unlocked().await?;
     let docs = state
         .db
         .search_documents_by_title(&query)
@@ -89,6 +91,7 @@ pub async fn search_documents(
 /// Full AI-powered search via the orchestrator.
 #[tauri::command]
 pub async fn search_query(state: State<'_, AppState>, query: String) -> Result<(), String> {
+    state.require_unlocked().await?;
     let orch = state
         .orchestrator
         .as_ref()
@@ -105,6 +108,7 @@ pub async fn search_query(state: State<'_, AppState>, query: String) -> Result<(
 /// Approve a pending action proposed by the orchestrator.
 #[tauri::command]
 pub async fn approve_action(state: State<'_, AppState>) -> Result<(), String> {
+    state.require_unlocked().await?;
     state
         .decision_tx
         .send(ActionDecision::Approve)
@@ -118,6 +122,7 @@ pub async fn reject_action(
     state: State<'_, AppState>,
     reason: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     state
         .decision_tx
         .send(ActionDecision::Reject(reason))
@@ -131,6 +136,7 @@ pub async fn accept_suggestion(
     state: State<'_, AppState>,
     action: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     state
         .feedback_tx
         .send(FeedbackEvent::SuggestionAccepted { action })
@@ -144,6 +150,7 @@ pub async fn dismiss_suggestion(
     state: State<'_, AppState>,
     action: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     state
         .feedback_tx
         .send(FeedbackEvent::SuggestionDismissed { action })
@@ -244,6 +251,7 @@ pub struct TrustEntryDto {
 /// Return all trust entries for the dashboard.
 #[tauri::command]
 pub async fn get_trust_entries(state: State<'_, AppState>) -> Result<Vec<TrustEntryDto>, String> {
+    state.require_unlocked().await?;
     let orch = state
         .orchestrator
         .as_ref()
@@ -266,6 +274,7 @@ pub async fn reset_trust_action(
     state: State<'_, AppState>,
     action: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     let orch = state
         .orchestrator
         .as_ref()
@@ -277,6 +286,7 @@ pub async fn reset_trust_action(
 /// Reset all trust entries.
 #[tauri::command]
 pub async fn reset_trust_all(state: State<'_, AppState>) -> Result<(), String> {
+    state.require_unlocked().await?;
     let orch = state
         .orchestrator
         .as_ref()

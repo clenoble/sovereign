@@ -175,6 +175,7 @@ impl From<ShareRecord> for ShareRecordDto {
 /// List all entities (excludes soft-deleted), ordered by name.
 #[tauri::command]
 pub async fn list_pii_entities(state: State<'_, AppState>) -> Result<Vec<EntityDto>, String> {
+    state.require_unlocked().await?;
     let entities = state.db.list_entities().await.str_err()?;
     Ok(entities.into_iter().map(EntityDto::from).collect())
 }
@@ -185,6 +186,7 @@ pub async fn get_pii_entity(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<EntityDto, String> {
+    state.require_unlocked().await?;
     let entity = state.db.get_entity(&id).await.str_err()?;
     Ok(EntityDto::from(entity))
 }
@@ -196,6 +198,7 @@ pub async fn list_share_records_for_entity(
     state: State<'_, AppState>,
     entity_id: String,
 ) -> Result<Vec<ShareRecordDto>, String> {
+    state.require_unlocked().await?;
     let records = state
         .db
         .list_share_records_for_entity(&entity_id)
@@ -216,6 +219,7 @@ pub async fn list_pii_records(
     review_state: Option<String>,
     stored_secret: Option<bool>,
 ) -> Result<Vec<PiiRecordDto>, String> {
+    state.require_unlocked().await?;
     let parsed_state = review_state.as_deref().and_then(parse_review_state);
     let records = state
         .db
@@ -236,6 +240,7 @@ pub async fn confirm_pii_record(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     state
         .db
         .update_pii_record_review_state(&id, ReviewState::Confirmed)
@@ -250,6 +255,7 @@ pub async fn dismiss_pii_record(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     state
         .db
         .update_pii_record_review_state(&id, ReviewState::Dismissed)
@@ -265,6 +271,7 @@ pub async fn redact_pii_record(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     state.db.soft_delete_pii_record(&id).await.str_err()
 }
 
@@ -394,7 +401,11 @@ pub async fn create_vault_entry(
 /// event for the frontend's SignupCapturePrompt.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub async fn extract_form_fields(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn extract_form_fields(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    state.require_unlocked().await?;
     crate::browser_pii::trigger_form_extraction(&app)
 }
 
@@ -406,9 +417,11 @@ pub async fn extract_form_fields(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn __browser_form_extracted(
+    state: State<'_, AppState>,
     app: tauri::AppHandle,
     payload: crate::browser_pii::FormExtractionDto,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     use tauri::Emitter;
     app.emit("browser-form-extracted", payload)
         .map_err(|e| e.to_string())
@@ -437,6 +450,35 @@ pub async fn autofill_pii_record(
         .ok_or_else(|| "Autofill unavailable: account key not loaded".to_string())?;
     let account_key = &*account_key;
     let record = state.db.get_pii_record(&record_id).await.str_err()?;
+
+    // WEB-003: bind autofill to the live browser host. Only inject a
+    // credential when the page the user is on belongs to the record's
+    // entity — otherwise a malicious/typo-squatting page could harvest a
+    // secret meant for another domain. Compare the www-stripped host
+    // against the entity's `domains`.
+    let entity_id = record
+        .entity_id
+        .as_deref()
+        .ok_or_else(|| "Autofill rejected: record is not attributed to any entity".to_string())?;
+    let entity = state.db.get_entity(entity_id).await.str_err()?;
+    let live_url = crate::browser::browser_url(&app)?;
+    let live_host = url::Url::parse(&live_url)
+        .map_err(|e| format!("could not parse browser URL: {e}"))?
+        .host_str()
+        .map(|h| h.to_ascii_lowercase())
+        .ok_or_else(|| "browser URL has no host".to_string())?;
+    let live_host = live_host.strip_prefix("www.").unwrap_or(&live_host);
+    let host_matches = entity.domains.iter().any(|d| {
+        let d = d.to_ascii_lowercase();
+        let d = d.strip_prefix("www.").unwrap_or(&d);
+        d == live_host
+    });
+    if !host_matches {
+        return Err(format!(
+            "Autofill rejected: current site '{live_host}' does not match this credential's entity"
+        ));
+    }
+
     let blob = EncryptedBlob::from_pair(record.value_encrypted, record.value_nonce);
     let plaintext = blob
         .decrypt_to_string(account_key)
@@ -673,6 +715,7 @@ pub async fn list_cookies_for_entity(
     app: tauri::AppHandle,
     entity_id: String,
 ) -> Result<Vec<crate::cookie_api::CookieDto>, String> {
+    state.require_unlocked().await?;
     let entity = state.db.get_entity(&entity_id).await.str_err()?;
     if entity.domains.is_empty() {
         return Ok(vec![]);
@@ -684,11 +727,13 @@ pub async fn list_cookies_for_entity(
 /// plan; the frontend gates the confirmation prompt before calling.
 #[tauri::command]
 pub async fn delete_cookie(
+    state: State<'_, AppState>,
     app: tauri::AppHandle,
     name: String,
     domain: String,
     path: String,
 ) -> Result<(), String> {
+    state.require_unlocked().await?;
     crate::cookie_api::delete_one(&app, &name, &domain, &path)
 }
 
@@ -700,6 +745,7 @@ pub async fn clear_entity_cookies(
     app: tauri::AppHandle,
     entity_id: String,
 ) -> Result<usize, String> {
+    state.require_unlocked().await?;
     let entity = state.db.get_entity(&entity_id).await.str_err()?;
     if entity.domains.is_empty() {
         return Ok(0);
