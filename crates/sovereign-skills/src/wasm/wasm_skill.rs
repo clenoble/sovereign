@@ -45,7 +45,11 @@ impl WasmSkill {
             .build();
         let state = PluginState {
             db: None,
+            // Metadata loading runs no skill code paths that touch the DB.
+            granted: Default::default(),
             limits: store_limits,
+            scope_doc: None,
+            scope_thread: None,
         };
         let mut store = Store::new(&engine, state);
         store.limiter(|s| &mut s.limits);
@@ -89,9 +93,23 @@ impl WasmSkill {
             .memory_size(self.limits.memory_bytes)
             .instances(self.limits.max_instances)
             .build();
+        // WASM-002: scope the single-document grants to the document the skill
+        // was invoked on. scope_doc is that document; scope_thread is its thread
+        // (resolved via the DB), so a WriteDocument-only skill can add docs to
+        // the current thread but not others. Resolution failure (e.g. an unsaved
+        // doc not yet in the DB) leaves scope_thread None → WriteDocument matches
+        // nothing and the skill must hold WriteAllDocuments instead.
+        let scope_thread = ctx
+            .db
+            .as_ref()
+            .and_then(|db| db.get_document(&doc.id).ok())
+            .map(|(_title, thread_id, _content)| thread_id);
         let state = PluginState {
             db: ctx.db.clone(),
+            granted: ctx.granted.clone(),
             limits: store_limits,
+            scope_doc: Some(doc.id.clone()),
+            scope_thread,
         };
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
@@ -107,7 +125,7 @@ impl WasmSkill {
         };
 
         // Convert granted capabilities to WIT enum
-        let wit_caps: Vec<_> = ctx.granted.iter().map(capability_to_wit).collect();
+        let wit_caps: Vec<_> = ctx.granted.iter().filter_map(capability_to_wit).collect();
 
         let result = bindings.call_execute(&mut store, action, &wit_doc, params, &wit_caps)?;
 
@@ -173,9 +191,9 @@ fn wit_cap_to_capability(
 
 fn capability_to_wit(
     c: &Capability,
-) -> crate::wasm::host_bridge::sovereign::skill::types::Capability {
+) -> Option<crate::wasm::host_bridge::sovereign::skill::types::Capability> {
     use crate::wasm::host_bridge::sovereign::skill::types::Capability as WitCap;
-    match c {
+    Some(match c {
         Capability::ReadDocument => WitCap::ReadDocument,
         Capability::WriteDocument => WitCap::WriteDocument,
         Capability::ReadAllDocuments => WitCap::ReadAllDocuments,
@@ -183,7 +201,10 @@ fn capability_to_wit(
         Capability::ReadFilesystem => WitCap::ReadFilesystem,
         Capability::WriteFilesystem => WitCap::WriteFilesystem,
         Capability::Network => WitCap::Network,
-    }
+        // No WIT representation: LLM access is host-mediated and never
+        // exposed to WASM guests, so the capability is not forwarded.
+        Capability::LlmInference => return None,
+    })
 }
 
 fn wit_output_to_skill_output(

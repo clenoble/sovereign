@@ -6,8 +6,11 @@ use super::*;
 
 /// Bulk-load all data needed for the spatial canvas.
 #[tauri::command]
-pub async fn canvas_load(state: State<'_, AppState>) -> Result<CanvasData, String> {
-    state.require_unlocked().await?;
+pub async fn canvas_load(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<CanvasData, String> {
+    state.require_unlocked(&webview).await?;
     tracing::info!("canvas_load: called from frontend");
     let docs = state.db.list_documents(None).await.str_err()?;
     tracing::info!("canvas_load: got {} documents from DB", docs.len());
@@ -120,12 +123,13 @@ pub async fn canvas_load(state: State<'_, AppState>) -> Result<CanvasData, Strin
 /// Update a document's spatial canvas position.
 #[tauri::command]
 pub async fn update_document_position(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
     x: f32,
     y: f32,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     state
         .db
         .update_document_position(&id, x, y)
@@ -136,12 +140,13 @@ pub async fn update_document_position(
 /// Load messages for a specific time range (viewport-scoped).
 #[tauri::command]
 pub async fn canvas_load_messages(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     t_min: String,
     t_max: String,
     limit: Option<u32>,
 ) -> Result<Vec<CanvasMessageDto>, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let after = chrono::DateTime::parse_from_rfc3339(&t_min)
         .map_err(|e| format!("Invalid t_min: {e}"))?
         .with_timezone(&Utc);

@@ -85,12 +85,25 @@ pub fn create_browser_webview(
             let app_handle = app.clone();
             move |nav_url| {
                 let url_str = nav_url.to_string();
+                // SSRF guard (WEB-002) applies to IN-PAGE navigation too:
+                // without this, any loaded page could redirect the native
+                // webview to loopback sidecars, cloud metadata, RFC1918
+                // hosts, or file:// — bypassing the guard that vetted the
+                // initial URL.
+                if let Err(reason) = crate::web::validate_public_url(&url_str) {
+                    tracing::warn!("Blocked in-page browser navigation to {url_str}: {reason}");
+                    let _ = app_handle.emit("browser-navigation-blocked", serde_json::json!({
+                        "url": url_str,
+                        "reason": reason,
+                    }));
+                    return false;
+                }
                 let title = nav_url.host_str().unwrap_or("").to_string();
                 let _ = app_handle.emit("browser-navigated", serde_json::json!({
                     "url": url_str,
                     "title": title,
                 }));
-                true // allow all navigation
+                true
             }
         });
 

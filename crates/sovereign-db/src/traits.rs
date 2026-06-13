@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 
 use crate::error::DbResult;
 use crate::schema::{
-    ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
+    ChannelType, Commit, Contact, Conversation, Document, Entity, EntityKind, Message, Milestone,
     PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, ShareRecord, SourceRef,
     SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
@@ -22,6 +22,13 @@ pub trait GraphDB: Send + Sync {
     // -- Documents ---
 
     async fn create_document(&self, doc: Document) -> DbResult<Document>;
+
+    /// Insert a document **under its own embedded id** (not a freshly minted
+    /// one), preserving identity across devices for P2P sync (P2P-004).
+    /// Idempotent: returns `Ok(false)` if a document with that id already
+    /// exists, `Ok(true)` if newly inserted. The `doc.id` must be set.
+    async fn create_document_with_id(&self, doc: Document) -> DbResult<bool>;
+
     async fn get_document(&self, id: &str) -> DbResult<Document>;
     async fn list_documents(&self, thread_id: Option<&str>) -> DbResult<Vec<Document>>;
     async fn update_document(
@@ -56,6 +63,16 @@ pub trait GraphDB: Send + Sync {
         title_ciphertext: &str,
         title_nonce: &str,
         title_token_hashes: &[String],
+    ) -> DbResult<()>;
+
+    /// Internal setter used by `EncryptedGraphDB` to write back encrypted
+    /// document content together with its nonce — without the nonce persisted
+    /// alongside, the ciphertext is unreadable on decrypt.
+    async fn set_document_content_encryption(
+        &self,
+        id: &str,
+        content_ciphertext: &str,
+        content_nonce: &str,
     ) -> DbResult<()>;
 
     /// Update a document's reliability assessment fields.
@@ -212,6 +229,9 @@ pub trait GraphDB: Send + Sync {
     /// Restore a document to a previous commit's snapshot.
     async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document>;
 
+    /// AUTOCOMMIT-001: store the tamper-evidence MAC on a commit row.
+    async fn set_commit_signature(&self, commit_id: &str, signature: &str) -> DbResult<()>;
+
     // -- Milestones ---
 
     /// Create a milestone on a thread's timeline.
@@ -268,6 +288,15 @@ pub trait GraphDB: Send + Sync {
         id: &str,
         notes_ciphertext: &str,
         notes_nonce: &str,
+    ) -> DbResult<()>;
+
+    /// ATREST-002: persist the contact's addresses as an encrypted blob,
+    /// clearing the plaintext `addresses` field on disk.
+    async fn set_contact_addresses_encryption(
+        &self,
+        id: &str,
+        addresses_ciphertext: &str,
+        addresses_nonce: &str,
     ) -> DbResult<()>;
 
     /// Soft-delete a contact.
@@ -339,6 +368,14 @@ pub trait GraphDB: Send + Sync {
         &self,
         hashes: &[String],
     ) -> DbResult<Vec<Message>>;
+
+    /// Exact lookup on `message.external_id` (backed by `idx_message_external`).
+    /// This is the dedup primitive for channel sync — token-search dedup can
+    /// both miss duplicates and falsely match unrelated messages.
+    async fn find_message_by_external_id(
+        &self,
+        external_id: &str,
+    ) -> DbResult<Option<Message>>;
 
     /// Internal setter used by `EncryptedGraphDB` to write back the ciphertext
     /// fields after a message is created. Updates body, subject, body_html and
@@ -468,6 +505,23 @@ pub trait GraphDB: Send + Sync {
     /// Fetch an `Entity` by ID.
     async fn get_entity(&self, id: &str) -> DbResult<Entity>;
 
+    /// Replace an entity's mutable fields in place (name, kind, domains,
+    /// contact_ids, notes, is_owned, deleted_at) and bump `modified_at`.
+    /// Used by P2P sync to apply a remote last-writer-wins update, and by
+    /// the dashboard's entity-edit flow. `None` args leave that field as-is.
+    #[allow(clippy::too_many_arguments)]
+    async fn update_entity(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        kind: Option<EntityKind>,
+        domains: Option<Vec<String>>,
+        contact_ids: Option<Vec<String>>,
+        notes: Option<&str>,
+        is_owned: Option<bool>,
+        deleted_at: Option<Option<String>>,
+    ) -> DbResult<Entity>;
+
     // -- Share Records (PII sharing ledger) ---
 
     /// Insert a new `ShareRecord` documenting that a `PiiRecord` was
@@ -563,5 +617,61 @@ pub trait GraphDB: Send + Sync {
         &self,
         id: &str,
         pii_scanned_at: Option<chrono::DateTime<Utc>>,
+    ) -> DbResult<()>;
+
+    // -- Id-preserving inserts for P2P sync (P2) ---
+    //
+    // Every synced row must land on the receiving device **under its origin
+    // id** (same contract as `create_document_with_id`), otherwise the next
+    // manifest exchange sees the remote id as still-missing and re-fetches
+    // it forever, duplicating the row on every sync round. All are
+    // idempotent: `Ok(false)` if a row with that id already exists,
+    // `Ok(true)` if newly inserted. The row's `id` must be set.
+
+    async fn create_thread_with_id(&self, thread: Thread) -> DbResult<bool>;
+    async fn create_entity_with_id(&self, entity: Entity) -> DbResult<bool>;
+    async fn create_pii_record_with_id(&self, record: PiiRecord) -> DbResult<bool>;
+    async fn create_share_record_with_id(&self, record: ShareRecord) -> DbResult<bool>;
+    async fn create_contact_with_id(&self, contact: Contact) -> DbResult<bool>;
+    async fn create_message_with_id(&self, message: Message) -> DbResult<bool>;
+    async fn create_conversation_with_id(&self, conversation: Conversation) -> DbResult<bool>;
+    async fn create_milestone_with_id(&self, milestone: Milestone) -> DbResult<bool>;
+
+    /// Insert a relationship edge under its origin id, with `in_`/`out`
+    /// preserved so graph traversal keeps working on the receiving device.
+    async fn create_relationship_with_id(&self, rel: RelatedTo) -> DbResult<bool>;
+
+    /// Insert a suggested-link edge under its origin id (full record,
+    /// including status/rationale/resolved_at — unlike
+    /// `create_suggested_link`, which mints a fresh pending suggestion).
+    async fn create_suggested_link_with_id(&self, link: SuggestedLink) -> DbResult<bool>;
+
+    // -- Per-row reads + raw status setter for P2P sync (P2) ---
+
+    /// Fetch a milestone by raw id (`milestone:key`).
+    async fn get_milestone(&self, id: &str) -> DbResult<Milestone>;
+
+    /// Fetch a relationship edge by raw id (`related_to:key`).
+    async fn get_relationship(&self, id: &str) -> DbResult<RelatedTo>;
+
+    /// Fetch a suggested link by raw id (`suggested_link:key`).
+    async fn get_suggested_link(&self, id: &str) -> DbResult<SuggestedLink>;
+
+    /// Every suggested link regardless of status. Used by the sync engine
+    /// to build the manifest (status changes must propagate, so resolved
+    /// links can't be filtered out the way `list_pending_suggestions` does).
+    async fn list_all_suggested_links(&self) -> DbResult<Vec<SuggestedLink>>;
+
+    /// Set a suggested link's status + resolved_at WITHOUT the
+    /// `resolve_suggestion` side effect of promoting an accepted link to a
+    /// `related_to` edge. P2P sync applies remote status changes through
+    /// this — the promoted edge syncs separately as its own row, so
+    /// re-promoting here would duplicate it. Takes a raw id
+    /// (`suggested_link:key`).
+    async fn set_suggested_link_status(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+        resolved_at: Option<DateTime<Utc>>,
     ) -> DbResult<()>;
 }

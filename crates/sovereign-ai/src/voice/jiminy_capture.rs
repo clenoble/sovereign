@@ -44,6 +44,36 @@ impl JiminyAudioCapture {
     }
 }
 
+/// Build the `/ws/audio` client request, reading `JIMINY_TOKEN` from the env.
+fn build_audio_request(url: &str) -> Result<tokio_tungstenite::tungstenite::http::Request<()>> {
+    build_audio_request_with_token(url, std::env::var("JIMINY_TOKEN").ok().as_deref())
+}
+
+/// VOICE-002: attach `Authorization: Bearer <token>` to the WS upgrade when a
+/// token is configured. The bridge enforces the same bearer check on the
+/// `/ws/audio` upgrade that the HTTP middleware enforces on REST calls
+/// (jiminy-bridge `_check_auth`); without this header a token-secured bridge
+/// silently refuses audio, and a token-less bridge accepts any local process.
+/// Mirrors [`crate::sidecar::auth_headers`]. Split from the env read so the
+/// header logic is unit-testable without mutating process env.
+fn build_audio_request_with_token(
+    url: &str,
+    token: Option<&str>,
+) -> Result<tokio_tungstenite::tungstenite::http::Request<()>> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::{header::AUTHORIZATION, HeaderValue};
+
+    let mut request = url.into_client_request()?;
+    if let Some(token) = token {
+        if !token.is_empty() {
+            let mut value = HeaderValue::from_str(&format!("Bearer {token}"))?;
+            value.set_sensitive(true);
+            request.headers_mut().insert(AUTHORIZATION, value);
+        }
+    }
+    Ok(request)
+}
+
 /// Blocking loop that connects, sends `{"cmd":"start"}`, and reads
 /// binary f32 frames into the ring buffer producer.  Reconnects on
 /// failure with exponential backoff (1s → 2s → 4s … 30s max).
@@ -61,7 +91,20 @@ fn ws_reader_loop(url: String, mut prod: ringbuf::HeapProd<f32>) {
 
     rt.block_on(async {
         loop {
-            match tokio_tungstenite::connect_async(&url).await {
+            // VOICE-002: build the upgrade request with the bearer token (if
+            // configured). A build error is treated like a connect failure.
+            let request = match build_audio_request(&url) {
+                Ok(r) => r,
+                Err(e) => {
+                    if backoff_ms <= 1000 {
+                        tracing::warn!("Jiminy audio request build failed ({url}): {e}");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    backoff_ms = (backoff_ms * 2).min(30_000);
+                    continue;
+                }
+            };
+            match tokio_tungstenite::connect_async(request).await {
                 Ok((mut ws, _response)) => {
                     backoff_ms = 1000; // reset on success
                     if !logged_first_connect {
@@ -167,5 +210,26 @@ mod tests {
         let result = JiminyAudioCapture::start("ws://127.0.0.1:1/ws/audio");
         assert!(result.is_ok());
         // Drop immediately — thread will exit on next backoff iteration
+    }
+
+    // VOICE-002
+    #[test]
+    fn audio_request_carries_bearer_token_when_set() {
+        let req =
+            build_audio_request_with_token("ws://127.0.0.1:9100/ws/audio", Some("s3cr3t")).unwrap();
+        assert_eq!(
+            req.headers().get("authorization").unwrap(),
+            "Bearer s3cr3t"
+        );
+    }
+
+    #[test]
+    fn audio_request_has_no_auth_header_without_token() {
+        let none = build_audio_request_with_token("ws://127.0.0.1:9100/ws/audio", None).unwrap();
+        assert!(none.headers().get("authorization").is_none());
+        // An empty token is treated as "no token" (matches auth_headers).
+        let empty =
+            build_audio_request_with_token("ws://127.0.0.1:9100/ws/audio", Some("")).unwrap();
+        assert!(empty.headers().get("authorization").is_none());
     }
 }

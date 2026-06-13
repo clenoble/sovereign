@@ -58,6 +58,20 @@ pub struct ShareRecordManifestEntry {
     pub content_hash: String,
 }
 
+/// Generic manifest entry for the P2 row tables (contacts, messages,
+/// conversations, milestones, relationships, suggested links). Same
+/// shape as the per-table entries above — the table is implied by which
+/// `SyncManifest` vec the entry sits in. `modified_at` holds the
+/// table's LWW field (see `SyncService::build_manifest`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RowManifestEntry {
+    pub id: String,
+    pub modified_at: String,
+    pub content_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+}
+
 /// A sync manifest covering every syncable table on a device. Documents
 /// keep their existing commit-chain track via `documents`; everything
 /// else moves through the row-level `EncryptedRow` protocol added in
@@ -83,6 +97,28 @@ pub struct SyncManifest {
     /// Per-share-record entries (append-only).
     #[serde(default)]
     pub share_records: Vec<ShareRecordManifestEntry>,
+    /// Per-contact entries (LWW on `modified_at`). P2.
+    #[serde(default)]
+    pub contacts: Vec<RowManifestEntry>,
+    /// Per-message entries (LWW field is `created_at`; bodies are
+    /// near-immutable, read-status/body changes resolve via the P1.3
+    /// version stamps). P2.
+    #[serde(default)]
+    pub messages: Vec<RowManifestEntry>,
+    /// Per-conversation entries (LWW field is `last_message_at`,
+    /// falling back to `created_at`). P2.
+    #[serde(default)]
+    pub conversations: Vec<RowManifestEntry>,
+    /// Per-milestone entries (append-only; `timestamp`). P2.
+    #[serde(default)]
+    pub milestones: Vec<RowManifestEntry>,
+    /// Per-relationship-edge entries (append-only; `created_at`). P2.
+    #[serde(default)]
+    pub relationships: Vec<RowManifestEntry>,
+    /// Per-suggested-link entries (LWW field is `resolved_at`, falling
+    /// back to `created_at` — status changes must propagate). P2.
+    #[serde(default)]
+    pub suggested_links: Vec<RowManifestEntry>,
 }
 
 /// An encrypted sync manifest for wire transport.
@@ -105,6 +141,12 @@ impl SyncManifest {
             entities: Vec::new(),
             pii_records: Vec::new(),
             share_records: Vec::new(),
+            contacts: Vec::new(),
+            messages: Vec::new(),
+            conversations: Vec::new(),
+            milestones: Vec::new(),
+            relationships: Vec::new(),
+            suggested_links: Vec::new(),
         }
     }
 

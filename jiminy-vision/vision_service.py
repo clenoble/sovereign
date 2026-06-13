@@ -15,12 +15,18 @@ camera by polling the reachy sidecar's /camera/frame on hardware.
 
 The Rust orchestrator POLLS GET /vision/state (like it polls the camera) and
 converts it into OrchestratorEvents. POST /vision/window opens the VLM window.
+
+Security: CORS + the server-side origin check admit only the Tauri webview
+origins (never wildcard — live camera frames must not be readable by arbitrary
+websites). Set JIMINY_TOKEN (same value here and in the Sovereign app) to also
+require a bearer token from non-browser clients.
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import os
+import secrets
 import threading
 import time
 from dataclasses import dataclass
@@ -29,9 +35,9 @@ from typing import Optional
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from PIL import Image
 from pydantic import BaseModel
 
@@ -506,13 +512,75 @@ class VisionEngine:
 # --------------------------------------------------------------------------- #
 engine: Optional[VisionEngine] = None
 app = FastAPI(title="Jiminy Vision", version="0.1.0")
-# Allow the Tauri webview to fetch /vision/* cross-origin (state + window control).
+
+# The Tauri webview fetches /vision/* cross-origin (state + window control), so
+# CORS must admit it — but ONLY it. A wildcard here would let any website the
+# user visits read live camera frames from the loopback service.
+ALLOWED_ORIGINS = [
+    "tauri://localhost",        # macOS / Linux webview origin
+    "http://tauri.localhost",   # Windows (WebView2) origin
+    "https://tauri.localhost",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Shared secret. Resolved from JIMINY_TOKEN, else the shared token file the
+# Sovereign app writes (JIMINY_TOKEN_FILE override, default
+# ~/.sovereign/crypto/jiminy_token) so the secure default needs no manual env
+# coordination. The webview sends it as a bearer token on its /vision fetches.
+def _resolve_auth_token() -> str:
+    tok = os.environ.get("JIMINY_TOKEN", "")
+    if tok:
+        return tok
+    path = os.environ.get("JIMINY_TOKEN_FILE") or os.path.join(
+        os.path.expanduser("~"), ".sovereign", "crypto", "jiminy_token"
+    )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+AUTH_TOKEN = _resolve_auth_token()
+# SIDECAR-002: fail closed when no token is configured (don't serve live camera
+# frames / scene state openly). JIMINY_ALLOW_NO_AUTH=1 opts into insecure dev.
+ALLOW_NO_AUTH = os.environ.get("JIMINY_ALLOW_NO_AUTH", "") == "1"
+
+
+def _auth_error(origin: Optional[str], authorization: Optional[str]) -> Optional[str]:
+    """Return an error string if the request must be rejected, else None.
+
+    CORS only stops a page READING responses; simple GETs/POSTs still reach the
+    handlers, so the Origin allowlist is enforced server-side as well.
+    """
+    # SIDECAR-001: the Origin allowlist and the token are AND-composed, not
+    # mutually exclusive. A page cannot forge its Origin, but a NON-browser
+    # local process can trivially set `Origin: tauri://localhost`, so the Origin
+    # check alone is necessary-not-sufficient. The token must ALWAYS be checked
+    # when configured, regardless of Origin — previously it sat in an `elif`, so
+    # any allow-listed Origin skipped it and any local process read the camera.
+    if origin is not None and origin not in ALLOWED_ORIGINS:
+        return "origin not allowed"
+    if not AUTH_TOKEN:
+        # SIDECAR-002: no shared secret → fail closed unless explicitly opted out.
+        return None if ALLOW_NO_AUTH else "sidecar auth not configured (set JIMINY_TOKEN); refusing"
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme != "Bearer" or not secrets.compare_digest(token, AUTH_TOKEN):
+        return "missing or invalid bearer token"
+    return None
+
+
+@app.middleware("http")
+async def require_local_auth(request: Request, call_next):
+    err = _auth_error(request.headers.get("origin"), request.headers.get("authorization"))
+    if err is not None:
+        return JSONResponse(status_code=403, content={"detail": err})
+    return await call_next(request)
 
 
 class WindowRequest(BaseModel):

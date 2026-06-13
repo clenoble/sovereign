@@ -24,7 +24,7 @@ use chrono::{DateTime, Utc};
 
 use crate::error::DbResult;
 use crate::schema::{
-    ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
+    ChannelType, Commit, Contact, Conversation, Document, Entity, EntityKind, Message, Milestone,
     PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, ShareRecord, SourceRef,
     SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
@@ -85,6 +85,7 @@ impl GraphDB for ArcWrapper {
     async fn init_schema(&self) -> DbResult<()> { self.0.init_schema().await }
 
     async fn create_document(&self, doc: Document) -> DbResult<Document> { self.0.create_document(doc).await }
+    async fn create_document_with_id(&self, doc: Document) -> DbResult<bool> { self.0.create_document_with_id(doc).await }
     async fn get_document(&self, id: &str) -> DbResult<Document> { self.0.get_document(id).await }
     async fn list_documents(&self, thread_id: Option<&str>) -> DbResult<Vec<Document>> { self.0.list_documents(thread_id).await }
     async fn update_document(&self, id: &str, title: Option<&str>, content: Option<&str>) -> DbResult<Document> { self.0.update_document(id, title, content).await }
@@ -94,6 +95,9 @@ impl GraphDB for ArcWrapper {
     async fn search_documents_by_title_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Document>> { self.0.search_documents_by_title_token_hashes(hashes).await }
     async fn set_document_title_encryption(&self, id: &str, title_ciphertext: &str, title_nonce: &str, title_token_hashes: &[String]) -> DbResult<()> {
         self.0.set_document_title_encryption(id, title_ciphertext, title_nonce, title_token_hashes).await
+    }
+    async fn set_document_content_encryption(&self, id: &str, content_ciphertext: &str, content_nonce: &str) -> DbResult<()> {
+        self.0.set_document_content_encryption(id, content_ciphertext, content_nonce).await
     }
     async fn update_document_reliability(&self, id: &str, source_url: Option<&str>, classification: Option<&str>, score: Option<f32>, assessment_json: Option<&str>) -> DbResult<Document> {
         self.0.update_document_reliability(id, source_url, classification, score, assessment_json).await
@@ -140,6 +144,7 @@ impl GraphDB for ArcWrapper {
     async fn list_document_commits(&self, doc_id: &str) -> DbResult<Vec<Commit>> { self.0.list_document_commits(doc_id).await }
     async fn get_commit(&self, commit_id: &str) -> DbResult<Commit> { self.0.get_commit(commit_id).await }
     async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> { self.0.restore_document(doc_id, commit_id).await }
+    async fn set_commit_signature(&self, commit_id: &str, signature: &str) -> DbResult<()> { self.0.set_commit_signature(commit_id, signature).await }
 
     async fn create_milestone(&self, milestone: Milestone) -> DbResult<Milestone> { self.0.create_milestone(milestone).await }
     async fn list_milestones(&self, thread_id: &str) -> DbResult<Vec<Milestone>> { self.0.list_milestones(thread_id).await }
@@ -153,6 +158,7 @@ impl GraphDB for ArcWrapper {
     async fn delete_contact(&self, id: &str) -> DbResult<()> { self.0.delete_contact(id).await }
     async fn set_contact_name_encryption(&self, id: &str, name_ciphertext: &str, name_nonce: &str) -> DbResult<()> { self.0.set_contact_name_encryption(id, name_ciphertext, name_nonce).await }
     async fn set_contact_notes_encryption(&self, id: &str, notes_ciphertext: &str, notes_nonce: &str) -> DbResult<()> { self.0.set_contact_notes_encryption(id, notes_ciphertext, notes_nonce).await }
+    async fn set_contact_addresses_encryption(&self, id: &str, addresses_ciphertext: &str, addresses_nonce: &str) -> DbResult<()> { self.0.set_contact_addresses_encryption(id, addresses_ciphertext, addresses_nonce).await }
     async fn soft_delete_contact(&self, id: &str) -> DbResult<()> { self.0.soft_delete_contact(id).await }
     async fn find_contact_by_address(&self, address: &str) -> DbResult<Option<Contact>> { self.0.find_contact_by_address(address).await }
     async fn add_contact_address(&self, contact_id: &str, address: crate::schema::ChannelAddress) -> DbResult<Contact> { self.0.add_contact_address(contact_id, address).await }
@@ -166,6 +172,7 @@ impl GraphDB for ArcWrapper {
     async fn list_messages_in_time_range(&self, after: DateTime<Utc>, before: DateTime<Utc>, limit: u32) -> DbResult<Vec<Message>> { self.0.list_messages_in_time_range(after, before, limit).await }
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>> { self.0.search_messages(query).await }
     async fn search_messages_by_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Message>> { self.0.search_messages_by_token_hashes(hashes).await }
+    async fn find_message_by_external_id(&self, external_id: &str) -> DbResult<Option<Message>> { self.0.find_message_by_external_id(external_id).await }
     async fn set_message_encryption(&self, id: &str, body_ciphertext: &str, body_nonce: &str, subject_ciphertext: Option<&str>, subject_nonce: Option<&str>, body_html_ciphertext: Option<&str>, body_html_nonce: Option<&str>, body_token_hashes: &[String]) -> DbResult<()> {
         self.0.set_message_encryption(id, body_ciphertext, body_nonce, subject_ciphertext, subject_nonce, body_html_ciphertext, body_html_nonce, body_token_hashes).await
     }
@@ -188,6 +195,7 @@ impl GraphDB for ArcWrapper {
     async fn update_pii_record_value(&self, id: &str, value_encrypted: &str, value_nonce: &str) -> DbResult<()> { self.0.update_pii_record_value(id, value_encrypted, value_nonce).await }
     async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> { self.0.soft_delete_pii_record(id).await }
     async fn get_entity(&self, id: &str) -> DbResult<Entity> { self.0.get_entity(id).await }
+    async fn update_entity(&self, id: &str, name: Option<&str>, kind: Option<EntityKind>, domains: Option<Vec<String>>, contact_ids: Option<Vec<String>>, notes: Option<&str>, is_owned: Option<bool>, deleted_at: Option<Option<String>>) -> DbResult<Entity> { self.0.update_entity(id, name, kind, domains, contact_ids, notes, is_owned, deleted_at).await }
 
     async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> { self.0.create_share_record(record).await }
     async fn set_share_record_via_url_encryption(&self, id: &str, via_url_ciphertext: &str, via_url_nonce: &str) -> DbResult<()> { self.0.set_share_record_via_url_encryption(id, via_url_ciphertext, via_url_nonce).await }
@@ -201,6 +209,22 @@ impl GraphDB for ArcWrapper {
     async fn update_message_body(&self, id: &str, body: &str, body_html: Option<&str>) -> DbResult<()> { self.0.update_message_body(id, body, body_html).await }
     async fn update_message_pii_fields(&self, id: &str, body_raw_encrypted: Option<&str>, body_raw_nonce: Option<&str>, pii_scanned_at: Option<DateTime<Utc>>) -> DbResult<()> { self.0.update_message_pii_fields(id, body_raw_encrypted, body_raw_nonce, pii_scanned_at).await }
     async fn update_contact_pii_fields(&self, id: &str, pii_scanned_at: Option<DateTime<Utc>>) -> DbResult<()> { self.0.update_contact_pii_fields(id, pii_scanned_at).await }
+
+    async fn create_thread_with_id(&self, thread: Thread) -> DbResult<bool> { self.0.create_thread_with_id(thread).await }
+    async fn create_entity_with_id(&self, entity: Entity) -> DbResult<bool> { self.0.create_entity_with_id(entity).await }
+    async fn create_pii_record_with_id(&self, record: PiiRecord) -> DbResult<bool> { self.0.create_pii_record_with_id(record).await }
+    async fn create_share_record_with_id(&self, record: ShareRecord) -> DbResult<bool> { self.0.create_share_record_with_id(record).await }
+    async fn create_contact_with_id(&self, contact: Contact) -> DbResult<bool> { self.0.create_contact_with_id(contact).await }
+    async fn create_message_with_id(&self, message: Message) -> DbResult<bool> { self.0.create_message_with_id(message).await }
+    async fn create_conversation_with_id(&self, conversation: Conversation) -> DbResult<bool> { self.0.create_conversation_with_id(conversation).await }
+    async fn create_milestone_with_id(&self, milestone: Milestone) -> DbResult<bool> { self.0.create_milestone_with_id(milestone).await }
+    async fn create_relationship_with_id(&self, rel: RelatedTo) -> DbResult<bool> { self.0.create_relationship_with_id(rel).await }
+    async fn create_suggested_link_with_id(&self, link: SuggestedLink) -> DbResult<bool> { self.0.create_suggested_link_with_id(link).await }
+    async fn get_milestone(&self, id: &str) -> DbResult<Milestone> { self.0.get_milestone(id).await }
+    async fn get_relationship(&self, id: &str) -> DbResult<RelatedTo> { self.0.get_relationship(id).await }
+    async fn get_suggested_link(&self, id: &str) -> DbResult<SuggestedLink> { self.0.get_suggested_link(id).await }
+    async fn list_all_suggested_links(&self) -> DbResult<Vec<SuggestedLink>> { self.0.list_all_suggested_links().await }
+    async fn set_suggested_link_status(&self, id: &str, status: SuggestionStatus, resolved_at: Option<DateTime<Utc>>) -> DbResult<()> { self.0.set_suggested_link_status(id, status, resolved_at).await }
 }
 
 #[async_trait]
@@ -209,6 +233,7 @@ impl GraphDB for LayeredGraphDB {
     async fn init_schema(&self) -> DbResult<()> { self.current().init_schema().await }
 
     async fn create_document(&self, doc: Document) -> DbResult<Document> { self.current().create_document(doc).await }
+    async fn create_document_with_id(&self, doc: Document) -> DbResult<bool> { self.current().create_document_with_id(doc).await }
     async fn get_document(&self, id: &str) -> DbResult<Document> { self.current().get_document(id).await }
     async fn list_documents(&self, thread_id: Option<&str>) -> DbResult<Vec<Document>> { self.current().list_documents(thread_id).await }
     async fn update_document(&self, id: &str, title: Option<&str>, content: Option<&str>) -> DbResult<Document> { self.current().update_document(id, title, content).await }
@@ -218,6 +243,9 @@ impl GraphDB for LayeredGraphDB {
     async fn search_documents_by_title_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Document>> { self.current().search_documents_by_title_token_hashes(hashes).await }
     async fn set_document_title_encryption(&self, id: &str, title_ciphertext: &str, title_nonce: &str, title_token_hashes: &[String]) -> DbResult<()> {
         self.current().set_document_title_encryption(id, title_ciphertext, title_nonce, title_token_hashes).await
+    }
+    async fn set_document_content_encryption(&self, id: &str, content_ciphertext: &str, content_nonce: &str) -> DbResult<()> {
+        self.current().set_document_content_encryption(id, content_ciphertext, content_nonce).await
     }
     async fn update_document_reliability(&self, id: &str, source_url: Option<&str>, classification: Option<&str>, score: Option<f32>, assessment_json: Option<&str>) -> DbResult<Document> {
         self.current().update_document_reliability(id, source_url, classification, score, assessment_json).await
@@ -264,6 +292,7 @@ impl GraphDB for LayeredGraphDB {
     async fn list_document_commits(&self, doc_id: &str) -> DbResult<Vec<Commit>> { self.current().list_document_commits(doc_id).await }
     async fn get_commit(&self, commit_id: &str) -> DbResult<Commit> { self.current().get_commit(commit_id).await }
     async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> { self.current().restore_document(doc_id, commit_id).await }
+    async fn set_commit_signature(&self, commit_id: &str, signature: &str) -> DbResult<()> { self.current().set_commit_signature(commit_id, signature).await }
 
     async fn create_milestone(&self, milestone: Milestone) -> DbResult<Milestone> { self.current().create_milestone(milestone).await }
     async fn list_milestones(&self, thread_id: &str) -> DbResult<Vec<Milestone>> { self.current().list_milestones(thread_id).await }
@@ -277,6 +306,7 @@ impl GraphDB for LayeredGraphDB {
     async fn delete_contact(&self, id: &str) -> DbResult<()> { self.current().delete_contact(id).await }
     async fn set_contact_name_encryption(&self, id: &str, name_ciphertext: &str, name_nonce: &str) -> DbResult<()> { self.current().set_contact_name_encryption(id, name_ciphertext, name_nonce).await }
     async fn set_contact_notes_encryption(&self, id: &str, notes_ciphertext: &str, notes_nonce: &str) -> DbResult<()> { self.current().set_contact_notes_encryption(id, notes_ciphertext, notes_nonce).await }
+    async fn set_contact_addresses_encryption(&self, id: &str, addresses_ciphertext: &str, addresses_nonce: &str) -> DbResult<()> { self.current().set_contact_addresses_encryption(id, addresses_ciphertext, addresses_nonce).await }
     async fn soft_delete_contact(&self, id: &str) -> DbResult<()> { self.current().soft_delete_contact(id).await }
     async fn find_contact_by_address(&self, address: &str) -> DbResult<Option<Contact>> { self.current().find_contact_by_address(address).await }
     async fn add_contact_address(&self, contact_id: &str, address: crate::schema::ChannelAddress) -> DbResult<Contact> { self.current().add_contact_address(contact_id, address).await }
@@ -290,6 +320,7 @@ impl GraphDB for LayeredGraphDB {
     async fn list_messages_in_time_range(&self, after: DateTime<Utc>, before: DateTime<Utc>, limit: u32) -> DbResult<Vec<Message>> { self.current().list_messages_in_time_range(after, before, limit).await }
     async fn search_messages(&self, query: &str) -> DbResult<Vec<Message>> { self.current().search_messages(query).await }
     async fn search_messages_by_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Message>> { self.current().search_messages_by_token_hashes(hashes).await }
+    async fn find_message_by_external_id(&self, external_id: &str) -> DbResult<Option<Message>> { self.current().find_message_by_external_id(external_id).await }
     async fn set_message_encryption(&self, id: &str, body_ciphertext: &str, body_nonce: &str, subject_ciphertext: Option<&str>, subject_nonce: Option<&str>, body_html_ciphertext: Option<&str>, body_html_nonce: Option<&str>, body_token_hashes: &[String]) -> DbResult<()> {
         self.current().set_message_encryption(id, body_ciphertext, body_nonce, subject_ciphertext, subject_nonce, body_html_ciphertext, body_html_nonce, body_token_hashes).await
     }
@@ -312,6 +343,7 @@ impl GraphDB for LayeredGraphDB {
     async fn update_pii_record_value(&self, id: &str, value_encrypted: &str, value_nonce: &str) -> DbResult<()> { self.current().update_pii_record_value(id, value_encrypted, value_nonce).await }
     async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> { self.current().soft_delete_pii_record(id).await }
     async fn get_entity(&self, id: &str) -> DbResult<Entity> { self.current().get_entity(id).await }
+    async fn update_entity(&self, id: &str, name: Option<&str>, kind: Option<EntityKind>, domains: Option<Vec<String>>, contact_ids: Option<Vec<String>>, notes: Option<&str>, is_owned: Option<bool>, deleted_at: Option<Option<String>>) -> DbResult<Entity> { self.current().update_entity(id, name, kind, domains, contact_ids, notes, is_owned, deleted_at).await }
 
     async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> { self.current().create_share_record(record).await }
     async fn set_share_record_via_url_encryption(&self, id: &str, via_url_ciphertext: &str, via_url_nonce: &str) -> DbResult<()> { self.current().set_share_record_via_url_encryption(id, via_url_ciphertext, via_url_nonce).await }
@@ -325,6 +357,22 @@ impl GraphDB for LayeredGraphDB {
     async fn update_message_body(&self, id: &str, body: &str, body_html: Option<&str>) -> DbResult<()> { self.current().update_message_body(id, body, body_html).await }
     async fn update_message_pii_fields(&self, id: &str, body_raw_encrypted: Option<&str>, body_raw_nonce: Option<&str>, pii_scanned_at: Option<DateTime<Utc>>) -> DbResult<()> { self.current().update_message_pii_fields(id, body_raw_encrypted, body_raw_nonce, pii_scanned_at).await }
     async fn update_contact_pii_fields(&self, id: &str, pii_scanned_at: Option<DateTime<Utc>>) -> DbResult<()> { self.current().update_contact_pii_fields(id, pii_scanned_at).await }
+
+    async fn create_thread_with_id(&self, thread: Thread) -> DbResult<bool> { self.current().create_thread_with_id(thread).await }
+    async fn create_entity_with_id(&self, entity: Entity) -> DbResult<bool> { self.current().create_entity_with_id(entity).await }
+    async fn create_pii_record_with_id(&self, record: PiiRecord) -> DbResult<bool> { self.current().create_pii_record_with_id(record).await }
+    async fn create_share_record_with_id(&self, record: ShareRecord) -> DbResult<bool> { self.current().create_share_record_with_id(record).await }
+    async fn create_contact_with_id(&self, contact: Contact) -> DbResult<bool> { self.current().create_contact_with_id(contact).await }
+    async fn create_message_with_id(&self, message: Message) -> DbResult<bool> { self.current().create_message_with_id(message).await }
+    async fn create_conversation_with_id(&self, conversation: Conversation) -> DbResult<bool> { self.current().create_conversation_with_id(conversation).await }
+    async fn create_milestone_with_id(&self, milestone: Milestone) -> DbResult<bool> { self.current().create_milestone_with_id(milestone).await }
+    async fn create_relationship_with_id(&self, rel: RelatedTo) -> DbResult<bool> { self.current().create_relationship_with_id(rel).await }
+    async fn create_suggested_link_with_id(&self, link: SuggestedLink) -> DbResult<bool> { self.current().create_suggested_link_with_id(link).await }
+    async fn get_milestone(&self, id: &str) -> DbResult<Milestone> { self.current().get_milestone(id).await }
+    async fn get_relationship(&self, id: &str) -> DbResult<RelatedTo> { self.current().get_relationship(id).await }
+    async fn get_suggested_link(&self, id: &str) -> DbResult<SuggestedLink> { self.current().get_suggested_link(id).await }
+    async fn list_all_suggested_links(&self) -> DbResult<Vec<SuggestedLink>> { self.current().list_all_suggested_links().await }
+    async fn set_suggested_link_status(&self, id: &str, status: SuggestionStatus, resolved_at: Option<DateTime<Utc>>) -> DbResult<()> { self.current().set_suggested_link_status(id, status, resolved_at).await }
 }
 
 #[cfg(test)]

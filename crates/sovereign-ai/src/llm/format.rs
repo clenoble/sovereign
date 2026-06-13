@@ -93,6 +93,24 @@ pub fn detect_format_from_filename(filename: &str) -> PromptFormat {
     }
 }
 
+/// Resolve a model's prompt format, preferring an explicit **pinned** format
+/// over filename-based detection.
+///
+/// MODELTRUST format-confusion: `detect_format_from_filename` keys off the
+/// (attacker-controllable) filename, so a renamed model could steer the format
+/// — e.g. to a family whose tool-call parsing or thinking-mode handling differs
+/// — and subtly corrupt behavior. When a model is listed in the integrity
+/// manifest with a `format`, that pin wins and can't be influenced by the
+/// filename. It is trustworthy because a pinned model's bytes were already
+/// hash-verified at load (a mismatch would have refused the load). Unlisted /
+/// custom (TOFU) models have no pin and still fall back to filename detection.
+pub fn resolve_format(filename: &str, pinned: Option<&str>) -> PromptFormat {
+    match pinned {
+        Some(f) => PromptFormat::from_str(f),
+        None => detect_format_from_filename(filename),
+    }
+}
+
 /// Create a boxed formatter from a `PromptFormat` enum.
 pub fn create_formatter(format: PromptFormat) -> Box<dyn PromptFormatter> {
     match format {
@@ -630,5 +648,24 @@ mod tests {
         // Existing formats unchanged
         assert_eq!(PromptFormat::from_str("chatml"), PromptFormat::ChatML);
         assert_eq!(PromptFormat::from_str("mistral"), PromptFormat::Mistral);
+    }
+
+    #[test]
+    fn pinned_format_overrides_filename_detection() {
+        // MODELTRUST format-confusion: a file renamed to scream "llama" is
+        // pinned as chatml-qwen3 — the pin must win, not the filename.
+        assert_eq!(
+            resolve_format("totally-llama-3-instruct.gguf", Some("chatml-qwen3")),
+            PromptFormat::ChatMLQwen3,
+        );
+        // Unlisted (no pin) → filename detection still applies.
+        assert_eq!(
+            resolve_format("Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", None),
+            PromptFormat::Llama3,
+        );
+        assert_eq!(
+            resolve_format("Qwen2.5-3B-Instruct-Q4_K_M.gguf", None),
+            PromptFormat::ChatML,
+        );
     }
 }

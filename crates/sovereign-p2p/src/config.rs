@@ -15,6 +15,11 @@ pub struct P2pConfig {
     /// Human-readable device name shown to peers.
     #[serde(default = "default_device_name")]
     pub device_name: String,
+    /// Whether mDNS LAN peer discovery is enabled (P2P-006). Default true.
+    /// When false, the node performs no multicast discovery — useful on
+    /// untrusted/shared networks or to require explicit out-of-band pairing.
+    #[serde(default = "default_enable_mdns")]
+    pub enable_mdns: bool,
     /// When true, suppress auto-sync triggers while the device reports
     /// `ConnectivityState::Cellular`. Defaults to true on Android (mobile
     /// data is metered; mDNS doesn't work without multicast anyway), and
@@ -30,6 +35,10 @@ fn default_listen_port() -> u16 {
 
 fn default_device_name() -> String {
     "Sovereign Device".into()
+}
+
+fn default_enable_mdns() -> bool {
+    true
 }
 
 fn default_wifi_only() -> bool {
@@ -83,6 +92,7 @@ impl Default for P2pConfig {
             listen_port: default_listen_port(),
             rendezvous_server: None,
             device_name: default_device_name(),
+            enable_mdns: default_enable_mdns(),
             wifi_only: default_wifi_only(),
         }
     }
@@ -107,6 +117,7 @@ mod tests {
             listen_port: 4001,
             rendezvous_server: Some("/ip4/1.2.3.4/tcp/8000".into()),
             device_name: "My Laptop".into(),
+            enable_mdns: false,
             wifi_only: true,
         };
         let json = serde_json::to_string(&cfg).unwrap();
@@ -114,6 +125,17 @@ mod tests {
         assert!(back.enabled);
         assert_eq!(back.listen_port, 4001);
         assert!(back.wifi_only);
+        assert!(!back.enable_mdns);
+    }
+
+    #[test]
+    fn enable_mdns_defaults_true_and_legacy_config_deserializes() {
+        // Default is on.
+        assert!(P2pConfig::default().enable_mdns);
+        // A config written before the field existed still loads (serde default).
+        let legacy = r#"{"enabled":true,"listen_port":0,"device_name":"Old","wifi_only":false}"#;
+        let cfg: P2pConfig = serde_json::from_str(legacy).unwrap();
+        assert!(cfg.enable_mdns);
     }
 
     #[test]

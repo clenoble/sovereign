@@ -39,7 +39,11 @@ pub enum OrchestratorEvent {
     SyncStatus { peer_id: String, status: String },
     SyncConflict { doc_id: String, description: String },
     DeviceDiscovered { device_id: String, device_name: String },
-    DevicePaired { device_id: String },
+    DevicePaired { device_id: String, device_name: String },
+    /// A P3.1 pairing handshake attempt failed. `offer_dead` means the
+    /// offer self-destructed (expired or attempts exhausted) and the
+    /// pairing QR must be regenerated.
+    PairingFailed { reason: String, offer_dead: bool },
     // Guardian events
     GuardianEnrolled { guardian_id: String, name: String },
     GuardianDropped { guardian_id: String, reason: String },

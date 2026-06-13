@@ -23,8 +23,10 @@
 		"@testing-library/jest-dom": "^6.9.1",
 		"@testing-library/svelte": "^5.3.1",
 		"@types/dompurify": "^3.0.5",
+		"@types/qrcode": "^1.5.5",
 		"@vitest/ui": "^4.1.5",
 		"happy-dom": "^20.9.0",
+		"jsdom": "^29.1.1",
 		"svelte": "^5.51.0",
 		"svelte-check": "^4.4.2",
 		"typescript": "^5.9.3",
@@ -36,9 +38,11 @@
 		"@tauri-apps/plugin-haptics": "^2.3.2",
 		"dompurify": "^3.3.1",
 		"jsqr": "^1.4.0",
-		"marked": "^17.0.3"
+		"marked": "^17.0.3",
+		"qrcode": "^1.5.4"
 	},
 	"overrides": {
-		"cookie": "^0.7.0"
+		"cookie": "^0.7.0",
+		"esbuild": "^0.28.1"
 	}
 }

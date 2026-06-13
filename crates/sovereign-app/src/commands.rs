@@ -173,19 +173,17 @@ pub async fn encrypt_data(
     let results =
         sovereign_crypto::migration::encrypt_documents(&plans, &mut key_db_guard, &kek, Some(&progress))?;
 
-    // Update each document with encrypted content and nonce
+    // Update each document with encrypted content and nonce. The nonce MUST
+    // be persisted with the ciphertext: without it the row reads back as raw
+    // ciphertext and a re-run would encrypt it a second time.
     for result in &results {
-        db.update_document(
+        db.set_document_content_encryption(
             &result.doc_id,
-            None,
-            Some(&result.encrypted_content),
+            &result.encrypted_content,
+            &result.nonce_b64,
         )
         .await?;
-        tracing::info!(
-            "Encrypted {}: nonce={}",
-            result.doc_id,
-            result.nonce_b64
-        );
+        tracing::info!("Encrypted {}", result.doc_id);
     }
 
     // Persist key database
@@ -194,7 +192,9 @@ pub async fn encrypt_data(
     let salt_path = crypto_dir.join("salt");
     let salt = std::fs::read(&salt_path)?;
     let pass = rpassword::prompt_password("Re-enter passphrase to save key DB: ")?;
-    let master = MasterKey::from_passphrase(pass.as_bytes(), &salt)?;
+    // CRYPTO-001: derive with the same version-aware KDF as init_crypto —
+    // single-pass HKDF here would undo the Argon2id brute-force hardening.
+    let master = MasterKey::derive(pass.as_bytes(), &salt, &crate::setup::cli_kdf())?;
     let device_key = DeviceKey::derive(&master, &device_id)?;
     key_db_guard.save(&device_key)?;
 

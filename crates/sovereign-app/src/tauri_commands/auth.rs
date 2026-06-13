@@ -28,20 +28,16 @@ async fn install_session(
     let device_key_arc = std::sync::Arc::new(auth_result.device_key);
     let account_key_arc = std::sync::Arc::new(auth_result.account_key);
 
-    // 1. Install both keys into AppState. account_key serves vault /
-    //    PII reveal / PII ingest. p2p_identity_key is consumed later by
-    //    the P2P startup hook.
-    state.set_account_key(account_key_arc.clone()).await;
-    state.set_p2p_identity_key(device_key_arc.clone()).await;
-
-    // 2. Call complete_auth and discard the returned key_db / kek —
+    // 1. Call complete_auth and discard the returned key_db / kek —
     //    side effect: keys.duress.db is created on first duress login,
     //    even though no AppState consumer reads it today.
     if let Err(e) = crate::setup::complete_auth(persona, &device_key_arc, &auth_result.kek) {
         tracing::warn!("complete_auth side-effect failed: {e}");
     }
 
-    // 2a. Wire EncryptedGraphDB into the runtime DB stack.
+    // 2. Wire EncryptedGraphDB into the runtime DB stack — BEFORE the session
+    //    is marked unlocked (step 3), so a failure here aborts the login rather
+    //    than leaving an "unlocked" session that writes plaintext.
     //
     // The app boots with the raw SurrealGraphDB wrapped in a LayeredGraphDB
     // (see lib.rs::init_backend). Here we build the encryption decorator
@@ -52,30 +48,110 @@ async fn install_session(
     // (each `*_nonce` field guards a per-field decrypt branch), so pre-login
     // plaintext rows (seed data, v0.0.5 desktop state) continue to read
     // correctly; new writes from this point on are encrypted.
-    //
-    // Best-effort: a failure here would mean encryption is OFF for this
-    // session (the raw inner stays). Logged but does not fail the login —
-    // the user can still use the app, just without at-rest encryption.
     {
         let kek_arc = std::sync::Arc::new(sovereign_crypto::kek::Kek::from_bytes(
             *auth_result.kek.as_bytes(),
         ));
-        // Wrap the *raw* inner (the bootstrap SurrealGraphDB), not the layer
-        // itself — otherwise EncryptedGraphDB.inner would be the layer whose
-        // current points back at us, looping on every DB call. raw_inner()
-        // is the bootstrap reference held since init_backend.
-        let raw_inner = state.db.raw_inner();
-        match crate::setup::build_encrypted_db(raw_inner, device_key_arc.clone(), kek_arc) {
-            Ok(encrypted) => {
-                state.db.swap(encrypted);
-                tracing::info!("EncryptedGraphDB installed for this session");
+        // CRYPTO-001 (v0.0.7): the raw store is PERSONA-SPECIFIC. The primary
+        // persona wraps the boot DB (raw_inner); the DURESS persona gets a
+        // SEPARATE database file (persona_db_path → `<db>-duress.db`) seeded
+        // with innocuous decoy data, so a coerced login can never reach the
+        // primary persona's real rows. The key DBs and blind index are likewise
+        // persona-suffixed inside build_encrypted_db. Previously both personas
+        // shared one raw DB + one key DB, so duress either failed to decrypt
+        // (locking the decoy out) or exposed REAL data.
+        let core_persona = match persona {
+            sovereign_crypto::auth::PersonaKind::Primary => {
+                sovereign_core::auth::PersonaKind::Primary
             }
+            sovereign_crypto::auth::PersonaKind::Duress => {
+                sovereign_core::auth::PersonaKind::Duress
+            }
+        };
+        // SIDECHANNEL-001: time the persona-distinguishing DB setup so we can pad
+        // it to a constant floor below. The primary persona reuses the already-
+        // open boot DB; the duress persona opens + seeds a SEPARATE DB. Without
+        // padding, that extra work makes a coerced (duress) login measurably
+        // slower over IPC — defeating plausible deniability. Pad both to the same
+        // wall-clock so login latency reveals nothing about which persona unlocked.
+        let db_setup_start = std::time::Instant::now();
+        let raw_for_persona: std::sync::Arc<dyn sovereign_db::GraphDB> = match core_persona {
+            // Wrap the *raw* inner (the bootstrap SurrealGraphDB), not the layer
+            // itself — otherwise EncryptedGraphDB.inner would be the layer whose
+            // current points back at us, looping on every DB call. raw_inner()
+            // is the bootstrap reference held since init_backend.
+            sovereign_core::auth::PersonaKind::Primary => state.db.raw_inner(),
+            sovereign_core::auth::PersonaKind::Duress => {
+                let mut duress_config = state.config.clone();
+                duress_config.database.path =
+                    crate::setup::persona_db_path(&state.config, core_persona);
+                match crate::setup::create_db(&duress_config).await {
+                    Ok(ddb) => {
+                        // Seed plausible decoy data on first duress login
+                        // (seed_duress_db is idempotent — no-op once populated).
+                        if let Err(e) = crate::duress::seed_duress_db(&ddb).await {
+                            tracing::warn!("duress decoy seed failed (continuing): {e}");
+                        }
+                        std::sync::Arc::new(ddb)
+                    }
+                    Err(e) => {
+                        tracing::error!("duress profile DB open failed; aborting login: {e}");
+                        return Err(format!("Could not open the duress profile ({e})"));
+                    }
+                }
+            }
+        };
+        let encrypted = match crate::setup::build_encrypted_db(
+            raw_for_persona,
+            device_key_arc.clone(),
+            kek_arc,
+            core_persona,
+        ) {
+            Ok(encrypted) => encrypted,
             Err(e) => {
-                tracing::warn!(
-                    "Failed to install EncryptedGraphDB (continuing with plaintext inner): {e}"
-                );
+                // CRYPTO-001 (v0.0.7): fail CLOSED. build_encrypted_db creates
+                // fresh per-entity key DBs when the files are absent, so an
+                // error here is a genuine failure (corrupt or wrong-device key
+                // file, disk error) — never an expected first run. Continuing
+                // would silently persist every later row in plaintext under a
+                // UI that believes it is encrypted, so abort the login with a
+                // visible error and leave the session locked (no account key is
+                // installed below — step 3 is never reached).
+                tracing::error!("EncryptedGraphDB install failed; aborting login: {e}");
+                return Err(format!(
+                    "Could not initialize at-rest encryption — login aborted to protect your data ({e})"
+                ));
             }
+        };
+        // SIDECHANNEL-001: pad the persona-specific DB setup to a constant floor.
+        // The floor comfortably exceeds opening + seeding the duress decoy DB, so
+        // the primary path (which just reuses the boot DB) waits the same total —
+        // duress and primary logins become indistinguishable by IPC latency.
+        const DB_SETUP_FLOOR: std::time::Duration = std::time::Duration::from_millis(400);
+        let elapsed = db_setup_start.elapsed();
+        if elapsed < DB_SETUP_FLOOR {
+            tokio::time::sleep(DB_SETUP_FLOOR - elapsed).await;
         }
+        state.db.swap(encrypted);
+        tracing::info!("EncryptedGraphDB installed for {core_persona:?} persona");
+    }
+
+    // 3. Encryption is installed: mark the session unlocked by installing both
+    //    keys into AppState. account_key serves vault / PII reveal / PII ingest;
+    //    p2p_identity_key is consumed by the P2P startup hook below. Reaching
+    //    this point means require_session_unlocked() will now return Ok.
+    state.set_account_key(account_key_arc.clone()).await;
+    state.set_p2p_identity_key(device_key_arc.clone()).await;
+
+    // 3b. MODELTRUST-002: install the model-integrity unlock key + TOFU store
+    //     path now that a session is unlocked. This enables trust-on-first-use
+    //     verification of unlisted (custom / hot-swapped) models for the rest of
+    //     the session; pinned models in the embedded manifest are verified
+    //     regardless of login state. Keyed off the AccountKey so the TOFU store
+    //     can't be forged by an attacker who can only write the model directory.
+    {
+        let tofu_path = state.profile_dir.join("crypto").join("model_tofu.json");
+        sovereign_ai::model_integrity::set_unlock_key(*account_key_arc.as_bytes(), tofu_path);
     }
 
     // 3. Wire orchestrator: inline PII tokenization in chat I/O uses
@@ -265,6 +341,13 @@ pub async fn complete_onboarding(
     data: OnboardingData,
 ) -> Result<(), String> {
     let profile_dir = &state.profile_dir;
+
+    // IPC-006: this is a BOOTSTRAP (pre-auth) command — without this guard a
+    // pre-login IPC caller could re-onboard with its own password, overwriting
+    // auth.store and locking the real user out of their encrypted data.
+    if profile_dir.join("crypto").join("auth.store").exists() {
+        return Err("Already onboarded — log in instead.".to_string());
+    }
 
     // Save user profile
     let mut profile = sovereign_core::profile::UserProfile::load(profile_dir)

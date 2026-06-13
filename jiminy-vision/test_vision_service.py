@@ -257,3 +257,56 @@ class TestVlmHelpers:
 
     def test_resize_max_keeps_small_images(self):
         assert _resize_max(Image.new("RGB", (100, 50)), 768).size == (100, 50)
+
+
+class TestAuthError:
+    """Loopback hardening (SIDECAR-001/002): the Origin allowlist and the bearer
+    token are AND-composed (a forged allow-listed Origin can't skip the token),
+    and with no token configured the service fails closed unless an explicit
+    insecure dev opt-in is set."""
+
+    def _vs(self):
+        import vision_service
+        return vision_service
+
+    def test_unknown_origin_rejected(self, monkeypatch):
+        vs = self._vs()
+        monkeypatch.setattr(vs, "AUTH_TOKEN", "s3cret")
+        # Rejected regardless of token — a real browser can't forge its Origin.
+        assert vs._auth_error("https://evil.example", "Bearer s3cret") is not None
+
+    def test_token_required_even_for_allowlisted_origin(self, monkeypatch):
+        # SIDECAR-001: the core fix. A local process forging an allow-listed
+        # Origin must STILL present the token (previously this returned None).
+        vs = self._vs()
+        monkeypatch.setattr(vs, "AUTH_TOKEN", "s3cret")
+        monkeypatch.setattr(vs, "ALLOW_NO_AUTH", False)
+        assert vs._auth_error("tauri://localhost", None) is not None
+        assert vs._auth_error("tauri://localhost", "Bearer wrong") is not None
+        # With the right token AND an allow-listed origin → allowed.
+        assert vs._auth_error("tauri://localhost", "Bearer s3cret") is None
+
+    def test_token_required_for_originless_client(self, monkeypatch):
+        vs = self._vs()
+        monkeypatch.setattr(vs, "AUTH_TOKEN", "s3cret")
+        monkeypatch.setattr(vs, "ALLOW_NO_AUTH", False)
+        assert vs._auth_error(None, None) is not None
+        assert vs._auth_error(None, "Bearer wrong") is not None
+        assert vs._auth_error(None, "Bearer s3cret") is None
+
+    def test_fails_closed_without_token(self, monkeypatch):
+        # SIDECAR-002: no token configured → refuse, even an allow-listed origin.
+        vs = self._vs()
+        monkeypatch.setattr(vs, "AUTH_TOKEN", "")
+        monkeypatch.setattr(vs, "ALLOW_NO_AUTH", False)
+        assert vs._auth_error(None, None) is not None
+        assert vs._auth_error("tauri://localhost", None) is not None
+
+    def test_allow_no_auth_opts_into_insecure_dev(self, monkeypatch):
+        vs = self._vs()
+        monkeypatch.setattr(vs, "AUTH_TOKEN", "")
+        monkeypatch.setattr(vs, "ALLOW_NO_AUTH", True)
+        # Origin allowlist still applies; the token is just not required.
+        assert vs._auth_error(None, None) is None
+        assert vs._auth_error("tauri://localhost", None) is None
+        assert vs._auth_error("https://evil.example", None) is not None

@@ -46,6 +46,15 @@ impl IndexKey {
     }
 
     /// HMAC-SHA256 of `data` under this key, base64-encoded.
+    ///
+    /// CRYPTO-004 (accepted tradeoff): this is a DETERMINISTIC blind index — the
+    /// same plaintext token always hashes to the same value, which is exactly
+    /// what makes equality search over encrypted-at-rest data possible. The cost
+    /// is that anyone who can read the stored hashes can do frequency analysis
+    /// and confirm the presence of a *guessed* token (chosen-plaintext) across
+    /// rows. It never reveals un-guessed plaintext, and the single-DB scope
+    /// bounds it (no cross-DB correlation). If this needs hardening later,
+    /// salt/bucket the hashes or index bigrams instead of whole tokens.
     pub fn hash_token(&self, data: &[u8]) -> String {
         let mut mac = HmacSha256::new_from_slice(&self.bytes)
             .expect("HMAC accepts any key length");
@@ -95,7 +104,7 @@ impl IndexKey {
             std::fs::create_dir_all(parent)
                 .map_err(|e| CryptoError::KeyDbIo(e.to_string()))?;
         }
-        std::fs::write(path, &output)
+        crate::fs_private::write_private(path, &output)
             .map_err(|e| CryptoError::KeyDbIo(e.to_string()))?;
         Ok(())
     }

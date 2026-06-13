@@ -84,24 +84,38 @@
 	// Phase 5: paired-device flow.
 	// `flowMode` is set by the welcome step.
 	//   - 'first': default — full onboarding wizard.
-	//   - 'paired': skip the personality steps; collect the QR + PIN +
-	//     new local password; submit `complete_onboarding_paired`.
+	//   - 'paired': skip the personality steps; collect the offer QR +
+	//     pairing code + new local password; submit
+	//     `complete_onboarding_paired`, which runs the P3.1 handshake
+	//     against the existing device.
 	let flowMode = $state<FlowMode>('first');
 	let qrPayload = $state('');
 	let qrPin = $state('');
 	let qrPreview = $state<PairPayloadPreview | null>(null);
 	let qrPreviewError = $state('');
 	let qrPreviewLoading = $state(false);
+	// P3.1 handshake progress/error while complete_onboarding_paired runs
+	// (it dials the existing device, proves the code, and can take a few
+	// seconds — or fail with a wrong code).
+	let pairingInProgress = $state(false);
+	let pairingError = $state('');
 	// Phase 4.4: camera-first input on the paired branch, with paste
 	// fallback (the QrScanner component itself surfaces the fallback
 	// option if the camera API isn't available).
 	let pairedInputMode = $state<PairedInputMode>('scan');
+
+	// The pairing code is 10 Crockford symbols, optionally dashed
+	// ("XXXXX-XXXXX"); case and separators don't matter.
+	let pairCodeOk = $derived(qrPin.replace(/[^a-zA-Z0-9]/g, '').length >= 10);
 
 	function handleScannedPayload(payload: string) {
 		qrPayload = payload;
 		// After a successful scan, switch to paste mode so the user
 		// sees what was decoded and can edit / re-scan if needed.
 		pairedInputMode = 'paste';
+		// The offer is plaintext (P3.1) — preview immediately, no code
+		// needed yet.
+		handlePreviewQr();
 	}
 
 	// Step 2 — Nickname
@@ -149,10 +163,11 @@
 		if (flowMode === 'paired') {
 			switch (step) {
 				case 0: return true; // Welcome
-				case 1: return qrPreview !== null; // QR validated
+				case 1: return qrPreview !== null && pairCodeOk; // offer decoded + code typed
 				case 2: return passwordPolicyValid
 					&& password === passwordConfirm
-					&& password.length > 0;
+					&& password.length > 0
+					&& !pairingInProgress;
 				default: return true;
 			}
 		}
@@ -263,7 +278,9 @@
 		qrPreviewLoading = true;
 		qrPreview = null;
 		try {
-			qrPreview = await consumePairQrPreview(qrPayload.trim(), qrPin.trim());
+			// P3.1: the offer is plaintext, so the preview needs no code —
+			// the code is only proven online during the final handshake.
+			qrPreview = await consumePairQrPreview(qrPayload.trim(), '');
 		} catch (e) {
 			qrPreviewError = String(e);
 		}
@@ -289,9 +306,12 @@
 	}
 
 	async function handleComplete() {
-		// Paired flow: skip the personality steps, just submit the
-		// imported AccountKey + new local passphrase.
+		// Paired flow: run the P3.1 handshake (dial the existing device,
+		// prove the code, receive the keys) and persist the new install.
 		if (flowMode === 'paired') {
+			if (pairingInProgress) return;
+			pairingInProgress = true;
+			pairingError = '';
 			try {
 				await completeOnboardingPaired({
 					qr_payload_b64: qrPayload.trim(),
@@ -306,7 +326,21 @@
 				app.authState = 'login'; // user must now log in with the new local password
 			} catch (e) {
 				console.error('Paired onboarding failed:', e);
+				const msg = String(e);
+				if (msg.includes('invalid proof')) {
+					pairingError =
+						'Wrong pairing code. Check the code shown on the existing device — after three wrong attempts you must generate a new QR there.';
+				} else if (msg.includes('no active pairing offer') || msg.includes('expired')) {
+					pairingError =
+						'This pairing offer is no longer valid. Generate a fresh QR on the existing device and scan it again.';
+				} else if (msg.includes('timed out')) {
+					pairingError =
+						'Could not reach the existing device. Make sure both devices are on the same network and its pairing screen is still open.';
+				} else {
+					pairingError = msg;
+				}
 			}
+			pairingInProgress = false;
 			return;
 		}
 
@@ -425,14 +459,14 @@
 					</div>
 				</div>
 
-			<!-- Paired flow: Step 2 = QR + PIN -->
+			<!-- Paired flow: Step 2 = offer QR + pairing code -->
 			{:else if flowMode === 'paired' && step === 1}
 				<div class="step-paired-qr">
 					<h2 class="step-title">Pair with your existing device</h2>
 					<p class="description">
 						On the existing device, open <strong>Settings &rarr; Devices &rarr;
-						Pair a new device</strong>. Scan the QR (or paste it manually) and
-						enter the 6-digit PIN.
+						Pair a new device</strong>. Scan the QR it shows, then type the
+						pairing code displayed next to it.
 					</p>
 
 					{#if pairedInputMode === 'scan'}
@@ -442,13 +476,14 @@
 						/>
 					{:else}
 						<div class="field-group">
-							<label class="field-label" for="pair-payload">Pairing payload</label>
+							<label class="field-label" for="pair-payload">Pairing offer</label>
 							<textarea
 								id="pair-payload"
 								class="text-input"
 								rows="4"
-								placeholder="paste base64url payload from existing device"
+								placeholder="paste the offer text from the existing device"
 								bind:value={qrPayload}
+								onchange={handlePreviewQr}
 							></textarea>
 							<button
 								class="link-btn"
@@ -460,36 +495,40 @@
 						</div>
 					{/if}
 
-					<div class="field-group">
-						<label class="field-label" for="pair-pin">PIN</label>
-						<input
-							id="pair-pin"
-							class="text-input"
-							type="text"
-							inputmode="numeric"
-							maxlength="6"
-							placeholder="6-digit PIN"
-							bind:value={qrPin}
-						/>
-					</div>
-					<button
-						class="primary-action"
-						onclick={handlePreviewQr}
-						disabled={qrPreviewLoading || !qrPayload || !qrPin}
-					>
-						{qrPreviewLoading ? 'Verifying...' : 'Verify pairing'}
-					</button>
+					{#if qrPreviewLoading}
+						<p class="description">Checking offer...</p>
+					{/if}
 					{#if qrPreviewError}
 						<p class="error-text">{qrPreviewError}</p>
 					{/if}
 					{#if qrPreview}
 						<div class="preview-box">
-							<span class="preview-label">Verified</span>
+							<span class="preview-label">Offer found</span>
 							<span class="preview-value">
 								Pairing with <strong>{qrPreview.source_device_name}</strong>
 							</span>
 						</div>
 					{/if}
+
+					<div class="field-group">
+						<label class="field-label" for="pair-pin">Pairing code</label>
+						<input
+							id="pair-pin"
+							class="text-input"
+							type="text"
+							autocapitalize="characters"
+							autocomplete="off"
+							spellcheck="false"
+							maxlength="11"
+							placeholder="XXXXX-XXXXX"
+							bind:value={qrPin}
+						/>
+						<p class="description">
+							The code is shown on the existing device. Case doesn't matter;
+							the dash is optional. It is checked when you finish the next
+							step — three wrong attempts invalidate the QR.
+						</p>
+					</div>
 				</div>
 
 			<!-- Paired flow: Step 3 = local password -->
@@ -500,6 +539,20 @@
 						This password locks the imported keys on this device only.
 						It can differ from your existing device's password.
 					</p>
+
+					{#if pairingInProgress}
+						<div class="preview-box">
+							<span class="preview-label">Pairing</span>
+							<span class="preview-value">
+								Connecting to
+								<strong>{qrPreview?.source_device_name ?? 'your existing device'}</strong>
+								and proving the pairing code... keep its pairing screen open.
+							</span>
+						</div>
+					{/if}
+					{#if pairingError}
+						<p class="error-text">{pairingError}</p>
+					{/if}
 					<div class="field-group">
 						<label class="field-label" for="paired-pw-main">Password</label>
 						<input
@@ -1053,23 +1106,6 @@
 		font-size: 0.85rem;
 		color: var(--text-muted, #666);
 		line-height: 1.4;
-	}
-
-	.primary-action {
-		background: var(--accent, #F59E0B);
-		border: none;
-		color: var(--bg-primary, #1a1a20);
-		padding: 10px 16px;
-		font-size: 0.9rem;
-		font-weight: 600;
-		border-radius: 6px;
-		cursor: pointer;
-		margin-top: 4px;
-	}
-
-	.primary-action:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
 	}
 
 	.preview-box {

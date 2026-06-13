@@ -52,9 +52,35 @@ pub fn load_or_create_device_id() -> Result<String> {
         Ok(std::fs::read_to_string(&path)?.trim().to_string())
     } else {
         let id = uuid::Uuid::new_v4().to_string();
-        std::fs::write(&path, &id)?;
+        sovereign_crypto::fs_private::write_private(&path, &id)?;
         tracing::info!("Generated new device ID: {id}");
         Ok(id)
+    }
+}
+
+/// Marker recording which KDF stretches the CLI passphrase (CRYPTO-001).
+#[cfg(feature = "encryption")]
+fn cli_kdf_path() -> std::path::PathBuf {
+    crypto_dir().join("kdf.json")
+}
+
+/// The KDF for the CLI crypto dir: the recorded marker when present;
+/// otherwise `LegacyHkdf` when a pre-marker store exists (so it still
+/// unlocks) or Argon2id for fresh dirs. Mirrors the version-aware KDF the
+/// GUI `AuthStore` records — without this the CLI path would keep deriving
+/// at HKDF speed, leaving `keys.db` offline-brute-forceable.
+#[cfg(feature = "encryption")]
+pub fn cli_kdf() -> sovereign_crypto::master_key::Kdf {
+    use sovereign_crypto::master_key::Kdf;
+    if let Ok(bytes) = std::fs::read(cli_kdf_path()) {
+        if let Ok(kdf) = serde_json::from_slice::<Kdf>(&bytes) {
+            return kdf;
+        }
+    }
+    if crypto_dir().join("kek.wrapped").exists() {
+        Kdf::LegacyHkdf
+    } else {
+        Kdf::current()
     }
 }
 
@@ -85,7 +111,7 @@ pub fn init_crypto() -> Result<(
         let mut s = vec![0u8; 32];
         use rand::Rng;
         rand::rng().fill_bytes(&mut s);
-        std::fs::write(&salt_path, &s)?;
+        sovereign_crypto::fs_private::write_private(&salt_path, &s)?;
         s
     };
 
@@ -93,7 +119,11 @@ pub fn init_crypto() -> Result<(
     if pass.is_empty() {
         anyhow::bail!("Passphrase cannot be empty");
     }
-    let master = MasterKey::from_passphrase(pass.as_bytes(), &salt)?;
+    // CRYPTO-001: stretch the passphrase with the recorded (version-aware)
+    // KDF — Argon2id for fresh dirs, LegacyHkdf only to unlock pre-marker
+    // stores, which are upgraded in place below.
+    let kdf = cli_kdf();
+    let master = MasterKey::derive(pass.as_bytes(), &salt, &kdf)?;
     let device_key = DeviceKey::derive(&master, &device_id)?;
 
     // Load or create KEK
@@ -105,7 +135,7 @@ pub fn init_crypto() -> Result<(
     } else {
         let kek = Kek::generate();
         let wrapped = kek.wrap(&device_key)?;
-        std::fs::write(&kek_path, serde_json::to_vec(&wrapped)?)?;
+        sovereign_crypto::fs_private::write_private(&kek_path, serde_json::to_vec(&wrapped)?)?;
         kek
     };
 
@@ -114,7 +144,28 @@ pub fn init_crypto() -> Result<(
     let key_db = if key_db_path.exists() {
         KeyDatabase::load(&key_db_path, &device_key)?
     } else {
-        KeyDatabase::new(key_db_path)
+        KeyDatabase::new(key_db_path.clone())
+    };
+
+    // Transparent upgrade of pre-marker stores: re-wrap the KEK and key DB
+    // under an Argon2id-stretched key so brute-force hardness applies to
+    // existing CLI stores too, then record the KDF.
+    let device_key = if kdf == sovereign_crypto::master_key::Kdf::LegacyHkdf {
+        let current = sovereign_crypto::master_key::Kdf::current();
+        let new_master = MasterKey::derive(pass.as_bytes(), &salt, &current)?;
+        let new_device_key = DeviceKey::derive(&new_master, &device_id)?;
+        sovereign_crypto::fs_private::write_private(&kek_path, serde_json::to_vec(&kek.wrap(&new_device_key)?)?)?;
+        if key_db_path.exists() {
+            key_db.save(&new_device_key)?;
+        }
+        sovereign_crypto::fs_private::write_private(&cli_kdf_path(), serde_json::to_vec(&current)?)?;
+        tracing::info!("Upgraded CLI key store from legacy HKDF to Argon2id");
+        new_device_key
+    } else {
+        if !cli_kdf_path().exists() {
+            sovereign_crypto::fs_private::write_private(&cli_kdf_path(), serde_json::to_vec(&kdf)?)?;
+        }
+        device_key
     };
 
     tracing::info!("Crypto subsystem initialized (device: {device_id})");
@@ -164,7 +215,7 @@ fn load_or_create_salt(dir: &std::path::Path) -> Result<Vec<u8>> {
         let mut s = vec![0u8; 32];
         use rand::Rng;
         rand::rng().fill_bytes(&mut s);
-        std::fs::write(&salt_path, &s)?;
+        sovereign_crypto::fs_private::write_private(&salt_path, &s)?;
         Ok(s)
     }
 }
@@ -216,11 +267,36 @@ pub fn complete_auth(
 ///   - `keys.contacts.db`     — contacts (Phase 2b)
 ///   - `keys.share_records.db`— share records (Phase 2b)
 ///   - `index.key`            — single 32-byte HMAC-SHA256 blind-index key
+/// CRYPTO-001: persona-suffixed key-DB filename. The duress persona gets its
+/// OWN key databases (`keys.duress.db`, `keys.messages.duress.db`, …) so a
+/// coerced login can never decrypt the primary persona's rows — it decrypts a
+/// physically separate database (see [`persona_db_path`]) under separate keys.
+#[cfg(feature = "encryption")]
+fn persona_key_db_filename(persona: sovereign_core::auth::PersonaKind, base: &str) -> String {
+    match persona {
+        sovereign_core::auth::PersonaKind::Primary => base.to_string(),
+        // "keys.messages.db" -> "keys.messages.duress.db"
+        sovereign_core::auth::PersonaKind::Duress => {
+            format!("{}.duress.db", base.trim_end_matches(".db"))
+        }
+    }
+}
+
+/// CRYPTO-001: persona-suffixed blind-index key filename.
+#[cfg(feature = "encryption")]
+fn persona_index_filename(persona: sovereign_core::auth::PersonaKind) -> &'static str {
+    match persona {
+        sovereign_core::auth::PersonaKind::Primary => "index.key",
+        sovereign_core::auth::PersonaKind::Duress => "index.duress.key",
+    }
+}
+
 #[cfg(feature = "encryption")]
 pub fn build_encrypted_db(
     raw_db: Arc<dyn sovereign_db::GraphDB>,
     device_key: Arc<sovereign_crypto::device_key::DeviceKey>,
     kek: Arc<sovereign_crypto::kek::Kek>,
+    persona: sovereign_core::auth::PersonaKind,
 ) -> Result<Arc<sovereign_db::encrypted::EncryptedGraphDB>> {
     use sovereign_crypto::index_key::IndexKey;
     use sovereign_crypto::key_db::KeyDatabase;
@@ -232,6 +308,8 @@ pub fn build_encrypted_db(
     // Load-or-create each per-entity-type KeyDatabase. `KeyDatabase::load`
     // returns an existing file decrypted under DeviceKey; absent files start
     // empty and are persisted on first key creation by EncryptedGraphDB.
+    // CRYPTO-001: filenames are persona-suffixed so the duress persona's keys
+    // never collide with (or decrypt) the primary persona's.
     let load_or_new = |filename: &str| -> Result<KeyDatabase> {
         let path = dir.join(filename);
         Ok(if path.exists() {
@@ -241,18 +319,21 @@ pub fn build_encrypted_db(
         })
     };
 
-    let documents_kdb = load_or_new("keys.db")?;
-    let messages_kdb = load_or_new("keys.messages.db")?;
-    let threads_kdb = load_or_new("keys.threads.db")?;
-    let conversations_kdb = load_or_new("keys.conversations.db")?;
-    let contacts_kdb = load_or_new("keys.contacts.db")?;
-    let share_records_kdb = load_or_new("keys.share_records.db")?;
+    let documents_kdb = load_or_new(&persona_key_db_filename(persona, "keys.db"))?;
+    let messages_kdb = load_or_new(&persona_key_db_filename(persona, "keys.messages.db"))?;
+    let threads_kdb = load_or_new(&persona_key_db_filename(persona, "keys.threads.db"))?;
+    let conversations_kdb =
+        load_or_new(&persona_key_db_filename(persona, "keys.conversations.db"))?;
+    let contacts_kdb = load_or_new(&persona_key_db_filename(persona, "keys.contacts.db"))?;
+    let share_records_kdb =
+        load_or_new(&persona_key_db_filename(persona, "keys.share_records.db"))?;
 
     // Single per-DB blind-index key, used uniformly across the six entity
     // types. Same plaintext token hashes to the same value across all entity
     // tables under this DB, but cross-table search isn't a feature so this
-    // leakage is bounded.
-    let index_key_path = dir.join("index.key");
+    // leakage is bounded. Persona-suffixed (index.duress.key) for the same
+    // isolation reason as the key DBs above.
+    let index_key_path = dir.join(persona_index_filename(persona));
     let index_key = IndexKey::load_or_create(index_key_path, &device_key, kek.as_ref())?;
 
     Ok(Arc::new(sovereign_db::encrypted::EncryptedGraphDB::new(
@@ -349,4 +430,73 @@ mod tests {
         // Clean up
         let _ = std::fs::remove_dir_all("test_sovereign_setup.db");
     }
+
+    // CRYPTO-001: the duress persona must use a different raw DB AND different
+    // key/index files than the primary, so a coerced login can't reach real
+    // data. These assert the isolation at the naming layer.
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn duress_persona_uses_separate_db_and_key_files() {
+        use sovereign_core::auth::PersonaKind;
+
+        let mut config = AppConfig::default();
+        config.database.path = "sovereign.db".into();
+        let primary_db = persona_db_path(&config, PersonaKind::Primary);
+        let duress_db = persona_db_path(&config, PersonaKind::Duress);
+        assert_eq!(primary_db, "sovereign.db");
+        assert_eq!(duress_db, "sovereign-duress.db");
+        assert_ne!(primary_db, duress_db, "duress must be a separate database file");
+
+        // Key DBs and blind index are persona-suffixed and never collide.
+        for base in [
+            "keys.db",
+            "keys.messages.db",
+            "keys.threads.db",
+            "keys.conversations.db",
+            "keys.contacts.db",
+            "keys.share_records.db",
+        ] {
+            let p = persona_key_db_filename(PersonaKind::Primary, base);
+            let d = persona_key_db_filename(PersonaKind::Duress, base);
+            assert_eq!(p, base);
+            assert!(d.ends_with(".duress.db"), "duress key file must be suffixed: {d}");
+            assert_ne!(p, d, "primary and duress key files must differ for {base}");
+        }
+        assert_eq!(persona_index_filename(PersonaKind::Primary), "index.key");
+        assert_eq!(persona_index_filename(PersonaKind::Duress), "index.duress.key");
+    }
+}
+
+/// SIDECAR-002: provision a shared `JIMINY_TOKEN` so the loopback sidecars
+/// (jiminy-bridge, jiminy-vision) are authenticated by default. Reads the
+/// existing 0600 token file under the profile's crypto dir, or generates a
+/// fresh random token and writes it 0600. Sets `JIMINY_TOKEN` in this process's
+/// env so the Rust sidecar clients (`sidecar::auth_headers`, `jiminy_capture`)
+/// send it, and `JIMINY_TOKEN_FILE` so the Python sidecars resolve the same
+/// secret with no manual env coordination. An operator-set `JIMINY_TOKEN` wins
+/// (no-op). Pairs with the Python fail-closed default: without a provisioned
+/// token, the now-secured sidecars would refuse the Rust clients too.
+#[cfg(all(feature = "encryption", any(feature = "jiminy", feature = "vision")))]
+pub fn ensure_jiminy_token(profile_dir: &std::path::Path) {
+    if std::env::var("JIMINY_TOKEN").map(|v| !v.is_empty()).unwrap_or(false) {
+        return; // operator-provided token takes precedence
+    }
+    let crypto_dir = profile_dir.join("crypto");
+    let token_path = crypto_dir.join("jiminy_token");
+    let token = match std::fs::read_to_string(&token_path) {
+        Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => {
+            let fresh = sovereign_crypto::random_hex_32();
+            let _ = std::fs::create_dir_all(&crypto_dir);
+            if let Err(e) =
+                sovereign_crypto::fs_private::write_private(&token_path, fresh.as_bytes())
+            {
+                tracing::warn!("could not persist jiminy sidecar token: {e}");
+            }
+            fresh
+        }
+    };
+    std::env::set_var("JIMINY_TOKEN", &token);
+    std::env::set_var("JIMINY_TOKEN_FILE", &token_path);
+    tracing::info!("Jiminy sidecar token provisioned at {}", token_path.display());
 }

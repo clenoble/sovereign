@@ -182,11 +182,24 @@ pub struct P2pConfig {
     pub rendezvous_server: Option<String>,
     /// Human-readable device name shown to peers.
     pub device_name: String,
+    /// Whether mDNS LAN peer discovery is enabled (P2P-006). Default true.
+    /// Set false to disable multicast discovery on untrusted/shared networks.
+    #[serde(default = "default_true")]
+    pub enable_mdns: bool,
     /// When true, suppress auto-sync triggers while the device reports
     /// cellular connectivity (Phase 4.2). Defaults to true on Android,
     /// false on desktop. The actual gating happens in
     /// `sovereign_p2p::ConnectivityState::allows_auto_sync`.
     pub wifi_only: bool,
+    /// Opt-in to hosting other users' encrypted backup fragments and
+    /// guardian key shards (P4.2). Off by default.
+    pub backup_host_enabled: bool,
+    /// Per-owner storage quota for hosted backup fragments, in MiB.
+    pub backup_quota_mb: u64,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for P2pConfig {
@@ -196,7 +209,10 @@ impl Default for P2pConfig {
             listen_port: 0,
             rendezvous_server: None,
             device_name: "Sovereign Device".into(),
+            enable_mdns: true,
             wifi_only: cfg!(target_os = "android"),
+            backup_host_enabled: false,
+            backup_quota_mb: 64,
         }
     }
 }
@@ -305,23 +321,35 @@ impl AppConfig {
 
     /// Candidate paths to search for `config/default.toml`.
     fn config_search_paths() -> Vec<std::path::PathBuf> {
-        let mut paths = vec![std::path::PathBuf::from("config/default.toml")];
-        // Fallback: project root derived from compile-time CARGO_MANIFEST_DIR
+        // INSTALLER-003: search ONLY the workspace/exe-anchored location (see
+        // project_root), never a bare CWD-relative `config/default.toml`. On a
+        // shipped build the latter let an attacker who controls the working
+        // directory plant a config that the app would silently load.
         let project = Self::project_root();
-        paths.push(project.join("config/default.toml"));
-        paths
+        vec![project.join("config/default.toml")]
     }
 
-    /// Best-effort project root: compile-time workspace root, then exe dir, then CWD.
+    /// Best-effort project root: compile-time workspace root (dev), then the
+    /// running executable's directory (shipped), then CWD as a last resort.
     fn project_root() -> std::path::PathBuf {
-        // CARGO_MANIFEST_DIR is crates/sovereign-app/ at compile time → go up 2 levels
+        // 1. Dev/workspace: CARGO_MANIFEST_DIR is crates/sovereign-app/ at
+        //    compile time → up 2 levels. Only trust it if it actually holds the
+        //    workspace layout (absent on an end-user machine).
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
         if let Some(root) = manifest.parent().and_then(|p| p.parent()) {
             if root.join("config").is_dir() || root.join("models").is_dir() {
                 return root.to_path_buf();
             }
         }
-        // Fallback to CWD
+        // 2. INSTALLER-003: shipped build → anchor to the EXECUTABLE's directory,
+        //    NOT the current working directory, so a process launched from an
+        //    attacker-controlled CWD can't plant a config/model that gets loaded.
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                return dir.to_path_buf();
+            }
+        }
+        // 3. Last resort (both of the above failed — very rare): CWD.
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     }
 }

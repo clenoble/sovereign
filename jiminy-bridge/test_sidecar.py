@@ -123,3 +123,41 @@ class TestBargeIn:
         monkeypatch.setattr(main, "mini", None)
         main._speak_task = None
         assert asyncio.run(main.stop()) == {"status": "stopped"}
+
+
+class TestCheckAuth:
+    """Loopback hardening: browser-origin requests are always rejected, and
+    when JIMINY_TOKEN is set every request must carry the bearer token."""
+
+    def test_browser_origin_rejected(self, monkeypatch):
+        monkeypatch.setattr(main, "AUTH_TOKEN", "")
+        assert main._check_auth("https://evil.example", None) is not None
+
+    def test_tauri_origin_also_rejected_on_bridge(self, monkeypatch):
+        # The bridge has no legitimate browser client at all.
+        monkeypatch.setattr(main, "AUTH_TOKEN", "")
+        assert main._check_auth("http://tauri.localhost", None) is not None
+
+    def test_fails_closed_without_token(self, monkeypatch):
+        # SIDECAR-002: no token configured → refuse rather than serve openly.
+        monkeypatch.setattr(main, "AUTH_TOKEN", "")
+        monkeypatch.setattr(main, "ALLOW_NO_AUTH", False)
+        assert main._check_auth(None, None) is not None
+
+    def test_allow_no_auth_opts_into_insecure_dev(self, monkeypatch):
+        monkeypatch.setattr(main, "AUTH_TOKEN", "")
+        monkeypatch.setattr(main, "ALLOW_NO_AUTH", True)
+        assert main._check_auth(None, None) is None
+        # Browser-origin requests are still always rejected.
+        assert main._check_auth("https://evil.example", None) is not None
+
+    def test_token_required_when_configured(self, monkeypatch):
+        monkeypatch.setattr(main, "AUTH_TOKEN", "s3cret")
+        assert main._check_auth(None, None) is not None
+        assert main._check_auth(None, "Bearer wrong") is not None
+        assert main._check_auth(None, "Basic s3cret") is not None
+        assert main._check_auth(None, "Bearer s3cret") is None
+
+    def test_origin_rejected_even_with_valid_token(self, monkeypatch):
+        monkeypatch.setattr(main, "AUTH_TOKEN", "s3cret")
+        assert main._check_auth("https://evil.example", "Bearer s3cret") is not None

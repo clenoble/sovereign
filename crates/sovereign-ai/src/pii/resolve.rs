@@ -133,6 +133,39 @@ pub fn resolve_to_preview(body: &str, records: &[sovereign_db::schema::PiiRecord
     out
 }
 
+/// PII-001: redact structured PII from a body that was never tokenized
+/// (`pii_scanned_at == None`: seeded / imported / P2P-synced / browser-saved
+/// content). Such a body has no `[pii:<id>]` tokens, so [`resolve_to_preview`]
+/// would pass it through verbatim and leak raw values to the model. This runs
+/// the synchronous regex stage and replaces each detected span with its
+/// type-only label, so raw SSN / IBAN / card / email / phone / AVS never reach
+/// the LLM.
+///
+/// Regex-only and best-effort: it catches the high-severity *structured* kinds
+/// (the ones that matter for an unbounded leak). Names/orgs are NER-only and
+/// are NOT caught here — the full ingest pipeline tokenizes those once the doc
+/// is scanned. Use this as the read-time fail-safe before handing un-scanned
+/// content to the model.
+pub fn redact_raw_regex(text: &str, locale: crate::pii::Locale) -> String {
+    // `regex_stage` returns findings sorted by start offset and de-overlapped.
+    let findings = crate::pii::regex::regex_stage(text, locale);
+    if findings.is_empty() {
+        return text.to_string();
+    }
+    let mut out = text.to_string();
+    // Splice right-to-left so earlier byte offsets stay valid as we replace.
+    for f in findings.iter().rev() {
+        if f.start <= f.end
+            && f.end <= out.len()
+            && out.is_char_boundary(f.start)
+            && out.is_char_boundary(f.end)
+        {
+            out.replace_range(f.start..f.end, preview_label_for_kind(&f.kind));
+        }
+    }
+    out
+}
+
 /// Apply a kind-specific masking transform to a plaintext PII value.
 /// Length-preserving where it makes sense; redacts everything for the
 /// catch-all kinds.
@@ -601,6 +634,26 @@ mod tests {
     #[test]
     fn resolve_to_preview_no_tokens_passthrough() {
         assert_eq!(resolve_to_preview("plain text", &[]), "plain text");
+    }
+
+    // --- redact_raw_regex (PII-001 read-time fail-safe) ---
+
+    #[test]
+    fn redact_raw_regex_masks_untokenized_email() {
+        // An un-scanned body has no [pii:..] tokens; resolve_to_preview would
+        // pass it through, so the read tools must regex-redact it first.
+        let body = "Reach me at alice@example.com please.";
+        let out = redact_raw_regex(body, crate::pii::Locale::Generic);
+        assert!(!out.contains("alice@example.com"), "raw email leaked: {out}");
+        assert!(out.contains("[Email]"), "no email label: {out}");
+    }
+
+    #[test]
+    fn redact_raw_regex_no_pii_passthrough() {
+        assert_eq!(
+            redact_raw_regex("just some plain notes here", crate::pii::Locale::Generic),
+            "just some plain notes here"
+        );
     }
 
     // --- resolve_body ---

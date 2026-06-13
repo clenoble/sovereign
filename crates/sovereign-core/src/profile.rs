@@ -9,6 +9,22 @@ use serde::{Deserialize, Serialize};
 
 const PROFILE_FILENAME: &str = "user_profile.json";
 
+/// Write `bytes` to `path`, restricted to the owner on Unix (0600). On Windows
+/// the per-user profile directory ACL already scopes access (same posture as
+/// the crypto stores' fs_private). (ATREST-004)
+fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path)?;
+    f.write_all(bytes)
+}
+
 // ── Bubble style ────────────────────────────────────────────────────────
 
 /// Visual style for the AI orchestrator bubble avatar.
@@ -272,7 +288,9 @@ impl UserProfile {
 
         let path = dir.join(PROFILE_FILENAME);
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)?;
+        // ATREST-004: owner-only write — the profile holds the user's nickname,
+        // designation, and interaction patterns; keep it off other local users.
+        write_owner_only(&path, json.as_bytes())?;
         Ok(())
     }
 }

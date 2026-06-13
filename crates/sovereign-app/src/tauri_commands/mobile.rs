@@ -7,7 +7,7 @@ use sovereign_db::GraphDB;
 use tauri::State;
 
 use crate::err::ToStringErr;
-use crate::tauri_state::AppState;
+use crate::tauri_state::{require_main_webview, AppState};
 
 // ---------------------------------------------------------------------------
 // Voice transcription (Web Audio API PCM → Whisper)
@@ -21,9 +21,14 @@ use crate::tauri_state::AppState;
 /// is not available (voice-stt feature disabled or no whisper model).
 #[tauri::command]
 pub async fn voice_transcribe_buffer(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     samples: Vec<f32>,
 ) -> Result<String, String> {
+    // IPC-003: only the trusted main webview may feed PCM to the STT engine —
+    // the embedded browser webview must not be able to burn CPU on attacker
+    // audio or reach the transcription path at all.
+    require_main_webview(&webview)?;
     #[cfg(feature = "voice-stt")]
     {
         let engine = state
@@ -57,10 +62,30 @@ pub struct SharedContent {
 /// SharePickerSheet. Returns the new document ID.
 #[tauri::command]
 pub async fn receive_shared_content(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     content: SharedContent,
     thread_id: String,
 ) -> Result<String, String> {
+    // IPC-001: this writes attacker-influenceable content straight into the DB
+    // (it surfaces to the orchestrator as workspace context — an indirect-
+    // injection vector), so it must require an unlocked session AND the trusted
+    // main webview. Without this gate the embedded browser webview could plant
+    // arbitrary documents, and pre-login callers could write into the plaintext
+    // bootstrap DB before the EncryptedGraphDB is installed.
+    state.require_unlocked(&webview).await?;
+
+    // ANDROID-005: bound the share payload. Any installed app can drive the OS
+    // share sheet into this command; reject oversized content rather than write
+    // an unbounded blob into the DB (and onward into the orchestrator context).
+    const MAX_SHARED_BYTES: usize = 1024 * 1024; // 1 MB
+    let shared_len = content.text.as_deref().map_or(0, str::len)
+        + content.url.as_deref().map_or(0, str::len)
+        + content.title.as_deref().map_or(0, str::len);
+    if shared_len > MAX_SHARED_BYTES {
+        return Err("Shared content too large".into());
+    }
+
     use sovereign_core::content::ContentFields;
     use sovereign_db::schema::Document;
     use sovereign_db::schema::thing_to_raw;
@@ -127,9 +152,14 @@ pub async fn receive_shared_content(
 /// `"offline"`, `"unknown"`. Anything else is treated as `unknown`.
 #[tauri::command]
 pub async fn set_connectivity_state(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     kind: String,
 ) -> Result<(), String> {
+    // IPC-003: only the main webview (the Android NetworkCallback and the test
+    // harness invoke through it) may drive the P2P sync gate — an embedded
+    // browser page must not be able to force/suppress sync triggers.
+    require_main_webview(&webview)?;
     #[cfg(feature = "p2p")]
     {
         use sovereign_p2p::ConnectivityState;
@@ -154,7 +184,13 @@ pub async fn set_connectivity_state(
 /// in Settings (so a user can see the gate state) and for debugging
 /// "why isn't sync firing".
 #[tauri::command]
-pub async fn get_connectivity_state(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn get_connectivity_state(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    // IPC-003: main webview only — keep the embedded browser webview off the
+    // connectivity/sync surface.
+    require_main_webview(&webview)?;
     #[cfg(feature = "p2p")]
     {
         use sovereign_p2p::ConnectivityState;

@@ -128,7 +128,10 @@ impl CommunicationChannel for SignalChannel {
                 )))?;
 
             let db_path = format!("{}/signal.db", self.config.store_path);
-            let store = SqliteStore::open(&db_path, OnNewIdentity::Trust)
+            let store = // Reject, never Trust: silently accepting a contact's CHANGED identity
+            // key disables Signal's safety-number/MITM protection. A rejected
+            // key change surfaces as a decryption error until re-verified.
+            SqliteStore::open(&db_path, OnNewIdentity::Reject)
                 .await
                 .map_err(|e| CommsError::NotConnected(format!(
                     "Failed to open Signal store: {e}"
@@ -186,7 +189,10 @@ impl CommunicationChannel for SignalChannel {
             use futures::StreamExt;
 
             let db_path = format!("{}/signal.db", self.config.store_path);
-            let store = SqliteStore::open(&db_path, OnNewIdentity::Trust)
+            let store = // Reject, never Trust: silently accepting a contact's CHANGED identity
+            // key disables Signal's safety-number/MITM protection. A rejected
+            // key change surfaces as a decryption error until re-verified.
+            SqliteStore::open(&db_path, OnNewIdentity::Reject)
                 .await
                 .map_err(|e| CommsError::FetchFailed(format!("Store open: {e}")))?;
 
@@ -272,7 +278,10 @@ impl CommunicationChannel for SignalChannel {
             use presage_store_sqlite::SqliteStore;
 
             let db_path = format!("{}/signal.db", self.config.store_path);
-            let store = SqliteStore::open(&db_path, OnNewIdentity::Trust)
+            let store = // Reject, never Trust: silently accepting a contact's CHANGED identity
+            // key disables Signal's safety-number/MITM protection. A rejected
+            // key change surfaces as a decryption error until re-verified.
+            SqliteStore::open(&db_path, OnNewIdentity::Reject)
                 .await
                 .map_err(|e| CommsError::SendFailed(format!("Store open: {e}")))?;
 
@@ -319,8 +328,9 @@ impl CommunicationChannel for SignalChannel {
 
         for msg in &messages {
             if let Some(ref ext_id) = msg.external_id {
-                let existing = self.db.search_messages(ext_id).await?;
-                if !existing.is_empty() {
+                // Exact indexed lookup — token-search dedup could both miss
+                // duplicates and falsely match unrelated messages.
+                if self.db.find_message_by_external_id(ext_id).await?.is_some() {
                     continue;
                 }
             }

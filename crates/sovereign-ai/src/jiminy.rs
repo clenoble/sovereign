@@ -29,6 +29,7 @@ impl JiminyBridge {
     pub fn new(base_url: &str) -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
+            .default_headers(crate::sidecar::auth_headers())
             .build()
             .unwrap_or_default();
         Self {

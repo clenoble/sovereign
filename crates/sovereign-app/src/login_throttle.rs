@@ -64,7 +64,7 @@ impl LoginAttempts {
     pub fn save(&self, crypto_dir: &Path) -> Result<(), String> {
         std::fs::create_dir_all(crypto_dir).map_err(|e| e.to_string())?;
         let json = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(tracker_path(crypto_dir), json).map_err(|e| e.to_string())
+        sovereign_crypto::fs_private::write_private(&tracker_path(crypto_dir), json).map_err(|e| e.to_string())
     }
 
     /// Record one failed attempt. The first failure of a fresh window stamps

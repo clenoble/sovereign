@@ -11,7 +11,7 @@ use surrealdb::Surreal;
 use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, DocumentSnapshot,
-    Entity, Message, Milestone, PiiRecord, ReadStatus, RelatedTo, RelationType,
+    Entity, EntityKind, Message, Milestone, PiiRecord, ReadStatus, RelatedTo, RelationType,
     ReviewState, ShareRecord, SourceRef, SuggestedLink, SuggestionSource,
     SuggestionStatus, Thread,
 };
@@ -145,6 +145,23 @@ impl GraphDB for SurrealGraphDB {
         created.ok_or_else(|| DbError::Query("Failed to create document".into()))
     }
 
+    async fn create_document_with_id(&self, doc: Document) -> DbResult<bool> {
+        let id = doc
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_document_with_id: doc.id unset".into()))?;
+        let (table, key) = parse_and_validate(&id, "document")?;
+
+        let existing: Option<Document> = self.db.select((table, key)).await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let mut payload = doc;
+        payload.id = None;
+        let created: Option<Document> = self.db.create((table, key)).content(payload).await?;
+        created.ok_or_else(|| DbError::Query("Failed to insert document with id".into()))?;
+        Ok(true)
+    }
+
     async fn get_document(&self, id: &str) -> DbResult<Document> {
         let (table, key) = parse_and_validate(id, "document")?;
         let doc: Option<Document> = self.db.select((table, key)).await?;
@@ -222,6 +239,28 @@ impl GraphDB for SurrealGraphDB {
             .bind(("title", title_ciphertext.to_string()))
             .bind(("title_nonce", title_nonce.to_string()))
             .bind(("hashes", title_token_hashes.to_vec()))
+            .await?
+            .take(0)?;
+        Ok(())
+    }
+
+    async fn set_document_content_encryption(
+        &self,
+        id: &str,
+        content_ciphertext: &str,
+        content_nonce: &str,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "document")?;
+        let _: Option<Document> = self
+            .db
+            .query(
+                "UPDATE type::thing($table, $key) SET \
+                 content = $content, encryption_nonce = $nonce",
+            )
+            .bind(("table", table.to_string()))
+            .bind(("key", key.to_string()))
+            .bind(("content", content_ciphertext.to_string()))
+            .bind(("nonce", content_nonce.to_string()))
             .await?
             .take(0)?;
         Ok(())
@@ -817,6 +856,7 @@ impl GraphDB for SurrealGraphDB {
             message: message.to_string(),
             timestamp: Utc::now(),
             snapshot,
+            signature: None,
         };
 
         let created: Option<Commit> = self.db.create("commit").content(commit).await?;
@@ -869,6 +909,19 @@ impl GraphDB for SurrealGraphDB {
         self.commit_document(doc_id, &restore_msg).await?;
 
         Ok(restored)
+    }
+
+    async fn set_commit_signature(&self, commit_id: &str, signature: &str) -> DbResult<()> {
+        let (table, key) = parse_and_validate(commit_id, "commit")?;
+        let _: Option<Commit> = self
+            .db
+            .query("UPDATE type::thing($table, $key) SET signature = $sig")
+            .bind(("table", table.to_string()))
+            .bind(("key", key.to_string()))
+            .bind(("sig", signature.to_string()))
+            .await?
+            .take(0)?;
+        Ok(())
     }
 
     // -- Contacts ---
@@ -958,6 +1011,26 @@ impl GraphDB for SurrealGraphDB {
             .bind(("key", key.to_string()))
             .bind(("notes", notes_ciphertext.to_string()))
             .bind(("nonce", notes_nonce.to_string()))
+            .await?
+            .take(0)?;
+        Ok(())
+    }
+
+    async fn set_contact_addresses_encryption(
+        &self,
+        id: &str,
+        addresses_ciphertext: &str,
+        addresses_nonce: &str,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "contact")?;
+        // ATREST-002: clear the plaintext addresses and store the encrypted blob.
+        let _: Option<Contact> = self
+            .db
+            .query("UPDATE type::thing($table, $key) SET addresses = [], addresses_encrypted = $ct, addresses_nonce = $nonce")
+            .bind(("table", table.to_string()))
+            .bind(("key", key.to_string()))
+            .bind(("ct", addresses_ciphertext.to_string()))
+            .bind(("nonce", addresses_nonce.to_string()))
             .await?
             .take(0)?;
         Ok(())
@@ -1100,6 +1173,19 @@ impl GraphDB for SurrealGraphDB {
             .await?;
         let msgs: Vec<Message> = result.take(0)?;
         Ok(msgs)
+    }
+
+    async fn find_message_by_external_id(
+        &self,
+        external_id: &str,
+    ) -> DbResult<Option<Message>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM message WHERE deleted_at IS NONE AND external_id = $ext LIMIT 1")
+            .bind(("ext", external_id.to_string()))
+            .await?;
+        let mut msgs: Vec<Message> = result.take(0)?;
+        Ok(msgs.pop())
     }
 
     async fn search_messages_by_token_hashes(
@@ -1380,6 +1466,49 @@ impl GraphDB for SurrealGraphDB {
         entity.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
 
+    async fn update_entity(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        kind: Option<EntityKind>,
+        domains: Option<Vec<String>>,
+        contact_ids: Option<Vec<String>>,
+        notes: Option<&str>,
+        is_owned: Option<bool>,
+        deleted_at: Option<Option<String>>,
+    ) -> DbResult<Entity> {
+        let (table, key) = parse_and_validate(id, "entity")?;
+
+        let current: Option<Entity> = self.db.select((table, key)).await?;
+        let mut entity = current.ok_or_else(|| DbError::NotFound(id.to_string()))?;
+
+        if let Some(n) = name {
+            entity.name = n.to_string();
+        }
+        if let Some(k) = kind {
+            entity.kind = k;
+        }
+        if let Some(d) = domains {
+            entity.domains = d;
+        }
+        if let Some(c) = contact_ids {
+            entity.contact_ids = c;
+        }
+        if let Some(nt) = notes {
+            entity.notes = nt.to_string();
+        }
+        if let Some(o) = is_owned {
+            entity.is_owned = o;
+        }
+        if let Some(d) = deleted_at {
+            entity.deleted_at = d;
+        }
+        entity.modified_at = Utc::now();
+
+        let updated: Option<Entity> = self.db.update((table, key)).content(entity).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to update entity".into()))
+    }
+
     async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> {
         let created: Option<ShareRecord> = self
             .db
@@ -1540,6 +1669,270 @@ impl GraphDB for SurrealGraphDB {
         });
         let updated: Option<Contact> = self.db.update((table, key)).merge(patch).await?;
         if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    // -- Id-preserving inserts for P2P sync (P2) ---
+    // Same pattern as create_document_with_id: check-then-insert under the
+    // row's own (table, key) so the origin id survives the device boundary.
+
+    async fn create_thread_with_id(&self, thread: Thread) -> DbResult<bool> {
+        let id = thread
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_thread_with_id: id unset".into()))?;
+        let (table, key) = parse_and_validate(&id, "thread")?;
+        let existing: Option<Thread> = self.db.select((table, key)).await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let mut payload = thread;
+        payload.id = None;
+        let created: Option<Thread> = self.db.create((table, key)).content(payload).await?;
+        created.ok_or_else(|| DbError::Query("Failed to insert thread with id".into()))?;
+        Ok(true)
+    }
+
+    async fn create_entity_with_id(&self, entity: Entity) -> DbResult<bool> {
+        let id = entity
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_entity_with_id: id unset".into()))?;
+        let (table, key) = parse_and_validate(&id, "entity")?;
+        let existing: Option<Entity> = self.db.select((table, key)).await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let mut payload = entity;
+        payload.id = None;
+        let created: Option<Entity> = self.db.create((table, key)).content(payload).await?;
+        created.ok_or_else(|| DbError::Query("Failed to insert entity with id".into()))?;
+        Ok(true)
+    }
+
+    async fn create_pii_record_with_id(&self, record: PiiRecord) -> DbResult<bool> {
+        let id = record
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_pii_record_with_id: id unset".into()))?;
+        let (table, key) = parse_and_validate(&id, "pii_record")?;
+        let existing: Option<PiiRecord> = self.db.select((table, key)).await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let mut payload = record;
+        payload.id = None;
+        let created: Option<PiiRecord> = self.db.create((table, key)).content(payload).await?;
+        created.ok_or_else(|| DbError::Query("Failed to insert pii_record with id".into()))?;
+        Ok(true)
+    }
+
+    async fn create_share_record_with_id(&self, record: ShareRecord) -> DbResult<bool> {
+        let id = record
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_share_record_with_id: id unset".into()))?;
+        let (table, key) = parse_and_validate(&id, "share_record")?;
+        let existing: Option<ShareRecord> = self.db.select((table, key)).await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let mut payload = record;
+        payload.id = None;
+        let created: Option<ShareRecord> = self.db.create((table, key)).content(payload).await?;
+        created.ok_or_else(|| DbError::Query("Failed to insert share_record with id".into()))?;
+        Ok(true)
+    }
+
+    async fn create_contact_with_id(&self, contact: Contact) -> DbResult<bool> {
+        let id = contact
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_contact_with_id: id unset".into()))?;
+        let (table, key) = parse_and_validate(&id, "contact")?;
+        let existing: Option<Contact> = self.db.select((table, key)).await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let mut payload = contact;
+        payload.id = None;
+        let created: Option<Contact> = self.db.create((table, key)).content(payload).await?;
+        created.ok_or_else(|| DbError::Query("Failed to insert contact with id".into()))?;
+        Ok(true)
+    }
+
+    async fn create_message_with_id(&self, message: Message) -> DbResult<bool> {
+        let id = message
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_message_with_id: id unset".into()))?;
+        let (table, key) = parse_and_validate(&id, "message")?;
+        let existing: Option<Message> = self.db.select((table, key)).await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let mut payload = message;
+        payload.id = None;
+        let created: Option<Message> = self.db.create((table, key)).content(payload).await?;
+        created.ok_or_else(|| DbError::Query("Failed to insert message with id".into()))?;
+        Ok(true)
+    }
+
+    async fn create_conversation_with_id(&self, conversation: Conversation) -> DbResult<bool> {
+        let id = conversation
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_conversation_with_id: id unset".into()))?;
+        let (table, key) = parse_and_validate(&id, "conversation")?;
+        let existing: Option<Conversation> = self.db.select((table, key)).await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let mut payload = conversation;
+        payload.id = None;
+        let created: Option<Conversation> =
+            self.db.create((table, key)).content(payload).await?;
+        created.ok_or_else(|| DbError::Query("Failed to insert conversation with id".into()))?;
+        Ok(true)
+    }
+
+    async fn create_milestone_with_id(&self, milestone: Milestone) -> DbResult<bool> {
+        let id = milestone
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_milestone_with_id: id unset".into()))?;
+        let (table, key) = parse_and_validate(&id, "milestone")?;
+        let existing: Option<Milestone> = self.db.select((table, key)).await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let mut payload = milestone;
+        payload.id = None;
+        let created: Option<Milestone> = self.db.create((table, key)).content(payload).await?;
+        created.ok_or_else(|| DbError::Query("Failed to insert milestone with id".into()))?;
+        Ok(true)
+    }
+
+    async fn create_relationship_with_id(&self, rel: RelatedTo) -> DbResult<bool> {
+        let id = rel
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_relationship_with_id: id unset".into()))?;
+        let (table, key) = parse_and_validate(&id, "related_to")?;
+        let existing: Option<RelatedTo> = self.db.select((table, key)).await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let in_thing = rel
+            .in_
+            .clone()
+            .ok_or_else(|| DbError::Query("create_relationship_with_id: in unset".into()))?;
+        let out_thing = rel
+            .out
+            .clone()
+            .ok_or_else(|| DbError::Query("create_relationship_with_id: out unset".into()))?;
+        // INSERT RELATION keeps the row a real graph edge (traversable via
+        // ->related_to->) while letting us pin the id — RELATE can't bind a
+        // parameterized id in the edge position.
+        self.db
+            .query(
+                "INSERT RELATION INTO related_to {
+                    id: $id, in: $in, out: $out,
+                    relation_type: $rtype, strength: $strength, created_at: $created_at
+                }",
+            )
+            .bind(("id", Thing::from((table.to_string(), key.to_string()))))
+            .bind(("in", in_thing))
+            .bind(("out", out_thing))
+            .bind(("rtype", rel.relation_type.to_string()))
+            .bind(("strength", rel.strength))
+            .bind(("created_at", rel.created_at))
+            .await?
+            .check()?;
+        Ok(true)
+    }
+
+    async fn create_suggested_link_with_id(&self, link: SuggestedLink) -> DbResult<bool> {
+        let id = link
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_suggested_link_with_id: id unset".into()))?;
+        let (table, key) = parse_and_validate(&id, "suggested_link")?;
+        let existing: Option<SuggestedLink> = self.db.select((table, key)).await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let in_thing = link
+            .in_
+            .clone()
+            .ok_or_else(|| DbError::Query("create_suggested_link_with_id: in unset".into()))?;
+        let out_thing = link
+            .out
+            .clone()
+            .ok_or_else(|| DbError::Query("create_suggested_link_with_id: out unset".into()))?;
+        self.db
+            .query(
+                "INSERT RELATION INTO suggested_link {
+                    id: $id, in: $in, out: $out,
+                    relation_type: $rtype, strength: $strength, rationale: $rationale,
+                    source: $source, status: $status,
+                    created_at: $created_at, resolved_at: $resolved_at
+                }",
+            )
+            .bind(("id", Thing::from((table.to_string(), key.to_string()))))
+            .bind(("in", in_thing))
+            .bind(("out", out_thing))
+            .bind(("rtype", link.relation_type.to_string()))
+            .bind(("strength", link.strength))
+            .bind(("rationale", link.rationale.clone()))
+            // Bind the enums directly (serde → bare "consolidation"/"pending"
+            // strings). serde_json::to_string would bind a QUOTED string,
+            // which then fails enum deserialization on read-back.
+            .bind(("source", link.source.clone()))
+            .bind(("status", link.status.clone()))
+            .bind(("created_at", link.created_at))
+            .bind(("resolved_at", link.resolved_at))
+            .await?
+            .check()?;
+        Ok(true)
+    }
+
+    // -- Per-row reads + raw status setter for P2P sync (P2) ---
+
+    async fn get_milestone(&self, id: &str) -> DbResult<Milestone> {
+        let (table, key) = parse_and_validate(id, "milestone")?;
+        let m: Option<Milestone> = self.db.select((table, key)).await?;
+        m.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn get_relationship(&self, id: &str) -> DbResult<RelatedTo> {
+        let (table, key) = parse_and_validate(id, "related_to")?;
+        let r: Option<RelatedTo> = self.db.select((table, key)).await?;
+        r.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn get_suggested_link(&self, id: &str) -> DbResult<SuggestedLink> {
+        let (table, key) = parse_and_validate(id, "suggested_link")?;
+        let l: Option<SuggestedLink> = self.db.select((table, key)).await?;
+        l.ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn list_all_suggested_links(&self) -> DbResult<Vec<SuggestedLink>> {
+        let mut result = self.db.query("SELECT * FROM suggested_link").await?;
+        let links: Vec<SuggestedLink> = result.take(0)?;
+        Ok(links)
+    }
+
+    async fn set_suggested_link_status(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+        resolved_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "suggested_link")?;
+        let mut result = self
+            .db
+            .query("UPDATE type::thing($table, $key) SET status = $status, resolved_at = $resolved_at RETURN AFTER")
+            .bind(("table", table.to_string()))
+            .bind(("key", key.to_string()))
+            // Bind the enum directly — see create_suggested_link_with_id.
+            .bind(("status", status))
+            .bind(("resolved_at", resolved_at))
+            .await?;
+        let updated: Vec<SuggestedLink> = result.take(0)?;
+        if updated.is_empty() {
             return Err(DbError::NotFound(id.to_string()));
         }
         Ok(())
@@ -2416,5 +2809,144 @@ mod tests {
 
         let not_found = db.find_thread_by_name("nonexistent").await.unwrap();
         assert!(not_found.is_none());
+    }
+
+    // ── P2: id-preserving inserts for sync ──────────────────────────────
+
+    use crate::schema::{thing_to_raw, MessageDirection};
+
+    #[tokio::test]
+    async fn create_thread_with_id_preserves_identity_and_is_idempotent() {
+        let db = setup_db().await;
+        let mut t = Thread::new("Synced".into(), "from remote".into());
+        t.id = Some(Thing::from(("thread".to_string(), "origin123".to_string())));
+
+        assert!(db.create_thread_with_id(t.clone()).await.unwrap());
+        let got = db.get_thread("thread:origin123").await.unwrap();
+        assert_eq!(got.name, "Synced");
+
+        // Second insert under the same id is a no-op.
+        assert!(!db.create_thread_with_id(t).await.unwrap());
+        assert_eq!(db.list_threads().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_relationship_with_id_yields_traversable_edge() {
+        let db = setup_db().await;
+        let d1 = db.create_document(Document::new("A".into(), "thread:t".into(), true)).await.unwrap();
+        let d2 = db.create_document(Document::new("B".into(), "thread:t".into(), true)).await.unwrap();
+        let d1_id = d1.id_string().unwrap();
+        let d2_id = d2.id_string().unwrap();
+
+        let rel = RelatedTo {
+            id: Some(Thing::from(("related_to".to_string(), "syncedge1".to_string()))),
+            in_: d1.id.clone(),
+            out: d2.id.clone(),
+            relation_type: RelationType::References,
+            strength: 0.9,
+            created_at: Utc::now(),
+        };
+        assert!(db.create_relationship_with_id(rel.clone()).await.unwrap());
+        // Idempotent on replay.
+        assert!(!db.create_relationship_with_id(rel).await.unwrap());
+
+        // Readable by id with in/out intact.
+        let got = db.get_relationship("related_to:syncedge1").await.unwrap();
+        assert_eq!(got.in_.as_ref().map(thing_to_raw), Some(d1_id.clone()));
+        assert_eq!(got.out.as_ref().map(thing_to_raw), Some(d2_id.clone()));
+        assert_eq!(got.relation_type, RelationType::References);
+
+        // Still a real graph edge: traversal from d1 must see it.
+        let outgoing = db.list_outgoing_relationships(&d1_id).await.unwrap();
+        assert_eq!(outgoing.len(), 1, "synced edge must be traversable");
+        assert_eq!(db.list_all_relationships().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_suggested_link_with_id_and_status_setter() {
+        let db = setup_db().await;
+        let d1 = db.create_document(Document::new("A".into(), "thread:t".into(), true)).await.unwrap();
+        let d2 = db.create_document(Document::new("B".into(), "thread:t".into(), true)).await.unwrap();
+
+        let link = SuggestedLink {
+            id: Some(Thing::from(("suggested_link".to_string(), "syncsl1".to_string()))),
+            in_: d2.id.clone(),
+            out: d1.id.clone(),
+            relation_type: RelationType::Supports,
+            strength: 0.7,
+            rationale: "remote rationale".into(),
+            source: SuggestionSource::Consolidation,
+            status: SuggestionStatus::Pending,
+            created_at: Utc::now(),
+            resolved_at: None,
+        };
+        assert!(db.create_suggested_link_with_id(link.clone()).await.unwrap());
+        assert!(!db.create_suggested_link_with_id(link).await.unwrap());
+
+        let got = db.get_suggested_link("suggested_link:syncsl1").await.unwrap();
+        assert_eq!(got.rationale, "remote rationale");
+        assert_eq!(got.status, SuggestionStatus::Pending);
+        assert_eq!(db.list_all_suggested_links().await.unwrap().len(), 1);
+
+        // Raw status setter: no promotion side effect.
+        let resolved_at = Utc::now();
+        db.set_suggested_link_status(
+            "suggested_link:syncsl1",
+            SuggestionStatus::Accepted,
+            Some(resolved_at),
+        )
+        .await
+        .unwrap();
+        let after = db.get_suggested_link("suggested_link:syncsl1").await.unwrap();
+        assert_eq!(after.status, SuggestionStatus::Accepted);
+        assert!(after.resolved_at.is_some());
+        assert!(
+            db.list_all_relationships().await.unwrap().is_empty(),
+            "set_suggested_link_status must NOT promote to a related_to edge"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_rows_with_id_for_remaining_sync_tables() {
+        let db = setup_db().await;
+
+        // Contact
+        let mut c = Contact::new("Alice".into(), true);
+        c.id = Some(Thing::from(("contact".to_string(), "csync1".to_string())));
+        assert!(db.create_contact_with_id(c.clone()).await.unwrap());
+        assert!(!db.create_contact_with_id(c).await.unwrap());
+        assert_eq!(db.get_contact("contact:csync1").await.unwrap().name, "Alice");
+
+        // Conversation
+        let mut conv = Conversation::new("Chat".into(), ChannelType::Email, vec!["contact:csync1".into()]);
+        conv.id = Some(Thing::from(("conversation".to_string(), "vsync1".to_string())));
+        assert!(db.create_conversation_with_id(conv).await.unwrap());
+        assert_eq!(db.get_conversation("conversation:vsync1").await.unwrap().title, "Chat");
+
+        // Message
+        let mut m = Message::new(
+            "conversation:vsync1".into(),
+            ChannelType::Email,
+            MessageDirection::Inbound,
+            "contact:csync1".into(),
+            vec![],
+            "hello".into(),
+        );
+        m.id = Some(Thing::from(("message".to_string(), "msync1".to_string())));
+        assert!(db.create_message_with_id(m).await.unwrap());
+        assert_eq!(db.get_message("message:msync1").await.unwrap().body, "hello");
+
+        // Milestone
+        let mut ms = Milestone::new("Shipped".into(), "thread:t".into(), String::new());
+        ms.id = Some(Thing::from(("milestone".to_string(), "misync1".to_string())));
+        assert!(db.create_milestone_with_id(ms).await.unwrap());
+        assert_eq!(db.get_milestone("milestone:misync1").await.unwrap().title, "Shipped");
+        assert_eq!(db.list_all_milestones().await.unwrap().len(), 1);
+
+        // Entity + PII + share record (the pre-P2 sync tables get the same fix)
+        let mut e = Entity::new("Acme".into(), EntityKind::Org);
+        e.id = Some(Thing::from(("entity".to_string(), "esync1".to_string())));
+        assert!(db.create_entity_with_id(e).await.unwrap());
+        assert_eq!(db.get_entity("entity:esync1").await.unwrap().name, "Acme");
     }
 }

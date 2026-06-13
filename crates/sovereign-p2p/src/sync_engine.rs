@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::protocol::manifest::{
-    DocumentManifestEntry, EntityManifestEntry, PiiRecordManifestEntry,
+    DocumentManifestEntry, EntityManifestEntry, PiiRecordManifestEntry, RowManifestEntry,
     ShareRecordManifestEntry, SyncManifest, ThreadManifestEntry,
 };
 use crate::protocol::sync::{SyncConflict, SyncDiff, SyncTable};
@@ -56,37 +56,42 @@ pub fn compute_diff(local: &SyncManifest, remote: &SyncManifest) -> SyncDiff {
                 push_to_remote.push(doc_id.to_string());
             }
             (Some(local_entry), Some(remote_entry)) => {
+                // Documents sync as content-LWW on `modified_at` (the
+                // plaintext-on-sync-boundary model can't replay an encrypted
+                // commit chain across the per-device at-rest key boundary, so
+                // commit ancestry is not used for cross-device direction).
                 if local_entry.content_hash == remote_entry.content_hash {
-                    // Same content
                     in_sync.push(doc_id.to_string());
-                } else if local_entry.head_commit == remote_entry.head_commit {
-                    // Same head but different hash — shouldn't happen, treat as conflict
-                    conflicts.push(SyncConflict {
-                        doc_id: doc_id.to_string(),
-                        local_head: local_entry.head_commit.clone(),
-                        remote_head: remote_entry.head_commit.clone(),
-                        local_commit_count: local_entry.commit_count,
-                        remote_commit_count: remote_entry.commit_count,
-                    });
-                } else if local_entry.commit_count > remote_entry.commit_count
-                    && is_ancestor(&remote_entry.head_commit, &local_entry.head_commit)
-                {
-                    // Local is ahead — push to remote
-                    push_to_remote.push(doc_id.to_string());
-                } else if remote_entry.commit_count > local_entry.commit_count
-                    && is_ancestor(&local_entry.head_commit, &remote_entry.head_commit)
-                {
-                    // Remote is ahead — need from remote
-                    need_from_remote.push(doc_id.to_string());
                 } else {
-                    // Both have diverged
-                    conflicts.push(SyncConflict {
-                        doc_id: doc_id.to_string(),
-                        local_head: local_entry.head_commit.clone(),
-                        remote_head: remote_entry.head_commit.clone(),
-                        local_commit_count: local_entry.commit_count,
-                        remote_commit_count: remote_entry.commit_count,
-                    });
+                    match local_entry.modified_at.cmp(&remote_entry.modified_at) {
+                        std::cmp::Ordering::Less => need_from_remote.push(doc_id.to_string()),
+                        std::cmp::Ordering::Greater => push_to_remote.push(doc_id.to_string()),
+                        std::cmp::Ordering::Equal => {
+                            // P2P-002: concurrent edit — same timestamp, diverging
+                            // content. Pushing from BOTH sides made the two copies
+                            // swap and flap on every sync (each side overwrites the
+                            // other's equal-timestamp version, forever). Break the
+                            // tie deterministically on content_hash: the
+                            // lexicographically greater hash wins. The comparison is
+                            // symmetric (device A sees local=A/remote=B; device B
+                            // sees local=B/remote=A), so both independently pick the
+                            // SAME absolute winner and converge. content_hash is
+                            // guaranteed to differ here (equal hashes took the
+                            // in_sync branch above). Still surfaced as a conflict.
+                            conflicts.push(SyncConflict {
+                                doc_id: doc_id.to_string(),
+                                local_head: local_entry.head_commit.clone(),
+                                remote_head: remote_entry.head_commit.clone(),
+                                local_commit_count: local_entry.commit_count,
+                                remote_commit_count: remote_entry.commit_count,
+                            });
+                            if local_entry.content_hash > remote_entry.content_hash {
+                                push_to_remote.push(doc_id.to_string());
+                            } else {
+                                need_from_remote.push(doc_id.to_string());
+                            }
+                        }
+                    }
                 }
             }
             (None, None) => unreachable!(),
@@ -99,16 +104,6 @@ pub fn compute_diff(local: &SyncManifest, remote: &SyncManifest) -> SyncDiff {
         conflicts,
         in_sync,
     }
-}
-
-/// Placeholder ancestry check.
-/// In a real implementation, this would walk the commit chain.
-/// For now, we use a heuristic: if both commits exist and differ, it's a divergence.
-fn is_ancestor(potential_ancestor: &Option<String>, _descendant: &Option<String>) -> bool {
-    // Without access to the commit chain, we can't determine ancestry.
-    // This will be connected to the DB in Phase 3B integration.
-    // For now, return false to treat unequal heads as conflicts.
-    potential_ancestor.is_none()
 }
 
 // ----- Row-level diff (non-document tables, Phase 3 v0.0.5) -----
@@ -220,6 +215,23 @@ pub fn compute_pii_record_diff(
     )
 }
 
+/// Diff for any table whose manifest uses the generic `RowManifestEntry`
+/// shape (the P2 tables: contacts, messages, conversations, milestones,
+/// relationships, suggested links).
+pub fn compute_generic_row_diff(
+    locals: &[RowManifestEntry],
+    remotes: &[RowManifestEntry],
+) -> RowDiff {
+    compute_row_diff_generic(
+        locals,
+        remotes,
+        |l| l.id.as_str(),
+        |r| r.id.as_str(),
+        |l| (l.modified_at.as_str(), l.content_hash.as_str()),
+        |r| (r.modified_at.as_str(), r.content_hash.as_str()),
+    )
+}
+
 pub fn compute_share_record_diff(
     locals: &[ShareRecordManifestEntry],
     remotes: &[ShareRecordManifestEntry],
@@ -262,6 +274,21 @@ pub fn compute_all_row_diffs(
         out.insert(SyncTable::ShareRecord, d);
     }
 
+    // P2 tables — all use the generic entry shape.
+    for (table, locals, remotes) in [
+        (SyncTable::Contact, &local.contacts, &remote.contacts),
+        (SyncTable::Message, &local.messages, &remote.messages),
+        (SyncTable::Conversation, &local.conversations, &remote.conversations),
+        (SyncTable::Milestone, &local.milestones, &remote.milestones),
+        (SyncTable::Relationship, &local.relationships, &remote.relationships),
+        (SyncTable::SuggestedLink, &local.suggested_links, &remote.suggested_links),
+    ] {
+        let d = compute_generic_row_diff(locals, remotes);
+        if d.has_work() {
+            out.insert(table, d);
+        }
+    }
+
     out
 }
 
@@ -271,26 +298,31 @@ mod tests {
     use crate::protocol::manifest::DocumentManifestEntry;
 
     fn entry(doc_id: &str, head: Option<&str>, count: u32, hash: &str) -> DocumentManifestEntry {
+        entry_at(doc_id, head, count, hash, "2026-01-01T00:00:00Z")
+    }
+
+    fn entry_at(
+        doc_id: &str,
+        head: Option<&str>,
+        count: u32,
+        hash: &str,
+        modified_at: &str,
+    ) -> DocumentManifestEntry {
         DocumentManifestEntry {
             doc_id: doc_id.into(),
             head_commit: head.map(String::from),
             commit_count: count,
             content_hash: hash.into(),
-            modified_at: "2026-01-01T00:00:00Z".into(),
+            modified_at: modified_at.into(),
             deleted_at: None,
         }
     }
 
     fn manifest_with(device: &str, docs: Vec<DocumentManifestEntry>) -> SyncManifest {
-        SyncManifest {
-            device_id: device.into(),
-            generated_at: "now".into(),
-            documents: docs,
-            threads: vec![],
-            entities: vec![],
-            pii_records: vec![],
-            share_records: vec![],
-        }
+        let mut m = SyncManifest::new(device.into());
+        m.generated_at = "now".into();
+        m.documents = docs;
+        m
     }
 
     #[test]
@@ -319,7 +351,8 @@ mod tests {
     }
 
     #[test]
-    fn diverged_docs_are_conflicts() {
+    fn concurrent_edit_same_timestamp_is_conflict() {
+        // Same modified_at, diverging content → concurrent edit conflict.
         let local = manifest_with("dev-1", vec![entry("doc:1", Some("c:local"), 3, "hash-local")]);
         let remote = manifest_with("dev-2", vec![entry("doc:1", Some("c:remote"), 4, "hash-remote")]);
         let diff = compute_diff(&local, &remote);
@@ -328,12 +361,35 @@ mod tests {
     }
 
     #[test]
-    fn remote_ahead_from_scratch() {
-        let local = manifest_with("dev-1", vec![entry("doc:1", None, 0, "empty")]);
-        let remote = manifest_with("dev-2", vec![entry("doc:1", Some("c:5"), 5, "hash5")]);
+    fn remote_newer_is_fetched() {
+        // Content-LWW: remote has a strictly newer modified_at → fetch it.
+        let local = manifest_with(
+            "dev-1",
+            vec![entry_at("doc:1", None, 0, "empty", "2026-01-01T00:00:00Z")],
+        );
+        let remote = manifest_with(
+            "dev-2",
+            vec![entry_at("doc:1", Some("c:5"), 5, "hash5", "2026-02-01T00:00:00Z")],
+        );
         let diff = compute_diff(&local, &remote);
-        // local head is None, is_ancestor returns true for None, so need_from_remote
         assert_eq!(diff.need_from_remote, vec!["doc:1"]);
+        assert!(diff.push_to_remote.is_empty());
+        assert!(diff.conflicts.is_empty());
+    }
+
+    #[test]
+    fn local_newer_is_pushed() {
+        let local = manifest_with(
+            "dev-1",
+            vec![entry_at("doc:1", Some("c:2"), 2, "hashA", "2026-03-01T00:00:00Z")],
+        );
+        let remote = manifest_with(
+            "dev-2",
+            vec![entry_at("doc:1", Some("c:1"), 1, "hashB", "2026-01-01T00:00:00Z")],
+        );
+        let diff = compute_diff(&local, &remote);
+        assert_eq!(diff.push_to_remote, vec!["doc:1"]);
+        assert!(diff.need_from_remote.is_empty());
     }
 
     #[test]
@@ -343,14 +399,14 @@ mod tests {
             vec![
                 entry("doc:1", Some("c:1"), 1, "hash1"),  // in sync
                 entry("doc:2", Some("c:2"), 2, "hash2"),  // only local
-                entry("doc:3", Some("c:3a"), 3, "hashA"), // conflict
+                entry("doc:3", Some("c:3a"), 3, "hashA"), // concurrent-edit conflict
             ],
         );
         let remote = manifest_with(
             "dev-2",
             vec![
                 entry("doc:1", Some("c:1"), 1, "hash1"),  // in sync
-                entry("doc:3", Some("c:3b"), 4, "hashB"), // conflict
+                entry("doc:3", Some("c:3b"), 4, "hashB"), // concurrent-edit conflict
                 entry("doc:4", Some("c:4"), 1, "hash4"),  // only remote
             ],
         );

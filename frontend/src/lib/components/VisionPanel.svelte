@@ -1,16 +1,38 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { vision, closeVisionPanel, setWindowSeconds } from '$lib/stores/vision.svelte';
-	import { visionFrameUrl, openVisionWindow, closeVisionWindow } from '$lib/api/vision';
+	import { fetchVisionFrameObjectUrl, openVisionWindow, closeVisionWindow } from '$lib/api/vision';
 
-	let frameTs = $state(Date.now());
+	// The camera frame is fetched WITH the sidecar bearer token (an <img src>
+	// can't carry one) and shown via an object URL we rotate ~5 fps.
+	let frameUrl = $state<string | null>(null);
 
 	onMount(() => {
-		// Refresh the camera frame ~5 fps while the panel is open.
-		const t = setInterval(() => {
-			frameTs = Date.now();
-		}, 200);
-		return () => clearInterval(t);
+		let current: string | null = null;
+		let cancelled = false;
+		const refresh = async () => {
+			if (!vision.cameraOk) return;
+			try {
+				const next = await fetchVisionFrameObjectUrl();
+				if (cancelled) {
+					URL.revokeObjectURL(next);
+					return;
+				}
+				const prev = current;
+				current = next;
+				frameUrl = next;
+				if (prev) URL.revokeObjectURL(prev);
+			} catch {
+				/* keep the last good frame */
+			}
+		};
+		refresh();
+		const t = setInterval(refresh, 200);
+		return () => {
+			cancelled = true;
+			clearInterval(t);
+			if (current) URL.revokeObjectURL(current);
+		};
 	});
 
 	const remaining = $derived(Math.round(vision.windowRemaining));
@@ -23,8 +45,8 @@
 	</header>
 
 	<div class="feed">
-		{#if vision.cameraOk}
-			<img src={visionFrameUrl(frameTs)} alt="Jiminy camera feed" />
+		{#if vision.cameraOk && frameUrl}
+			<img src={frameUrl} alt="Jiminy camera feed" />
 		{:else}
 			<div class="no-cam">
 				Camera off — start the vision service:

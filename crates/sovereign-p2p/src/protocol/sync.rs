@@ -9,6 +9,13 @@ pub enum SyncTable {
     Entity,
     PiiRecord,
     ShareRecord,
+    // P2: full data coverage.
+    Contact,
+    Message,
+    Conversation,
+    Milestone,
+    Relationship,
+    SuggestedLink,
 }
 
 impl SyncTable {
@@ -18,6 +25,12 @@ impl SyncTable {
             SyncTable::Entity => "entity",
             SyncTable::PiiRecord => "pii_record",
             SyncTable::ShareRecord => "share_record",
+            SyncTable::Contact => "contact",
+            SyncTable::Message => "message",
+            SyncTable::Conversation => "conversation",
+            SyncTable::Milestone => "milestone",
+            SyncTable::Relationship => "related_to",
+            SyncTable::SuggestedLink => "suggested_link",
         }
     }
 }
@@ -40,6 +53,21 @@ pub struct EncryptedRow {
     /// honour this without decrypting the body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<String>,
+    /// Lamport counter of the write this row carries (P1.3 / P2P-003).
+    /// Conflict resolution orders by `(version_counter, version_device)`,
+    /// never by the forgeable `modified_at`.
+    #[serde(default)]
+    pub version_counter: u64,
+    /// The device that made the write identified by `version_counter`.
+    #[serde(default)]
+    pub version_device: String,
+    /// Base64 Ed25519 signature by the SENDING device's identity key over
+    /// the canonical envelope encoding (see `sync_service::row_sig_bytes`).
+    /// Receivers verify against the public key embedded in the sender's
+    /// libp2p PeerId and reject the row otherwise — unsigned rows from
+    /// pre-P1.3 builds are rejected too (fail closed, like P2P-002).
+    #[serde(default)]
+    pub signature: String,
 }
 
 /// An encrypted commit for sync transport.
@@ -59,6 +87,16 @@ pub struct EncryptedCommit {
     pub message: String,
     /// ISO-8601 timestamp.
     pub timestamp: String,
+    /// AUTOCOMMIT-001 / P2P-001: the authoring device's identity (its libp2p
+    /// PeerId string). `apply_commits` requires this to equal the verified
+    /// sender, so a paired peer can't forge a document update "from" another
+    /// device. Empty on pre-signing peers (rejected).
+    #[serde(default)]
+    pub version_device: String,
+    /// Base64 Ed25519 signature by the authoring device over the envelope
+    /// (see `commit_sig_bytes`). Empty = unsigned (rejected, like rows).
+    #[serde(default)]
+    pub signature: String,
 }
 
 /// Result of comparing two manifests.
@@ -107,6 +145,8 @@ mod tests {
             nonce: "base64nonce".into(),
             message: "initial".into(),
             timestamp: "2026-01-01T00:00:00Z".into(),
+            version_device: String::new(),
+            signature: String::new(),
         };
         let json = serde_json::to_string(&commit).unwrap();
         let back: EncryptedCommit = serde_json::from_str(&json).unwrap();

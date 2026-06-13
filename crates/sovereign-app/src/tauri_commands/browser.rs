@@ -19,8 +19,11 @@ pub struct CommsConfigDto {
 
 /// Return the current comms configuration.
 #[tauri::command]
-pub async fn get_comms_config(state: State<'_, AppState>) -> Result<CommsConfigDto, String> {
-    state.require_unlocked().await?;
+pub async fn get_comms_config(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<CommsConfigDto, String> {
+    state.require_unlocked(&webview).await?;
     #[cfg(feature = "comms")]
     {
         // Load comms config from disk
@@ -98,10 +101,11 @@ pub struct SaveCommsConfigDto {
 /// Save comms configuration to disk.
 #[tauri::command]
 pub async fn save_comms_config(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     data: SaveCommsConfigDto,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     #[cfg(feature = "comms")]
     {
         let config_dir = sovereign_core::sovereign_dir();
@@ -196,12 +200,13 @@ fn validate_port(port: u16) -> Result<(), String> {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn open_browser(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     url: String,
     bounds: crate::browser::LogicalRect,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     // Must spawn on a separate thread to avoid deadlock on Windows
     let handle = app.clone();
     tokio::task::spawn_blocking(move || {
@@ -215,10 +220,11 @@ pub async fn open_browser(
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn close_browser(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     crate::browser::destroy_browser(&app)
 }
 
@@ -226,11 +232,12 @@ pub async fn close_browser(
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn navigate_browser(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     url: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     crate::browser::navigate_browser(&app, &url)
 }
 
@@ -238,10 +245,11 @@ pub async fn navigate_browser(
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn browser_back(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     crate::browser::browser_back(&app)
 }
 
@@ -249,10 +257,11 @@ pub async fn browser_back(
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn browser_forward(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     crate::browser::browser_forward(&app)
 }
 
@@ -260,10 +269,11 @@ pub async fn browser_forward(
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn browser_refresh(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     crate::browser::browser_refresh(&app)
 }
 
@@ -271,11 +281,12 @@ pub async fn browser_refresh(
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn set_browser_bounds(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     bounds: crate::browser::LogicalRect,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     crate::browser::set_browser_bounds(&app, bounds)
 }
 
@@ -283,11 +294,12 @@ pub async fn set_browser_bounds(
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn set_browser_visible(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     visible: bool,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     crate::browser::set_browser_visible(&app, visible)
 }
 
@@ -320,10 +332,11 @@ pub struct RubricScoreDto {
 /// Fetch a web page and extract readable content (server-side).
 #[tauri::command]
 pub async fn fetch_web_page(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     url: String,
 ) -> Result<FetchedPageDto, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     #[cfg(feature = "web-browse")]
     {
         let page = crate::web::fetch_and_extract(&url)
@@ -346,10 +359,11 @@ pub async fn fetch_web_page(
 /// Run reliability assessment on text content using local LLM.
 #[tauri::command]
 pub async fn assess_reliability(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     text: String,
 ) -> Result<ReliabilityResultDto, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let orch = state.orchestrator.as_ref()
         .ok_or_else(|| "AI orchestrator not available".to_string())?;
     let result = orch
@@ -374,6 +388,7 @@ pub async fn assess_reliability(
 /// Save a fetched web page as an external document with reliability metadata.
 #[tauri::command]
 pub async fn save_web_page(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     url: String,
     title: String,
@@ -383,7 +398,7 @@ pub async fn save_web_page(
     score: Option<f32>,
     assessment_json: Option<String>,
 ) -> Result<CanvasDocDto, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let tid = match thread_id {
         Some(t) if !t.is_empty() => t,
         _ => {
@@ -447,10 +462,11 @@ pub async fn save_web_page(
 /// Re-run reliability assessment on an existing document.
 #[tauri::command]
 pub async fn reassess_reliability(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     doc_id: String,
 ) -> Result<ReliabilityResultDto, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let doc = state.db.get_document(&doc_id).await.str_err()?;
 
     // Parse content JSON to extract body text

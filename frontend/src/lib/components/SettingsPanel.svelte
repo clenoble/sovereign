@@ -12,7 +12,9 @@
 		listPairedDevices,
 		forgetPairedDevice,
 		getLocalPeerId,
-		triggerSyncNow
+		triggerSyncNow,
+		getP2pSettings,
+		resolveSyncConflictKeepMine
 	} from '$lib/api/commands';
 	import type {
 		UserProfileDto,
@@ -21,12 +23,14 @@
 		TrustEntryDto,
 		CommsConfigDto,
 		SaveCommsConfigDto,
-		PairedDevice
+		PairedDevice,
+		P2pSettings
 	} from '$lib/api/commands';
 	import BubblePreview from './BubblePreview.svelte';
 	import PairQrPanel from './PairQrPanel.svelte';
 	import { focusTrap } from '$lib/actions/focusTrap';
-	import { sync, clearError } from '$lib/stores/sync.svelte';
+	import { sync, clearError, dismissConflict } from '$lib/stores/sync.svelte';
+	import { pairing } from '$lib/stores/pairing.svelte';
 	import { vision, setWindowSeconds } from '$lib/stores/vision.svelte';
 
 	type Tab = 'profile' | 'ai' | 'security' | 'trust' | 'comms' | 'devices' | 'vision';
@@ -82,6 +86,16 @@
 	let localPeerId = $state('');
 	let pairPanelOpen = $state(false);
 	let syncing = $state(false);
+	let p2pSettings = $state<P2pSettings | null>(null);
+	let resolvingConflict = $state('');
+
+	// Live-refresh the paired list when the P3.1 handshake completes
+	// while the pairing panel is open.
+	$effect(() => {
+		if (pairing.lastPaired && activeTab === 'devices') {
+			loadDevices();
+		}
+	});
 
 	$effect(() => {
 		if (app.settingsVisible) {
@@ -212,13 +226,30 @@
 		devicesLoading = true;
 		error = '';
 		try {
-			const [devices, pid] = await Promise.all([listPairedDevices(), getLocalPeerId()]);
+			const [devices, pid, settings] = await Promise.all([
+				listPairedDevices(),
+				getLocalPeerId(),
+				getP2pSettings().catch(() => null)
+			]);
 			pairedDevices = devices;
 			localPeerId = pid;
+			p2pSettings = settings;
 		} catch (e) {
 			error = String(e);
 		}
 		devicesLoading = false;
+	}
+
+	async function handleKeepMine(docId: string) {
+		resolvingConflict = docId;
+		error = '';
+		try {
+			await resolveSyncConflictKeepMine(docId);
+			dismissConflict(docId);
+		} catch (e) {
+			error = String(e);
+		}
+		resolvingConflict = '';
 	}
 
 	async function handleForgetDevice(peerId: string) {
@@ -805,20 +836,83 @@
 						<PairQrPanel onClose={() => { pairPanelOpen = false; loadDevices(); }} />
 					{/if}
 
+					<!-- P2P configuration (read-only; edited via config.toml) -->
+					{#if p2pSettings}
+						<div class="form-section">
+							<label class="field-label">P2P configuration</label>
+							<div class="p2p-config">
+								<div class="p2p-row">
+									<span class="p2p-key">Sync</span>
+									<span class="p2p-val" class:on={p2pSettings.enabled && p2pSettings.running}>
+										{#if !p2pSettings.available}
+											Not included in this build
+										{:else if !p2pSettings.enabled}
+											Disabled
+										{:else if p2pSettings.running}
+											Enabled &amp; running
+										{:else}
+											Enabled (node not running)
+										{/if}
+									</span>
+								</div>
+								<div class="p2p-row">
+									<span class="p2p-key">Device name</span>
+									<span class="p2p-val">{p2pSettings.device_name || '—'}</span>
+								</div>
+								<div class="p2p-row">
+									<span class="p2p-key">LAN discovery (mDNS)</span>
+									<span class="p2p-val">{p2pSettings.enable_mdns ? 'On' : 'Off'}</span>
+								</div>
+								<div class="p2p-row">
+									<span class="p2p-key">Wi-Fi only</span>
+									<span class="p2p-val">{p2pSettings.wifi_only ? 'On' : 'Off'}</span>
+								</div>
+							</div>
+							<p class="hint">
+								These are read from config.toml ([p2p] section) at startup.
+								In-app editing arrives with the config rework.
+							</p>
+						</div>
+					{/if}
+
 					<!-- Conflicts (if any) -->
 					{#if sync.conflicts.length > 0}
 						<div class="form-section">
 							<label class="field-label">Sync conflicts</label>
+							<p class="hint">
+								Both devices edited these at the same moment. "Keep mine"
+								pushes this device's version to your other devices.
+							</p>
 							<ul class="conflict-list">
 								{#each sync.conflicts as c (c.docId)}
 									<li class="conflict-item">
-										<span class="conflict-doc">{c.docId}</span>
-										<span class="conflict-desc">{c.description}</span>
+										<div class="conflict-info">
+											<span class="conflict-doc">{c.docId}</span>
+											<span class="conflict-desc">{c.description}</span>
+										</div>
+										<div class="conflict-actions">
+											<button
+												class="conflict-btn primary"
+												disabled={resolvingConflict === c.docId}
+												onclick={() => handleKeepMine(c.docId)}
+											>
+												{resolvingConflict === c.docId ? 'Pushing...' : 'Keep mine'}
+											</button>
+											<button
+												class="conflict-btn"
+												onclick={() => dismissConflict(c.docId)}
+											>
+												Dismiss
+											</button>
+										</div>
 									</li>
 								{/each}
 							</ul>
 							<p class="hint">
-								Open the document to view its commit history and pick a head.
+								To inspect first, open the document and check its version
+								history. "Keep theirs" needs a remote-fetch step and is
+								coming in a later release — until then, the newer edit wins
+								automatically on the next sync.
 							</p>
 						</div>
 					{/if}
@@ -1395,6 +1489,68 @@
 	.conflict-desc {
 		font-size: 0.7rem;
 		color: var(--text-muted);
+	}
+
+	.conflict-info {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.conflict-actions {
+		display: flex;
+		gap: 6px;
+		margin-top: 6px;
+	}
+
+	.conflict-btn {
+		background: var(--bg-hover);
+		border: 1px solid var(--border);
+		color: var(--text-secondary);
+		padding: 4px 10px;
+		font-size: 0.72rem;
+		border-radius: 4px;
+		cursor: pointer;
+	}
+	.conflict-btn:hover {
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+	.conflict-btn.primary {
+		background: var(--accent);
+		border-color: var(--accent);
+		color: var(--bg-primary);
+		font-weight: 600;
+	}
+	.conflict-btn:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.p2p-config {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 8px 10px;
+		background: var(--bg-input);
+		border-radius: 4px;
+	}
+
+	.p2p-row {
+		display: flex;
+		justify-content: space-between;
+		font-size: 0.78rem;
+	}
+
+	.p2p-key {
+		color: var(--text-muted);
+	}
+
+	.p2p-val {
+		color: var(--text-secondary);
+	}
+	.p2p-val.on {
+		color: #22c55e;
 	}
 
 	.muted {

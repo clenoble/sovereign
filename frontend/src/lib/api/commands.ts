@@ -763,15 +763,40 @@ export const forgetPairedDevice = (peerId: string) =>
  *  StartSync commands queued (0 if the P2P node isn't running). */
 export const triggerSyncNow = () => invoke<number>('trigger_sync_now');
 
+/** Disarm the active pairing offer (P3.1) — called when the pairing
+ *  panel closes so a stale QR can't be redeemed later. */
+export const cancelPairing = () => invoke<void>('cancel_pairing');
+
+export interface P2pSettings {
+	available: boolean;
+	enabled: boolean;
+	device_name: string;
+	enable_mdns: boolean;
+	wifi_only: boolean;
+	running: boolean;
+}
+
+/** Read-only view of the P2P configuration for Settings → Devices.
+ *  Editing still happens via config.toml (see P3.2 gap note). */
+export const getP2pSettings = () => invoke<P2pSettings>('get_p2p_settings');
+
+/** Resolve a document sync conflict by keeping the local version:
+ *  touches the document (bumps modified_at, so this device wins the
+ *  next LWW round) and triggers an immediate sync. */
+export const resolveSyncConflictKeepMine = (docId: string) =>
+	invoke<void>('resolve_sync_conflict_keep_mine', { docId });
+
 export interface GeneratePairQrResult {
 	qr_payload_b64: string;
 	pin: string;
 	expires_at: number;
 }
 
-/** Existing device → produce a QR + 6-digit PIN that lets a new
- *  device import this user's AccountKey. The QR is single-use and
- *  expires after ~60s (per backend `PAIR_TTL_SECONDS`). */
+/** Existing device → arm the P2P node with a pairing offer and return
+ *  it for QR display, plus the pairing code (`pin` field; 10 symbols,
+ *  case-insensitive). Since P3.1 the QR carries NO secrets — the code
+ *  is proven online with at most three attempts; the offer is
+ *  single-use and expires after ~120 s. */
 export const generatePairQr = () =>
 	invoke<GeneratePairQrResult>('generate_pair_qr');
 
@@ -782,8 +807,10 @@ export interface PairPayloadPreview {
 	expires_at: number;
 }
 
-/** New device → decrypt the QR with the typed PIN and preview metadata
- *  (source device name, expiry). Doesn't persist anything. */
+/** New device → decode the (plaintext) offer and preview metadata
+ *  (source device name, expiry). Doesn't persist anything; the `pin`
+ *  is ignored since P3.1 (the code is only proven during the
+ *  handshake) and kept for API compatibility. */
 export const consumePairQrPreview = (qrPayloadB64: string, pin: string) =>
 	invoke<PairPayloadPreview>('consume_pair_qr_preview', {
 		input: { qr_payload_b64: qrPayloadB64, pin }

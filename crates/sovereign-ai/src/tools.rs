@@ -158,7 +158,13 @@ pub fn parse_tool_calls(output: &str, formatter: Option<&dyn PromptFormatter>) -
         if let Some(end) = after_tag.find(close_tag) {
             let json_str = after_tag[..end].trim();
             if let Ok(call) = serde_json::from_str::<ToolCall>(json_str) {
-                calls.push(call);
+                // GATING-003: validate the tool name against the registry in the
+                // primary (tagged) path too — the bare-JSON fallback below
+                // already does. An unknown/hallucinated name would otherwise be
+                // accepted here and re-enter the prompt as junk on dispatch.
+                if all_tools().any(|t| t.name == call.name) {
+                    calls.push(call);
+                }
             }
             remaining = &after_tag[end + close_tag.len()..];
         } else {
@@ -519,11 +525,19 @@ async fn execute_get_document(call: &ToolCall, db: &dyn GraphDB) -> String {
         let ownership = if doc.is_owned { "owned" } else { "external" };
         // PII-002: replace any `[pii:<id>]` tokens with type-only labels
         // (`[Email]`, …) before the content reaches the model — no decryption.
-        let records = db
-            .list_pii_records(None, None, None)
-            .await
-            .unwrap_or_default();
-        let preview = crate::pii::resolve::resolve_to_preview(&doc.content, &records);
+        // PII-001: a doc that was never PII-scanned (pii_scanned_at==None:
+        // seeded / imported / P2P-synced / browser-saved) carries NO tokens, so
+        // resolve_to_preview would pass its raw SSN/IBAN/card/etc. straight to
+        // the model. Fail safe: regex-redact the structured PII first.
+        let preview = if doc.pii_scanned_at.is_none() {
+            crate::pii::resolve::redact_raw_regex(&doc.content, crate::pii::Locale::Swiss)
+        } else {
+            let records = db
+                .list_pii_records(None, None, None)
+                .await
+                .unwrap_or_default();
+            crate::pii::resolve::resolve_to_preview(&doc.content, &records)
+        };
         // Char-safe truncation: never slice mid-codepoint.
         let truncated: String = preview.chars().take(500).collect();
         format!(
@@ -584,10 +598,18 @@ async fn execute_search_messages(call: &ToolCall, db: &dyn GraphDB) -> String {
                 .iter()
                 .take(5)
                 .map(|m| {
-                    let preview = crate::pii::resolve::resolve_to_preview(&m.body, &records);
+                    // PII-001: an un-scanned message body (pii_scanned_at==None)
+                    // has no tokens — regex-redact it; otherwise resolve tokens
+                    // to labels. Redact the FULL body before truncating so a
+                    // PII value straddling the 100-char cut can't leak.
+                    let resolved = if m.pii_scanned_at.is_none() {
+                        crate::pii::resolve::redact_raw_regex(&m.body, crate::pii::Locale::Swiss)
+                    } else {
+                        crate::pii::resolve::resolve_to_preview(&m.body, &records)
+                    };
                     // COMMS-002: char-safe truncation — `&m.body[..100]` could
                     // panic by slicing mid-codepoint. Take 100 chars instead.
-                    let body_preview: String = preview.chars().take(100).collect();
+                    let body_preview: String = resolved.chars().take(100).collect();
                     format!("- [{}] {}", m.sent_at.format("%Y-%m-%d"), body_preview)
                 })
                 .collect();

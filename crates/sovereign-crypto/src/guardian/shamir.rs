@@ -61,6 +61,46 @@ pub fn reconstruct(shares: &[Share], threshold: u8) -> CryptoResult<MasterKey> {
     Ok(MasterKey::from_bytes(bytes))
 }
 
+/// Split an arbitrary 32-byte secret (e.g. the P4 backup key) into
+/// Shamir shares. Same semantics as [`split_master_key`].
+pub fn split_secret(secret: &[u8; 32], threshold: u8, total: usize) -> CryptoResult<Vec<Share>> {
+    if total < threshold as usize {
+        return Err(CryptoError::RecoveryError(format!(
+            "total ({}) must be >= threshold ({})",
+            total, threshold
+        )));
+    }
+    if threshold < 2 {
+        return Err(CryptoError::RecoveryError("threshold must be >= 2".into()));
+    }
+    let sharks = Sharks(threshold);
+    Ok(sharks.dealer(secret).take(total).collect())
+}
+
+/// Reconstruct a 32-byte secret from Shamir shares. Same semantics as
+/// [`reconstruct`].
+pub fn reconstruct_secret(shares: &[Share], threshold: u8) -> CryptoResult<[u8; 32]> {
+    if shares.len() < threshold as usize {
+        return Err(CryptoError::InsufficientShards {
+            threshold,
+            got: shares.len(),
+        });
+    }
+    let sharks = Sharks(threshold);
+    let secret = sharks
+        .recover(shares)
+        .map_err(|e| CryptoError::RecoveryError(format!("reconstruction failed: {e}")))?;
+    if secret.len() != 32 {
+        return Err(CryptoError::InvalidKeyLength {
+            expected: 32,
+            got: secret.len(),
+        });
+    }
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(&secret);
+    Ok(bytes)
+}
+
 /// Serialize a Share to bytes for storage/transport.
 pub fn share_to_bytes(share: &Share) -> Vec<u8> {
     Vec::from(share)

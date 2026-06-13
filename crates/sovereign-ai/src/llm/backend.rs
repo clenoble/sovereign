@@ -65,6 +65,10 @@ impl LlamaCppBackend {
     /// Load a GGUF model file. `n_gpu_layers` controls GPU offload (99 = all layers).
     /// Creates and caches a `LlamaContext` so the KV cache is allocated once.
     pub fn load(path: &str, n_gpu_layers: i32, n_ctx: u32) -> Result<Self> {
+        // MODELTRUST-002: refuse to load a model whose bytes fail integrity
+        // verification (pinned-manifest mismatch, or a TOFU model that changed
+        // since first use). This is the single choke point for every GGUF load.
+        let _pinned_format = crate::model_integrity::verify_path(path)?;
         let backend = get_or_init_backend()?;
 
         let model_params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers as u32);

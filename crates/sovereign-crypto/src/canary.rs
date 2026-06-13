@@ -32,7 +32,18 @@ impl CanaryDetector {
     pub fn feed_char(&mut self, ch: char) -> bool {
         self.buffer.push(ch);
         self.trim_buffer();
-        self.buffer.ends_with(&self.phrase.text)
+        // SIDECHANNEL-005: compare the buffer suffix to the phrase in CONSTANT
+        // time. `str::ends_with` short-circuits on the first mismatching byte,
+        // leaking — via per-keystroke timing to a local observer — how much of
+        // the secret canary phrase has been matched. This byte comparison is
+        // equivalent to `ends_with` for a UTF-8 suffix but takes the same time
+        // regardless of how many bytes match. An empty phrase never triggers.
+        let phrase = self.phrase.text.as_bytes();
+        let buf = self.buffer.as_bytes();
+        if phrase.is_empty() || buf.len() < phrase.len() {
+            return false;
+        }
+        ct_eq(&buf[buf.len() - phrase.len()..], phrase)
     }
 
     /// Feed a string (e.g. pasted text). Returns `true` if canary triggered.
@@ -98,7 +109,7 @@ impl CanaryStore {
     pub fn save(&self, path: &std::path::Path) -> CryptoResult<()> {
         let json = serde_json::to_vec(self)
             .map_err(|e| CryptoError::Serialization(e.to_string()))?;
-        std::fs::write(path, json).map_err(|e| CryptoError::KeyDbIo(e.to_string()))?;
+        crate::fs_private::write_private(path, json).map_err(|e| CryptoError::KeyDbIo(e.to_string()))?;
         Ok(())
     }
 
@@ -109,9 +120,31 @@ impl CanaryStore {
     }
 }
 
+/// Constant-time byte-slice equality (SIDECHANNEL-005). Compares every byte
+/// with no early exit, so timing reveals nothing about how many bytes matched.
+/// Callers pass equal-length slices (a fixed-length suffix vs the phrase).
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ct_eq_matches_and_rejects() {
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"ab"));
+        assert!(ct_eq(b"", b""));
+    }
 
     #[test]
     fn detects_exact_phrase() {

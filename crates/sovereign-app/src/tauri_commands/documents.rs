@@ -7,10 +7,11 @@ use super::*;
 /// List all documents, optionally filtered by thread.
 #[tauri::command]
 pub async fn list_documents(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     thread_id: Option<String>,
 ) -> Result<Vec<DocSummary>, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let docs = state
         .db
         .list_documents(thread_id.as_deref())
@@ -35,8 +36,11 @@ pub async fn list_documents(
 
 /// List all threads.
 #[tauri::command]
-pub async fn list_threads(state: State<'_, AppState>) -> Result<Vec<ThreadSummary>, String> {
-    state.require_unlocked().await?;
+pub async fn list_threads(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<Vec<ThreadSummary>, String> {
+    state.require_unlocked(&webview).await?;
     let threads = state.db.list_threads().await.str_err()?;
 
     Ok(threads
@@ -132,10 +136,11 @@ fn to_full_document(doc: Document) -> FullDocument {
 /// Get a full document by ID (with parsed body/images/videos).
 #[tauri::command]
 pub async fn get_document(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<FullDocument, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let doc = state.db.get_document(&id).await.str_err()?;
     Ok(to_full_document(doc))
 }
@@ -143,6 +148,7 @@ pub async fn get_document(
 /// Save document content (title + body + images + videos).
 #[tauri::command]
 pub async fn save_document(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
     title: String,
@@ -150,7 +156,7 @@ pub async fn save_document(
     images: Vec<ContentImageDto>,
     videos: Vec<ContentVideoDto>,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     // PII-002: PII ingest on the body before persisting — runs regardless of
     // the `encryption` feature so PII is tokenized in non-encryption builds
     // too. The helper short-circuits gracefully when no account_key is
@@ -190,11 +196,12 @@ pub async fn save_document(
 /// Create a new document and return its ID.
 #[tauri::command]
 pub async fn create_document(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     title: String,
     thread_id: String,
 ) -> Result<String, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let doc = Document::new(title, thread_id, true);
     let created = state
         .db
@@ -211,10 +218,11 @@ pub async fn create_document(
 /// Close a document (flush auto-commit).
 #[tauri::command]
 pub async fn close_document(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     state.autocommit.lock().await.commit_on_close(&id).await;
     Ok(())
 }
@@ -226,10 +234,11 @@ pub async fn close_document(
 /// List commits for a document.
 #[tauri::command]
 pub async fn list_commits(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     doc_id: String,
 ) -> Result<Vec<CommitSummaryDto>, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let commits = state
         .db
         .list_document_commits(&doc_id)
@@ -262,11 +271,12 @@ pub async fn list_commits(
 /// Restore a document to a specific commit.
 #[tauri::command]
 pub async fn restore_commit(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     doc_id: String,
     commit_id: String,
 ) -> Result<FullDocument, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let doc = state
         .db
         .restore_document(&doc_id, &commit_id)
@@ -282,10 +292,11 @@ pub async fn restore_commit(
 /// List skills applicable to a document (based on file extension in title).
 #[tauri::command]
 pub async fn list_skills_for_doc(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     doc_title: String,
 ) -> Result<Vec<SkillInfo>, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let ext = doc_title
         .rsplit('.')
         .next()
@@ -310,13 +321,14 @@ pub async fn list_skills_for_doc(
 /// Execute a skill action on a document.
 #[tauri::command]
 pub async fn execute_skill(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     skill_name: String,
     action: String,
     doc_id: String,
     params: String,
 ) -> Result<SkillResultDto, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let doc = state.db.get_document(&doc_id).await.str_err()?;
     let fields = ContentFields::parse(&doc.content);
     let skill_doc = SkillDocument {
@@ -412,8 +424,11 @@ pub async fn execute_skill(
 
 /// List all registered skills and their actions.
 #[tauri::command]
-pub async fn list_all_skills(state: State<'_, AppState>) -> Result<Vec<SkillInfo>, String> {
-    state.require_unlocked().await?;
+pub async fn list_all_skills(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<Vec<SkillInfo>, String> {
+    state.require_unlocked(&webview).await?;
     let skills = state.skill_registry.all_skills();
     Ok(skills
         .iter()
@@ -434,10 +449,11 @@ pub async fn list_all_skills(state: State<'_, AppState>) -> Result<Vec<SkillInfo
 
 #[tauri::command]
 pub async fn delete_document(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     state
         .db
         .soft_delete_document(&id)
@@ -453,11 +469,12 @@ pub async fn delete_document(
 /// Import a file from the local filesystem as a new document.
 #[tauri::command]
 pub async fn import_file(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     file_path: String,
     thread_id: Option<String>,
 ) -> Result<CanvasDocDto, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
 
     // IPC-001: contain the import path. Canonicalize the requested path
     // (resolving symlinks + `..`) and reject anything that escapes the

@@ -9,6 +9,8 @@ pub struct SttEngine {
 impl SttEngine {
     /// Load a whisper GGML model file.
     pub fn new(model_path: &str) -> Result<Self> {
+        // MODELTRUST-002: integrity-check the whisper model before loading it.
+        crate::model_integrity::verify_path(model_path)?;
         let ctx = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
             .map_err(|e| anyhow::anyhow!("Failed to load whisper model: {:?}", e))?;
         tracing::info!("Whisper STT model loaded from {model_path}");

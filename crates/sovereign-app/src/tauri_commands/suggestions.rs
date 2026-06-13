@@ -20,9 +20,10 @@ pub struct SuggestionDto {
 /// List all pending AI-suggested links.
 #[tauri::command]
 pub async fn list_pending_suggestions(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
 ) -> Result<Vec<SuggestionDto>, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let suggestions = state
         .db
         .list_pending_suggestions()
@@ -56,10 +57,11 @@ pub async fn list_pending_suggestions(
 /// Accept an AI-suggested link (promotes to a real relationship).
 #[tauri::command]
 pub async fn accept_link_suggestion(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     state
         .db
         .resolve_suggestion(&id, sovereign_db::schema::SuggestionStatus::Accepted)
@@ -76,10 +78,11 @@ pub async fn accept_link_suggestion(
 /// Dismiss an AI-suggested link (will not be re-suggested).
 #[tauri::command]
 pub async fn dismiss_link_suggestion(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     state
         .db
         .resolve_suggestion(&id, sovereign_db::schema::SuggestionStatus::Dismissed)
@@ -96,9 +99,10 @@ pub async fn dismiss_link_suggestion(
 /// Manually trigger a consolidation cycle (for testing / debug).
 #[tauri::command]
 pub async fn trigger_consolidation(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
 ) -> Result<u32, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let orch = state
         .orchestrator
         .as_ref()

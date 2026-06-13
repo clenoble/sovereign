@@ -185,6 +185,15 @@ pub struct SyncConflictPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct DevicePairedPayload {
     pub device_id: String,
+    pub device_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PairingFailedPayload {
+    pub reason: String,
+    /// True when the offer self-destructed (expired or attempts
+    /// exhausted) and the pairing QR must be regenerated.
+    pub offer_dead: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -427,10 +436,16 @@ pub fn spawn_event_forwarder(
                         SyncConflictPayload { doc_id, description },
                     );
                 }
-                OrchestratorEvent::DevicePaired { device_id } => {
+                OrchestratorEvent::DevicePaired { device_id, device_name } => {
                     let _ = app_handle.emit(
                         "device-paired",
-                        DevicePairedPayload { device_id },
+                        DevicePairedPayload { device_id, device_name },
+                    );
+                }
+                OrchestratorEvent::PairingFailed { reason, offer_dead } => {
+                    let _ = app_handle.emit(
+                        "pairing-failed",
+                        PairingFailedPayload { reason, offer_dead },
                     );
                 }
 

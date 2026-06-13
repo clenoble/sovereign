@@ -6,8 +6,11 @@ use super::*;
 
 /// List all non-owned contacts with unread counts.
 #[tauri::command]
-pub async fn list_contacts(state: State<'_, AppState>) -> Result<Vec<ContactSummaryDto>, String> {
-    state.require_unlocked().await?;
+pub async fn list_contacts(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<Vec<ContactSummaryDto>, String> {
+    state.require_unlocked(&webview).await?;
     let contacts = state.db.list_contacts().await.str_err()?;
     let agg = aggregate_conversations(state.db.as_ref()).await?;
     let unread_by_contact = agg.unread_by_contact;
@@ -37,10 +40,11 @@ pub async fn list_contacts(state: State<'_, AppState>) -> Result<Vec<ContactSumm
 /// Get full contact detail including conversations.
 #[tauri::command]
 pub async fn get_contact_detail(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<ContactDetailDto, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let contact = state.db.get_contact(&id).await.str_err()?;
     let all_convs = state.db.list_conversations(None).await.str_err()?;
 
@@ -83,10 +87,11 @@ pub async fn get_contact_detail(
 /// List conversations, optionally filtered by contact participant.
 #[tauri::command]
 pub async fn list_conversations(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     contact_id: Option<String>,
 ) -> Result<Vec<ConversationDto>, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let convs = state.db.list_conversations(None).await.str_err()?;
 
     Ok(convs
@@ -114,12 +119,13 @@ pub async fn list_conversations(
 /// List messages in a conversation with cursor-based pagination.
 #[tauri::command]
 pub async fn list_messages(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     conversation_id: String,
     before: Option<String>,
     limit: u32,
 ) -> Result<Vec<MessageDto>, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let before_dt = before
         .as_ref()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
@@ -152,10 +158,11 @@ pub async fn list_messages(
 /// Mark a message as read.
 #[tauri::command]
 pub async fn mark_message_read(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     state
         .db
         .update_message_read_status(&id, ReadStatus::Read)
@@ -167,13 +174,14 @@ pub async fn mark_message_read(
 /// Create a relationship between two documents.
 #[tauri::command]
 pub async fn create_relationship(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     from_id: String,
     to_id: String,
     relation_type: String,
     strength: f32,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let rel_type = match relation_type.to_lowercase().as_str() {
         "references" => RelationType::References,
         "derivedfrom" => RelationType::DerivedFrom,

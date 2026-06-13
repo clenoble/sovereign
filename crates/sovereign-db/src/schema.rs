@@ -2,7 +2,9 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use surrealdb::sql::Thing;
+// Re-exported so id-handling code in dependents (e.g. sovereign-p2p's
+// id-preserving sync creates) can name the type without a surrealdb dep.
+pub use surrealdb::sql::Thing;
 
 /// Format a Thing ID as "table:key" without backtick escaping.
 ///
@@ -124,6 +126,12 @@ pub struct RelatedTo {
     pub created_at: DateTime<Utc>,
 }
 
+impl RelatedTo {
+    pub fn id_string(&self) -> Option<String> {
+        self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+}
+
 /// Relationship type classification
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -235,6 +243,12 @@ pub struct Commit {
     pub message: String,
     pub timestamp: DateTime<Utc>,
     pub snapshot: DocumentSnapshot,
+    /// AUTOCOMMIT-001: base64 device-keyed HMAC over the commit's canonical
+    /// fields (see EncryptedGraphDB::commit_mac_bytes), making the local version
+    /// history tamper-evident. `None` = a legacy pre-MAC commit; verification is
+    /// skipped for those.
+    #[serde(default)]
+    pub signature: Option<String>,
 }
 
 impl Document {
@@ -412,6 +426,16 @@ pub struct Contact {
     /// None = name is plaintext.
     #[serde(default)]
     pub name_nonce: Option<String>,
+    /// ATREST-002: base64 XChaCha20 ciphertext of the JSON-serialized
+    /// `addresses` Vec, encrypted under the contacts key DB. When
+    /// `addresses_nonce` is Some, the plaintext `addresses` field above is
+    /// empty on disk and the real addresses live here.
+    #[serde(default)]
+    pub addresses_encrypted: Option<String>,
+    /// Base64 nonce paired with `addresses_encrypted`. None = addresses are
+    /// stored plaintext (pre-2c rows, or no addresses).
+    #[serde(default)]
+    pub addresses_nonce: Option<String>,
     /// Entity this contact belongs to (e.g. an employee at an org).
     /// None means the contact is unassigned.
     #[serde(default)]
@@ -436,6 +460,8 @@ impl Contact {
             deleted_at: None,
             encryption_nonce: None,
             name_nonce: None,
+            addresses_encrypted: None,
+            addresses_nonce: None,
             entity_id: None,
             pii_scanned_at: None,
         }

@@ -26,6 +26,7 @@ import {
 	onSyncError,
 	onSyncStarted
 } from '$lib/stores/sync.svelte';
+import { onDevicePaired, onPairingFailed } from '$lib/stores/pairing.svelte';
 import type { PendingShare } from '$lib/stores/app.svelte';
 import type { ReliabilityResultDto } from '$lib/api/commands';
 
@@ -161,6 +162,13 @@ interface SyncConflictPayload {
 }
 interface DevicePairedPayload {
 	device_id: string;
+	device_name: string;
+}
+interface PairingFailedPayload {
+	reason: string;
+	/** True when the armed offer self-destructed (expired or attempts
+	 *  exhausted) and the pairing QR must be regenerated. */
+	offer_dead: boolean;
 }
 
 /** Subscribe to all backend events. Returns an unlisten function. */
@@ -420,6 +428,12 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	unlisteners.push(
 		await listen<DevicePairedPayload>('device-paired', (e) => {
 			console.info('Device paired:', e.payload.device_id);
+			onDevicePaired(e.payload.device_id, e.payload.device_name);
+		})
+	);
+	unlisteners.push(
+		await listen<PairingFailedPayload>('pairing-failed', (e) => {
+			onPairingFailed(e.payload.reason, e.payload.offer_dead);
 		})
 	);
 

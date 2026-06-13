@@ -63,6 +63,47 @@ impl AccountKey {
         out
     }
 
+    /// Derive the sealing key for one device **pair** (P1.4 / P2P-005).
+    ///
+    /// Replaces the single account-wide transport key for row/commit
+    /// envelopes: each pair of devices gets a distinct key, so captured
+    /// traffic between one pair can't be opened with another pair's key,
+    /// and unpairing a device retires exactly its pair keys. The peer ids
+    /// are sorted before derivation, so both ends derive the same key
+    /// without an interactive exchange.
+    ///
+    /// Caveat (until the P3.1 handshake lands): the key is derivable by
+    /// any holder of the AccountKey, so this is isolation between pairs,
+    /// not full per-device crypto revocation — that needs the fresh-ECDH
+    /// pair exchange.
+    pub fn derive_pair_key(&self, peer_a: &str, peer_b: &str) -> [u8; KEY_SIZE] {
+        let (lo, hi) = if peer_a <= peer_b {
+            (peer_a, peer_b)
+        } else {
+            (peer_b, peer_a)
+        };
+        let hk = Hkdf::<Sha256>::new(None, &self.bytes);
+        let mut out = [0u8; KEY_SIZE];
+        let info = format!("sovereign-p2p-pair-key:v1:{lo}:{hi}");
+        hk.expand(info.as_bytes(), &mut out)
+            .expect("32 bytes is within HKDF output limit");
+        out
+    }
+
+    /// Derive the public **backup owner tag** (P4): the identifier backup
+    /// hosts file this account's snapshot fragments under, and the lookup
+    /// key a recovering device presents to fetch them. Derivable only
+    /// from the AccountKey (passphrase + salt), but treated as PUBLIC —
+    /// fragments are opaque ciphertext whose key is Shamir-split across
+    /// guardians, so knowing the tag yields nothing decryptable.
+    pub fn derive_backup_tag(&self) -> String {
+        let hk = Hkdf::<Sha256>::new(None, &self.bytes);
+        let mut out = [0u8; 16];
+        hk.expand(b"sovereign-backup-owner-tag:v1", &mut out)
+            .expect("16 bytes is within HKDF output limit");
+        out.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
     /// Access the raw key bytes.
     pub fn as_bytes(&self) -> &[u8; KEY_SIZE] {
         &self.bytes
@@ -182,5 +223,43 @@ mod tests {
         let mk2 = MasterKey::from_passphrase(b"other", b"shared-salt").unwrap();
         let ak2 = AccountKey::derive(&mk2).unwrap();
         assert_ne!(ak_a.derive_transport_key(), ak2.derive_transport_key());
+    }
+
+    #[test]
+    fn backup_tag_deterministic_and_account_scoped() {
+        let mk = MasterKey::from_passphrase(b"test", b"shared-salt").unwrap();
+        let ak = AccountKey::derive(&mk).unwrap();
+        let tag = ak.derive_backup_tag();
+        assert_eq!(tag.len(), 32, "16 bytes hex-encoded");
+        assert!(tag.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(tag, ak.derive_backup_tag(), "deterministic");
+
+        let mk2 = MasterKey::from_passphrase(b"other", b"shared-salt").unwrap();
+        let ak2 = AccountKey::derive(&mk2).unwrap();
+        assert_ne!(tag, ak2.derive_backup_tag(), "account-scoped");
+    }
+
+    #[test]
+    fn pair_key_order_independent_and_distinct_per_pair() {
+        // P1.4 / P2P-005: both ends of a pair derive the same key
+        // regardless of argument order; different pairs get different
+        // keys; and pair keys are domain-separated from the transport key.
+        let mk = MasterKey::from_passphrase(b"test", b"shared-salt").unwrap();
+        let ak = AccountKey::derive(&mk).unwrap();
+
+        let ab = ak.derive_pair_key("12D3KooWPeerA", "12D3KooWPeerB");
+        let ba = ak.derive_pair_key("12D3KooWPeerB", "12D3KooWPeerA");
+        assert_eq!(ab, ba, "pair key must be order-independent");
+
+        let ac = ak.derive_pair_key("12D3KooWPeerA", "12D3KooWPeerC");
+        assert_ne!(ab, ac, "each device pair must get a distinct key");
+
+        assert_ne!(ab, ak.derive_transport_key());
+        assert_ne!(&ab, ak.as_bytes());
+
+        // A different account derives different pair keys for the same pair.
+        let mk2 = MasterKey::from_passphrase(b"other", b"shared-salt").unwrap();
+        let ak2 = AccountKey::derive(&mk2).unwrap();
+        assert_ne!(ab, ak2.derive_pair_key("12D3KooWPeerA", "12D3KooWPeerB"));
     }
 }

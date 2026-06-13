@@ -74,7 +74,7 @@ impl KeyDatabase {
             std::fs::create_dir_all(parent)
                 .map_err(|e| CryptoError::KeyDbIo(e.to_string()))?;
         }
-        std::fs::write(&self.path, &output)
+        crate::fs_private::write_private(&self.path, &output)
             .map_err(|e| CryptoError::KeyDbIo(e.to_string()))?;
 
         Ok(())

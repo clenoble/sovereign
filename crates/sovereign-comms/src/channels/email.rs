@@ -436,10 +436,11 @@ impl CommunicationChannel for EmailChannel {
         let mut updated_conversations = std::collections::HashSet::new();
 
         for msg in &messages {
-            // Check if message already exists by external_id
+            // Dedup on the exact external_id (indexed) — token-search dedup
+            // could both miss duplicates (Message-IDs tokenize oddly) and
+            // falsely match unrelated messages, silently dropping new mail.
             if let Some(ref ext_id) = msg.external_id {
-                let existing = self.db.search_messages(ext_id).await?;
-                if !existing.is_empty() {
+                if self.db.find_message_by_external_id(ext_id).await?.is_some() {
                     continue; // Skip duplicate
                 }
             }

@@ -17,7 +17,7 @@ use tokio::sync::RwLock;
 
 use crate::error::{DbError, DbResult};
 use crate::schema::{
-    ChannelType, Commit, Contact, Conversation, Document, Entity, Message, Milestone,
+    ChannelType, Commit, Contact, Conversation, Document, Entity, EntityKind, Message, Milestone,
     PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, ShareRecord, SourceRef,
     SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
@@ -112,12 +112,16 @@ impl EncryptedGraphDB {
         };
 
         if minted {
-            if let Err(e) = kdb.save(&self.device_key) {
-                tracing::warn!(
-                    "key DB save failed after minting key for {entity_id}: {e}. \
-                     Row will encrypt in this session but is at risk on restart."
-                );
-            }
+            // CRYPTO-002: if we just minted a key but cannot persist it, the row
+            // would be encrypted under a key that only exists in memory and
+            // vanishes on restart — silent, unrecoverable ciphertext (data
+            // loss). Fail the write instead, so the caller surfaces the error
+            // and the row is never stored under an unsaved key.
+            kdb.save(&self.device_key).map_err(|e| {
+                DbError::Query(format!(
+                    "key DB save failed after minting key for {entity_id}: {e}"
+                ))
+            })?;
         }
 
         let (ciphertext, nonce) = aead::encrypt(plaintext, entity_key.as_bytes())
@@ -309,7 +313,83 @@ impl EncryptedGraphDB {
         if let Some(nonce) = contact.encryption_nonce.take() {
             contact.notes = self.decrypt_with(&self.contacts_key_db, &id, &contact.notes, &nonce).await?;
         }
+        // ATREST-002: decrypt the addresses blob back into the Vec.
+        if let Some(nonce) = contact.addresses_nonce.take() {
+            if let Some(ct) = contact.addresses_encrypted.take() {
+                let json = self.decrypt_with(&self.contacts_key_db, &id, &ct, &nonce).await?;
+                contact.addresses = serde_json::from_str(&json)
+                    .map_err(|e| DbError::Query(format!("decrypt contact addresses: {e}")))?;
+            }
+        }
         Ok(contact)
+    }
+
+    /// ATREST-002: encrypt a contact's addresses under the contacts key DB and
+    /// persist them (clearing the plaintext field on disk). Empty input is a
+    /// no-op — nothing sensitive to protect.
+    async fn encrypt_contact_addresses(
+        &self,
+        id: &str,
+        addresses: &[crate::schema::ChannelAddress],
+    ) -> DbResult<()> {
+        if addresses.is_empty() {
+            return Ok(());
+        }
+        let json = serde_json::to_string(addresses)
+            .map_err(|e| DbError::Query(format!("serialize contact addresses: {e}")))?;
+        let (ct, nonce) = self
+            .encrypt_with(&self.contacts_key_db, id, json.as_bytes())
+            .await?;
+        self.inner
+            .set_contact_addresses_encryption(id, &ct, &nonce)
+            .await
+    }
+
+    /// AUTOCOMMIT-001: canonical bytes a commit's tamper-evidence MAC covers.
+    /// Excludes the `signature` field itself and the timestamp (display metadata
+    /// that need not round-trip byte-exactly); binds the document id, parent,
+    /// message and the snapshot — the tamper-relevant content. Length-prefixed.
+    fn commit_mac_bytes(commit: &Commit) -> Vec<u8> {
+        let mut out = Vec::with_capacity(128 + commit.snapshot.content.len());
+        out.extend_from_slice(b"sovereign-commit-mac-fields:v1");
+        for field in [
+            commit.document_id.as_str(),
+            commit.parent_commit.as_deref().unwrap_or(""),
+            commit.message.as_str(),
+            commit.snapshot.document_id.as_str(),
+            commit.snapshot.title.as_str(),
+            commit.snapshot.content.as_str(),
+        ] {
+            out.extend_from_slice(&(field.len() as u32).to_le_bytes());
+            out.extend_from_slice(field.as_bytes());
+        }
+        out.push(commit.parent_commit.is_some() as u8);
+        out
+    }
+
+    /// True if the commit's MAC verifies — or it's a legacy unsigned commit
+    /// (`signature == None`), tolerated so pre-MAC history still reads. (A
+    /// local attacker who strips the signature to look "legacy" is a known,
+    /// documented residual — the precondition is DB-write access.)
+    fn commit_mac_ok(&self, commit: &Commit) -> bool {
+        match &commit.signature {
+            Some(sig) => sovereign_crypto::mac::verify_device_mac(
+                &self.device_key,
+                &Self::commit_mac_bytes(commit),
+                sig,
+            ),
+            None => true,
+        }
+    }
+
+    /// Log if a signed commit fails its integrity check (local tampering).
+    fn warn_if_commit_tampered(&self, commit: &Commit) {
+        if !self.commit_mac_ok(commit) {
+            tracing::error!(
+                "commit {} integrity check FAILED — possible local version-history tampering (AUTOCOMMIT-001)",
+                commit.id_string().unwrap_or_default()
+            );
+        }
     }
 
     async fn decrypt_contacts(&self, contacts: Vec<Contact>) -> DbResult<Vec<Contact>> {
@@ -363,9 +443,11 @@ impl GraphDB for EncryptedGraphDB {
             .map(|t| crate::schema::thing_to_raw(t))
             .unwrap_or_default();
 
-        // Encrypt content and update via update_document (same as v0.0.5 path).
-        let (encrypted_content, _content_nonce) = self.encrypt_content(&doc_id, &created.content).await?;
-        self.inner.update_document(&doc_id, None, Some(&encrypted_content)).await?;
+        // Encrypt content and persist it TOGETHER with its nonce — without the
+        // nonce the row would read back as raw ciphertext (decrypt_document
+        // treats nonce-less rows as plaintext/legacy).
+        let (encrypted_content, content_nonce) = self.encrypt_content(&doc_id, &created.content).await?;
+        self.inner.set_document_content_encryption(&doc_id, &encrypted_content, &content_nonce).await?;
 
         // Encrypt title separately and write through the dedicated setter, which
         // also stores the blind-index token hashes for search.
@@ -377,6 +459,38 @@ impl GraphDB for EncryptedGraphDB {
         ).await?;
 
         Ok(created)
+    }
+
+    async fn create_document_with_id(&self, doc: Document) -> DbResult<bool> {
+        // `doc` arrives with PLAINTEXT title/content from the sync boundary.
+        // Insert the row under its own id, then overwrite title + content
+        // with ciphertext under this device's local key (same pattern as
+        // create_document). The brief plaintext write is immediately
+        // replaced by the encrypted setters.
+        let doc_id = doc
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_document_with_id: doc.id unset".into()))?;
+        let title_hashes = self.token_hashes(&doc.title);
+        let plain_title = doc.title.clone();
+        let plain_content = doc.content.clone();
+
+        let inserted = self.inner.create_document_with_id(doc).await?;
+        if !inserted {
+            return Ok(false);
+        }
+
+        let (ct, content_nonce) = self.encrypt_content(&doc_id, &plain_content).await?;
+        self.inner
+            .set_document_content_encryption(&doc_id, &ct, &content_nonce)
+            .await?;
+
+        let (title_ct, title_nonce) =
+            self.encrypt_with(&self.key_db, &doc_id, plain_title.as_bytes()).await?;
+        self.inner
+            .set_document_title_encryption(&doc_id, &title_ct, &title_nonce, &title_hashes)
+            .await?;
+
+        Ok(true)
     }
 
     async fn get_document(&self, id: &str) -> DbResult<Document> {
@@ -395,19 +509,14 @@ impl GraphDB for EncryptedGraphDB {
         title: Option<&str>,
         content: Option<&str>,
     ) -> DbResult<Document> {
-        let encrypted_content = if let Some(plaintext) = content {
-            let (ct, _nonce) = self.encrypt_content(id, plaintext).await?;
-            Some(ct)
-        } else {
-            None
-        };
+        if let Some(plaintext) = content {
+            // Persist ciphertext and nonce together (see create_document).
+            let (ct, nonce) = self.encrypt_content(id, plaintext).await?;
+            self.inner.set_document_content_encryption(id, &ct, &nonce).await?;
+        }
 
-        // Update content first (does not touch title fields if `title` is None).
-        let mut doc = self.inner.update_document(
-            id,
-            None,
-            encrypted_content.as_deref(),
-        ).await?;
+        // Bump modified_at and fetch the row (field writes happened above).
+        let mut doc = self.inner.update_document(id, None, None).await?;
 
         // If the caller passed a new title, encrypt + update token hashes via the dedicated setter.
         if let Some(plaintext_title) = title {
@@ -460,6 +569,17 @@ impl GraphDB for EncryptedGraphDB {
     ) -> DbResult<()> {
         self.inner.set_document_title_encryption(
             id, title_ciphertext, title_nonce, title_token_hashes,
+        ).await
+    }
+
+    async fn set_document_content_encryption(
+        &self,
+        id: &str,
+        content_ciphertext: &str,
+        content_nonce: &str,
+    ) -> DbResult<()> {
+        self.inner.set_document_content_encryption(
+            id, content_ciphertext, content_nonce,
         ).await
     }
 
@@ -713,20 +833,48 @@ impl GraphDB for EncryptedGraphDB {
     async fn commit_document(&self, doc_id: &str, message: &str) -> DbResult<Commit> {
         // Commit snapshots the current content — which is encrypted in the DB.
         // The snapshot will contain encrypted content.
-        self.inner.commit_document(doc_id, message).await
+        let mut created = self.inner.commit_document(doc_id, message).await?;
+        // AUTOCOMMIT-001: stamp a device-keyed MAC so the local version history
+        // is tamper-evident — a DB-write attacker can't forge or alter a commit
+        // without the DeviceKey. The MAC covers the commit's canonical fields.
+        let commit_id = created.id_string().unwrap_or_default();
+        let mac = sovereign_crypto::mac::device_mac(&self.device_key, &Self::commit_mac_bytes(&created));
+        self.inner.set_commit_signature(&commit_id, &mac).await?;
+        created.signature = Some(mac);
+        Ok(created)
     }
 
     async fn list_document_commits(&self, doc_id: &str) -> DbResult<Vec<Commit>> {
-        self.inner.list_document_commits(doc_id).await
+        let commits = self.inner.list_document_commits(doc_id).await?;
+        for c in &commits {
+            self.warn_if_commit_tampered(c);
+        }
+        Ok(commits)
     }
 
     async fn get_commit(&self, commit_id: &str) -> DbResult<Commit> {
-        self.inner.get_commit(commit_id).await
+        let commit = self.inner.get_commit(commit_id).await?;
+        self.warn_if_commit_tampered(&commit);
+        Ok(commit)
     }
 
     async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> {
+        // AUTOCOMMIT-001: refuse to restore from a commit whose MAC doesn't
+        // verify — a tampered/forged commit must not silently overwrite the
+        // live document. (Legacy unsigned commits are tolerated; see
+        // commit_mac_ok.)
+        let commit = self.inner.get_commit(commit_id).await?;
+        if !self.commit_mac_ok(&commit) {
+            return Err(DbError::Query(format!(
+                "refusing to restore from commit {commit_id}: integrity check failed (tampered or forged)"
+            )));
+        }
         let doc = self.inner.restore_document(doc_id, commit_id).await?;
         self.decrypt_document(doc).await
+    }
+
+    async fn set_commit_signature(&self, commit_id: &str, signature: &str) -> DbResult<()> {
+        self.inner.set_commit_signature(commit_id, signature).await
     }
 
     async fn create_milestone(&self, milestone: Milestone) -> DbResult<Milestone> {
@@ -770,6 +918,9 @@ impl GraphDB for EncryptedGraphDB {
             ).await?;
             self.inner.set_contact_notes_encryption(&id, &notes_ct, &notes_nonce).await?;
         }
+
+        // ATREST-002: encrypt the addresses Vec (email/phone/Signal) at rest.
+        self.encrypt_contact_addresses(&id, &created.addresses).await?;
 
         Ok(created)
     }
@@ -825,12 +976,14 @@ impl GraphDB for EncryptedGraphDB {
     }
 
     async fn find_contact_by_address(&self, address: &str) -> DbResult<Option<Contact>> {
-        // Address lookup goes through plaintext addresses field, which is not
-        // encrypted in 2b (Vec<ChannelAddress> per-element encryption is deferred).
-        match self.inner.find_contact_by_address(address).await? {
-            Some(c) => Ok(Some(self.decrypt_contact(c).await?)),
-            None => Ok(None),
-        }
+        // ATREST-002: addresses are encrypted at rest, so the inner plaintext
+        // search can't match. Decrypt all contacts and scan. This lookup is only
+        // used by the (latent) comms channels, so O(n) over a personal contact
+        // set is acceptable.
+        let contacts = self.list_contacts().await?;
+        Ok(contacts
+            .into_iter()
+            .find(|c| c.addresses.iter().any(|a| a.address == address)))
     }
 
     async fn add_contact_address(
@@ -838,8 +991,12 @@ impl GraphDB for EncryptedGraphDB {
         contact_id: &str,
         address: crate::schema::ChannelAddress,
     ) -> DbResult<Contact> {
-        let contact = self.inner.add_contact_address(contact_id, address).await?;
-        self.decrypt_contact(contact).await
+        // ATREST-002: addresses are encrypted at rest; append to the DECRYPTED
+        // set and re-encrypt the whole Vec (can't push into ciphertext).
+        let mut contact = self.get_contact(contact_id).await?;
+        contact.addresses.push(address);
+        self.encrypt_contact_addresses(contact_id, &contact.addresses).await?;
+        Ok(contact)
     }
 
     async fn set_contact_name_encryption(
@@ -858,6 +1015,17 @@ impl GraphDB for EncryptedGraphDB {
         notes_nonce: &str,
     ) -> DbResult<()> {
         self.inner.set_contact_notes_encryption(id, notes_ciphertext, notes_nonce).await
+    }
+
+    async fn set_contact_addresses_encryption(
+        &self,
+        id: &str,
+        addresses_ciphertext: &str,
+        addresses_nonce: &str,
+    ) -> DbResult<()> {
+        self.inner
+            .set_contact_addresses_encryption(id, addresses_ciphertext, addresses_nonce)
+            .await
     }
 
     // -- Messages: encrypt body, subject, body_html with per-field nonces ---
@@ -976,6 +1144,18 @@ impl GraphDB for EncryptedGraphDB {
         // Direct pass-through: caller already hashed under our index key.
         let msgs = self.inner.search_messages_by_token_hashes(hashes).await?;
         self.decrypt_messages(msgs).await
+    }
+
+    async fn find_message_by_external_id(
+        &self,
+        external_id: &str,
+    ) -> DbResult<Option<Message>> {
+        // external_id is stored plaintext (it's an opaque provider id, used
+        // as the sync-dedup key), so the lookup needs no index-key hashing.
+        match self.inner.find_message_by_external_id(external_id).await? {
+            Some(msg) => Ok(Some(self.decrypt_message(msg).await?)),
+            None => Ok(None),
+        }
     }
 
     async fn set_message_encryption(
@@ -1129,6 +1309,24 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.get_entity(id).await
     }
 
+    async fn update_entity(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        kind: Option<EntityKind>,
+        domains: Option<Vec<String>>,
+        contact_ids: Option<Vec<String>>,
+        notes: Option<&str>,
+        is_owned: Option<bool>,
+        deleted_at: Option<Option<String>>,
+    ) -> DbResult<Entity> {
+        // Entity fields are not metadata-encrypted at this layer (parity
+        // with create_entity/get_entity) — pass through.
+        self.inner
+            .update_entity(id, name, kind, domains, contact_ids, notes, is_owned, deleted_at)
+            .await
+    }
+
     async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> {
         // Capture the plaintext via_url before the create, so we can re-encrypt
         // afterward (the DB-assigned ID is needed to mint the per-record key).
@@ -1276,6 +1474,211 @@ impl GraphDB for EncryptedGraphDB {
     ) -> DbResult<()> {
         self.inner.update_contact_pii_fields(id, pii_scanned_at).await
     }
+
+    // -- Id-preserving inserts for P2P sync (P2) ---
+    //
+    // Rows arrive with PLAINTEXT user-content fields from the sync
+    // boundary. Same pattern as create_document_with_id: insert under the
+    // origin id, then immediately overwrite the sensitive fields with
+    // ciphertext through the dedicated setters.
+
+    async fn create_thread_with_id(&self, thread: Thread) -> DbResult<bool> {
+        let id = thread
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_thread_with_id: id unset".into()))?;
+        let name_hashes = self.token_hashes(&thread.name);
+        let plain_name = thread.name.clone();
+        let plain_desc = thread.description.clone();
+
+        let inserted = self.inner.create_thread_with_id(thread).await?;
+        if !inserted {
+            return Ok(false);
+        }
+
+        let (name_ct, name_nonce) = self
+            .encrypt_with(&self.threads_key_db, &id, plain_name.as_bytes())
+            .await?;
+        let (desc_ct, desc_nonce) = self
+            .encrypt_with(&self.threads_key_db, &id, plain_desc.as_bytes())
+            .await?;
+        self.inner
+            .set_thread_encryption(&id, &name_ct, &name_nonce, &desc_ct, &desc_nonce, &name_hashes)
+            .await?;
+        Ok(true)
+    }
+
+    async fn create_entity_with_id(&self, entity: Entity) -> DbResult<bool> {
+        // Entity has no encrypted fields at this layer — pass through.
+        self.inner.create_entity_with_id(entity).await
+    }
+
+    async fn create_pii_record_with_id(&self, record: PiiRecord) -> DbResult<bool> {
+        // PiiRecord values are already ciphertext (vault primitive).
+        self.inner.create_pii_record_with_id(record).await
+    }
+
+    async fn create_share_record_with_id(&self, record: ShareRecord) -> DbResult<bool> {
+        let plain_url = record.via_url.clone();
+        let id = record
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_share_record_with_id: id unset".into()))?;
+        let inserted = self.inner.create_share_record_with_id(record).await?;
+        if !inserted {
+            return Ok(false);
+        }
+        if let Some(url) = plain_url {
+            let (url_ct, url_nonce) = self
+                .encrypt_with(&self.share_records_key_db, &id, url.as_bytes())
+                .await?;
+            self.inner
+                .set_share_record_via_url_encryption(&id, &url_ct, &url_nonce)
+                .await?;
+        }
+        Ok(true)
+    }
+
+    async fn create_contact_with_id(&self, contact: Contact) -> DbResult<bool> {
+        let id = contact
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_contact_with_id: id unset".into()))?;
+        let plain_name = contact.name.clone();
+        let plain_notes = contact.notes.clone();
+        let plain_addresses = contact.addresses.clone();
+
+        let inserted = self.inner.create_contact_with_id(contact).await?;
+        if !inserted {
+            return Ok(false);
+        }
+
+        let (name_ct, name_nonce) = self
+            .encrypt_with(&self.contacts_key_db, &id, plain_name.as_bytes())
+            .await?;
+        self.inner
+            .set_contact_name_encryption(&id, &name_ct, &name_nonce)
+            .await?;
+        if !plain_notes.is_empty() {
+            let (notes_ct, notes_nonce) = self
+                .encrypt_with(&self.contacts_key_db, &id, plain_notes.as_bytes())
+                .await?;
+            self.inner
+                .set_contact_notes_encryption(&id, &notes_ct, &notes_nonce)
+                .await?;
+        }
+        // ATREST-002: encrypt addresses for synced contacts too.
+        self.encrypt_contact_addresses(&id, &plain_addresses).await?;
+        Ok(true)
+    }
+
+    async fn create_message_with_id(&self, message: Message) -> DbResult<bool> {
+        let id = message
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_message_with_id: id unset".into()))?;
+        let mut combined = String::with_capacity(
+            message.body.len() + message.subject.as_deref().map(|s| s.len() + 1).unwrap_or(0),
+        );
+        if let Some(s) = &message.subject {
+            combined.push_str(s);
+            combined.push(' ');
+        }
+        combined.push_str(&message.body);
+        let token_hashes = self.token_hashes(&combined);
+        let plain_body = message.body.clone();
+        let plain_subject = message.subject.clone();
+        let plain_html = message.body_html.clone();
+
+        let inserted = self.inner.create_message_with_id(message).await?;
+        if !inserted {
+            return Ok(false);
+        }
+
+        let (body_ct, body_nonce) = self
+            .encrypt_with(&self.messages_key_db, &id, plain_body.as_bytes())
+            .await?;
+        let subject_enc = if let Some(s) = &plain_subject {
+            Some(self.encrypt_with(&self.messages_key_db, &id, s.as_bytes()).await?)
+        } else {
+            None
+        };
+        let html_enc = if let Some(h) = &plain_html {
+            Some(self.encrypt_with(&self.messages_key_db, &id, h.as_bytes()).await?)
+        } else {
+            None
+        };
+        self.inner
+            .set_message_encryption(
+                &id,
+                &body_ct,
+                &body_nonce,
+                subject_enc.as_ref().map(|(ct, _)| ct.as_str()),
+                subject_enc.as_ref().map(|(_, n)| n.as_str()),
+                html_enc.as_ref().map(|(ct, _)| ct.as_str()),
+                html_enc.as_ref().map(|(_, n)| n.as_str()),
+                &token_hashes,
+            )
+            .await?;
+        Ok(true)
+    }
+
+    async fn create_conversation_with_id(&self, conversation: Conversation) -> DbResult<bool> {
+        let id = conversation
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_conversation_with_id: id unset".into()))?;
+        let plain_title = conversation.title.clone();
+
+        let inserted = self.inner.create_conversation_with_id(conversation).await?;
+        if !inserted {
+            return Ok(false);
+        }
+
+        let (title_ct, title_nonce) = self
+            .encrypt_with(&self.conversations_key_db, &id, plain_title.as_bytes())
+            .await?;
+        self.inner
+            .set_conversation_title_encryption(&id, &title_ct, &title_nonce)
+            .await?;
+        Ok(true)
+    }
+
+    async fn create_milestone_with_id(&self, milestone: Milestone) -> DbResult<bool> {
+        self.inner.create_milestone_with_id(milestone).await
+    }
+
+    async fn create_relationship_with_id(&self, rel: RelatedTo) -> DbResult<bool> {
+        self.inner.create_relationship_with_id(rel).await
+    }
+
+    async fn create_suggested_link_with_id(&self, link: SuggestedLink) -> DbResult<bool> {
+        self.inner.create_suggested_link_with_id(link).await
+    }
+
+    // -- Per-row reads + raw status setter for P2P sync (P2) ---
+    // Milestones, relationships, and suggested links carry no
+    // field-encrypted content at this layer — pass through.
+
+    async fn get_milestone(&self, id: &str) -> DbResult<Milestone> {
+        self.inner.get_milestone(id).await
+    }
+
+    async fn get_relationship(&self, id: &str) -> DbResult<RelatedTo> {
+        self.inner.get_relationship(id).await
+    }
+
+    async fn get_suggested_link(&self, id: &str) -> DbResult<SuggestedLink> {
+        self.inner.get_suggested_link(id).await
+    }
+
+    async fn list_all_suggested_links(&self) -> DbResult<Vec<SuggestedLink>> {
+        self.inner.list_all_suggested_links().await
+    }
+
+    async fn set_suggested_link_status(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+        resolved_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> DbResult<()> {
+        self.inner.set_suggested_link_status(id, status, resolved_at).await
+    }
 }
 
 #[cfg(test)]
@@ -1302,6 +1705,52 @@ mod tests {
     fn encrypted_graph_db_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<EncryptedGraphDB>();
+    }
+
+    fn encrypted_over_mock() -> EncryptedGraphDB {
+        let kek = test_kek();
+        let n = std::env::temp_dir();
+        EncryptedGraphDB {
+            inner: Arc::new(crate::mock::MockGraphDB::new()),
+            key_db: Arc::new(RwLock::new(KeyDatabase::new(n.join("p2p-cdwi-doc.db")))),
+            messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(n.join("p2p-cdwi-msg.db")))),
+            threads_key_db: Arc::new(RwLock::new(KeyDatabase::new(n.join("p2p-cdwi-thr.db")))),
+            conversations_key_db: Arc::new(RwLock::new(KeyDatabase::new(n.join("p2p-cdwi-conv.db")))),
+            contacts_key_db: Arc::new(RwLock::new(KeyDatabase::new(n.join("p2p-cdwi-con.db")))),
+            share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(n.join("p2p-cdwi-shr.db")))),
+            kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
+            index_key: Arc::new(IndexKey::generate()),
+            device_key: Arc::new(test_device_key()),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_document_with_id_encrypts_then_roundtrips() {
+        // The P2P sync receive path: a peer's plaintext document is stored
+        // under its origin id, encrypted at rest with THIS device's local
+        // key, and reads back as plaintext (P2P-004 + plaintext-boundary).
+        let db = encrypted_over_mock();
+        let mut doc = Document::new("Remote Title".into(), "default".into(), false);
+        doc.id = Some(crate::schema::raw_to_thing("document:origin_xyz").unwrap());
+        doc.content = "secret remote body".into();
+
+        let inserted = db.create_document_with_id(doc).await.unwrap();
+        assert!(inserted);
+
+        // At rest (inner), the content is ciphertext — not the plaintext.
+        let raw = db.inner.get_document("document:origin_xyz").await.unwrap();
+        assert_ne!(raw.content, "secret remote body");
+        assert!(raw.encryption_nonce.is_some());
+
+        // Through the decrypting layer, it reads back as plaintext.
+        let got = db.get_document("document:origin_xyz").await.unwrap();
+        assert_eq!(got.content, "secret remote body");
+        assert_eq!(got.title, "Remote Title");
+
+        // Idempotent: a second insert under the same id is a no-op.
+        let mut dup = Document::new("Other".into(), "default".into(), false);
+        dup.id = Some(crate::schema::raw_to_thing("document:origin_xyz").unwrap());
+        assert!(!db.create_document_with_id(dup).await.unwrap());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1409,6 +1858,7 @@ mod tests {
         async fn connect(&self) -> DbResult<()> { Ok(()) }
         async fn init_schema(&self) -> DbResult<()> { Ok(()) }
         async fn create_document(&self, doc: Document) -> DbResult<Document> { Ok(doc) }
+        async fn create_document_with_id(&self, _doc: Document) -> DbResult<bool> { Ok(true) }
         async fn get_document(&self, _id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn list_documents(&self, _thread_id: Option<&str>) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn update_document(&self, _id: &str, _title: Option<&str>, _content: Option<&str>) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
@@ -1417,6 +1867,7 @@ mod tests {
         async fn search_documents_by_title(&self, _query: &str) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn search_documents_by_title_token_hashes(&self, _hashes: &[String]) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn set_document_title_encryption(&self, _id: &str, _title_ciphertext: &str, _title_nonce: &str, _title_token_hashes: &[String]) -> DbResult<()> { Ok(()) }
+        async fn set_document_content_encryption(&self, _id: &str, _content_ciphertext: &str, _content_nonce: &str) -> DbResult<()> { Ok(()) }
         async fn update_document_reliability(&self, _id: &str, _source_url: Option<&str>, _classification: Option<&str>, _score: Option<f32>, _assessment_json: Option<&str>) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn create_suggested_link(&self, _from_id: &str, _to_id: &str, _relation_type: RelationType, _strength: f32, _rationale: &str, _source: SuggestionSource) -> DbResult<SuggestedLink> { Err(DbError::NotFound("mock".into())) }
         async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> { Ok(vec![]) }
@@ -1449,6 +1900,7 @@ mod tests {
         async fn list_document_commits(&self, _doc_id: &str) -> DbResult<Vec<Commit>> { Ok(vec![]) }
         async fn get_commit(&self, _commit_id: &str) -> DbResult<Commit> { Err(DbError::NotFound("mock".into())) }
         async fn restore_document(&self, _doc_id: &str, _commit_id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
+        async fn set_commit_signature(&self, _commit_id: &str, _signature: &str) -> DbResult<()> { Ok(()) }
         async fn create_milestone(&self, milestone: Milestone) -> DbResult<Milestone> { Ok(milestone) }
         async fn list_milestones(&self, _thread_id: &str) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
         async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
@@ -1463,6 +1915,7 @@ mod tests {
         async fn find_contact_by_address(&self, _address: &str) -> DbResult<Option<Contact>> { Ok(None) }
         async fn add_contact_address(&self, _contact_id: &str, _address: crate::schema::ChannelAddress) -> DbResult<Contact> { Err(DbError::NotFound("mock".into())) }
         async fn set_contact_name_encryption(&self, _id: &str, _name_ciphertext: &str, _name_nonce: &str) -> DbResult<()> { Ok(()) }
+        async fn set_contact_addresses_encryption(&self, _id: &str, _ciphertext: &str, _nonce: &str) -> DbResult<()> { Ok(()) }
         async fn set_contact_notes_encryption(&self, _id: &str, _notes_ciphertext: &str, _notes_nonce: &str) -> DbResult<()> { Ok(()) }
         // Messages
         async fn create_message(&self, message: Message) -> DbResult<Message> { Ok(message) }
@@ -1474,6 +1927,7 @@ mod tests {
         async fn list_messages_in_time_range(&self, _after: chrono::DateTime<chrono::Utc>, _before: chrono::DateTime<chrono::Utc>, _limit: u32) -> DbResult<Vec<Message>> { Ok(vec![]) }
         async fn search_messages(&self, _query: &str) -> DbResult<Vec<Message>> { Ok(vec![]) }
         async fn search_messages_by_token_hashes(&self, _hashes: &[String]) -> DbResult<Vec<Message>> { Ok(vec![]) }
+        async fn find_message_by_external_id(&self, _external_id: &str) -> DbResult<Option<Message>> { Ok(None) }
         async fn set_message_encryption(
             &self,
             _id: &str,
@@ -1504,6 +1958,7 @@ mod tests {
         async fn update_pii_record_value(&self, _id: &str, _value_encrypted: &str, _value_nonce: &str) -> DbResult<()> { Ok(()) }
         async fn soft_delete_pii_record(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn get_entity(&self, _id: &str) -> DbResult<Entity> { Err(DbError::NotFound("mock".into())) }
+        async fn update_entity(&self, _id: &str, _name: Option<&str>, _kind: Option<EntityKind>, _domains: Option<Vec<String>>, _contact_ids: Option<Vec<String>>, _notes: Option<&str>, _is_owned: Option<bool>, _deleted_at: Option<Option<String>>) -> DbResult<Entity> { Err(DbError::NotFound("mock".into())) }
         async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> { Ok(record) }
         async fn set_share_record_via_url_encryption(&self, _id: &str, _via_url_ciphertext: &str, _via_url_nonce: &str) -> DbResult<()> { Ok(()) }
         async fn list_share_records_for_entity(&self, _entity_id: &str) -> DbResult<Vec<ShareRecord>> { Ok(vec![]) }
@@ -1515,6 +1970,21 @@ mod tests {
         async fn update_message_body(&self, _id: &str, _body: &str, _body_html: Option<&str>) -> DbResult<()> { Ok(()) }
         async fn update_message_pii_fields(&self, _id: &str, _body_raw_encrypted: Option<&str>, _body_raw_nonce: Option<&str>, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
         async fn update_contact_pii_fields(&self, _id: &str, _pii_scanned_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
+        async fn create_thread_with_id(&self, _thread: Thread) -> DbResult<bool> { Ok(true) }
+        async fn create_entity_with_id(&self, _entity: Entity) -> DbResult<bool> { Ok(true) }
+        async fn create_pii_record_with_id(&self, _record: PiiRecord) -> DbResult<bool> { Ok(true) }
+        async fn create_share_record_with_id(&self, _record: ShareRecord) -> DbResult<bool> { Ok(true) }
+        async fn create_contact_with_id(&self, _contact: Contact) -> DbResult<bool> { Ok(true) }
+        async fn create_message_with_id(&self, _message: Message) -> DbResult<bool> { Ok(true) }
+        async fn create_conversation_with_id(&self, _conversation: Conversation) -> DbResult<bool> { Ok(true) }
+        async fn create_milestone_with_id(&self, _milestone: Milestone) -> DbResult<bool> { Ok(true) }
+        async fn create_relationship_with_id(&self, _rel: RelatedTo) -> DbResult<bool> { Ok(true) }
+        async fn create_suggested_link_with_id(&self, _link: SuggestedLink) -> DbResult<bool> { Ok(true) }
+        async fn get_milestone(&self, _id: &str) -> DbResult<Milestone> { Err(DbError::NotFound("mock".into())) }
+        async fn get_relationship(&self, _id: &str) -> DbResult<RelatedTo> { Err(DbError::NotFound("mock".into())) }
+        async fn get_suggested_link(&self, _id: &str) -> DbResult<SuggestedLink> { Err(DbError::NotFound("mock".into())) }
+        async fn list_all_suggested_links(&self) -> DbResult<Vec<SuggestedLink>> { Ok(vec![]) }
+        async fn set_suggested_link_status(&self, _id: &str, _status: SuggestionStatus, _resolved_at: Option<chrono::DateTime<chrono::Utc>>) -> DbResult<()> { Ok(()) }
     }
 
     // ── Phase 2a behavioural tests: Message.body + subject encryption + blind-index search ──
@@ -1719,6 +2189,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn document_content_roundtrip_persists_nonce() {
+        let (inner, edb) = build_encrypted_db("doc-content");
+        let mut doc = Document::new("Ledger".into(), "thread:1".into(), true);
+        doc.content = "the secret content".into();
+        let d = edb.create_document(doc).await.unwrap();
+        let id = d.id_string().unwrap();
+
+        // Read returns plaintext; the inner row holds ciphertext + its nonce.
+        let got = edb.get_document(&id).await.unwrap();
+        assert_eq!(got.content, "the secret content");
+        let raw = inner.get_document(&id).await.unwrap();
+        assert_ne!(raw.content, "the secret content", "content at rest must be ciphertext");
+        assert!(
+            raw.encryption_nonce.is_some(),
+            "content nonce must be persisted with the ciphertext (pre-v0.0.7 bug: \
+             the nonce was discarded, leaving the row unreadable)"
+        );
+
+        // Same guarantees through the update path.
+        let updated = edb.update_document(&id, None, Some("rewritten secret")).await.unwrap();
+        assert_eq!(updated.content, "rewritten secret");
+        let raw = inner.get_document(&id).await.unwrap();
+        assert_ne!(raw.content, "rewritten secret");
+        assert!(raw.encryption_nonce.is_some());
+        assert_eq!(edb.get_document(&id).await.unwrap().content, "rewritten secret");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn document_update_rewrites_title_hashes() {
         let (_, edb) = build_encrypted_db("doc-update");
         let d = edb.create_document(Document::new("alpha beta".into(), "thread:1".into(), true)).await.unwrap();
@@ -1809,6 +2307,88 @@ mod tests {
         assert_ne!(raw.notes, "private debrief notes", "notes at rest must be ciphertext");
         assert!(raw.name_nonce.is_some());
         assert!(raw.encryption_nonce.is_some(), "notes nonce companion must be set (pre-2b bug fix)");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn contact_addresses_encrypted_at_rest_roundtrip() {
+        // ATREST-002: contact addresses (email/phone) must be ciphertext at rest
+        // and restored on read; find / add must still work.
+        use crate::schema::{ChannelAddress, ChannelType};
+        let (inner, edb) = build_encrypted_db("contact-addrs");
+        let mut c = Contact::new("Bob Example".into(), false);
+        c.addresses.push(ChannelAddress {
+            channel: ChannelType::Email,
+            address: "bob@example.com".into(),
+            display_name: None,
+            is_primary: true,
+        });
+        let created = edb.create_contact(c).await.unwrap();
+        let id = created.id_string().unwrap();
+
+        // Read back through the encrypted layer: addresses restored.
+        let got = edb.get_contact(&id).await.unwrap();
+        assert_eq!(got.addresses.len(), 1);
+        assert_eq!(got.addresses[0].address, "bob@example.com");
+
+        // At rest: plaintext addresses cleared, encrypted blob + nonce present,
+        // and the stored blob does NOT contain the address in the clear.
+        let raw = inner.get_contact(&id).await.unwrap();
+        assert!(raw.addresses.is_empty(), "plaintext addresses must be cleared at rest");
+        assert!(raw.addresses_nonce.is_some(), "addresses nonce must be set");
+        let blob = raw.addresses_encrypted.clone().unwrap_or_default();
+        assert!(!blob.contains("bob@example.com"), "address must not be plaintext in the blob");
+
+        // find_contact_by_address resolves via decrypt-scan.
+        let found = edb.find_contact_by_address("bob@example.com").await.unwrap();
+        assert!(found.is_some(), "find_contact_by_address must resolve via decrypt-scan");
+        assert_eq!(found.unwrap().id_string().unwrap(), id);
+
+        // add_contact_address appends and re-encrypts the whole set.
+        let c2 = edb
+            .add_contact_address(
+                &id,
+                ChannelAddress {
+                    channel: ChannelType::Phone,
+                    address: "+41791234567".into(),
+                    display_name: None,
+                    is_primary: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(c2.addresses.len(), 2);
+        let got2 = edb.get_contact(&id).await.unwrap();
+        assert_eq!(got2.addresses.len(), 2);
+        let raw2 = inner.get_contact(&id).await.unwrap();
+        assert!(raw2.addresses.is_empty(), "addresses still cleared at rest after add");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn commit_mac_roundtrip_and_tamper_detection() {
+        // AUTOCOMMIT-001: local commits get a device-keyed MAC; tampering the
+        // stored snapshot invalidates it, and legacy unsigned commits are
+        // tolerated.
+        let (_inner, edb) = build_encrypted_db("commit-mac");
+        let doc = edb
+            .create_document(Document::new("D".into(), "thread:t".into(), true))
+            .await
+            .unwrap();
+        let doc_id = doc.id_string().unwrap();
+        edb.update_document(&doc_id, Some("D"), Some("body v1")).await.unwrap();
+
+        let commit = edb.commit_document(&doc_id, "snapshot").await.unwrap();
+        assert!(commit.signature.is_some(), "commit must be MAC-stamped");
+        assert!(edb.commit_mac_ok(&commit), "a fresh commit's MAC must verify");
+
+        // Tamper: alter the snapshot content but keep the old MAC → must fail.
+        let mut tampered = commit.clone();
+        tampered.snapshot.content = "evil rewrite".into();
+        assert!(!edb.commit_mac_ok(&tampered), "a tampered commit MAC must fail");
+
+        // Legacy unsigned commit (no MAC) is tolerated so old history still reads.
+        let mut legacy = commit.clone();
+        legacy.signature = None;
+        assert!(edb.commit_mac_ok(&legacy), "legacy unsigned commit is tolerated");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

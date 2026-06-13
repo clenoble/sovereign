@@ -1,21 +1,23 @@
 //! Out-of-band pairing payload for v0.0.5 mobile + desktop sync.
 //!
 //! When a user pairs a new device with an existing one, the existing
-//! device displays a QR code (or 6-word fallback) plus a 6-digit PIN.
-//! The QR carries the user's `salt` + `AccountKey` + the existing
-//! device's `PeerId`/name + a 60-second expiry, AEAD-encrypted under
-//! a key derived from the PIN via Argon2id. The new device scans the
-//! QR, the user types the PIN, and the new device unwraps the payload
-//! to import the AccountKey.
+//! device displays a QR code (or 6-word fallback) plus a 10-symbol
+//! pairing code (50 bits of entropy; see CRYPTO-003). The QR carries
+//! the user's `salt` + `AccountKey` + the existing device's
+//! `PeerId`/name + a 60-second expiry, AEAD-encrypted under a key
+//! derived from the pairing code via Argon2id. The new device scans
+//! the QR, the user types the code, and the new device unwraps the
+//! payload to import the AccountKey.
 //!
 //! Threat model:
-//! - QR + PIN travel via different channels (visual + verbal). An
-//!   attacker who only sees the QR can't decrypt without the PIN.
-//! - Argon2id (t=2, m=64MiB, p=1) makes brute-forcing a 6-digit PIN
-//!   prohibitively expensive (~64MB × 2 iterations per attempt).
+//! - QR + pairing code travel via different channels (visual + verbal).
+//!   An attacker who only sees the QR can't decrypt without the code.
+//! - Argon2id (t=2, m=64MiB, p=1) over a 50-bit code makes offline
+//!   brute-force of a captured QR computationally infeasible
+//!   (~9 million years on average at ~250–500 ms/guess).
 //! - 60-second expiry limits the attack window; the existing device
-//!   regenerates the QR + PIN every time the pairing screen is opened.
-//! - The PIN is single-use: the existing device clears the
+//!   regenerates the QR + code every time the pairing screen is opened.
+//! - The code is single-use: the existing device clears the
 //!   `PendingPairing` after a successful consume.
 //!
 //! For v0.0.5 we don't add an interactive ECDH handshake on the wire —
@@ -51,7 +53,7 @@ const PIN_KDF_SALT_SIZE: usize = 16;
 ///     the first paired device on the new device
 ///   - `source_device_name`: human-readable name shown in Settings
 ///   - `issued_at`/`expires_at`: unix milliseconds
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct PairPayload {
     pub schema_version: u8,
     pub salt: Vec<u8>,
@@ -60,6 +62,21 @@ pub struct PairPayload {
     pub source_device_name: String,
     pub issued_at: i64,
     pub expires_at: i64,
+}
+
+// Manual Debug: the derived impl would print the raw AccountKey bytes into
+// any log/format site (every other key type in this crate redacts).
+impl std::fmt::Debug for PairPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairPayload")
+            .field("schema_version", &self.schema_version)
+            .field("account_key_bytes", &"[REDACTED]")
+            .field("source_peer_id", &self.source_peer_id)
+            .field("source_device_name", &self.source_device_name)
+            .field("issued_at", &self.issued_at)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PairPayload {
@@ -172,9 +189,16 @@ fn normalize_code(code: &str) -> String {
         .collect()
 }
 
-/// Argon2id with t=2, m=64 MiB, p=1. Stretches the (now high-entropy)
-/// pairing code to a 256-bit AEAD key. Input is normalized first so the
-/// code is case- and separator-insensitive.
+/// Argon2id with t=2, m=64 MiB, p=1. Stretches a pairing code to a
+/// 256-bit key. Input is normalized first so the code is case- and
+/// separator-insensitive. Public since P3.1: the interactive pairing
+/// handshake derives its session key from the code + the offer id with
+/// the same KDF (`derive_code_key` is the public name).
+pub fn derive_code_key(code: &str, salt: &[u8]) -> CryptoResult<[u8; KEY_SIZE]> {
+    derive_pin_key(code, salt)
+}
+
+/// See [`derive_code_key`].
 fn derive_pin_key(code: &str, salt: &[u8]) -> CryptoResult<[u8; KEY_SIZE]> {
     use argon2::{Algorithm, Argon2, Params, Version};
 
@@ -187,6 +211,40 @@ fn derive_pin_key(code: &str, salt: &[u8]) -> CryptoResult<[u8; KEY_SIZE]> {
         .hash_password_into(normalized.as_bytes(), salt, &mut out)
         .map_err(|e| CryptoError::PairPayload(format!("argon2: {e}")))?;
     Ok(out)
+}
+
+/// HMAC-SHA256 tag under a handshake key, domain-separated by `context`
+/// and computed over the length-prefixed `parts` (no delimiter
+/// ambiguity). Used by the P3.1 pairing handshake for the proof and
+/// confirm MACs.
+pub fn handshake_mac(key: &[u8; KEY_SIZE], context: &str, parts: &[&[u8]]) -> Vec<u8> {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(key)
+        .expect("HMAC accepts any key length");
+    mac.update(context.as_bytes());
+    for p in parts {
+        mac.update(&(p.len() as u32).to_le_bytes());
+        mac.update(p);
+    }
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// Constant-time verification of a [`handshake_mac`] tag.
+pub fn verify_handshake_mac(
+    key: &[u8; KEY_SIZE],
+    context: &str,
+    parts: &[&[u8]],
+    tag: &[u8],
+) -> bool {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(key)
+        .expect("HMAC accepts any key length");
+    mac.update(context.as_bytes());
+    for p in parts {
+        mac.update(&(p.len() as u32).to_le_bytes());
+        mac.update(p);
+    }
+    mac.verify_slice(tag).is_ok()
 }
 
 /// Generate a fresh high-entropy pairing code (50 bits). Returned grouped
@@ -289,6 +347,34 @@ mod tests {
         encrypted.schema_version = 99;
         let b64 = encrypted.encode().unwrap();
         assert!(EncryptedPairPayload::decode(&b64).is_err());
+    }
+
+    #[test]
+    fn handshake_mac_roundtrip_and_separation() {
+        let key = [3u8; KEY_SIZE];
+        let tag = handshake_mac(&key, "ctx:v1", &[b"nonce", b"peer"]);
+        assert!(verify_handshake_mac(&key, "ctx:v1", &[b"nonce", b"peer"], &tag));
+
+        // Wrong key, wrong context, reordered/merged parts all fail.
+        assert!(!verify_handshake_mac(&[4u8; KEY_SIZE], "ctx:v1", &[b"nonce", b"peer"], &tag));
+        assert!(!verify_handshake_mac(&key, "ctx:v2", &[b"nonce", b"peer"], &tag));
+        assert!(!verify_handshake_mac(&key, "ctx:v1", &[b"peer", b"nonce"], &tag));
+        assert!(
+            !verify_handshake_mac(&key, "ctx:v1", &[b"noncepeer"], &tag),
+            "length prefixing must prevent part-boundary ambiguity"
+        );
+        let mut bad = tag.clone();
+        bad[0] ^= 1;
+        assert!(!verify_handshake_mac(&key, "ctx:v1", &[b"nonce", b"peer"], &bad));
+    }
+
+    #[test]
+    fn derive_code_key_is_normalized_and_deterministic() {
+        let k1 = derive_code_key("ABCDE-FGHJK", b"offer-id-salt-16").unwrap();
+        let k2 = derive_code_key("abcde fghjk", b"offer-id-salt-16").unwrap();
+        assert_eq!(k1, k2, "normalization must apply");
+        let k3 = derive_code_key("ABCDE-FGHJK", b"other-salt-bytes").unwrap();
+        assert_ne!(k1, k3, "salt must matter");
     }
 
     #[test]

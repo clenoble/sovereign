@@ -19,9 +19,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sovereign_db::mock::MockGraphDB;
-use sovereign_db::schema::{Document, Entity, EntityKind, PiiKind, PiiRecord, ReviewState, Thread};
+use sovereign_db::schema::{
+    ChannelType, Contact, Conversation, Document, Entity, EntityKind, Message,
+    MessageDirection, Milestone, PiiKind, PiiRecord, RelationType, ReviewState,
+    SuggestionSource, Thread,
+};
 use sovereign_db::GraphDB;
-use sovereign_p2p::pairing::PairingManager;
 use sovereign_p2p::{P2pCommand, P2pConfig, P2pEvent, SovereignNode, SyncService};
 use tokio::sync::mpsc;
 
@@ -36,16 +39,41 @@ struct Harness {
     cmd_tx: mpsc::Sender<P2pCommand>,
     event_rx: mpsc::Receiver<P2pEvent>,
     db: Arc<MockGraphDB>,
+    svc: Arc<SyncService>,
     peer_id: libp2p::PeerId,
     listen_addr: libp2p::Multiaddr,
 }
 
+/// Install the symmetric per-pair sealing key on both ends (P1.4 /
+/// P2P-005) the way the app does from the PairingManager: both devices
+/// derive the same key from the shared AccountKey + the sorted peer-id
+/// pair, no handshake needed.
+fn install_pair_keys(a: &Harness, b: &Harness, account_seed: [u8; 32]) {
+    let account = sovereign_crypto::account_key::AccountKey::from_bytes(account_seed);
+    let pair_key = account.derive_pair_key(&a.peer_id.to_string(), &b.peer_id.to_string());
+
+    let mut a_keys = std::collections::HashMap::new();
+    a_keys.insert(b.peer_id.to_string(), pair_key);
+    a.svc.set_pair_keys(a_keys);
+
+    let mut b_keys = std::collections::HashMap::new();
+    b_keys.insert(a.peer_id.to_string(), pair_key);
+    b.svc.set_pair_keys(b_keys);
+}
+
 async fn spawn_node(device_id: &str, seed: [u8; 32], transport_key: [u8; 32]) -> Harness {
     let db = Arc::new(MockGraphDB::new());
+    // The SyncService signs row envelopes with the SAME keypair the node
+    // derives its PeerId from (P1.3) — receivers verify against the
+    // sender's peer id, so the two must match.
+    let kp = keypair_from_seed(&seed);
     let svc = Arc::new(SyncService::new(
         db.clone() as Arc<dyn GraphDB>,
-        device_id.into(),
+        // P2P-001: version identity = the verifiable PeerId, not the device id.
+        kp.public().to_peer_id().to_string(),
         transport_key,
+        kp.clone(),
+        sovereign_p2p::VersionStore::ephemeral(),
     ));
 
     let (event_tx, event_rx) = mpsc::channel::<P2pEvent>(64);
@@ -57,13 +85,15 @@ async fn spawn_node(device_id: &str, seed: [u8; 32], transport_key: [u8; 32]) ->
         listen_port: 0,
         rendezvous_server: None,
         device_name: device_id.into(),
+        // The e2e test relies on mDNS to discover the peer on loopback.
+        enable_mdns: true,
         // Allow auto-trigger regardless of host platform — the test
         // doesn't model connectivity transitions.
         wifi_only: false,
     };
-    let kp = keypair_from_seed(&seed);
     let peer_id = kp.public().to_peer_id();
-    let mut node = SovereignNode::new(&cfg, kp, event_tx, cmd_rx, svc).expect("node");
+    let mut node =
+        SovereignNode::new(&cfg, kp, event_tx, cmd_rx, svc.clone(), None).expect("node");
 
     let listen_addr = node.listen(&cfg).expect("listen");
 
@@ -78,6 +108,7 @@ async fn spawn_node(device_id: &str, seed: [u8; 32], transport_key: [u8; 32]) ->
         cmd_tx,
         event_rx,
         db,
+        svc,
         peer_id,
         listen_addr,
     }
@@ -119,6 +150,9 @@ async fn two_nodes_sync_doc_entity_and_pii_record() {
     // therefore derive the same sync transport key (P2P-002).
     let a = spawn_node("device-A", [0xA1; 32], [0x5A; 32]).await;
     let mut b = spawn_node("device-B", [0xB2; 32], [0x5A; 32]).await;
+
+    // Per-pair sealing key for rows/commits (P1.4 / P2P-005).
+    install_pair_keys(&a, &b, [0x5A; 32]);
 
     // ---- Pair the two nodes both ways (P2P-001) ----
     // The responder now refuses sync requests from unpaired peers and the
@@ -191,6 +225,56 @@ async fn two_nodes_sync_doc_entity_and_pii_record() {
         .unwrap();
     let pii_id = pii.id_string().unwrap();
 
+    // P2 tables: contact, conversation, message, milestone, relationship,
+    // suggested link.
+    let contact = a.db.create_contact(Contact::new("Alice".into(), true)).await.unwrap();
+    let contact_id = contact.id_string().unwrap();
+    let conv = a
+        .db
+        .create_conversation(Conversation::new(
+            "Inbox chat".into(),
+            ChannelType::Email,
+            vec![contact_id.clone()],
+        ))
+        .await
+        .unwrap();
+    let conv_id = conv.id_string().unwrap();
+    a.db.create_message(Message::new(
+        conv_id.clone(),
+        ChannelType::Email,
+        MessageDirection::Inbound,
+        contact_id.clone(),
+        vec![],
+        "hello from A".into(),
+    ))
+    .await
+    .unwrap();
+    a.db.create_milestone(Milestone::new("Kickoff".into(), tid.clone(), String::new()))
+        .await
+        .unwrap();
+    let doc2 = a
+        .db
+        .create_document(Document::new("Doc-A2".into(), tid.clone(), true))
+        .await
+        .unwrap();
+    let doc2_id = doc2.id_string().unwrap();
+    // Documents fetch by head_commit, so an uncommitted doc never syncs
+    // (pre-existing limitation of the commit-keyed GetCommits path).
+    a.db.commit_document(&doc2_id, "initial").await.unwrap();
+    a.db.create_relationship(&doc_id, &doc2_id, RelationType::References, 0.8)
+        .await
+        .unwrap();
+    a.db.create_suggested_link(
+        &doc_id,
+        &doc2_id,
+        RelationType::Supports,
+        0.6,
+        "both about A",
+        SuggestionSource::Consolidation,
+    )
+    .await
+    .unwrap();
+
     // Sanity: B starts empty.
     assert!(b.db.list_documents(None).await.unwrap().is_empty());
     assert!(b.db.list_entities().await.unwrap().is_empty());
@@ -237,11 +321,9 @@ async fn two_nodes_sync_doc_entity_and_pii_record() {
 
     // ---- Verify B now has the data ----
     let docs = b.db.list_documents(None).await.unwrap();
-    assert_eq!(docs.len(), 1, "B should have 1 document after sync");
-    // The document content was transmitted via the commit chain; verify
-    // the snapshot replayed.
-    assert_eq!(docs[0].title, "Doc-A", "doc title should match");
-    assert_eq!(docs[0].content, "body content", "doc body should match");
+    assert_eq!(docs.len(), 2, "B should have both documents after sync");
+    let doc_a = docs.iter().find(|d| d.title == "Doc-A").expect("Doc-A synced");
+    assert_eq!(doc_a.content, "body content", "doc body should match");
 
     let entities = b.db.list_entities().await.unwrap();
     assert_eq!(entities.len(), 1, "B should have 1 entity after sync");
@@ -254,11 +336,48 @@ async fn two_nodes_sync_doc_entity_and_pii_record() {
     // sync); the receiver stores the same ciphertext.
     assert_eq!(pii_records[0].value_encrypted, "ZmFrZS1jaXBoZXJ0ZXh0");
 
-    // Keep the import alive (used by the rejection test below).
-    let _ = PairingManager::derive_pair_key(b"unused");
+    // P2 tables arrived, each under its origin id.
+    assert_eq!(b.db.get_contact(&contact_id).await.unwrap().name, "Alice");
+    assert_eq!(b.db.get_conversation(&conv_id).await.unwrap().title, "Inbox chat");
+    let msgs = b.db.list_all_messages().await.unwrap();
+    assert_eq!(msgs.len(), 1, "B should have 1 message after sync");
+    assert_eq!(msgs[0].body, "hello from A");
+    assert_eq!(b.db.list_all_milestones().await.unwrap().len(), 1);
+    let rels = b.db.list_all_relationships().await.unwrap();
+    assert_eq!(rels.len(), 1, "B should have the relationship edge");
+    assert_eq!(b.db.list_all_suggested_links().await.unwrap().len(), 1);
 
-    // We hold doc_id / pii_id in scope for clarity — silence the unused
-    // warnings.
+    // ---- Round 2: a second sync must be a clean no-op (P2 regression:
+    // pre-id-preserving creates re-fetched and duplicated rows forever) ----
+    b.cmd_tx
+        .send(P2pCommand::StartSync {
+            peer_id: a.peer_id.to_string(),
+        })
+        .await
+        .unwrap();
+    let completed2 = wait_for_event(
+        &mut b.event_rx,
+        Duration::from_secs(15),
+        "B SyncCompleted (round 2)",
+        |e| matches!(e, P2pEvent::SyncCompleted { .. }),
+    )
+    .await;
+    if let P2pEvent::SyncCompleted { docs_synced, .. } = completed2 {
+        assert_eq!(docs_synced, 0, "second sync round must transfer nothing");
+    }
+    assert_eq!(b.db.list_documents(None).await.unwrap().len(), 2);
+    assert_eq!(b.db.list_threads().await.unwrap().len(), 1);
+    assert_eq!(b.db.list_entities().await.unwrap().len(), 1);
+    assert_eq!(b.db.list_contacts().await.unwrap().len(), 1);
+    assert_eq!(b.db.list_all_messages().await.unwrap().len(), 1);
+    assert_eq!(b.db.list_all_milestones().await.unwrap().len(), 1);
+    assert_eq!(b.db.list_all_relationships().await.unwrap().len(), 1);
+    assert_eq!(b.db.list_all_suggested_links().await.unwrap().len(), 1);
+    // And nothing echoed back into A either.
+    assert_eq!(a.db.list_documents(None).await.unwrap().len(), 2);
+    assert_eq!(a.db.list_contacts().await.unwrap().len(), 1);
+    assert_eq!(a.db.list_all_messages().await.unwrap().len(), 1);
+
     let _ = (doc_id, pii_id);
 }
 

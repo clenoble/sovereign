@@ -10,6 +10,13 @@ Usage:
     python main.py --sim              # Force simulation mode
     python main.py --port 9100        # Custom port
 
+Security:
+    Set JIMINY_TOKEN (same value in this process and the Sovereign app) to
+    require `Authorization: Bearer <token>` on every request — the mic,
+    camera, and actuation endpoints should not be open to other local
+    processes. Browser-originated requests (Origin header) are always
+    rejected to block drive-by CSRF against the loopback port.
+
 Simulation:
     Start daemon with gold-themed scene:
         reachy-mini-daemon --sim --scene sovereign
@@ -23,13 +30,14 @@ import argparse
 import asyncio
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import Optional
 
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket
-from fastapi.responses import Response
+from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from reachy_mini import ReachyMini
@@ -162,6 +170,59 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Jiminy Bridge", version="0.1.0", lifespan=lifespan)
+
+# Shared secret for the Rust app. Resolved from JIMINY_TOKEN, else the shared
+# token file the Sovereign app writes at startup (JIMINY_TOKEN_FILE override,
+# default ~/.sovereign/crypto/jiminy_token) — so the secure default needs no
+# manual env coordination between the two processes. When set, every request
+# must carry `Authorization: Bearer <token>`.
+def _resolve_auth_token() -> str:
+    tok = os.environ.get("JIMINY_TOKEN", "")
+    if tok:
+        return tok
+    path = os.environ.get("JIMINY_TOKEN_FILE") or os.path.join(
+        os.path.expanduser("~"), ".sovereign", "crypto", "jiminy_token"
+    )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+AUTH_TOKEN = _resolve_auth_token()
+# SIDECAR-002: with no token configured the sidecar can authenticate nobody, so
+# it FAILS CLOSED (refuses) rather than serving the mic / robot / camera openly
+# to any local process. Set JIMINY_TOKEN (or the shared token file) to enable
+# auth; JIMINY_ALLOW_NO_AUTH=1 is an explicit opt-in to the insecure dev mode.
+ALLOW_NO_AUTH = os.environ.get("JIMINY_ALLOW_NO_AUTH", "") == "1"
+
+
+def _check_auth(origin: Optional[str], authorization: Optional[str]) -> Optional[str]:
+    """Return an error string if the request must be rejected, else None.
+
+    Browser pages can fire cross-origin requests at loopback services (CSRF) —
+    e.g. fetch('http://127.0.0.1:9100/listen') from any website triggers the
+    mic even if the response is unreadable. Legitimate clients (the Rust app)
+    never send an Origin header, so any browser-originated request is rejected.
+    """
+    if origin is not None:
+        return "browser-origin requests are not allowed"
+    if not AUTH_TOKEN:
+        # SIDECAR-002: no shared secret → fail closed unless explicitly opted out.
+        return None if ALLOW_NO_AUTH else "sidecar auth not configured (set JIMINY_TOKEN); refusing"
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme != "Bearer" or not secrets.compare_digest(token, AUTH_TOKEN):
+        return "missing or invalid bearer token"
+    return None
+
+
+@app.middleware("http")
+async def require_local_auth(request: Request, call_next):
+    err = _check_auth(request.headers.get("origin"), request.headers.get("authorization"))
+    if err is not None:
+        return JSONResponse(status_code=403, content={"detail": err})
+    return await call_next(request)
 
 
 # --- Endpoints ---
@@ -391,6 +452,11 @@ async def look_at(req: LookAtRequest):
 @app.websocket("/ws/audio")
 async def ws_audio(ws: WebSocket):
     """Stream mic audio from Reachy Mini's ReSpeaker array."""
+    # HTTP middleware does not cover websocket connections — enforce here too.
+    err = _check_auth(ws.headers.get("origin"), ws.headers.get("authorization"))
+    if err is not None:
+        await ws.close(code=4403, reason=err)
+        return
     await audio_ws_handler(ws, mini)
 
 

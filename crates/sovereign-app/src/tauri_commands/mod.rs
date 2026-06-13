@@ -1,5 +1,7 @@
 pub mod ai;
 pub mod auth;
+#[cfg(feature = "encryption")]
+pub mod backup;
 pub mod browser;
 pub mod canvas;
 pub mod contacts;

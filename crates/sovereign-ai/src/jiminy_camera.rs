@@ -42,6 +42,7 @@ pub fn spawn_poller(
             rt.block_on(async {
                 let client = reqwest::Client::builder()
                     .timeout(Duration::from_secs(3))
+                    .default_headers(crate::sidecar::auth_headers())
                     .build()
                     .unwrap_or_default();
 

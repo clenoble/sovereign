@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rust-tests:
+    name: Rust tests (core crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Pure crates that build without CUDA / webkit system deps. sovereign-ai
+      # (llama-cpp), sovereign-app (tauri) and sovereign-comms (presage) need
+      # heavier toolchains — add them once a system-deps step exists.
+      - name: Test sovereign-core / sovereign-crypto / sovereign-db
+        run: |
+          cargo test -p sovereign-core -p sovereign-crypto --all-features -j 4
+          cargo test -p sovereign-db --features encryption -j 4
+
+  rust-audit:
+    name: Dependency CVE audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: cargo audit
+        run: cargo audit
+
+  frontend:
+    name: Frontend tests + npm audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx vitest run
+      - name: npm audit (production deps)
+        run: npm audit --omit=dev --audit-level=high
+
+  python-vision:
+    name: Vision sidecar tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Only the lightweight deps the unit tests touch (torch/mediapipe are
+      # imported lazily inside the detector/captioner and aren't exercised).
+      - name: Install test deps
+        run: pip install pytest fastapi httpx uvicorn numpy opencv-python-headless pillow requests pydantic
+      - name: Run vision service tests
+        working-directory: jiminy-vision
+        run: python -m pytest -q

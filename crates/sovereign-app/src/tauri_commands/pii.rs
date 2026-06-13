@@ -174,8 +174,11 @@ impl From<ShareRecord> for ShareRecordDto {
 
 /// List all entities (excludes soft-deleted), ordered by name.
 #[tauri::command]
-pub async fn list_pii_entities(state: State<'_, AppState>) -> Result<Vec<EntityDto>, String> {
-    state.require_unlocked().await?;
+pub async fn list_pii_entities(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<Vec<EntityDto>, String> {
+    state.require_unlocked(&webview).await?;
     let entities = state.db.list_entities().await.str_err()?;
     Ok(entities.into_iter().map(EntityDto::from).collect())
 }
@@ -183,10 +186,11 @@ pub async fn list_pii_entities(state: State<'_, AppState>) -> Result<Vec<EntityD
 /// Fetch one entity by ID.
 #[tauri::command]
 pub async fn get_pii_entity(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<EntityDto, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let entity = state.db.get_entity(&id).await.str_err()?;
     Ok(EntityDto::from(entity))
 }
@@ -195,10 +199,11 @@ pub async fn get_pii_entity(
 /// Used by the dashboard's Shared tab. Order: most-recently-shared first.
 #[tauri::command]
 pub async fn list_share_records_for_entity(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     entity_id: String,
 ) -> Result<Vec<ShareRecordDto>, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let records = state
         .db
         .list_share_records_for_entity(&entity_id)
@@ -214,12 +219,13 @@ pub async fn list_share_records_for_entity(
 /// any other value is silently ignored (treated as no filter).
 #[tauri::command]
 pub async fn list_pii_records(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     entity_id: Option<String>,
     review_state: Option<String>,
     stored_secret: Option<bool>,
 ) -> Result<Vec<PiiRecordDto>, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let parsed_state = review_state.as_deref().and_then(parse_review_state);
     let records = state
         .db
@@ -237,10 +243,11 @@ pub async fn list_pii_records(
 /// real PII). Action level: Annotate (L2).
 #[tauri::command]
 pub async fn confirm_pii_record(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     state
         .db
         .update_pii_record_review_state(&id, ReviewState::Confirmed)
@@ -252,10 +259,11 @@ pub async fn confirm_pii_record(
 /// false positive). Action level: Annotate (L2).
 #[tauri::command]
 pub async fn dismiss_pii_record(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     state
         .db
         .update_pii_record_review_state(&id, ReviewState::Dismissed)
@@ -268,10 +276,11 @@ pub async fn dismiss_pii_record(
 /// gates the confirmation prompt before calling.
 #[tauri::command]
 pub async fn redact_pii_record(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     state.db.soft_delete_pii_record(&id).await.str_err()
 }
 
@@ -282,9 +291,11 @@ pub async fn redact_pii_record(
 #[cfg(feature = "encryption")]
 #[tauri::command]
 pub async fn reveal_pii_record(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<String, String> {
+    crate::tauri_state::require_main_webview(&webview)?;
     use chrono::Utc;
     use sovereign_crypto::vault::EncryptedBlob;
 
@@ -340,9 +351,11 @@ pub struct VaultEntryInput {
 #[cfg(feature = "encryption")]
 #[tauri::command]
 pub async fn create_vault_entry(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     input: VaultEntryInput,
 ) -> Result<PiiRecordDto, String> {
+    crate::tauri_state::require_main_webview(&webview)?;
     use chrono::Utc;
     use sovereign_crypto::vault::EncryptedBlob;
     use sovereign_db::schema::{PiiKind, PiiRecord, ReviewState};
@@ -402,10 +415,11 @@ pub async fn create_vault_entry(
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn extract_form_fields(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     crate::browser_pii::trigger_form_extraction(&app)
 }
 
@@ -417,11 +431,18 @@ pub async fn extract_form_fields(
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn __browser_form_extracted(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     payload: crate::browser_pii::FormExtractionDto,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    // This callback is invoked BY the browser webview's injected script —
+    // restrict it to exactly that webview, and still require an unlocked
+    // session before re-emitting form data.
+    if webview.label() != "browser" {
+        return Err("only the browser webview may call this".to_string());
+    }
+    state.require_session_unlocked().await?;
     use tauri::Emitter;
     app.emit("browser-form-extracted", payload)
         .map_err(|e| e.to_string())
@@ -436,11 +457,13 @@ pub async fn __browser_form_extracted(
 #[cfg(all(feature = "encryption", not(any(target_os = "android", target_os = "ios"))))]
 #[tauri::command]
 pub async fn autofill_pii_record(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     record_id: String,
     selector: String,
 ) -> Result<(), String> {
+    crate::tauri_state::require_main_webview(&webview)?;
     use chrono::Utc;
     use sovereign_crypto::vault::EncryptedBlob;
 
@@ -577,9 +600,11 @@ pub struct SignupCaptureResult {
 #[cfg(feature = "encryption")]
 #[tauri::command]
 pub async fn commit_signup_capture(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     input: SignupCaptureInput,
 ) -> Result<SignupCaptureResult, String> {
+    crate::tauri_state::require_main_webview(&webview)?;
     use chrono::Utc;
     use sovereign_crypto::vault::EncryptedBlob;
     use sovereign_db::schema::{
@@ -711,11 +736,12 @@ pub async fn commit_signup_capture(
 /// browser webview isn't open, or no cookie matches.
 #[tauri::command]
 pub async fn list_cookies_for_entity(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     entity_id: String,
 ) -> Result<Vec<crate::cookie_api::CookieDto>, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let entity = state.db.get_entity(&entity_id).await.str_err()?;
     if entity.domains.is_empty() {
         return Ok(vec![]);
@@ -727,13 +753,14 @@ pub async fn list_cookies_for_entity(
 /// plan; the frontend gates the confirmation prompt before calling.
 #[tauri::command]
 pub async fn delete_cookie(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     name: String,
     domain: String,
     path: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     crate::cookie_api::delete_one(&app, &name, &domain, &path)
 }
 
@@ -741,11 +768,12 @@ pub async fn delete_cookie(
 /// domains. Returns the number deleted. L5 Destruct.
 #[tauri::command]
 pub async fn clear_entity_cookies(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     entity_id: String,
 ) -> Result<usize, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let entity = state.db.get_entity(&entity_id).await.str_err()?;
     if entity.domains.is_empty() {
         return Ok(0);
@@ -814,11 +842,13 @@ pub struct ResolvedBodyDto {
 #[cfg(feature = "encryption")]
 #[tauri::command]
 pub async fn resolve_pii_tokens(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     source_kind: String,
     source_id: String,
     access_level: AccessLevel,
 ) -> Result<ResolvedBodyDto, String> {
+    crate::tauri_state::require_main_webview(&webview)?;
     use sovereign_ai::pii::resolve::{resolve_body, resolve_raw_original};
     use sovereign_db::traits::GraphDB;
 

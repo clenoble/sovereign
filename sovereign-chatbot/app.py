@@ -7,7 +7,9 @@ startup from chunks.json + embeddings.npy.
 
 import json
 import os
+import threading
 import time
+from collections import defaultdict, deque
 from pathlib import Path
 
 import gradio as gr
@@ -23,6 +25,38 @@ MAX_INPUT_CHARS = 500
 MAX_OUTPUT_TOKENS = 500
 TOP_K = 4
 MAX_QUESTIONS_PER_SESSION = 30
+# Server-side limit per client IP. The history-based session limit above is
+# advisory only — API callers control `history` and can reset it at will, so
+# this is what actually protects the API key from cost/quota exhaustion.
+MAX_QUESTIONS_PER_HOUR = 30
+RATE_WINDOW_SECONDS = 3600
+
+_rate_lock = threading.Lock()
+_rate_log: dict[str, deque] = defaultdict(deque)
+
+
+def _client_ip(request) -> str:
+    """Best-effort client identity behind the HF Spaces proxy."""
+    if request is None:
+        return "unknown"
+    forwarded = (request.headers or {}).get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    client = getattr(request, "client", None)
+    return getattr(client, "host", None) or "unknown"
+
+
+def _over_rate_limit(client_id: str) -> bool:
+    """Sliding-window per-IP limiter; records the request when allowed."""
+    now = time.monotonic()
+    with _rate_lock:
+        log = _rate_log[client_id]
+        while log and now - log[0] > RATE_WINDOW_SECONDS:
+            log.popleft()
+        if len(log) >= MAX_QUESTIONS_PER_HOUR:
+            return True
+        log.append(now)
+        return False
 
 SYSTEM_PROMPT = """You are the Sovereign GE project assistant — a helpful guide \
 for people exploring the Sovereign GE project.
@@ -101,6 +135,7 @@ def format_context(results: list[dict]) -> str:
 def rag_query(
     message: str,
     history: list[dict],
+    request: gr.Request | None = None,
 ) -> str:
     """Main RAG pipeline: embed question → retrieve → generate."""
 
@@ -114,7 +149,15 @@ def rag_query(
             f"(yours is {len(message)})."
         )
 
-    # Session rate limit (count assistant messages in history)
+    # Server-side per-IP rate limit (the real control — see config note).
+    if _over_rate_limit(_client_ip(request)):
+        return (
+            "You've reached the hourly question limit. "
+            "Please come back a little later."
+        )
+
+    # Session rate limit (count assistant messages in history) — advisory
+    # UI nudge only; `history` is client-supplied.
     assistant_count = sum(1 for m in history if m.get("role") == "assistant")
     if assistant_count >= MAX_QUESTIONS_PER_SESSION:
         return (

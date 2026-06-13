@@ -1,14 +1,23 @@
+pub mod backup;
+pub mod backup_client;
+pub mod backup_host;
 pub mod behaviour;
 pub mod config;
 pub mod error;
 pub mod identity;
 pub mod node;
 pub mod pairing;
+pub mod pairing_client;
+pub mod pairing_offer;
 pub mod protocol;
 pub mod sync_engine;
 pub mod sync_service;
+pub mod version_store;
 
+pub use backup_host::BackupHost;
 pub use config::{ConnectivityState, P2pConfig};
 pub use error::{P2pError, P2pResult};
-pub use node::{P2pCommand, P2pEvent, SovereignNode};
+pub use node::{ActivePairingOffer, P2pCommand, P2pEvent, PairKeyMap, SovereignNode};
+pub use pairing_offer::PairingOffer;
 pub use sync_service::SyncService;
+pub use version_store::VersionStore;

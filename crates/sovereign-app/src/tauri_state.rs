@@ -73,10 +73,23 @@ pub struct AppState {
         tokio::sync::RwLock<Option<tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>>>,
     /// In-memory paired devices, persisted under
     /// `~/.sovereign/crypto/paired_devices.json`. `None` until
-    /// `install_session` loads (or initialises) the manager.
+    /// `install_session` loads (or initialises) the manager. Arc-shared
+    /// with the sync_startup event translator, which persists the new
+    /// device record when the P3.1 handshake emits `PairingCompleted`.
     #[cfg(feature = "p2p")]
     pub pairing_manager:
-        tokio::sync::RwLock<Option<sovereign_p2p::pairing::PairingManager>>,
+        Arc<tokio::sync::RwLock<Option<sovereign_p2p::pairing::PairingManager>>>,
+    /// Concrete listen multiaddrs the P2P swarm reported (interface-
+    /// expanded). Collected by the event translator; pairing offers use
+    /// them as dial hints so the new device doesn't depend on mDNS.
+    #[cfg(feature = "p2p")]
+    pub p2p_listen_addrs: Arc<std::sync::RwLock<Vec<String>>>,
+    /// Opt-in backup host store (P4.2): fragments + guardian shards we
+    /// hold for other users. `None` until P2P startup, or when
+    /// `p2p.backup_host_enabled` is off. Shared with the node.
+    #[cfg(feature = "p2p")]
+    pub backup_host:
+        tokio::sync::RwLock<Option<std::sync::Arc<sovereign_p2p::BackupHost>>>,
     /// Latest connectivity state reported by the Android plugin (Phase
     /// 4.2). Shared with the sync_startup event translator + periodic
     /// poll so they can suppress auto-sync on Cellular/Offline when
@@ -93,12 +106,30 @@ pub struct AppState {
     pub stt_engine: Option<Arc<tokio::sync::Mutex<sovereign_ai::voice::stt::SttEngine>>>,
 }
 
+/// IPC-005: data commands may only be invoked from the trusted main
+/// webview. The embedded `browser` webview renders arbitrary external
+/// pages; even while the session is unlocked it must never reach data
+/// commands through the IPC bridge.
+pub fn require_main_webview(caller: &tauri::Webview) -> Result<(), String> {
+    if caller.label() == "main" {
+        Ok(())
+    } else {
+        Err(format!("Command not available to webview '{}'", caller.label()))
+    }
+}
+
 // Without the encryption feature there is no login/account-key concept, so
-// the authorization gate is a no-op (keeps the ~65 gated commands compiling
-// in all feature configurations). The shipped builds always enable encryption.
+// the session check is a no-op (keeps the ~65 gated commands compiling in
+// all feature configurations). The shipped builds always enable encryption.
+// The caller (webview) check still applies in every configuration.
 #[cfg(not(feature = "encryption"))]
 impl AppState {
-    pub async fn require_unlocked(&self) -> Result<(), String> {
+    pub async fn require_unlocked(&self, caller: &tauri::Webview) -> Result<(), String> {
+        require_main_webview(caller)?;
+        self.require_session_unlocked().await
+    }
+
+    pub async fn require_session_unlocked(&self) -> Result<(), String> {
         Ok(())
     }
 }
@@ -112,13 +143,23 @@ impl AppState {
         self.account_key.read().await.clone()
     }
 
-    /// Authorization gate for data/IPC commands (IPC-004). Rejects unless a
-    /// session is unlocked — i.e. `install_session` has installed the account
-    /// key and swapped in the EncryptedGraphDB. Bootstrap commands
-    /// (onboarding, auth, theme, connectivity, voice, paired-onboarding) must
-    /// NOT call this; every other command must call it first so the plaintext
+    /// Authorization gate for data/IPC commands (IPC-004 + IPC-005).
+    /// Rejects unless the caller is the trusted main webview AND a session
+    /// is unlocked — i.e. `install_session` has installed the account key
+    /// and swapped in the EncryptedGraphDB. Bootstrap commands (onboarding,
+    /// auth, theme, connectivity, voice, paired-onboarding) must NOT call
+    /// this; every other command must call it first so the plaintext
     /// bootstrap DB is never readable pre-login.
-    pub async fn require_unlocked(&self) -> Result<(), String> {
+    pub async fn require_unlocked(&self, caller: &tauri::Webview) -> Result<(), String> {
+        require_main_webview(caller)?;
+        self.require_session_unlocked().await
+    }
+
+    /// Caller-agnostic session check (IPC-004 only). For internal callers
+    /// with no webview, and for the one command legitimately invoked FROM
+    /// the browser webview (`__browser_form_extracted`), which enforces its
+    /// own caller restriction instead.
+    pub async fn require_session_unlocked(&self) -> Result<(), String> {
         if self.account_key.read().await.is_some() {
             Ok(())
         } else {

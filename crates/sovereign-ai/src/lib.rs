@@ -12,7 +12,10 @@ pub mod jiminy;
 pub mod jiminy_camera;
 #[cfg(feature = "vision")]
 pub mod jiminy_vision;
+#[cfg(any(feature = "jiminy", feature = "vision"))]
+pub mod sidecar;
 pub mod llm;
+pub mod model_integrity;
 pub mod orchestrator;
 pub mod pii;
 pub mod reliability;

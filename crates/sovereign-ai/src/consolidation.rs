@@ -51,12 +51,29 @@ struct ScoredPair {
 fn build_fingerprint(doc: &Document) -> String {
     let body = extract_body(&doc.content);
     let truncated = if body.len() > FINGERPRINT_CHARS {
-        &body[..FINGERPRINT_CHARS]
+        // Round to a char boundary — bodies include external/web-ingested
+        // text, and slicing mid-codepoint panics the consolidation cycle.
+        let mut end = FINGERPRINT_CHARS;
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        &body[..end]
     } else {
         &body
     };
     let ownership = if doc.is_owned { "owned" } else { "web" };
-    format!("({ownership}): \"{}\" — {truncated}", doc.title)
+    // INJECTION-001: the title and body are attacker-influenceable (saved web
+    // pages, imported or P2P-synced docs), and candidate selection prioritizes
+    // external↔owned pairs, so a malicious page is the prime input here. Fence
+    // the fingerprint as untrusted DATA so injected "instructions" can't steer
+    // the scoring model into forging a high-strength link or an attacker-chosen
+    // `reason`. The background cycle has no UI surface to emit InjectionDetected
+    // to, so fencing is the substantive control.
+    let (fenced, _) = crate::injection::fence_external(
+        "document fingerprint",
+        &format!("({ownership}): \"{}\" — {truncated}", doc.title),
+    );
+    fenced
 }
 
 /// Extract the body text from the JSON content field.

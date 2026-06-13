@@ -1,0 +1,7 @@
+{
+  "comment": "MODELTRUST: pinned model-integrity manifest. Maps model filename -> expected SHA-256 (lowercase hex) and (optional) pinned prompt format. This file is embedded into the binary at build time (include_str!), so it is the load-time trust anchor for KNOWN models: a listed model whose bytes don't match its hash is refused. Models NOT listed here fall back to trust-on-first-use (recorded in a DeviceKey/AccountKey-MAC'd store once a session is unlocked). Populate the official Qwen entries from upstream-published hashes (scripts/download-models.sh emits them); never paste a hash you haven't verified against a trusted source.",
+  "models": {
+    "qwen2.5-3b-instruct-q4_k_m.gguf": { "sha256": "9c9f56a391a3abbd5b89d0245bf6106081bcc3173119d4229235dd9d23253f94", "format": "chatml" },
+    "qwen2.5-7b-instruct-q4_k_m.gguf": { "sha256": "65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423", "format": "chatml" }
+  }
+}

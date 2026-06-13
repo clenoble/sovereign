@@ -25,6 +25,7 @@ pub struct MockGraphDB {
     entities: RwLock<HashMap<String, Entity>>,
     pii_records: RwLock<HashMap<String, PiiRecord>>,
     share_records: RwLock<HashMap<String, ShareRecord>>,
+    milestones: RwLock<HashMap<String, Milestone>>,
     next_id: AtomicU64,
 }
 
@@ -42,6 +43,7 @@ impl MockGraphDB {
             entities: RwLock::new(HashMap::new()),
             pii_records: RwLock::new(HashMap::new()),
             share_records: RwLock::new(HashMap::new()),
+            milestones: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(1),
         }
     }
@@ -67,6 +69,18 @@ impl GraphDB for MockGraphDB {
         doc.id = Some(thing);
         self.documents.write().unwrap().insert(id_str, doc.clone());
         Ok(doc)
+    }
+
+    async fn create_document_with_id(&self, doc: Document) -> DbResult<bool> {
+        let id = doc
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_document_with_id: doc.id unset".into()))?;
+        let mut docs = self.documents.write().unwrap();
+        if docs.contains_key(&id) {
+            return Ok(false);
+        }
+        docs.insert(id, doc);
+        Ok(true)
     }
 
     async fn get_document(&self, id: &str) -> DbResult<Document> {
@@ -178,6 +192,20 @@ impl GraphDB for MockGraphDB {
         Ok(())
     }
 
+    async fn set_document_content_encryption(
+        &self,
+        id: &str,
+        content_ciphertext: &str,
+        content_nonce: &str,
+    ) -> DbResult<()> {
+        let mut docs = self.documents.write().unwrap();
+        let doc = docs.get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        doc.content = content_ciphertext.to_string();
+        doc.encryption_nonce = Some(content_nonce.to_string());
+        Ok(())
+    }
+
     async fn create_thread(&self, mut thread: Thread) -> DbResult<Thread> {
         let key = self.next_key();
         let thing = Self::make_thing("thread", &key);
@@ -268,14 +296,15 @@ impl GraphDB for MockGraphDB {
         Ok(doc.clone())
     }
 
-    async fn create_relationship(&self, _from_id: &str, _to_id: &str, _relation_type: RelationType, _strength: f32) -> DbResult<RelatedTo> {
+    async fn create_relationship(&self, from_id: &str, to_id: &str, relation_type: RelationType, strength: f32) -> DbResult<RelatedTo> {
         let key = self.next_key();
         let rel = RelatedTo {
             id: Some(Self::make_thing("related_to", &key)),
-            in_: None,
-            out: None,
-            relation_type: _relation_type,
-            strength: _strength,
+            // RELATE $from->related_to->$to: `in` is the source, `out` the target.
+            in_: raw_to_thing(from_id),
+            out: raw_to_thing(to_id),
+            relation_type,
+            strength,
             created_at: Utc::now(),
         };
         self.relationships.write().unwrap().push(rel.clone());
@@ -467,6 +496,7 @@ impl GraphDB for MockGraphDB {
                 content: doc_content,
             },
             timestamp: Utc::now(),
+            signature: None,
         };
 
         let mut commits = self.commits.write().unwrap();
@@ -510,12 +540,49 @@ impl GraphDB for MockGraphDB {
         Ok(doc.clone())
     }
 
-    async fn create_milestone(&self, _milestone: Milestone) -> DbResult<Milestone> {
-        Ok(_milestone)
+    async fn set_commit_signature(&self, commit_id: &str, signature: &str) -> DbResult<()> {
+        let mut commits = self.commits.write().unwrap();
+        for list in commits.values_mut() {
+            for c in list.iter_mut() {
+                if c.id.as_ref().map(thing_to_raw).as_deref() == Some(commit_id) {
+                    c.signature = Some(signature.to_string());
+                    return Ok(());
+                }
+            }
+        }
+        Err(DbError::NotFound(commit_id.to_string()))
     }
-    async fn list_milestones(&self, _thread_id: &str) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
-    async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
-    async fn delete_milestone(&self, _id: &str) -> DbResult<()> { Ok(()) }
+
+    async fn create_milestone(&self, mut milestone: Milestone) -> DbResult<Milestone> {
+        let key = self.next_key();
+        let thing = Self::make_thing("milestone", &key);
+        let id_str = thing_to_raw(&thing);
+        milestone.id = Some(thing);
+        self.milestones.write().unwrap().insert(id_str, milestone.clone());
+        Ok(milestone)
+    }
+
+    async fn list_milestones(&self, thread_id: &str) -> DbResult<Vec<Milestone>> {
+        let ms = self.milestones.read().unwrap();
+        let mut out: Vec<Milestone> = ms.values()
+            .filter(|m| m.thread_id == thread_id)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        Ok(out)
+    }
+
+    async fn list_all_milestones(&self) -> DbResult<Vec<Milestone>> {
+        let ms = self.milestones.read().unwrap();
+        let mut out: Vec<Milestone> = ms.values().cloned().collect();
+        out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        Ok(out)
+    }
+
+    async fn delete_milestone(&self, id: &str) -> DbResult<()> {
+        self.milestones.write().unwrap().remove(id);
+        Ok(())
+    }
 
     async fn create_contact(&self, mut contact: Contact) -> DbResult<Contact> {
         let key = self.next_key();
@@ -579,6 +646,22 @@ impl GraphDB for MockGraphDB {
             .ok_or_else(|| DbError::NotFound(id.to_string()))?;
         c.notes = notes_ciphertext.to_string();
         c.encryption_nonce = Some(notes_nonce.to_string());
+        Ok(())
+    }
+
+    async fn set_contact_addresses_encryption(
+        &self,
+        id: &str,
+        addresses_ciphertext: &str,
+        addresses_nonce: &str,
+    ) -> DbResult<()> {
+        let mut contacts = self.contacts.write().unwrap();
+        let c = contacts
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        c.addresses = Vec::new();
+        c.addresses_encrypted = Some(addresses_ciphertext.to_string());
+        c.addresses_nonce = Some(addresses_nonce.to_string());
         Ok(())
     }
 
@@ -673,6 +756,17 @@ impl GraphDB for MockGraphDB {
             .filter(|m| m.body.to_lowercase().contains(&q))
             .cloned()
             .collect())
+    }
+
+    async fn find_message_by_external_id(
+        &self,
+        external_id: &str,
+    ) -> DbResult<Option<Message>> {
+        let msgs = self.messages.read().unwrap();
+        Ok(msgs
+            .values()
+            .find(|m| m.external_id.as_deref() == Some(external_id))
+            .cloned())
     }
 
     async fn search_messages_by_token_hashes(
@@ -893,6 +987,46 @@ impl GraphDB for MockGraphDB {
             .ok_or_else(|| DbError::NotFound(id.to_string()))
     }
 
+    async fn update_entity(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        kind: Option<EntityKind>,
+        domains: Option<Vec<String>>,
+        contact_ids: Option<Vec<String>>,
+        notes: Option<&str>,
+        is_owned: Option<bool>,
+        deleted_at: Option<Option<String>>,
+    ) -> DbResult<Entity> {
+        let mut entities = self.entities.write().unwrap();
+        let entity = entities
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        if let Some(n) = name {
+            entity.name = n.to_string();
+        }
+        if let Some(k) = kind {
+            entity.kind = k;
+        }
+        if let Some(d) = domains {
+            entity.domains = d;
+        }
+        if let Some(c) = contact_ids {
+            entity.contact_ids = c;
+        }
+        if let Some(nt) = notes {
+            entity.notes = nt.to_string();
+        }
+        if let Some(o) = is_owned {
+            entity.is_owned = o;
+        }
+        if let Some(d) = deleted_at {
+            entity.deleted_at = d;
+        }
+        entity.modified_at = Utc::now();
+        Ok(entity.clone())
+    }
+
     async fn create_share_record(&self, mut record: ShareRecord) -> DbResult<ShareRecord> {
         let key = self.next_key();
         let thing = Self::make_thing("share_record", &key);
@@ -1032,6 +1166,179 @@ impl GraphDB for MockGraphDB {
             .get_mut(id)
             .ok_or_else(|| DbError::NotFound(id.to_string()))?;
         c.pii_scanned_at = pii_scanned_at;
+        Ok(())
+    }
+
+    // -- Id-preserving inserts for P2P sync (P2) ---
+
+    async fn create_thread_with_id(&self, thread: Thread) -> DbResult<bool> {
+        let id = thread
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_thread_with_id: id unset".into()))?;
+        let mut map = self.threads.write().unwrap();
+        if map.contains_key(&id) {
+            return Ok(false);
+        }
+        map.insert(id, thread);
+        Ok(true)
+    }
+
+    async fn create_entity_with_id(&self, entity: Entity) -> DbResult<bool> {
+        let id = entity
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_entity_with_id: id unset".into()))?;
+        let mut map = self.entities.write().unwrap();
+        if map.contains_key(&id) {
+            return Ok(false);
+        }
+        map.insert(id, entity);
+        Ok(true)
+    }
+
+    async fn create_pii_record_with_id(&self, record: PiiRecord) -> DbResult<bool> {
+        let id = record
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_pii_record_with_id: id unset".into()))?;
+        let mut map = self.pii_records.write().unwrap();
+        if map.contains_key(&id) {
+            return Ok(false);
+        }
+        map.insert(id, record);
+        Ok(true)
+    }
+
+    async fn create_share_record_with_id(&self, record: ShareRecord) -> DbResult<bool> {
+        let id = record
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_share_record_with_id: id unset".into()))?;
+        let mut map = self.share_records.write().unwrap();
+        if map.contains_key(&id) {
+            return Ok(false);
+        }
+        map.insert(id, record);
+        Ok(true)
+    }
+
+    async fn create_contact_with_id(&self, contact: Contact) -> DbResult<bool> {
+        let id = contact
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_contact_with_id: id unset".into()))?;
+        let mut map = self.contacts.write().unwrap();
+        if map.contains_key(&id) {
+            return Ok(false);
+        }
+        map.insert(id, contact);
+        Ok(true)
+    }
+
+    async fn create_message_with_id(&self, message: Message) -> DbResult<bool> {
+        let id = message
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_message_with_id: id unset".into()))?;
+        let mut map = self.messages.write().unwrap();
+        if map.contains_key(&id) {
+            return Ok(false);
+        }
+        map.insert(id, message);
+        Ok(true)
+    }
+
+    async fn create_conversation_with_id(&self, conversation: Conversation) -> DbResult<bool> {
+        let id = conversation
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_conversation_with_id: id unset".into()))?;
+        let mut map = self.conversations.write().unwrap();
+        if map.contains_key(&id) {
+            return Ok(false);
+        }
+        map.insert(id, conversation);
+        Ok(true)
+    }
+
+    async fn create_milestone_with_id(&self, milestone: Milestone) -> DbResult<bool> {
+        let id = milestone
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_milestone_with_id: id unset".into()))?;
+        let mut map = self.milestones.write().unwrap();
+        if map.contains_key(&id) {
+            return Ok(false);
+        }
+        map.insert(id, milestone);
+        Ok(true)
+    }
+
+    async fn create_relationship_with_id(&self, rel: RelatedTo) -> DbResult<bool> {
+        let id = rel
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_relationship_with_id: id unset".into()))?;
+        let mut rels = self.relationships.write().unwrap();
+        if rels.iter().any(|r| r.id_string().as_deref() == Some(&id)) {
+            return Ok(false);
+        }
+        rels.push(rel);
+        Ok(true)
+    }
+
+    async fn create_suggested_link_with_id(&self, link: SuggestedLink) -> DbResult<bool> {
+        let id = link
+            .id_string()
+            .ok_or_else(|| DbError::Query("create_suggested_link_with_id: id unset".into()))?;
+        let mut links = self.suggested_links.write().unwrap();
+        if links.iter().any(|l| l.id_string().as_deref() == Some(&id)) {
+            return Ok(false);
+        }
+        links.push(link);
+        Ok(true)
+    }
+
+    // -- Per-row reads + raw status setter for P2P sync (P2) ---
+
+    async fn get_milestone(&self, id: &str) -> DbResult<Milestone> {
+        self.milestones
+            .read()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn get_relationship(&self, id: &str) -> DbResult<RelatedTo> {
+        self.relationships
+            .read()
+            .unwrap()
+            .iter()
+            .find(|r| r.id_string().as_deref() == Some(id))
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn get_suggested_link(&self, id: &str) -> DbResult<SuggestedLink> {
+        self.suggested_links
+            .read()
+            .unwrap()
+            .iter()
+            .find(|l| l.id_string().as_deref() == Some(id))
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn list_all_suggested_links(&self) -> DbResult<Vec<SuggestedLink>> {
+        Ok(self.suggested_links.read().unwrap().clone())
+    }
+
+    async fn set_suggested_link_status(
+        &self,
+        id: &str,
+        status: SuggestionStatus,
+        resolved_at: Option<DateTime<Utc>>,
+    ) -> DbResult<()> {
+        let mut links = self.suggested_links.write().unwrap();
+        let link = links
+            .iter_mut()
+            .find(|l| l.id_string().as_deref() == Some(id))
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        link.status = status;
+        link.resolved_at = resolved_at;
         Ok(())
     }
 }

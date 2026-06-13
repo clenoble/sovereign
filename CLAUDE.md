@@ -26,6 +26,14 @@ This is critical — APIs change between versions and stale knowledge causes cas
 
 **UI:** the Svelte 5 + Tauri 2 frontend in `frontend/` is the only supported UI. The previous Iced-based `sovereign-ui` and `sovereign-canvas` crates were retired.
 
+### Data-at-rest threat model
+
+The at-rest model is **field-level encryption + OS full-disk encryption**, not whole-database encryption:
+
+- **Content is field-encrypted** by `EncryptedGraphDB` (a decorator over the raw SurrealGraphDB): document titles + bodies, message bodies, thread/conversation names, contact names + notes + addresses, and all PII vault values are XChaCha20-Poly1305 encrypted under per-entity keys (per-persona key DBs — see [[CRYPTO-001]] duress isolation). Install fails *closed* (login aborts rather than writing plaintext).
+- **Metadata/structure stays plaintext on disk** and cannot be opaquely encrypted without making the store unqueryable: record IDs, timestamps, relationship/graph edges, and the deterministic blind-index token hashes used for encrypted-search (the accepted CRYPTO-004 correlation tradeoff). Embedded SurrealDB+RocksDB has **no native at-rest encryption**.
+- **For the offline-disk-theft threat, the metadata layer is covered by OS full-disk encryption** (BitLocker / FileVault / LUKS) — treat that as a deployment requirement, with field encryption as defense-in-depth on top. This is the disposition of audit finding ATREST-001 (re-scoped from "datadir not encrypted" to "metadata-at-rest leakage, covered by OS FDE").
+
 ### AI Orchestrator Architecture (`sovereign-ai`)
 
 The orchestrator uses local Qwen models (2.5 and 3.5) via llama-cpp-2 (no cloud, no external servers):
@@ -209,10 +217,15 @@ When launching `sovereign.exe` in the background (e.g. `./sovereign.exe &`), the
 Before every release, run the adversarial red-team workflow:
 `Workflow({ name: "pre-release-security-audit", args: { version: "X.Y.Z" } })`. It
 static-audits, fuzz/adversarial-tests, dependency-CVE-audits, and sandbox-attacks the whole
-app across ~9 dimensions, adversarially verifies each finding to drop false positives, and
-emits a severity-ranked report + release verdict (find-only — it never edits source). The
-workflow script and its reports live under `.claude/` and are **gitignored — never published
-to the github mirror**; see `.claude/workflows/README.md` for the playbook.
+app across **19 dimensions** — the original 9 (`crypto`, `injection`, `gating`, `ipc`, `pii`,
+`p2p`, `comms`, `web`, `supply`) plus 10 folded in after the v0.0.7 audit (`dos`, `wasm`,
+`voice`, `sessionlog`, `android`, `sidecar`, `installer`, `sidechannel`, `atrest`,
+`modeltrust`) — adversarially verifies each finding to drop false positives, and emits a
+severity-ranked report + release verdict (find-only — it never edits source). Pass
+`args.dims: [keys]` to run a focused subset (e.g. just the new attack classes), or
+`args.depth` (`smoke`/`static`/`full`). The workflow script and its reports live under
+`.claude/` and are **gitignored — never published to the github mirror**; see
+`.claude/workflows/README.md` for the playbook.
 
 ### WSL2 / Linux
 ```bash

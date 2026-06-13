@@ -212,7 +212,7 @@ impl AuthStore {
     pub fn save(&self, path: &std::path::Path) -> CryptoResult<()> {
         let json = serde_json::to_vec_pretty(self)
             .map_err(|e| CryptoError::Serialization(e.to_string()))?;
-        std::fs::write(path, json).map_err(|e| CryptoError::KeyDbIo(e.to_string()))?;
+        crate::fs_private::write_private(path, json).map_err(|e| CryptoError::KeyDbIo(e.to_string()))?;
         Ok(())
     }
 

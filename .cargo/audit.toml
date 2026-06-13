@@ -1,0 +1,17 @@
+# cargo-audit triage. Each ignore must carry a justification and should be
+# re-checked at every release (see .github/workflows/ci.yml rust-audit job).
+[advisories]
+ignore = [
+    # rsa Marvin timing side-channel (no patched release). Pulled in via
+    # presage-store-sqlite -> sqlx -> sqlx-mysql; the MySQL driver is never
+    # used (Signal store is SQLite-only) and features are additive so it
+    # cannot be disabled from this workspace. No RSA decryption oracle is
+    # exposed. Re-check when presage/sqlx update.
+    "RUSTSEC-2023-0071",
+    # hickory-proto DoS issues, pulled in via libp2p-mdns (libp2p 0.56 pins
+    # hickory <0.26). mDNS runs only on the local network for peer discovery
+    # and sync is gated on device pairing. Bump libp2p when a release using
+    # hickory-proto >=0.26.1 lands.
+    "RUSTSEC-2026-0118",
+    "RUSTSEC-2026-0119",
+]

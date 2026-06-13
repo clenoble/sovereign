@@ -3,7 +3,11 @@ mod account_key_migration;
 mod cli;
 mod commands;
 mod llm_bridge;
-#[cfg(feature = "duress")]
+// CRYPTO-001 (v0.0.7): compiled in the encryption build, where install_session
+// seeds the duress persona's decoy database. It was previously gated behind a
+// non-existent `duress` feature, so it never compiled and the persona was
+// half-wired (seed_duress_db / persona_db_path were dead code).
+#[cfg(feature = "encryption")]
 mod duress;
 mod err;
 // Server-side login lockout (CRYPTO-002). Only the encryption build's
@@ -147,7 +151,17 @@ pub fn run_cli() -> Result<()> {
             let dir = setup::crypto_dir().join("paired_devices.json");
             if dir.exists() {
                 let content = std::fs::read_to_string(&dir)?;
-                println!("{content}");
+                // P1.4: the store is encrypted at rest (it carries the
+                // per-pair sealing keys) and the CLI runs pre-auth, so it
+                // can only report that devices exist.
+                if content.contains("\"ciphertext\"") {
+                    println!(
+                        "paired_devices.json is encrypted (P2P-005). \
+                         Use the app's Settings panel to view paired devices."
+                    );
+                } else {
+                    println!("{content}");
+                }
             } else {
                 println!("No paired devices.");
             }
@@ -339,6 +353,21 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pairing::get_local_peer_id,
             #[cfg(feature = "encryption")]
             tauri_commands::pairing::trigger_sync_now,
+            #[cfg(feature = "encryption")]
+            tauri_commands::pairing::cancel_pairing,
+            #[cfg(feature = "encryption")]
+            tauri_commands::pairing::get_p2p_settings,
+            #[cfg(feature = "encryption")]
+            tauri_commands::pairing::resolve_sync_conflict_keep_mine,
+            // Backup (P4)
+            #[cfg(feature = "encryption")]
+            tauri_commands::backup::backup_now,
+            #[cfg(feature = "encryption")]
+            tauri_commands::backup::backup_status,
+            #[cfg(feature = "encryption")]
+            tauri_commands::backup::approve_shard_release,
+            #[cfg(feature = "encryption")]
+            tauri_commands::backup::deny_shard_release,
             // Mobile: voice transcription + share-sheet receiver + connectivity
             tauri_commands::mobile::voice_transcribe_buffer,
             tauri_commands::mobile::receive_shared_content,
@@ -347,6 +376,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             // Voice: push-to-talk control surface
             tauri_commands::voice::start_listening,
             tauri_commands::voice::stop_listening,
+            // Sidecar: hand the provisioned jiminy token to the vision UI
+            tauri_commands::ai::get_jiminy_token,
         ])
         .setup(move |app| -> std::result::Result<(), Box<dyn std::error::Error>> {
             use tauri::Manager;
@@ -463,7 +494,11 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 #[cfg(feature = "p2p")]
                 p2p_command_tx: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "p2p")]
-                pairing_manager: tokio::sync::RwLock::new(None),
+                pairing_manager: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+                #[cfg(feature = "p2p")]
+                p2p_listen_addrs: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+                #[cfg(feature = "p2p")]
+                backup_host: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "p2p")]
                 connectivity: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
                 #[cfg(feature = "voice-stt")]
@@ -483,6 +518,13 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             // (robot head/antenna/emotions + ChatResponse -> sidecar /speak),
             // so `orch_rx` is rebound to the UI receiver below.
             let orch_rx = backend.orch_rx;
+
+            // SIDECAR-002: provision the shared sidecar auth token before any
+            // jiminy/vision client connects, so the (now fail-closed) sidecars
+            // authenticate the Rust clients. Writes a 0600 token file the Python
+            // sidecars also read; sets JIMINY_TOKEN for this process.
+            #[cfg(all(feature = "encryption", any(feature = "jiminy", feature = "vision")))]
+            crate::setup::ensure_jiminy_token(&sovereign_core::sovereign_dir());
 
             // Jiminy embodiment (BODY): fan-out every orchestrator event to BOTH
             // the Tauri event forwarder AND the JiminyBridge. Rebind orch_rx to
@@ -559,6 +601,7 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                         };
                         let client = reqwest::Client::builder()
                             .timeout(std::time::Duration::from_secs(30))
+                            .default_headers(sovereign_ai::sidecar::auth_headers())
                             .build()
                             .unwrap_or_default();
                         while listen_rx.recv().await.is_some() {
@@ -774,8 +817,14 @@ fn sleep_jiminy(bridge_url: &str) {
     if let Ok(mut stream) = TcpStream::connect_timeout(&sock, Duration::from_secs(2)) {
         let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
         let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+        let auth = match std::env::var("JIMINY_TOKEN") {
+            Ok(token) if !token.is_empty() && !token.contains(['\r', '\n']) => {
+                format!("Authorization: Bearer {token}\r\n")
+            }
+            _ => String::new(),
+        };
         let req = format!(
-            "POST /sleep HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            "POST /sleep HTTP/1.1\r\nHost: {addr}\r\n{auth}Content-Length: 0\r\nConnection: close\r\n\r\n"
         );
         if stream.write_all(req.as_bytes()).is_ok() {
             let _ = stream.flush();
@@ -1009,11 +1058,12 @@ mod ipc_classification_guard {
         "consume_pair_qr_preview",
         "complete_onboarding_paired",
         "voice_transcribe_buffer",
-        "receive_shared_content",
         "set_connectivity_state",
         "get_connectivity_state",
         "start_listening",
         "stop_listening",
+        // Sidecar token for the vision UI — reads an env var, no session needed.
+        "get_jiminy_token",
     ];
 
     /// Commands that require an unlocked session. Either gated with an
@@ -1083,6 +1133,8 @@ mod ipc_classification_guard {
         "accept_link_suggestion",
         "dismiss_link_suggestion",
         "trigger_consolidation",
+        // mobile / share (IPC-001: now require_unlocked + main-webview)
+        "receive_shared_content",
         // pii (account_key-gated ones included)
         "resolve_pii_tokens",
         "list_pii_entities",
@@ -1107,6 +1159,14 @@ mod ipc_classification_guard {
         "forget_paired_device",
         "get_local_peer_id",
         "trigger_sync_now",
+        "cancel_pairing",
+        "get_p2p_settings",
+        "resolve_sync_conflict_keep_mine",
+        // backup (P4)
+        "backup_now",
+        "backup_status",
+        "approve_shard_release",
+        "deny_shard_release",
     ];
 
     /// Mirrors the `tauri::generate_handler!` registration in `run_tauri`
@@ -1217,6 +1277,14 @@ mod ipc_classification_guard {
         "forget_paired_device",
         "get_local_peer_id",
         "trigger_sync_now",
+        "cancel_pairing",
+        "get_p2p_settings",
+        "resolve_sync_conflict_keep_mine",
+        // backup (P4)
+        "backup_now",
+        "backup_status",
+        "approve_shard_release",
+        "deny_shard_release",
         // mobile
         "voice_transcribe_buffer",
         "receive_shared_content",
@@ -1225,6 +1293,7 @@ mod ipc_classification_guard {
         // voice
         "start_listening",
         "stop_listening",
+        "get_jiminy_token",
     ];
 
     #[test]

@@ -12,7 +12,14 @@ pub async fn greet(name: String) -> String {
 
 /// Return summary stats about the loaded data.
 #[tauri::command]
-pub async fn get_status(state: State<'_, AppState>) -> Result<AppStatus, String> {
+pub async fn get_status(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<AppStatus, String> {
+    // IPC-002: row counts are workspace metadata — keep them off the embedded
+    // browser webview (an external page must not be able to enumerate how many
+    // documents/threads/contacts exist).
+    crate::tauri_state::require_main_webview(&webview)?;
     let docs = state.db.list_documents(None).await.str_err()?;
     let threads = state.db.list_threads().await.str_err()?;
     let contacts = state.db.list_contacts().await.str_err()?;
@@ -25,6 +32,18 @@ pub async fn get_status(state: State<'_, AppState>) -> Result<AppStatus, String>
     })
 }
 
+/// SIDECAR-001/002: hand the provisioned jiminy sidecar token to the trusted
+/// webview so `vision.ts` can authenticate its cross-origin `/vision/*` fetches
+/// (the sidecars now require the bearer token regardless of Origin). Returns
+/// the process `JIMINY_TOKEN`, or `None` if none is provisioned (sidecars not
+/// in use). The renderer is the app's own trusted frontend, and the token only
+/// guards the loopback sidecars against OTHER local processes — exposing it to
+/// the renderer doesn't widen the trust boundary.
+#[tauri::command]
+pub fn get_jiminy_token() -> Option<String> {
+    std::env::var("JIMINY_TOKEN").ok().filter(|t| !t.is_empty())
+}
+
 // ---------------------------------------------------------------------------
 // Chat
 // ---------------------------------------------------------------------------
@@ -35,8 +54,12 @@ pub async fn get_status(state: State<'_, AppState>) -> Result<AppStatus, String>
 /// bubble-state, action-proposed, etc.) — this command only kicks off
 /// processing and returns immediately.
 #[tauri::command]
-pub async fn chat_message(state: State<'_, AppState>, message: String) -> Result<(), String> {
-    state.require_unlocked().await?;
+pub async fn chat_message(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+    message: String,
+) -> Result<(), String> {
+    state.require_unlocked(&webview).await?;
     let orch = state
         .orchestrator
         .as_ref()
@@ -53,10 +76,11 @@ pub async fn chat_message(state: State<'_, AppState>, message: String) -> Result
 /// Search documents by title (client-side quick filter).
 #[tauri::command]
 pub async fn search_documents(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     query: String,
 ) -> Result<Vec<SearchHit>, String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let docs = state
         .db
         .search_documents_by_title(&query)
@@ -90,8 +114,12 @@ pub async fn search_documents(
 
 /// Full AI-powered search via the orchestrator.
 #[tauri::command]
-pub async fn search_query(state: State<'_, AppState>, query: String) -> Result<(), String> {
-    state.require_unlocked().await?;
+pub async fn search_query(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<(), String> {
+    state.require_unlocked(&webview).await?;
     let orch = state
         .orchestrator
         .as_ref()
@@ -107,8 +135,11 @@ pub async fn search_query(state: State<'_, AppState>, query: String) -> Result<(
 
 /// Approve a pending action proposed by the orchestrator.
 #[tauri::command]
-pub async fn approve_action(state: State<'_, AppState>) -> Result<(), String> {
-    state.require_unlocked().await?;
+pub async fn approve_action(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.require_unlocked(&webview).await?;
     state
         .decision_tx
         .send(ActionDecision::Approve)
@@ -119,10 +150,11 @@ pub async fn approve_action(state: State<'_, AppState>) -> Result<(), String> {
 /// Reject a pending action proposed by the orchestrator.
 #[tauri::command]
 pub async fn reject_action(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     reason: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     state
         .decision_tx
         .send(ActionDecision::Reject(reason))
@@ -133,10 +165,11 @@ pub async fn reject_action(
 /// Accept a proactive suggestion.
 #[tauri::command]
 pub async fn accept_suggestion(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     action: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     state
         .feedback_tx
         .send(FeedbackEvent::SuggestionAccepted { action })
@@ -147,10 +180,11 @@ pub async fn accept_suggestion(
 /// Dismiss a proactive suggestion.
 #[tauri::command]
 pub async fn dismiss_suggestion(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     action: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     state
         .feedback_tx
         .send(FeedbackEvent::SuggestionDismissed { action })
@@ -221,6 +255,16 @@ pub async fn delete_model(
     state: State<'_, AppState>,
     filename: String,
 ) -> Result<(), String> {
+    // Pre-auth command + user-controlled filename: require a bare .gguf name
+    // so `..`/absolute paths can't delete files outside the model dir
+    // (Path::join replaces the base entirely when handed an absolute path).
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return Err("Invalid model filename".into());
+    }
+    if !filename.ends_with(".gguf") {
+        return Err("Not a model file".into());
+    }
+
     let assignments = state.model_assignments.lock().str_err()?;
     if assignments.router == filename {
         return Err("Cannot delete the active router model".into());
@@ -250,8 +294,11 @@ pub struct TrustEntryDto {
 
 /// Return all trust entries for the dashboard.
 #[tauri::command]
-pub async fn get_trust_entries(state: State<'_, AppState>) -> Result<Vec<TrustEntryDto>, String> {
-    state.require_unlocked().await?;
+pub async fn get_trust_entries(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<Vec<TrustEntryDto>, String> {
+    state.require_unlocked(&webview).await?;
     let orch = state
         .orchestrator
         .as_ref()
@@ -271,10 +318,11 @@ pub async fn get_trust_entries(state: State<'_, AppState>) -> Result<Vec<TrustEn
 /// Reset trust for a specific action.
 #[tauri::command]
 pub async fn reset_trust_action(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     action: String,
 ) -> Result<(), String> {
-    state.require_unlocked().await?;
+    state.require_unlocked(&webview).await?;
     let orch = state
         .orchestrator
         .as_ref()
@@ -285,8 +333,11 @@ pub async fn reset_trust_action(
 
 /// Reset all trust entries.
 #[tauri::command]
-pub async fn reset_trust_all(state: State<'_, AppState>) -> Result<(), String> {
-    state.require_unlocked().await?;
+pub async fn reset_trust_all(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.require_unlocked(&webview).await?;
     let orch = state
         .orchestrator
         .as_ref()

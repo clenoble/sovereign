@@ -83,7 +83,10 @@ impl RecoveryRequest {
         }
     }
 
-    /// Force advance past waiting period (for testing / admin override).
+    /// Force advance past the waiting period — test-only: the 72-hour delay
+    /// is the anti-coercion control for social recovery, so production code
+    /// must never be able to skip it.
+    #[cfg(test)]
     pub fn force_advance_past_waiting(&mut self) {
         if self.state == RecoveryState::WaitingPeriod {
             self.state = RecoveryState::AwaitingShards;
