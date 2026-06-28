@@ -11,6 +11,7 @@
 	let lockedUntil = $state<number | null>(null);
 	let lockCountdown = $state('');
 	let submitting = $state(false);
+	let showPw = $state(false);
 
 	// Keystroke timing capture
 	let keyTimings: Map<string, number> = new Map();
@@ -66,22 +67,40 @@
 	}
 
 	async function handleSubmit() {
-		if (!password.trim() || submitting || lockedUntil) return;
+		// Trim before sending: phone keyboards can slip an invisible leading/
+		// trailing space into the field (undetectable even with reveal on),
+		// which makes the correct password fail to authenticate. The guard
+		// already trims, but we previously sent the untrimmed value.
+		const pw = password.trim();
+		if (!pw || submitting || lockedUntil) return;
 		submitting = true;
 		error = '';
 
 		try {
-			const persona = await validatePassword(password, keystrokes);
+			const persona = await validatePassword(pw, keystrokes);
 			app.authState = 'ready';
 		} catch (e) {
-			attempts++;
-			error = 'Invalid password';
+			// Surface the REAL backend error. validate_password returns
+			// "Invalid password" only for an actual auth failure; other failures
+			// (e.g. at-rest encryption init aborting the login, a locked account)
+			// previously got mislabeled as a bad password, which is badly
+			// misleading. Only a genuine wrong password counts toward lockout.
+			const msg =
+				(typeof e === 'string' ? e : ((e as { message?: string })?.message ?? '')) ||
+				'Invalid password';
 			password = '';
 			keystrokes = [];
 
-			if (attempts >= maxAttempts) {
-				lockedUntil = Date.now() + lockoutSeconds * 1000;
-				error = '';
+			if (/invalid password/i.test(msg)) {
+				attempts++;
+				if (attempts >= maxAttempts) {
+					lockedUntil = Date.now() + lockoutSeconds * 1000;
+					error = '';
+				} else {
+					error = 'Invalid password';
+				}
+			} else {
+				error = msg;
 			}
 		} finally {
 			submitting = false;
@@ -101,15 +120,30 @@
 			</div>
 		{:else}
 			<div class="form">
-				<input
-					type="password"
-					class="password-input"
-					placeholder="Password"
-					bind:value={password}
-					onkeydown={handleKeydown}
-					onkeyup={handleKeyup}
-					disabled={submitting}
-				/>
+				<div class="password-field">
+					<input
+						type={showPw ? 'text' : 'password'}
+						class="password-input"
+						placeholder="Password"
+						bind:value={password}
+						onkeydown={handleKeydown}
+						onkeyup={handleKeyup}
+						disabled={submitting}
+						autocapitalize="off"
+						autocorrect="off"
+						autocomplete="off"
+						spellcheck="false"
+					/>
+					<button
+						type="button"
+						class="reveal-btn"
+						onclick={() => (showPw = !showPw)}
+						tabindex="-1"
+						aria-label={showPw ? 'Hide password' : 'Show password'}
+					>
+						{showPw ? 'Hide' : 'Show'}
+					</button>
+				</div>
 				<button
 					class="unlock-btn"
 					onclick={handleSubmit}
@@ -182,6 +216,28 @@
 	}
 	.password-input:focus {
 		border-color: var(--accent, #4ea7e9);
+	}
+
+	.password-field {
+		position: relative;
+	}
+	.password-field .password-input {
+		padding-right: 64px;
+	}
+	.reveal-btn {
+		position: absolute;
+		right: 6px;
+		top: 50%;
+		transform: translateY(-50%);
+		background: none;
+		border: none;
+		color: var(--text-muted, #888);
+		font-size: 0.85rem;
+		cursor: pointer;
+		padding: 6px 10px;
+	}
+	.reveal-btn:hover {
+		color: var(--accent, #4ea7e9);
 	}
 
 	.unlock-btn {

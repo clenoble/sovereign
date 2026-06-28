@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use crate::error::DbResult;
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, Entity, EntityKind, Message, Milestone,
-    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, ShareRecord, SourceRef,
-    SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, RowRecovery, ShareRecord,
+    SourceRef, SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
 
 /// Core database abstraction for the Sovereign GE document graph.
@@ -38,6 +38,9 @@ pub trait GraphDB: Send + Sync {
         content: Option<&str>,
     ) -> DbResult<Document>;
     async fn delete_document(&self, id: &str) -> DbResult<()>;
+
+    /// Set a document's user-pinned flag (plaintext metadata).
+    async fn set_document_pinned(&self, id: &str, pinned: bool) -> DbResult<()>;
 
     /// Update a document's spatial canvas position.
     async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()>;
@@ -84,6 +87,53 @@ pub trait GraphDB: Send + Sync {
         score: Option<f32>,
         assessment_json: Option<&str>,
     ) -> DbResult<Document>;
+
+    // -- P2P peer-write review (p2p-no-per-doc-authz) --
+    /// Mark a document as overwritten by a paired peer's sync, preserving the
+    /// prior local version's commit id for one-click restore. The change is
+    /// surfaced for review on next open instead of silently replacing content.
+    async fn set_document_peer_review(
+        &self,
+        doc_id: &str,
+        peer: &str,
+        prior_commit: Option<&str>,
+    ) -> DbResult<()>;
+    /// Attach the async LLM audit verdict to a pending peer-review.
+    async fn set_document_peer_review_assessment(
+        &self,
+        doc_id: &str,
+        assessment_json: &str,
+    ) -> DbResult<()>;
+    /// Clear the peer-review flag once the user has reviewed the change.
+    async fn clear_document_peer_review(&self, doc_id: &str) -> DbResult<()>;
+    /// Documents with an unreviewed peer change, for the review queue.
+    async fn list_documents_pending_peer_review(&self) -> DbResult<Vec<Document>>;
+
+    // -- Row shadow-recovery (p2p-no-per-doc-authz; rows have no commit history) --
+    /// Preserve the pre-overwrite copy of a row before a paired peer's sync
+    /// replaces it. `prior_ciphertext`/`prior_nonce` are the serialized prior
+    /// record, already AEAD-sealed by the sync layer (never plaintext at rest).
+    /// Returns the recovery row id.
+    async fn stash_row_recovery(
+        &self,
+        row_id: &str,
+        table: &str,
+        prior_ciphertext: &str,
+        prior_nonce: &str,
+        peer: &str,
+    ) -> DbResult<String>;
+    /// Attach the async LLM audit verdict to a pending row recovery.
+    async fn set_row_recovery_assessment(
+        &self,
+        recovery_id: &str,
+        assessment_json: &str,
+    ) -> DbResult<()>;
+    /// Row recoveries awaiting review, newest first.
+    async fn list_pending_row_recoveries(&self) -> DbResult<Vec<RowRecovery>>;
+    /// Fetch one recovery (e.g. to re-apply the prior value on restore).
+    async fn get_row_recovery(&self, recovery_id: &str) -> DbResult<RowRecovery>;
+    /// Mark a recovery reviewed (the user restored or accepted the change).
+    async fn resolve_row_recovery(&self, recovery_id: &str) -> DbResult<()>;
 
     // -- Threads ---
 

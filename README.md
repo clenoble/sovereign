@@ -6,17 +6,17 @@ An experimental local-first graphical environment with on-device AI, end-to-end 
 
 Sovereign explores what personal computing looks like when nothing leaves your machine — no cloud accounts, no telemetry, no external servers. AI runs locally via quantized Qwen models (2.5 and 3.5) through llama.cpp. Documents are encrypted at rest with per-document keys. Devices sync directly over libp2p.
 
-This is a prototype. Built in Rust. 8 crates plus a Svelte 5 + Tauri 2 frontend (the only supported UI as of [v0.0.3](RELEASE_NOTES_v0.0.3.md)). Co-developed with [Claude](https://claude.ai) by Anthropic.
+This is a prototype. Built in Rust. 9 crates. The **default desktop UI is a native Rust shell** (Vello + winit + wgpu) that calls the backend in-process — no web stack, no IPC. The Svelte 5 + Tauri 2 frontend is kept as a build option and is the **mobile** UI. Co-developed with [Claude](https://claude.ai) by Anthropic.
 
 ## What it explores
 
 - **On-device AI** — A 3B router classifies intent; a 7B model handles complex queries. Multi-turn chat with tool calling, trust tracking, and prompt injection detection. Supports Qwen 2.5 and 3.5 (with thinking-mode suppression), Mistral, and Llama3. No API keys, no subscriptions.
-- **Spatial canvas** — Documents live on an infinite 2D canvas. Time runs left to right, thread lanes top to bottom. Adaptive level-of-detail: full cards at close zoom, density heatmap at extreme zoom-out. Minimap, sticky lane labels, cascade stacking for same-date cards.
+- **Spatial canvas** — Documents live on a 2D canvas, rendered natively with Vello (no web stack). Time runs left to right on a **calibrated, zoom-adaptive axis** (zoom in for hours/minutes, out for months/years) with a live "now" line; thread lanes run top to bottom. Adaptive level-of-detail, minimap, sticky lane labels, and fit-to-data vs now-centered framing.
 - **Embedded browser** — Browse the web from within Sovereign. An LLM-powered reliability assessment scores external content on domain-specific rubrics (factual integrity, logical coherence, rhetorical style). Save pages to your workspace with provenance and reliability metadata.
 - **Memory consolidation** — Background AI process discovers semantic links between documents. Suggests relationships (supports, references, contradicts, continues, derived-from) with strength scores and rationale. Accept or dismiss — dismissed pairs are never re-suggested.
 - **Action gravity** — Friction scales with irreversibility. Reading is instant. Deleting requires confirmation and a 30-day undo window. Security enforced by code architecture, not prompts.
 - **Encryption & social recovery** — XChaCha20-Poly1305 with per-document keys. Zero plaintext on disk. Shamir secret sharing splits your recovery key across trusted guardians — 3 of 5 can reconstruct it.
-- **Peer-to-peer sync** — Device pairing over libp2p. Encrypted manifests ensure even the network can't see your data.
+- **Peer-to-peer sync** — Interactive device pairing over libp2p: a QR + PIN handshake exchanges sealed keys over a live connection (the account key never travels in the QR), and the new device auto-syncs the workspace right after pairing. Encrypted manifests ensure even the network can't see your data.
 - **Unified communications** — Email, Signal, WhatsApp — organized by person, not by app. Conversations stay local.
 - **Content skills** — Composable tools instead of monolithic apps. ~30 built-in skills as of v0.0.3: markdown editor, PDF/HTML/plaintext export, search, find-replace, image handling, file import, outline extractor, link checker, PII detector, redactor, table of contents, JSON/YAML formatter, CSV → markdown, sort lists, case converter, backlink map, orphan finder, daily journal, thread summary, plus 20 community spec-as-seed skills. Third-party WASM skill plugins via the Component Model.
 - **Voice pipeline** — Wake word, Whisper speech-to-text, Piper TTS (optional).
@@ -34,9 +34,10 @@ Rust workspace with 8 crates:
 | `sovereign-skills` | Skill registry — ~30 built-in skills covering read-only, read+write, and cross-document operations (markdown editor, exports, find-replace, outline / link / PII / readability scanners, redactor, ToC, formatters, backlink map, orphan finder, daily journal, thread summary, community seeds) |
 | `sovereign-p2p` | libp2p networking, device pairing, encrypted sync |
 | `sovereign-comms` | Unified communications — email (IMAP/SMTP), Signal, WhatsApp |
-| `sovereign-app` | Binary entry point — CLI dispatch, Tauri bootstrap, embedded browser, Tauri commands |
+| `sovereign-shell` | **Native desktop UI** (default) — Rust/Vello/winit/wgpu, calls the backend crates in-process (no IPC). Builds as `sovereign` |
+| `sovereign-app` | Tauri/CLI binary — Tauri bootstrap, dev CLI, embedded browser, Tauri commands. Builds as `sovereign-tauri` (desktop) + the `sovereign_app` cdylib (mobile) |
 
-The sole UI is a **Tauri 2.10 + Svelte 5 frontend** (`frontend/`), built with SvelteKit 2.50 and Vite 7.3 over Tauri IPC. Includes timeline canvas, AI chat panel, embedded browser, suggestion panel, onboarding wizard, settings, and trust dashboard. The previous Iced-based `sovereign-ui` and `sovereign-canvas` crates were retired in v0.0.3.
+**Two desktop frontends, one mobile.** The default desktop UI is the **native shell** (`sovereign-shell`, binary `sovereign`): a roll-our-own widget layer on Vello 0.9 + winit 0.30 + wgpu + parley, rendering the spatial timeline canvas, floating windows (documents, contact-first inbox, chat, tabbed settings, embedded browser via `wry`, devices & sync), and the orchestrator bubble — all calling the backend in-process. The **Tauri 2.10 + Svelte 5 frontend** (`frontend/`, SvelteKit 2.50 + Vite 7.3) remains a build option on desktop (`sovereign-tauri`) and is the **mobile** UI (`cargo tauri android`). The previous Iced-based `sovereign-ui` and `sovereign-canvas` crates were retired in v0.0.3.
 
 ## Getting started
 
@@ -71,15 +72,14 @@ Filenames must match `config/default.toml`. Qwen 3.5 models are auto-detected fr
 ### 2. Build & run
 
 ```bash
-# Install frontend dependencies
-cd frontend && npm install && cd ..
+# Default desktop UI — the native shell (binary `sovereign`). No Node needed.
+cargo build -p sovereign-shell -j 4
+./target/debug/sovereign            # (or _run.bat on Windows)
 
-# Build frontend + Rust backend together
-cd frontend && npm run build && cd ..
+# Tauri UI (kept as an option; also the mobile UI). Needs the frontend built:
+cd frontend && npm install && npm run build && cd ..
 cargo build -p sovereign-app --features encrypted-log -j 4
-
-# Or use Tauri CLI for dev mode (hot-reload)
-cd frontend && npm run tauri dev
+./target/debug/sovereign-tauri run  # (or _run-tauri.bat / _dev.bat for hot-reload)
 ```
 
 On Windows, set `LIBCLANG_PATH` (defaults to `$env:ProgramFiles\LLVM\bin`) before building if you installed LLVM elsewhere. The `_build.bat` and `_release_build.bat` wrappers in the repo root configure the MSVC + LLVM + CUDA environment for you:
@@ -93,11 +93,13 @@ _build.bat build -p sovereign-app -j 4
 _release_build.bat
 ```
 
-On first launch, sample data is seeded automatically.
+On first launch, the onboarding wizard offers to seed a sample workspace (enabled by default); a device that onboards by **pairing** skips seeding and instead receives its workspace from the paired peer over sync.
+
+**Mobile pairing (Android).** Pairing a phone is driven from its onboarding wizard — choose *pair with an existing device* and scan the desktop's QR (the account key never travels in the QR; only a sealed handshake does). Both devices must be on the **same Wi-Fi/LAN**: discovery is mDNS and sync is QUIC-over-UDP, which the Android emulator's NAT blocks, so pairing must be tested on a **physical device**. One sharp edge: if the phone has **mobile data or Wi-Fi calling on, Android often keeps the cellular (IMS) network as the system default**, and libp2p binds its sync socket to whichever network is default *when the P2P node starts*. That socket then can't reach the desktop's LAN address — the workspace stays empty and the logs show `sendmsg … Operation not permitted` / `Outbound request … DialFailure`. The fix is to **turn off mobile data (and Wi-Fi calling) so Wi-Fi is the default, then restart the app** so the P2P node rebinds to Wi-Fi (Android won't move a live socket onto a different network). Binding P2P sockets to the Wi-Fi network explicitly is a known follow-up.
 
 ### 3. Configure
 
-Settings live in `config/default.toml`. Override at runtime with `sovereign --config path/to/custom.toml run`.
+Settings live in `config/default.toml`. The dev CLI lives on the Tauri binary — override at runtime with `sovereign-tauri --config path/to/custom.toml run`.
 
 ## Feature flags
 

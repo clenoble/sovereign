@@ -86,6 +86,19 @@ pub struct PairedDeviceDto {
     pub paired_at: String,
 }
 
+/// True if a listen multiaddr is worth advertising to a *remote* joiner.
+/// Drops loopback (`127.0.0.0/8`, `::1`) and unspecified (`0.0.0.0`, `::`)
+/// addresses: a remote peer can never reach them, and a loopback hint makes
+/// a joiner that races every offered address dial *itself* on that port
+/// instead of this device. Routable LAN addresses are kept as-is.
+#[cfg(feature = "p2p")]
+fn is_routable_listen_addr(addr: &str) -> bool {
+    !(addr.contains("/ip4/127.")
+        || addr.contains("/ip4/0.0.0.0/")
+        || addr.contains("/ip6/::1/")
+        || addr.contains("/ip6/::/"))
+}
+
 /// Existing device → frontend: produce a pairing QR + code (P3.1).
 ///
 /// The QR carries only a plaintext, short-lived `PairingOffer` (peer id,
@@ -119,11 +132,21 @@ pub async fn generate_pair_qr(
             .map_err(|e| format!("read salt: {e}"))?;
         // Concrete listen addrs collected by the event translator; the
         // new device falls back to mDNS discovery when empty.
+        //
+        // Filter out loopback + unspecified addresses before advertising
+        // them: they are never reachable by a *remote* joiner, and a
+        // loopback hint (/ip4/127.0.0.1/…) is actively harmful — a joiner
+        // that "tries every address" would dial ITSELF on that port instead
+        // of this device. Routable LAN addresses (192.168.x, 10.x, etc.) are
+        // kept; the joiner races them and uses whichever connects first.
         let addrs = state
             .p2p_listen_addrs
             .read()
             .map(|a| a.clone())
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a| is_routable_listen_addr(a))
+            .collect::<Vec<_>>();
 
         let offer = sovereign_p2p::PairingOffer::new(
             source_peer_id,
@@ -258,8 +281,20 @@ pub async fn complete_onboarding_paired(
             &input.pin,
             &device_name,
             |secrets| {
-                let master = MasterKey::from_passphrase(password.as_bytes(), &secrets.salt)
-                    .map_err(|e| format!("master key: {e}"))?;
+                // Derive THIS device's identity with the SAME KDF login will use —
+                // Argon2id (Kdf::current), matching create_with_imported_account_key
+                // + AuthStore::authenticate below. The legacy HKDF `from_passphrase`
+                // makes the handshake PeerId + paired-store key diverge from the
+                // login-time ones: paired_devices.json then fails to decrypt after
+                // login (AEAD error → empty allow-list → no sync) AND the source
+                // registers the wrong PeerId for us. (The native shell already does
+                // this correctly — see sovereign-shell/src/p2p.rs.)
+                let master = MasterKey::derive(
+                    password.as_bytes(),
+                    &secrets.salt,
+                    &sovereign_crypto::master_key::Kdf::current(),
+                )
+                .map_err(|e| format!("master key: {e}"))?;
                 let dk = DeviceKey::derive(&master, &device_id_for_closure)
                     .map_err(|e| format!("device key: {e}"))?;
                 let kp = sovereign_p2p::identity::derive_keypair(&dk)
@@ -574,4 +609,24 @@ async fn peer_id_from_state(state: &AppState) -> String {
 #[cfg(not(feature = "p2p"))]
 async fn peer_id_from_state(_state: &AppState) -> String {
     String::new()
+}
+
+#[cfg(all(test, feature = "p2p"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routable_addr_filter_drops_loopback_and_unspecified() {
+        // Reachable LAN addresses are kept (a remote joiner can dial them).
+        assert!(is_routable_listen_addr("/ip4/192.168.1.39/udp/60933/quic-v1"));
+        assert!(is_routable_listen_addr("/ip4/10.0.0.5/udp/4001/quic-v1"));
+        assert!(is_routable_listen_addr("/ip4/172.16.4.2/udp/4001/quic-v1"));
+
+        // Loopback + unspecified are dropped — never reachable remotely, and
+        // a 127.0.0.1 hint would make the joiner dial itself.
+        assert!(!is_routable_listen_addr("/ip4/127.0.0.1/udp/60933/quic-v1"));
+        assert!(!is_routable_listen_addr("/ip4/0.0.0.0/udp/0/quic-v1"));
+        assert!(!is_routable_listen_addr("/ip6/::1/udp/60933/quic-v1"));
+        assert!(!is_routable_listen_addr("/ip6/::/udp/0/quic-v1"));
+    }
 }

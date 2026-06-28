@@ -498,6 +498,54 @@ mod tests {
     }
 
     #[test]
+    fn paired_onboarding_identity_matches_login_identity() {
+        // Regression: the paired-onboarding handshake must derive THIS device's
+        // DeviceKey with the SAME KDF the AuthStore records (Kdf::current /
+        // Argon2id) — the value `authenticate` reproduces at login. If the
+        // handshake used the legacy HKDF `from_passphrase` instead, the libp2p
+        // PeerId it registers with the source AND the key that encrypts
+        // paired_devices.json diverge from the login-time ones, so the paired
+        // store fails to decrypt (empty allow-list → no sync). This is the bug
+        // that silently broke mobile pairing; see sovereign-app
+        // complete_onboarding_paired and sovereign-shell/src/p2p.rs.
+        let imported_ak =
+            AccountKey::derive(&MasterKey::from_passphrase(b"shared", b"shared-salt").unwrap())
+                .unwrap();
+        let store = AuthStore::create_with_imported_account_key(
+            b"NewDevicePass1!",
+            b"NewDuressPass2!",
+            TEST_SALT,
+            TEST_DEVICE,
+            &imported_ak,
+        )
+        .unwrap();
+
+        // Login-time identity (what the running app actually uses).
+        let login_dk = store.authenticate(b"NewDevicePass1!").unwrap().device_key;
+
+        // Correct handshake recipe: Kdf::current(), matching the store.
+        let handshake_master =
+            MasterKey::derive(b"NewDevicePass1!", TEST_SALT, &crate::master_key::Kdf::current())
+                .unwrap();
+        let handshake_dk = DeviceKey::derive(&handshake_master, TEST_DEVICE).unwrap();
+        assert_eq!(
+            handshake_dk.as_bytes(),
+            login_dk.as_bytes(),
+            "paired-onboarding DeviceKey must match the login-time DeviceKey"
+        );
+
+        // The legacy HKDF recipe (the original bug) must NOT match — documents
+        // exactly why pairing silently failed before the fix.
+        let buggy_master = MasterKey::from_passphrase(b"NewDevicePass1!", TEST_SALT).unwrap();
+        let buggy_dk = DeviceKey::derive(&buggy_master, TEST_DEVICE).unwrap();
+        assert_ne!(
+            buggy_dk.as_bytes(),
+            login_dk.as_bytes(),
+            "legacy HKDF derivation diverges from login — the original pairing bug"
+        );
+    }
+
+    #[test]
     fn imported_account_key_survives_save_load() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("auth.store");

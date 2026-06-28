@@ -22,9 +22,13 @@ This is critical — APIs change between versions and stale knowledge causes cas
 | `sovereign-skills` | Skill registry and built-in skills (markdown editor, PDF export, video) |
 | `sovereign-p2p` | libp2p peer-to-peer sync (experimental) |
 | `sovereign-comms` | Communications — email (IMAP/SMTP), Signal (via presage) |
-| `sovereign-app` | Binary crate — CLI, Tauri bootstrap, setup, seeding |
+| `sovereign-app` | Tauri/CLI binary crate — Tauri bootstrap, CLI, setup, seeding. Builds as `sovereign-tauri` (desktop) + the `sovereign_app` cdylib (mobile) |
+| `sovereign-shell` | Native Rust/Vello/winit/wgpu UI — the **default desktop UI**. Builds as `sovereign` (`sovereign.exe`). Calls the backend crates in-process (no Tauri IPC) |
 
-**UI:** the Svelte 5 + Tauri 2 frontend in `frontend/` is the only supported UI. The previous Iced-based `sovereign-ui` and `sovereign-canvas` crates were retired.
+**UI — two desktop frontends, one mobile:**
+- **Default desktop UI = the native shell** (`sovereign-shell`, binary `sovereign`). Run with `_run.bat` or `cargo run -p sovereign-shell`.
+- **Tauri is kept as an option**: the Svelte 5 + Tauri 2 frontend in `frontend/` still builds as `sovereign-tauri` (desktop — `_run-tauri.bat` / `_dev.bat`) and **is the mobile UI** (`cargo tauri android`, the `sovereign_app` cdylib — unaffected by the desktop default).
+- The previous Iced-based `sovereign-ui` and `sovereign-canvas` crates were retired.
 
 ### Data-at-rest threat model
 
@@ -136,7 +140,7 @@ export PATH="$CUDA_PATH/bin/x64:$CUDA_PATH/bin:$PATH"   # bash
 $env:PATH = "$env:CUDA_PATH\bin\x64;$env:CUDA_PATH\bin;$env:PATH"  # PowerShell
 ```
 
-For shipping the release exe, copy the 3 runtime DLLs next to `sovereign.exe` (~485 MB) so end users don't need a CUDA toolkit install — only NVIDIA drivers.
+For shipping a `--features cuda` release exe, copy the 3 runtime DLLs next to it (~485 MB) so end users don't need a CUDA toolkit install — only NVIDIA drivers. Note: the default `sovereign.exe` (native shell) and the default `sovereign-tauri` build are **CPU-only** (`sovereign-ai` is pulled `default-features = false`), so they don't need the CUDA DLLs unless built with `--features cuda`.
 
 ### WSL2 / Linux
 - If your source lives on a network mount, copy to WSL native filesystem (`~/`) before building for performance
@@ -206,7 +210,7 @@ cargo.exe build -p sovereign-app -j 2
   ```
 
 #### Running the Tauri app from bash
-When launching `sovereign.exe` in the background (e.g. `./sovereign.exe &`), the shell reports exit code 0 almost immediately. **The app is still running** — the Tauri window runs in a separate GUI thread. The exit code 0 from the shell only indicates that the initial process setup completed. Use `tasklist | grep sovereign` or Task Manager to confirm the app is still running. Kill with `taskkill //F //IM sovereign.exe`.
+When launching the Tauri binary `sovereign-tauri.exe` in the background (e.g. `./sovereign-tauri.exe &`), the shell reports exit code 0 almost immediately. **The app is still running** — the Tauri window runs in a separate GUI thread. The exit code 0 from the shell only indicates that the initial process setup completed. Use `tasklist | grep sovereign` or Task Manager to confirm the app is still running. Kill with `taskkill //F //IM sovereign-tauri.exe`. (The default native shell binary is `sovereign.exe` — kill that with `taskkill //F //IM sovereign.exe`.)
 
 ## Testing
 
@@ -281,7 +285,7 @@ The public mirror is on GitHub: `https://github.com/clenoble/sovereign.git`.
 
 ## sovereign-app Module Structure
 The binary crate (`sovereign-app`) is split into focused modules:
-- `cli.rs` — Clap CLI struct and Commands enum. **Subcommand is optional** — running `sovereign.exe` with no args defaults to `run` (launches the Tauri app).
+- `cli.rs` — Clap CLI struct and Commands enum. **Subcommand is optional** — running `sovereign-tauri` with no args defaults to `run` (launches the Tauri UI). The dev CLI subcommands (create-doc, list-threads, …) live on this `sovereign-tauri` binary; the default `sovereign` binary is the native shell (UI only).
 - `commands.rs` — Async CLI handler functions (create/get/list/update/delete for docs, threads, relationships, commits, contacts, conversations)
 - `tauri_commands.rs` — 40+ Tauri `invoke()` command handlers (chat, documents, threads, contacts, settings, browser, suggestions, reliability)
 - `tauri_events.rs` — `OrchestratorEvent` → Tauri `emit()` bridge with typed payloads

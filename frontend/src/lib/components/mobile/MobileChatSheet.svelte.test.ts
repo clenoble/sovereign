@@ -31,6 +31,7 @@ function makeMessage(role: ChatMessage['role'], text: string): ChatMessage {
 beforeEach(() => {
 	app.bubbleState = 'Idle';
 	app.pendingAction = null;
+	app.aiName = 'AI';
 	chat.messages = [];
 	chat.generating = false;
 	suggestions.pending = [];
@@ -40,9 +41,9 @@ beforeEach(() => {
 // ── Peek state rendering ─────────────────────────────────────────────────────
 
 describe('MobileChatSheet — peek state', () => {
-	it('renders the state orb in peek mode (no messages)', () => {
+	it('does NOT render a state orb in peek mode', () => {
 		const { container } = render(MobileChatSheet);
-		expect(container.querySelector('.state-orb')).not.toBeNull();
+		expect(container.querySelector('.state-orb')).toBeNull();
 	});
 
 	it('does NOT show the messages list in peek mode', () => {
@@ -55,8 +56,14 @@ describe('MobileChatSheet — peek state', () => {
 		expect(container.querySelector('.input-row')).toBeNull();
 	});
 
-	it('shows "Chat with AI" label when there are no messages', () => {
+	it('shows "Chat with <AI name>" label when there are no messages', () => {
+		app.aiName = 'Ike';
 		chat.messages = [];
+		const { container } = render(MobileChatSheet);
+		expect(container.querySelector('.peek-label')?.textContent?.trim()).toBe('Chat with Ike');
+	});
+
+	it('falls back to "Chat with AI" when no AI name is set', () => {
 		const { container } = render(MobileChatSheet);
 		expect(container.querySelector('.peek-label')?.textContent?.trim()).toBe('Chat with AI');
 	});
@@ -65,32 +72,6 @@ describe('MobileChatSheet — peek state', () => {
 		chat.generating = true;
 		const { container } = render(MobileChatSheet);
 		expect(container.querySelector('.peek-label')?.textContent?.trim()).toBe('Thinking…');
-	});
-
-	it('state orb does NOT have .active class when bubbleState is Idle', () => {
-		app.bubbleState = 'Idle';
-		const { container } = render(MobileChatSheet);
-		const orb = container.querySelector('.state-orb') as HTMLElement;
-		expect(orb.classList.contains('active')).toBe(false);
-	});
-
-	it('state orb has .active class when bubbleState is not Idle', () => {
-		app.bubbleState = 'ProcessingOwned';
-		const { container } = render(MobileChatSheet);
-		const orb = container.querySelector('.state-orb') as HTMLElement;
-		expect(orb.classList.contains('active')).toBe(true);
-	});
-
-	it('state orb .active updates reactively when bubbleState changes', async () => {
-		app.bubbleState = 'Idle';
-		const { container } = render(MobileChatSheet);
-		const orb = container.querySelector('.state-orb') as HTMLElement;
-		expect(orb.classList.contains('active')).toBe(false);
-
-		app.bubbleState = 'Executing';
-		await tick();
-
-		expect(orb.classList.contains('active')).toBe(true);
 	});
 });
 

@@ -7,7 +7,7 @@ Welcome! This guide will help you understand the codebase and start contributing
 ### Prerequisites
 
 - **Rust** (stable, edition 2021) — `rustup default stable`
-- **Node.js** 20+ and **npm** (for the Tauri/Svelte frontend)
+- **Node.js** 20+ and **npm** — only for the Tauri/Svelte frontend (the default native shell needs no Node)
 - **CMake** and **LLVM** (for llama-cpp-2 bindgen)
 - **Windows additionally:** Visual Studio 2022 Build Tools with C++ workload
 
@@ -29,11 +29,13 @@ cd frontend && npm install && cd ..
 # Build frontend
 cd frontend && npm run build && cd ..
 
-# Build the app (Tauri 2 + Svelte 5 is the only UI as of v0.0.3)
-cargo build -p sovereign-app --features encrypted-log -j 4
+# Build + run the DEFAULT desktop UI — the native shell (binary `sovereign`)
+cargo build -p sovereign-shell -j 4
+./target/debug/sovereign
 
-# Run
-./target/debug/sovereign run
+# Tauri UI is kept as an option (and is the mobile UI). Binary `sovereign-tauri`:
+cargo build -p sovereign-app --features encrypted-log -j 4
+./target/debug/sovereign-tauri run
 
 # Run tests
 cargo test -j 4                                          # all crates except sovereign-ai
@@ -47,18 +49,23 @@ On Windows the `_build.bat`, `_check.bat`, and `_release_build.bat` wrappers in 
 
 ## Architecture Overview
 
-Sovereign GE is an 8-crate Rust workspace plus a Svelte frontend. Here's how the pieces relate:
+Sovereign GE is a 9-crate Rust workspace. Two desktop UIs sit on a shared backend:
+the **native shell** (`sovereign-shell`, the default) calls the backend crates
+in-process; the **Tauri/Svelte frontend** (a desktop option + the mobile UI) goes
+through `sovereign-app` over Tauri IPC. Here's how the pieces relate:
 
 ```
-    ┌─────────────────┐
-    │  frontend/      │  Svelte 5 + SvelteKit 2.50 + Tauri 2.10
-    │  (web UI)       │  Canvas, chat, onboarding, settings, panels
-    └────────┬────────┘
-             │ Tauri IPC (invoke / events)
-    ┌────────▼────────┐
-    │ sovereign-app   │  Binary: CLI + Tauri host + GUI bootstrap
-    └────────┬────────┘
-             │ depends on all crates below
+  ┌──────────────────┐        ┌─────────────────┐
+  │ sovereign-shell  │        │  frontend/      │  Svelte 5 + Tauri 2.10
+  │ native UI        │        │  (web UI)       │  desktop option + mobile
+  │ Vello/winit/wgpu │        └────────┬────────┘
+  │ DEFAULT desktop  │                 │ Tauri IPC (invoke / events)
+  │ binary: sovereign│        ┌────────▼────────┐
+  └────────┬─────────┘        │ sovereign-app   │  binary: sovereign-tauri
+           │ in-process       │ (Tauri host/CLI)│
+           │ (no IPC)         └────────┬────────┘
+           └───────────┬───────────────┘
+             both depend on the crates below
              │
         ┌────▼─────────┐
         │ sovereign-ai │  Orchestrator: LLM router + reasoning,
@@ -84,17 +91,41 @@ Sovereign GE is an 8-crate Rust workspace plus a Svelte frontend. Here's how the
 
 ### Key Data Flow
 
-1. **User types in search bar or chat panel** (Svelte frontend)
-2. Frontend calls Tauri `invoke()` → Rust command handler
+1. **User types in the search bar or chat panel** (native shell or Svelte frontend)
+2. The native shell calls `handle_query()` in-process; the Tauri frontend calls it via `invoke()` → Rust command handler
 3. Both go through the same path: `handle_query()` → `IntentClassifier.classify()` → action gate → `execute_action()`
 4. The classifier uses a local 3B GGUF model (Qwen 2.5 or 3.5) to determine intent (search, open, create_thread, chat, browse, etc.)
 5. For "chat" intent, the agent loop runs: build prompt → generate → parse tool calls → execute tools → feed results back → repeat (up to 5 rounds)
-6. Results emit `OrchestratorEvent`s via Tauri `emit()` → frontend event listener updates stores → reactive UI updates
+6. Results emit `OrchestratorEvent`s — the native shell drains them in its event loop; the Tauri frontend receives them via `emit()` → event listener → reactive store updates
 7. **Background consolidation**: When idle (no user interaction for 60s, model not busy), runs memory consolidation to discover and suggest document links
 
-### Tauri Frontend Architecture
+### Native Shell Architecture (default desktop UI)
 
-The sole UI is a Svelte 5 + SvelteKit 2.50 app bundled via Tauri 2.10. The previous Iced-based `sovereign-ui` and `sovereign-canvas` crates were retired in v0.0.3.
+`sovereign-shell` (binary `sovereign`) is the default desktop UI: a roll-our-own
+widget layer on **Vello 0.9 + winit 0.30 + wgpu + parley 0.10** (text) + **wry**
+(embedded browser), calling the backend crates in-process — no Tauri, no IPC. Key
+modules under `crates/sovereign-shell/src/`:
+
+- `app.rs` — the `App` (winit event loop): floating-window manager, the spatial
+  canvas, taskbar, orchestrator bubble, auth gate, input handling, and the
+  `OrchestratorEvent` drain.
+- `canvas.rs` — the canvas data model + painters: workspace load, cards/links/
+  minimap, the **calibrated time axis** (`x_of_ts`/`ts_of_x`, zoom-adaptive ticks).
+- `panels.rs` — the floating windows: documents, **contact-first inbox**, chat,
+  **tabbed settings**, browser, devices & sync, plus the auth screen.
+- `camera.rs`, `text.rs`, `theme.rs`, `clip.rs`, `crypto.rs`, `comms.rs`, `p2p.rs`.
+
+Vello has no SVG-animation runtime, so the orchestrator-bubble styles are static
+re-creations. Debug/headless: `SHELL_SHOT=<png> SHELL_NO_AUTH=1 SHELL_OPEN_<X>=1`
+renders one frame to a PNG (it can't capture the wry browser child window).
+
+### Tauri Frontend (desktop option + mobile UI)
+
+The Tauri frontend — a Svelte 5 + SvelteKit 2.50 app bundled via Tauri 2.10
+(binary `sovereign-tauri`) — is kept as a desktop build option and is the
+**mobile** UI (`cargo tauri android`). The default desktop UI is the native shell
+above. The earlier Iced-based `sovereign-ui` and `sovereign-canvas` crates were
+retired in v0.0.3.
 
 - **Stores** (`lib/stores/*.svelte.ts`): Svelte 5 rune modules using `$state()`, `$derived()`, `$effect()`. Must use `.svelte.ts` extension — Svelte 4 `writable` stores don't propagate reactivity when updated from async Tauri IPC.
 - **Commands** (`lib/api/commands.ts`): Typed wrappers around `@tauri-apps/api/core.invoke()` for all backend operations (chat, documents, threads, contacts, settings, auth).

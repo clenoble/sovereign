@@ -18,8 +18,8 @@ use tokio::sync::RwLock;
 use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, Entity, EntityKind, Message, Milestone,
-    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, ShareRecord, SourceRef,
-    SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, RowRecovery, ShareRecord,
+    SourceRef, SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -540,6 +540,11 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.update_document_position(id, x, y).await
     }
 
+    async fn set_document_pinned(&self, id: &str, pinned: bool) -> DbResult<()> {
+        // pinned is plaintext metadata — delegate straight through.
+        self.inner.set_document_pinned(id, pinned).await
+    }
+
     async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>> {
         // Phase 2b: titles are encrypted, so the plaintext CONTAINS path can no
         // longer hit anything. Tokenize the query and route through the
@@ -595,6 +600,68 @@ impl GraphDB for EncryptedGraphDB {
             id, source_url, classification, score, assessment_json,
         ).await?;
         self.decrypt_document(doc).await
+    }
+
+    // Peer-review markers are plaintext metadata — delegate straight through;
+    // only the listing needs to decrypt the documents it returns.
+    async fn set_document_peer_review(
+        &self,
+        doc_id: &str,
+        peer: &str,
+        prior_commit: Option<&str>,
+    ) -> DbResult<()> {
+        self.inner.set_document_peer_review(doc_id, peer, prior_commit).await
+    }
+
+    async fn set_document_peer_review_assessment(
+        &self,
+        doc_id: &str,
+        assessment_json: &str,
+    ) -> DbResult<()> {
+        self.inner.set_document_peer_review_assessment(doc_id, assessment_json).await
+    }
+
+    async fn clear_document_peer_review(&self, doc_id: &str) -> DbResult<()> {
+        self.inner.clear_document_peer_review(doc_id).await
+    }
+
+    async fn list_documents_pending_peer_review(&self) -> DbResult<Vec<Document>> {
+        let docs = self.inner.list_documents_pending_peer_review().await?;
+        self.decrypt_documents(docs).await
+    }
+
+    // Row-recovery blobs are AEAD-sealed by the sync layer before they reach
+    // the DB, so this decorator delegates straight through — no field-level
+    // crypto to apply here.
+    async fn stash_row_recovery(
+        &self,
+        row_id: &str,
+        table: &str,
+        prior_ciphertext: &str,
+        prior_nonce: &str,
+        peer: &str,
+    ) -> DbResult<String> {
+        self.inner.stash_row_recovery(row_id, table, prior_ciphertext, prior_nonce, peer).await
+    }
+
+    async fn set_row_recovery_assessment(
+        &self,
+        recovery_id: &str,
+        assessment_json: &str,
+    ) -> DbResult<()> {
+        self.inner.set_row_recovery_assessment(recovery_id, assessment_json).await
+    }
+
+    async fn list_pending_row_recoveries(&self) -> DbResult<Vec<RowRecovery>> {
+        self.inner.list_pending_row_recoveries().await
+    }
+
+    async fn get_row_recovery(&self, recovery_id: &str) -> DbResult<RowRecovery> {
+        self.inner.get_row_recovery(recovery_id).await
+    }
+
+    async fn resolve_row_recovery(&self, recovery_id: &str) -> DbResult<()> {
+        self.inner.resolve_row_recovery(recovery_id).await
     }
 
     // -- Threads: encrypt name + description, blind-index on name --
@@ -1864,11 +1931,21 @@ mod tests {
         async fn update_document(&self, _id: &str, _title: Option<&str>, _content: Option<&str>) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn delete_document(&self, _id: &str) -> DbResult<()> { Ok(()) }
         async fn update_document_position(&self, _id: &str, _x: f32, _y: f32) -> DbResult<()> { Ok(()) }
+        async fn set_document_pinned(&self, _id: &str, _pinned: bool) -> DbResult<()> { Ok(()) }
         async fn search_documents_by_title(&self, _query: &str) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn search_documents_by_title_token_hashes(&self, _hashes: &[String]) -> DbResult<Vec<Document>> { Ok(vec![]) }
         async fn set_document_title_encryption(&self, _id: &str, _title_ciphertext: &str, _title_nonce: &str, _title_token_hashes: &[String]) -> DbResult<()> { Ok(()) }
         async fn set_document_content_encryption(&self, _id: &str, _content_ciphertext: &str, _content_nonce: &str) -> DbResult<()> { Ok(()) }
         async fn update_document_reliability(&self, _id: &str, _source_url: Option<&str>, _classification: Option<&str>, _score: Option<f32>, _assessment_json: Option<&str>) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
+        async fn set_document_peer_review(&self, _doc_id: &str, _peer: &str, _prior_commit: Option<&str>) -> DbResult<()> { Ok(()) }
+        async fn set_document_peer_review_assessment(&self, _doc_id: &str, _assessment_json: &str) -> DbResult<()> { Ok(()) }
+        async fn clear_document_peer_review(&self, _doc_id: &str) -> DbResult<()> { Ok(()) }
+        async fn list_documents_pending_peer_review(&self) -> DbResult<Vec<Document>> { Ok(vec![]) }
+        async fn stash_row_recovery(&self, _row_id: &str, _table: &str, _prior_ciphertext: &str, _prior_nonce: &str, _peer: &str) -> DbResult<String> { Ok("row_recovery:mock".into()) }
+        async fn set_row_recovery_assessment(&self, _recovery_id: &str, _assessment_json: &str) -> DbResult<()> { Ok(()) }
+        async fn list_pending_row_recoveries(&self) -> DbResult<Vec<RowRecovery>> { Ok(vec![]) }
+        async fn get_row_recovery(&self, _recovery_id: &str) -> DbResult<RowRecovery> { Err(DbError::NotFound("mock".into())) }
+        async fn resolve_row_recovery(&self, _recovery_id: &str) -> DbResult<()> { Ok(()) }
         async fn create_suggested_link(&self, _from_id: &str, _to_id: &str, _relation_type: RelationType, _strength: f32, _rationale: &str, _source: SuggestionSource) -> DbResult<SuggestedLink> { Err(DbError::NotFound("mock".into())) }
         async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> { Ok(vec![]) }
         async fn list_suggestions_for_document(&self, _doc_id: &str) -> DbResult<Vec<SuggestedLink>> { Ok(vec![]) }

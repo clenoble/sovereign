@@ -9,10 +9,10 @@ Skills are document-level transformations that users invoke from the UI. They ca
 ### How skills run
 
 ```
-User clicks action in Skills panel
-        │
+User invokes a skill action on a document
+        │  (native shell: right-click a card → Skills; Tauri: the Skills panel)
         ▼
-Tauri backend loads the WASM component
+The app loads the WASM component
         │
         ▼
 Creates a fresh Store (isolated memory, capped fuel)
@@ -24,7 +24,7 @@ Passes SkillDocument + params + granted capabilities
 Skill runs: may call host-db functions, compute results
         │
         ▼
-Returns SkillOutput → frontend renders result
+Returns SkillOutput → the UI renders the result
 ```
 
 Each execution gets a fresh `Store` — skills are stateless by design.
@@ -434,11 +434,11 @@ export!(WordCountWasm);
 ## Skill Discovery & Loading
 
 At startup, Sovereign GE:
-1. Registers the 10 built-in core skills (compiled Rust, no WASM)
+1. Registers the built-in core skills (~two dozen, compiled Rust, no WASM)
 2. Scans the `skills/` directory for `skill.json` manifests
 3. For each subdirectory with both `skill.json` and a `.wasm` file, loads the WASM component
 4. Caches metadata (name, capabilities, actions, file types) to avoid re-instantiation
-5. All skills appear in the Skills panel in the UI
+5. All skills appear in the UI's skills menu (native shell: right-click a document → Skills; Tauri: the Skills panel)
 
 The build script `build-wasm-skills.sh` automates building all WASM skills in the `skills/` directory.
 

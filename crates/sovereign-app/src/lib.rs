@@ -280,6 +280,7 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::contacts::create_relationship,
             // Auth, onboarding, profile, config
             tauri_commands::auth::check_auth_state,
+            tauri_commands::auth::onboarding_designation,
             tauri_commands::auth::validate_password,
             tauri_commands::auth::validate_password_policy,
             tauri_commands::auth::complete_onboarding,
@@ -314,6 +315,11 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::suggestions::accept_link_suggestion,
             tauri_commands::suggestions::dismiss_link_suggestion,
             tauri_commands::suggestions::trigger_consolidation,
+            // Peer-write review (p2p-no-per-doc-authz)
+            tauri_commands::peer_review::list_peer_reviews,
+            tauri_commands::peer_review::accept_peer_review,
+            tauri_commands::peer_review::restore_peer_review,
+            tauri_commands::peer_review::audit_peer_reviews,
             // PII resolution
             tauri_commands::pii::resolve_pii_tokens,
             tauri_commands::pii::list_pii_entities,
@@ -412,6 +418,15 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 // honors SOVEREIGN_DATA_DIR), so on Android the DB lands
                 // inside the app sandbox under .../data/sovereign.db.
                 // Persistence is via SurrealKV (kv-mem replaced in v0.0.6).
+
+                // Enable P2P on mobile: phone<->desktop sync is the whole point
+                // of the mobile build, and there is no editable config.toml here.
+                // mDNS stays on: it's how paired peers rediscover each other's
+                // LAN address for ongoing sync (without it, sync dials fail with
+                // DialFailure). MainActivity holds a Wi-Fi multicast lock so the
+                // mDNS receive path works on Android. On cellular there's no
+                // multicast, but pairing still works via the QR offer's address.
+                config.p2p.enabled = true;
             }
 
             // Profile dir (correct on both platforms after the env-var step).
@@ -875,16 +890,14 @@ async fn init_backend(
     }
 
     let db = create_db(config).await?;
-    seed::seed_if_empty(&db).await?;
 
-    // PII seed runs in complete_onboarding (auth.rs) once the device_key
-    // is installed. Skipped at startup because the device_key isn't
-    // available until login completes.
-
-    let orchestrator_profile_dir = profile_dir.join("orchestrator");
-    if let Err(e) = seed::seed_profile_and_history(&orchestrator_profile_dir) {
-        tracing::warn!("Profile/history seed failed: {e}");
-    }
+    // No auto-seeding at startup. ALL sample data — DB rows, the orchestrator
+    // profile + multi-day session-log history, and PII — is seeded only when
+    // the user opts in during onboarding (complete_onboarding, gated on
+    // `seed_sample_data`). A freshly installed device may be a *pairing
+    // target* that receives its workspace via P2P sync, so it must come up
+    // empty rather than auto-populating with demo content that would then
+    // diverge from / leak into the paired peer's database.
 
     // Wrap the raw SurrealGraphDB in a LayeredGraphDB. Boot uses the raw
     // inner; install_session() in tauri_commands/auth.rs swaps in an
@@ -1048,6 +1061,7 @@ mod ipc_classification_guard {
         "toggle_theme",
         "get_theme",
         "check_auth_state",
+        "onboarding_designation",
         "validate_password",
         "validate_password_policy",
         "complete_onboarding",
@@ -1133,6 +1147,11 @@ mod ipc_classification_guard {
         "accept_link_suggestion",
         "dismiss_link_suggestion",
         "trigger_consolidation",
+        // peer-write review (p2p-no-per-doc-authz)
+        "list_peer_reviews",
+        "accept_peer_review",
+        "restore_peer_review",
+        "audit_peer_reviews",
         // mobile / share (IPC-001: now require_unlocked + main-webview)
         "receive_shared_content",
         // pii (account_key-gated ones included)
@@ -1224,6 +1243,7 @@ mod ipc_classification_guard {
         "create_relationship",
         // auth
         "check_auth_state",
+        "onboarding_designation",
         "validate_password",
         "validate_password_policy",
         "complete_onboarding",
@@ -1250,6 +1270,11 @@ mod ipc_classification_guard {
         "accept_link_suggestion",
         "dismiss_link_suggestion",
         "trigger_consolidation",
+        // peer-write review
+        "list_peer_reviews",
+        "accept_peer_review",
+        "restore_peer_review",
+        "audit_peer_reviews",
         // pii
         "resolve_pii_tokens",
         "list_pii_entities",

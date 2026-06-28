@@ -83,7 +83,12 @@ impl PiiContactHook {
             let entities = self.db.list_entities().await?;
             let contacts = self.db.list_contacts().await?;
             let sink = GraphDbPiiSink::new(self.db.clone());
-            let config = PipelineConfig::default();
+            // PII-001: scan at the deployment locale (Swiss) so AVS in contact
+            // notes is tokenized at ingest rather than left raw.
+            let config = PipelineConfig {
+                locale: sovereign_ai::pii::Locale::Swiss,
+                ..PipelineConfig::default()
+            };
             let result = ingest_text(
                 &contact.notes,
                 contact_id,

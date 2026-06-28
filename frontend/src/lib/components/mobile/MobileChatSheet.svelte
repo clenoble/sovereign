@@ -39,23 +39,6 @@
 	let audioStream: MediaStream | null = null;
 
 	let messages = $derived(recentMessages());
-	let isActive = $derived(app.bubbleState !== 'Idle');
-
-	function stateColor(s: string): string {
-		switch (s) {
-			case 'ProcessingOwned':
-			case 'ProcessingExternal':
-				return 'var(--bubble-processing, #6366f1)';
-			case 'Executing':
-				return 'var(--bubble-executing, #f59e0b)';
-			case 'Proposing':
-				return 'var(--bubble-proposing, #10b981)';
-			case 'Suggesting':
-				return 'var(--bubble-suggesting, #3b82f6)';
-			default:
-				return 'var(--bubble-idle, #555)';
-		}
-	}
 
 	// Auto-scroll to bottom when messages arrive
 	$effect(() => {
@@ -217,29 +200,22 @@
 		return text.includes('Injection detected');
 	}
 
-	function lastSnippet(): string {
-		if (!messages.length) return 'Chat with AI';
+	// Snippet of the most recent message (empty when there are none — the
+	// "Chat with <name>" label is rendered directly in markup instead, so it
+	// stays reactive to app.aiName when the nickname changes in Settings).
+	let peekSnippet = $derived.by(() => {
 		const m = messages[messages.length - 1];
+		if (!m) return '';
 		const raw = m.text.replace(/<[^>]+>/g, '').trim();
 		return raw.length > 48 ? raw.slice(0, 48) + '…' : raw;
-	}
+	});
 </script>
 
 <BottomSheet bind:detent peekHeight={100}>
 	{#snippet children()}
 		{#if detent === 'peek'}
-			<!-- ── Peek: state orb + snippet + badges + quick action buttons ── -->
+			<!-- ── Peek: snippet + badges + quick action buttons ── -->
 			<div class="peek-row">
-				<button
-					class="state-orb"
-					class:active={isActive}
-					style="--orb-color: {stateColor(app.bubbleState)}"
-					onclick={() => (detent = 'partial')}
-					aria-label="Open AI chat"
-				>
-					<span class="orb-dot"></span>
-				</button>
-
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<span
 					class="peek-label"
@@ -250,8 +226,10 @@
 						Thinking…
 					{:else if app.pendingAction}
 						Action pending &middot; {app.pendingAction.level}
+					{:else if !messages.length}
+						Chat with {app.aiName}
 					{:else}
-						{lastSnippet()}
+						{peekSnippet}
 					{/if}
 				</span>
 
@@ -364,35 +342,6 @@
 		gap: 8px;
 		min-height: 44px;
 		padding: 2px 0;
-	}
-
-	.state-orb {
-		flex-shrink: 0;
-		width: 30px;
-		height: 30px;
-		border-radius: 50%;
-		border: 2px solid var(--orb-color);
-		background: none;
-		cursor: pointer;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 0;
-	}
-	.state-orb.active {
-		animation: pulse-orb 2s ease-in-out infinite;
-	}
-
-	.orb-dot {
-		width: 10px;
-		height: 10px;
-		border-radius: 50%;
-		background: var(--orb-color);
-	}
-
-	@keyframes pulse-orb {
-		0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--orb-color) 40%, transparent); }
-		50%       { box-shadow: 0 0 0 5px transparent; }
 	}
 
 	.peek-label {

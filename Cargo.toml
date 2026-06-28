@@ -10,6 +10,7 @@ members = [
     "crates/sovereign-p2p",
     "crates/sovereign-comms",
     "crates/sovereign-app",
+    "crates/sovereign-shell",
 ]
 
 [workspace.dependencies]
@@ -61,7 +62,7 @@ encoding_rs = "0.8"
 genpdf = "0.2"
 
 # PDF text extraction
-pdf-extract = "0.10"
+pdf-extract = "0.12"
 
 # Markdown parsing / rendering (used by HTML Export, Plaintext Export)
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }

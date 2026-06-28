@@ -84,6 +84,32 @@ pub struct Document {
     /// the document has not yet been scanned.
     #[serde(default)]
     pub pii_scanned_at: Option<DateTime<Utc>>,
+    /// User-pinned flag (keeps a document surfaced on the canvas). Plaintext
+    /// metadata — not encrypted.
+    #[serde(default)]
+    pub pinned: bool,
+    // --- P2P peer-write review (p2p-no-per-doc-authz) ---
+    /// Set when a paired peer's sync overwrote this document. The prior local
+    /// version is preserved as a commit (`peer_review_prior_commit`) and the
+    /// change is surfaced for review when the user next opens the doc, rather
+    /// than silently replacing their content. Cleared once reviewed. Plaintext
+    /// metadata — not encrypted (mirrors the reliability/PII-scan markers).
+    #[serde(default)]
+    pub peer_review_pending: bool,
+    /// PeerId of the device whose sync produced the pending change.
+    #[serde(default)]
+    pub peer_review_peer: Option<String>,
+    /// When the peer change was applied.
+    #[serde(default)]
+    pub peer_review_at: Option<DateTime<Utc>>,
+    /// Commit id of the pre-overwrite local version, for one-click restore.
+    #[serde(default)]
+    pub peer_review_prior_commit: Option<String>,
+    /// JSON verdict from the async LLM audit of the incoming change
+    /// (`{classification, risk, reasons[]}`). None until audited, or when no
+    /// local model is available (the change is still surfaced, sans verdict).
+    #[serde(default)]
+    pub peer_review_assessment: Option<String>,
 }
 
 /// Thread (project/topic grouping)
@@ -232,6 +258,13 @@ pub struct DocumentSnapshot {
     pub document_id: String,
     pub title: String,
     pub content: String,
+    /// Thread (lane) the document belonged to when the snapshot was taken.
+    /// Transported in the sealed commit so a synced document lands in its
+    /// real thread instead of `"default"`. `#[serde(default)]` keeps older
+    /// commits (which predate this field) deserializable — they decode to an
+    /// empty string and the apply path falls back to `"default"`.
+    #[serde(default)]
+    pub thread_id: String,
 }
 
 /// A per-document version control commit with parent chain.
@@ -249,6 +282,48 @@ pub struct Commit {
     /// skipped for those.
     #[serde(default)]
     pub signature: Option<String>,
+}
+
+/// The pre-overwrite copy of a non-document row, preserved before a paired
+/// peer's sync overwrote it (`p2p-no-per-doc-authz`). Rows (PII vault,
+/// contacts, threads, messages, conversations) have no commit history, so this
+/// is their non-destructive shadow: the prior value is kept and surfaced for
+/// review instead of being silently lost.
+///
+/// `prior_ciphertext`/`prior_nonce` hold the serialized prior record AEAD-
+/// sealed by the sync layer (under the account transport key) — never plaintext
+/// at rest, mirroring the field-encryption threat model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RowRecovery {
+    pub id: Option<Thing>,
+    /// The overwritten record's id, e.g. `pii:abc` / `contact:xyz`.
+    pub row_id: String,
+    /// The `SyncTable` the row belongs to (e.g. `"PiiRecord"`), so a restore
+    /// knows which apply path to re-run.
+    pub table: String,
+    /// Base64 AEAD ciphertext of the serialized prior record.
+    pub prior_ciphertext: String,
+    /// Base64 nonce paired with `prior_ciphertext`.
+    pub prior_nonce: String,
+    /// PeerId of the device whose sync overwrote the row.
+    pub peer: String,
+    pub overwritten_at: DateTime<Utc>,
+    /// Cleared once the user reviews (restores or accepts) the change.
+    #[serde(default = "default_true")]
+    pub review_pending: bool,
+    /// JSON verdict from the async LLM audit; None until audited / no model.
+    #[serde(default)]
+    pub assessment: Option<String>,
+}
+
+impl RowRecovery {
+    pub fn id_string(&self) -> Option<String> {
+        self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Document {
@@ -277,6 +352,12 @@ impl Document {
             body_raw_encrypted: None,
             body_raw_nonce: None,
             pii_scanned_at: None,
+            pinned: false,
+            peer_review_pending: false,
+            peer_review_peer: None,
+            peer_review_at: None,
+            peer_review_prior_commit: None,
+            peer_review_assessment: None,
         }
     }
 

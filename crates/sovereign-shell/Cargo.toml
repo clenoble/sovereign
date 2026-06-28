@@ -1,0 +1,80 @@
+[package]
+name = "sovereign-shell"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Native Rust/wgpu/Vello UI shell — the native-UI migration target. Calls the
+# backend crates IN-PROCESS (no Tauri IPC). See doc/plans/native-ui-migration.md.
+# Workspace member, but building sovereign-app does NOT pull vello (separate
+# member); build with --target-dir C:/cargo-target to reuse the warm tree.
+
+# The native shell is the default desktop UI: its binary is `sovereign` (the
+# primary `sovereign.exe`). The Tauri app builds as `sovereign-tauri`; the
+# mobile app is the `sovereign_app` cdylib (unaffected by this bin name).
+[[bin]]
+name = "sovereign"
+path = "src/main.rs"
+
+[dependencies]
+# Surface backend/P2P logs (sync engine, mDNS, pairing) for debugging — the node
+# logs via `tracing`, dropped without a subscriber. Env-filtered (RUST_LOG).
+tracing-subscriber = { workspace = true }
+vello = "0.9"
+winit = "0.30"
+pollster = "0.3"
+parley = "0.10"
+png = "0.17" # headless render-to-PNG (SHELL_SHOT) — desktop-less visual debug
+
+# Phase 0b: in-process backend (no Tauri IPC). Raw read of the real workspace.
+# Phase 3: + encryption feature => EncryptedGraphDB decorator (decrypt post-login).
+sovereign-db = { workspace = true, features = ["rocksdb", "encryption"] }
+sovereign-core = { workspace = true }
+# Batch 2d: the 24 built-in skills, run on a document from the context menu.
+sovereign-skills = { workspace = true }
+tokio = { workspace = true }
+
+# Phase 1d.2: in-process AI orchestrator. default-features=false (via workspace)
+# => CPU llama-cpp (no CUDA) — avoids the cudart64_13.dll launch gotcha and the
+# warm CPU llama-cpp-sys build is reused (no fresh build script => no SAC trip).
+sovereign-ai = { workspace = true }
+
+# Phase 3: auth (login/onboarding/duress) + the at-rest key stack feeding
+# EncryptedGraphDB. AuthStore, MasterKey/DeviceKey/Kek/AccountKey, KeyDatabase,
+# IndexKey, fs_private.
+sovereign-crypto = { workspace = true }
+anyhow = { workspace = true }
+
+# Phase: accessibility (WCAG 4.1.2). accesskit builds the a11y tree; accesskit_winit
+# bridges it to the OS screen-reader API. 0.24/0.32 pair with winit 0.30.13
+# (confirmed against the Linebender xilem workspace).
+accesskit = "0.24"
+accesskit_winit = "0.32"
+
+# Batch 5: real embedded browser. wry is the same WebView crate Tauri uses
+# (already in the workspace lock via sovereign-app). A child WebView is overlaid
+# on the winit window — vello draws the chrome, wry renders the web page.
+# serde_json parses the page-info the injected JS posts back over wry IPC.
+wry = "0.55"
+serde_json = { workspace = true }
+
+# Batch 6: email (IMAP fetch + SMTP send). Signal/WhatsApp deferred, so only the
+# `email` feature — the engine exists + is tested in sovereign-comms but was never
+# wired into a running app; the shell is the first place it actually runs.
+sovereign-comms = { workspace = true, features = ["email"] }
+toml = { workspace = true } # read/write comms.toml (email account config)
+chrono = { workspace = true } # timestamps for vault PiiRecords (saved email password)
+
+# Batch 6c: P2P multi-device sync (libp2p, mDNS+QUIC). Already compiled in the
+# warm target via the app's `p2p` feature. The shell ports sync_startup.rs.
+sovereign-p2p = { workspace = true }
+# Pairing (Phase 2): render the offer payload as a QR a mobile device scans —
+# same payload the app's generate_pair_qr produces. default-features=false drops
+# the optional image/svg deps (pure-Rust encoder, no build script → SAC-safe);
+# we read the module grid via to_colors() and draw cells in Vello ourselves.
+qrcode = { version = "0.14", default-features = false }
+# Clipboard for pairing (Phase 2b): copy the offer code on the source device,
+# paste it on the joiner (the offer is ~200 chars + the shell has no camera to
+# scan a QR back). arboard reuses the already-warm windows-sys (0.59/0.60) — its
+# only build-script dep — so no fresh build script for SAC to block.
+arboard = "3.6"

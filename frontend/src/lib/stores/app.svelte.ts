@@ -78,6 +78,8 @@ export const app = $state({
 	contextMenu: null as ContextMenuState | null,
 	skillsPanelVisible: false,
 	bubbleStyle: 'icon' as string,
+	/** AI display name: onboarding nickname, else the full designation. */
+	aiName: 'AI' as string,
 	piiDashboardVisible: false,
 	/** Content received from the OS share sheet, waiting for thread selection. */
 	pendingShare: null as PendingShare | null

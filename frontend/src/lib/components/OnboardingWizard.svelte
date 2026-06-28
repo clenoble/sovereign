@@ -3,6 +3,7 @@
 	import { app } from '$lib/stores/app.svelte';
 	import {
 		checkAuthState,
+		getOnboardingDesignation,
 		validatePasswordPolicy,
 		completeOnboarding,
 		completeOnboardingPaired,
@@ -17,6 +18,7 @@
 	import BubblePreview from './BubblePreview.svelte';
 	import QrScanner from './QrScanner.svelte';
 	import { applyTheme, theme } from '$lib/stores/theme.svelte';
+	import { device } from '$lib/stores/device.svelte';
 
 	type FlowMode = 'first' | 'paired';
 	type PairedInputMode = 'scan' | 'paste';
@@ -79,7 +81,9 @@
 
 	let cryptoEnabled = $state(false);
 	let step = $state(0);
-	let designation = $state(generateDesignation());
+	// Filled from the backend on mount (the persisted, reused designation).
+	// generateDesignation() is only a fallback if that call fails.
+	let designation = $state('');
 
 	// Phase 5: paired-device flow.
 	// `flowMode` is set by the welcome step.
@@ -130,6 +134,7 @@
 	// Step 6 — Password
 	let password = $state('');
 	let passwordConfirm = $state('');
+	let showPw = $state(false);
 	let passwordStrength = $state(0);
 	let passwordPolicyValid = $state(false);
 	let passwordPolicyErrors = $state<string[]>([]);
@@ -157,6 +162,14 @@
 	let totalSteps = $derived(
 		flowMode === 'paired' ? 3 : cryptoEnabled ? 9 : 5
 	);
+
+	// The orchestrator bubble isn't used in the mobile UI, so the first-device
+	// flow skips the Bubble step (index 2) on mobile. Internal `step` indices and
+	// `totalSteps` stay the same (so the per-step switches below are untouched) —
+	// step 2 is simply never landed on, and the displayed counter omits it.
+	let mobileSkipBubble = $derived(flowMode !== 'paired' && device.isMobile);
+	let displayTotal = $derived(mobileSkipBubble ? totalSteps - 1 : totalSteps);
+	let displayStep = $derived(mobileSkipBubble && step > 2 ? step : step + 1);
 
 	// Whether the Next button should be enabled for the current step.
 	let canAdvance = $derived.by(() => {
@@ -196,6 +209,13 @@
 			cryptoEnabled = result.crypto_enabled;
 		} catch {
 			cryptoEnabled = false;
+		}
+		// Show the backend-owned designation that complete_onboarding will
+		// persist — so the name here is exactly the one reused on every login.
+		try {
+			designation = await getOnboardingDesignation();
+		} catch {
+			designation = generateDesignation(); // fallback if the backend is unavailable
 		}
 	});
 
@@ -240,6 +260,10 @@
 	function handleBack() {
 		if (step > 0) {
 			step--;
+			// Hop over the Bubble step (index 2) on mobile.
+			if (mobileSkipBubble && step === 2) {
+				step = 1;
+			}
 			// Returning to welcome resets the choice so the user can pick
 			// the other flow.
 			if (step === 0) {
@@ -265,6 +289,10 @@
 		}
 
 		step++;
+		// Hop over the Bubble step (index 2) on mobile.
+		if (mobileSkipBubble && step === 2) {
+			step = 3;
+		}
 	}
 
 	function canSkipCurrentStep(): boolean {
@@ -305,6 +333,27 @@
 		step++;
 	}
 
+	// Field refs so Enter on the first field of a pair jumps to the second.
+	let pwConfirmEl: HTMLInputElement | null = null;
+	let duressConfirmEl: HTMLInputElement | null = null;
+	let canaryConfirmEl: HTMLInputElement | null = null;
+	let pairedPwConfirmEl: HTMLInputElement | null = null;
+
+	// Soft-keyboard Enter handling. Without this, Enter does nothing and the
+	// on-screen keyboard keeps covering the Next button. On the last field of
+	// a step we dismiss the keyboard and advance (if allowed); otherwise we
+	// hop to the next field.
+	function onFieldEnter(e: KeyboardEvent, nextEl?: HTMLInputElement | null) {
+		if (e.key !== 'Enter') return;
+		e.preventDefault();
+		if (nextEl) {
+			nextEl.focus();
+			return;
+		}
+		(e.currentTarget as HTMLElement).blur(); // dismiss the soft keyboard
+		if (canAdvance) handleNext();
+	}
+
 	async function handleComplete() {
 		// Paired flow: run the P3.1 handshake (dial the existing device,
 		// prove the code, receive the keys) and persist the new install.
@@ -316,7 +365,7 @@
 				await completeOnboardingPaired({
 					qr_payload_b64: qrPayload.trim(),
 					pin: qrPin.trim(),
-					password,
+					password: password.trim(),
 					duress_password: null,
 					nickname: null,
 					bubble_style: null,
@@ -348,7 +397,7 @@
 			nickname: nickname.trim() || null,
 			bubble_style: bubbleStyle,
 			seed_sample_data: seedSampleData,
-			password: cryptoEnabled && password ? password : null,
+			password: cryptoEnabled && password.trim() ? password.trim() : null,
 			duress_password: cryptoEnabled && duressPassword.trim() ? duressPassword.trim() : null,
 			canary_phrase: cryptoEnabled && canaryPhrase.trim() ? canaryPhrase.trim() : null,
 			keystrokes: cryptoEnabled ? keystrokeSamples : []
@@ -417,11 +466,11 @@
 	<div class="wizard-card">
 		<!-- Progress indicator -->
 		<div class="progress-bar">
-			<span class="progress-label">Step {step + 1} of {totalSteps}</span>
+			<span class="progress-label">Step {displayStep} of {displayTotal}</span>
 			<div class="progress-track">
 				<div
 					class="progress-fill"
-					style="width: {((step + 1) / totalSteps) * 100}%"
+					style="width: {(displayStep / displayTotal) * 100}%"
 				></div>
 			</div>
 		</div>
@@ -522,6 +571,8 @@
 							maxlength="11"
 							placeholder="XXXXX-XXXXX"
 							bind:value={qrPin}
+							enterkeyhint="done"
+							onkeydown={onFieldEnter}
 						/>
 						<p class="description">
 							The code is shown on the existing device. Case doesn't matter;
@@ -561,6 +612,8 @@
 							class="text-input"
 							placeholder="Enter password"
 							bind:value={password}
+							enterkeyhint="next"
+							onkeydown={(e) => onFieldEnter(e, pairedPwConfirmEl)}
 						/>
 					</div>
 					<div class="field-group">
@@ -571,6 +624,9 @@
 							class="text-input"
 							placeholder="Confirm password"
 							bind:value={passwordConfirm}
+							bind:this={pairedPwConfirmEl}
+							enterkeyhint="done"
+							onkeydown={onFieldEnter}
 						/>
 					</div>
 
@@ -618,6 +674,8 @@
 						placeholder='e.g. "Ike", "T-Nine", "B4"...'
 						bind:value={nickname}
 						maxlength="32"
+						enterkeyhint="next"
+						onkeydown={onFieldEnter}
 					/>
 					<p class="hint">You can change this later in settings. Leave blank to skip.</p>
 				</div>
@@ -720,22 +778,39 @@
 						<label class="field-label" for="pw-main">Password</label>
 						<input
 							id="pw-main"
-							type="password"
+							type={showPw ? 'text' : 'password'}
 							class="text-input"
 							placeholder="Enter password"
 							bind:value={password}
+							enterkeyhint="next"
+							autocapitalize="off"
+							autocorrect="off"
+							autocomplete="off"
+							spellcheck="false"
+							onkeydown={(e) => onFieldEnter(e, pwConfirmEl)}
 						/>
 					</div>
 					<div class="field-group">
 						<label class="field-label" for="pw-confirm">Confirm password</label>
 						<input
 							id="pw-confirm"
-							type="password"
+							type={showPw ? 'text' : 'password'}
 							class="text-input"
 							placeholder="Confirm password"
 							bind:value={passwordConfirm}
+							bind:this={pwConfirmEl}
+							enterkeyhint="done"
+							autocapitalize="off"
+							autocorrect="off"
+							autocomplete="off"
+							spellcheck="false"
+							onkeydown={onFieldEnter}
 						/>
 					</div>
+					<label class="show-pw-toggle">
+						<input type="checkbox" bind:checked={showPw} />
+						Show password
+					</label>
 
 					<!-- Strength bar -->
 					{#if password.length > 0}
@@ -787,6 +862,8 @@
 							class="text-input"
 							placeholder="Enter duress password"
 							bind:value={duressPassword}
+							enterkeyhint="next"
+							onkeydown={(e) => onFieldEnter(e, duressConfirmEl)}
 						/>
 					</div>
 					<div class="field-group">
@@ -797,6 +874,9 @@
 							class="text-input"
 							placeholder="Confirm duress password"
 							bind:value={duressConfirm}
+							bind:this={duressConfirmEl}
+							enterkeyhint="done"
+							onkeydown={onFieldEnter}
 						/>
 					</div>
 
@@ -826,6 +906,8 @@
 							class="text-input"
 							placeholder="e.g. The cat sleeps on warm roofs"
 							bind:value={canaryPhrase}
+							enterkeyhint="next"
+							onkeydown={(e) => onFieldEnter(e, canaryConfirmEl)}
 						/>
 					</div>
 					<div class="field-group">
@@ -836,6 +918,9 @@
 							class="text-input"
 							placeholder="Re-type your phrase"
 							bind:value={canaryConfirm}
+							bind:this={canaryConfirmEl}
+							enterkeyhint="done"
+							onkeydown={onFieldEnter}
 						/>
 					</div>
 
@@ -1172,6 +1257,16 @@
 
 	.field-group {
 		margin-bottom: 14px;
+	}
+
+	.show-pw-toggle {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 0.85rem;
+		color: var(--text-secondary, #999);
+		cursor: pointer;
+		user-select: none;
 	}
 
 	.field-label {

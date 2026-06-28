@@ -536,7 +536,14 @@ async fn execute_get_document(call: &ToolCall, db: &dyn GraphDB) -> String {
                 .list_pii_records(None, None, None)
                 .await
                 .unwrap_or_default();
-            crate::pii::resolve::resolve_to_preview(&doc.content, &records)
+            // PII-001: backstop the token resolution with a regex pass so a body
+            // scanned under a narrower locale (no AVS rule) can't leak raw
+            // structured PII it never tokenized.
+            crate::pii::resolve::resolve_to_preview_redacted(
+                &doc.content,
+                &records,
+                crate::pii::Locale::Swiss,
+            )
         };
         // Char-safe truncation: never slice mid-codepoint.
         let truncated: String = preview.chars().take(500).collect();
@@ -605,7 +612,12 @@ async fn execute_search_messages(call: &ToolCall, db: &dyn GraphDB) -> String {
                     let resolved = if m.pii_scanned_at.is_none() {
                         crate::pii::resolve::redact_raw_regex(&m.body, crate::pii::Locale::Swiss)
                     } else {
-                        crate::pii::resolve::resolve_to_preview(&m.body, &records)
+                        // PII-001: backstop token resolution with a regex pass.
+                        crate::pii::resolve::resolve_to_preview_redacted(
+                            &m.body,
+                            &records,
+                            crate::pii::Locale::Swiss,
+                        )
                     };
                     // COMMS-002: char-safe truncation — `&m.body[..100]` could
                     // panic by slicing mid-codepoint. Take 100 chars instead.

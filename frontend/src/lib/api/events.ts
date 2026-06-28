@@ -412,6 +412,16 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 				onSyncStarted(peer_id);
 			} else if (status.startsWith('completed')) {
 				onSyncCompleted(peer_id);
+				// A paired peer just pushed rows into our DB. Refresh the
+				// canvas + contacts so synced threads/docs/contacts appear
+				// without a manual reload (the "it didn't land on mobile"
+				// gap). The backend reports "completed (N items)"; skip the
+				// refetch only when it explicitly synced zero items.
+				const m = status.match(/\((\d+)\s+items?\)/);
+				if (!m || parseInt(m[1], 10) > 0) {
+					canvasRefresh();
+					refreshContacts();
+				}
 			} else if (status === 'disconnected') {
 				onSyncDisconnected(peer_id);
 			} else {

@@ -36,24 +36,56 @@
 	let cleanup: (() => void) | null = null;
 	onDestroy(() => cleanup?.());
 
+	// Profile-derived UI (bubble style + AI name). Refreshed whenever auth
+	// reaches `ready` rather than once at mount: getProfile during onboarding
+	// / login runs before the encrypted profile is readable, so a one-shot
+	// mount load would leave a stale AI name after the user logs in.
+	async function refreshProfileUi() {
+		try {
+			const profile = await getProfile();
+			if (profile.bubble_style) app.bubbleStyle = profile.bubble_style;
+			// Prefer the nickname set during onboarding; otherwise the full
+			// auto-generated designation shown on the first onboarding screen
+			// (e.g. "Ikshal-3ERZ-Я"). 'AI' is a never-expected last resort.
+			app.aiName = profile.nickname?.trim() || profile.designation?.trim() || 'AI';
+		} catch { /* profile not available yet */ }
+	}
+
+	$effect(() => {
+		if (app.authState === 'ready') refreshProfileUi();
+	});
+
 	onMount(async () => {
 		// Initialize device detection (viewport + platform). Subscribes
 		// to resize so toggling Chrome devtools' device emulation flips
 		// the layout live.
 		initDevice();
 
-		// Check auth state first
-		try {
-			const auth = await checkAuthState();
-			if (auth.needs_onboarding) {
-				app.authState = 'onboarding';
-			} else if (auth.needs_login) {
-				app.authState = 'login';
-			} else {
-				app.authState = 'ready';
+		// Check auth state first. RETRY until the backend answers — on a cold
+		// start (especially mobile) the Tauri IPC bridge may not be ready for
+		// the first call, which throws. We must NEVER fall through to the app
+		// shell on error: the {:else} template branch renders the full
+		// workspace, so assuming "ready" here exposed the canvas before
+		// authentication (flash of unauthenticated content). Stay on the
+		// loading screen until the backend tells us which gate to show.
+		let auth = null;
+		for (let i = 0; i < 24; i++) {
+			try {
+				auth = await checkAuthState();
+				break;
+			} catch {
+				await new Promise((r) => setTimeout(r, 250));
 			}
-		} catch {
-			// Backend not ready yet — assume ready (no auth)
+		}
+		if (!auth) {
+			// Backend never answered (~6s) — keep the loading screen rather
+			// than exposing the canvas unauthenticated.
+			app.authState = 'checking';
+		} else if (auth.needs_onboarding) {
+			app.authState = 'onboarding';
+		} else if (auth.needs_login) {
+			app.authState = 'login';
+		} else {
 			app.authState = 'ready';
 		}
 
@@ -65,11 +97,7 @@
 			applyTheme('dark');
 		}
 
-		// Load user profile for bubble style
-		try {
-			const profile = await getProfile();
-			if (profile.bubble_style) app.bubbleStyle = profile.bubble_style;
-		} catch { /* profile not available yet */ }
+		// (bubble style + AI name are loaded by the auth-gated $effect above)
 
 		// Subscribe to backend events
 		const unlisten = await subscribeToEvents();
@@ -177,7 +205,7 @@
 
 {#if app.authState === 'checking'}
 	<div class="loading">
-		<span class="spinner"></span>
+		<img class="app-icon" src="/app-icon.png" alt="Sovereign GE" />
 		<span>Loading...</span>
 	</div>
 {:else if app.authState === 'onboarding'}
@@ -245,23 +273,22 @@
 		width: 100vw;
 		height: 100vh;
 		display: flex;
+		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		gap: 12px;
+		gap: 16px;
 		color: var(--text-muted, #888);
 		font-size: 0.9rem;
 	}
 
-	.spinner {
-		width: 20px;
-		height: 20px;
-		border: 2px solid var(--border, #333);
-		border-top-color: var(--accent, #F59E0B);
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
+	.app-icon {
+		width: 88px;
+		height: 88px;
+		animation: pulse 1.6s ease-in-out infinite;
 	}
 
-	@keyframes spin {
-		to { transform: rotate(360deg); }
+	@keyframes pulse {
+		0%, 100% { opacity: 1; transform: scale(1); }
+		50%      { opacity: 0.6; transform: scale(0.94); }
 	}
 </style>

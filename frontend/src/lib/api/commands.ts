@@ -331,6 +331,8 @@ export interface OnboardingData {
 
 // Auth
 export const checkAuthState = () => invoke<AuthCheckResult>('check_auth_state');
+/** The backend-owned designation the wizard should display (== what gets saved). */
+export const getOnboardingDesignation = () => invoke<string>('onboarding_designation');
 export const validatePassword = (password: string, keystrokes: KeystrokeSampleDto[]) =>
 	invoke<string>('validate_password', { password, keystrokes });
 export const validatePasswordPolicy = (password: string) =>
@@ -476,6 +478,29 @@ export const dismissLinkSuggestion = (id: string) =>
 
 export const triggerConsolidation = () =>
 	invoke<number>('trigger_consolidation');
+
+// Peer-write review (p2p-no-per-doc-authz): changes a paired device synced that
+// overwrote local content. Non-destructive — the prior is preserved for restore.
+export interface PeerReviewDto {
+	kind: string; // "document" | "row"
+	id: string;
+	title: string;
+	peer: string;
+	at: string | null;
+	/** JSON-encoded PeerChangeVerdict, or null if not yet audited. */
+	assessment: string | null;
+	can_restore: boolean;
+}
+
+export const listPeerReviews = () => invoke<PeerReviewDto[]>('list_peer_reviews');
+
+export const acceptPeerReview = (kind: string, id: string) =>
+	invoke<void>('accept_peer_review', { kind, id });
+
+export const restorePeerReview = (kind: string, id: string) =>
+	invoke<void>('restore_peer_review', { kind, id });
+
+export const auditPeerReviews = () => invoke<number>('audit_peer_reviews');
 
 // Save web page as document
 export const saveWebPage = (
@@ -762,6 +787,11 @@ export const forgetPairedDevice = (peerId: string) =>
 /** Trigger a sync with every paired peer. Returns the number of
  *  StartSync commands queued (0 if the P2P node isn't running). */
 export const triggerSyncNow = () => invoke<number>('trigger_sync_now');
+
+/** Report the network class so the P2P sync gate (wifi_only on Android)
+ *  knows whether to allow auto-sync. kind: 'wifi' | 'cellular' | 'offline'. */
+export const setConnectivityState = (kind: string) =>
+	invoke<void>('set_connectivity_state', { kind });
 
 /** Disarm the active pairing offer (P3.1) — called when the pairing
  *  panel closes so a stale QR can't be redeemed later. */

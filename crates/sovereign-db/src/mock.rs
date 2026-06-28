@@ -26,6 +26,7 @@ pub struct MockGraphDB {
     pii_records: RwLock<HashMap<String, PiiRecord>>,
     share_records: RwLock<HashMap<String, ShareRecord>>,
     milestones: RwLock<HashMap<String, Milestone>>,
+    row_recoveries: RwLock<HashMap<String, RowRecovery>>,
     next_id: AtomicU64,
 }
 
@@ -44,6 +45,7 @@ impl MockGraphDB {
             pii_records: RwLock::new(HashMap::new()),
             share_records: RwLock::new(HashMap::new()),
             milestones: RwLock::new(HashMap::new()),
+            row_recoveries: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(1),
         }
     }
@@ -130,11 +132,118 @@ impl GraphDB for MockGraphDB {
         Ok(doc.clone())
     }
 
+    async fn set_document_peer_review(
+        &self,
+        doc_id: &str,
+        peer: &str,
+        prior_commit: Option<&str>,
+    ) -> DbResult<()> {
+        let mut docs = self.documents.write().unwrap();
+        let doc = docs.get_mut(doc_id).ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
+        doc.peer_review_pending = true;
+        doc.peer_review_peer = Some(peer.to_string());
+        doc.peer_review_at = Some(Utc::now());
+        doc.peer_review_prior_commit = prior_commit.map(|c| c.to_string());
+        doc.peer_review_assessment = None;
+        Ok(())
+    }
+
+    async fn set_document_peer_review_assessment(
+        &self,
+        doc_id: &str,
+        assessment_json: &str,
+    ) -> DbResult<()> {
+        let mut docs = self.documents.write().unwrap();
+        let doc = docs.get_mut(doc_id).ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
+        doc.peer_review_assessment = Some(assessment_json.to_string());
+        Ok(())
+    }
+
+    async fn clear_document_peer_review(&self, doc_id: &str) -> DbResult<()> {
+        let mut docs = self.documents.write().unwrap();
+        let doc = docs.get_mut(doc_id).ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
+        doc.peer_review_pending = false;
+        doc.peer_review_peer = None;
+        doc.peer_review_at = None;
+        doc.peer_review_prior_commit = None;
+        doc.peer_review_assessment = None;
+        Ok(())
+    }
+
+    async fn list_documents_pending_peer_review(&self) -> DbResult<Vec<Document>> {
+        let docs = self.documents.read().unwrap();
+        Ok(docs
+            .values()
+            .filter(|d| d.peer_review_pending && d.deleted_at.is_none())
+            .cloned()
+            .collect())
+    }
+
+    async fn stash_row_recovery(
+        &self,
+        row_id: &str,
+        table: &str,
+        prior_ciphertext: &str,
+        prior_nonce: &str,
+        peer: &str,
+    ) -> DbResult<String> {
+        let key = self.next_key();
+        let id = format!("row_recovery:{key}");
+        let rec = RowRecovery {
+            id: Some(Self::make_thing("row_recovery", &key)),
+            row_id: row_id.to_string(),
+            table: table.to_string(),
+            prior_ciphertext: prior_ciphertext.to_string(),
+            prior_nonce: prior_nonce.to_string(),
+            peer: peer.to_string(),
+            overwritten_at: Utc::now(),
+            review_pending: true,
+            assessment: None,
+        };
+        self.row_recoveries.write().unwrap().insert(id.clone(), rec);
+        Ok(id)
+    }
+
+    async fn set_row_recovery_assessment(
+        &self,
+        recovery_id: &str,
+        assessment_json: &str,
+    ) -> DbResult<()> {
+        let mut recs = self.row_recoveries.write().unwrap();
+        let rec = recs.get_mut(recovery_id).ok_or_else(|| DbError::NotFound(recovery_id.to_string()))?;
+        rec.assessment = Some(assessment_json.to_string());
+        Ok(())
+    }
+
+    async fn list_pending_row_recoveries(&self) -> DbResult<Vec<RowRecovery>> {
+        let recs = self.row_recoveries.read().unwrap();
+        Ok(recs.values().filter(|r| r.review_pending).cloned().collect())
+    }
+
+    async fn get_row_recovery(&self, recovery_id: &str) -> DbResult<RowRecovery> {
+        let recs = self.row_recoveries.read().unwrap();
+        recs.get(recovery_id).cloned().ok_or_else(|| DbError::NotFound(recovery_id.to_string()))
+    }
+
+    async fn resolve_row_recovery(&self, recovery_id: &str) -> DbResult<()> {
+        let mut recs = self.row_recoveries.write().unwrap();
+        let rec = recs.get_mut(recovery_id).ok_or_else(|| DbError::NotFound(recovery_id.to_string()))?;
+        rec.review_pending = false;
+        Ok(())
+    }
+
     async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
         let mut docs = self.documents.write().unwrap();
         let doc = docs.get_mut(id).ok_or_else(|| DbError::NotFound(id.to_string()))?;
         doc.spatial_x = x;
         doc.spatial_y = y;
+        Ok(())
+    }
+
+    async fn set_document_pinned(&self, id: &str, pinned: bool) -> DbResult<()> {
+        let mut docs = self.documents.write().unwrap();
+        let doc = docs.get_mut(id).ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        doc.pinned = pinned;
         Ok(())
     }
 
@@ -476,6 +585,7 @@ impl GraphDB for MockGraphDB {
         let key = self.next_key();
         let doc_title = doc.title.clone();
         let doc_content = doc.content.clone();
+        let doc_thread_id = doc.thread_id.clone();
 
         let existing = self.commits.read().unwrap();
         let parent = existing.get(doc_id)
@@ -494,6 +604,7 @@ impl GraphDB for MockGraphDB {
                 document_id: doc_id.to_string(),
                 title: doc_title,
                 content: doc_content,
+                thread_id: doc_thread_id,
             },
             timestamp: Utc::now(),
             signature: None,

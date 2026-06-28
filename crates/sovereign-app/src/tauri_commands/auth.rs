@@ -220,6 +220,25 @@ pub async fn check_auth_state(state: State<'_, AppState>) -> Result<AuthCheckRes
     })
 }
 
+/// Return the orchestrator designation the onboarding wizard should display.
+///
+/// The designation is generated and owned by the backend (see
+/// `UserProfile::default_new`). The wizard shows *this* value rather than
+/// inventing its own client-side, so the name on the welcome screen is exactly
+/// the one `complete_onboarding` persists and `get_profile` returns on every
+/// later login. Creating + saving the profile here is safe pre-auth: the
+/// onboarding gate keys off the `onboarding_done` marker, not `profile.json`.
+#[tauri::command]
+pub async fn onboarding_designation(state: State<'_, AppState>) -> Result<String, String> {
+    let profile_dir = &state.profile_dir;
+    let mut profile = sovereign_core::profile::UserProfile::load(profile_dir)
+        .unwrap_or_else(|_| sovereign_core::profile::UserProfile::default_new());
+    // Persist so complete_onboarding (and future launches) reuse this exact
+    // designation instead of generating a fresh one.
+    profile.save(profile_dir).str_err()?;
+    Ok(profile.designation)
+}
+
 /// Validate a password against the auth store and install the session.
 /// Returns persona ("primary" or "duress"). After this call returns Ok,
 /// AppState.device_key is populated and the orchestrator has its PII /
@@ -391,9 +410,42 @@ pub async fn complete_onboarding(
             .save(&crypto_dir.join("auth.store"))
             .str_err()?;
 
+        // Persist the MasterKey salt so this device can later generate a
+        // pairing QR (generate_pair_qr releases it to the new device). The
+        // paired-onboarding path writes this too; first-device onboarding
+        // previously omitted it, which broke "Pair a new device". The salt
+        // is not secret — it travels in the pairing offer.
+        std::fs::write(crypto_dir.join("salt"), &salt).str_err()?;
+
         // Install the session immediately so the user lands in a fully
         // unlocked state (vault, PII pipeline, encrypted session log).
         install_session(&state, &auth_store, password.as_bytes()).await?;
+
+        // sidechannel-001-floor-not-equalizer: pre-create + pre-seed the duress
+        // decoy DB now, at onboarding, so the FIRST duress login pays no seed
+        // cost. The login-time DB_SETUP_FLOOR pads the persona-distinguishing
+        // work UP to a constant but cannot CAP it, so a first coerced login that
+        // also seeded the decoy could overrun the floor and leak the persona via
+        // latency. With the seed done here, both personas' login paths only OPEN
+        // an existing DB (well within the floor). Best-effort — on failure the
+        // first duress login falls back to seeding (the prior behavior).
+        {
+            let mut duress_config = state.config.clone();
+            duress_config.database.path = crate::setup::persona_db_path(
+                &state.config,
+                sovereign_core::auth::PersonaKind::Duress,
+            );
+            match crate::setup::create_db(&duress_config).await {
+                Ok(ddb) => {
+                    if let Err(e) = crate::duress::seed_duress_db(&ddb).await {
+                        tracing::warn!("duress decoy pre-seed at onboarding failed (continuing): {e}");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("duress decoy DB pre-create at onboarding failed (continuing): {e}");
+                }
+            }
+        }
 
         // Save canary phrase if provided
         if let Some(ref phrase) = data.canary_phrase {
@@ -438,11 +490,22 @@ pub async fn complete_onboarding(
         }
     }
 
-    // Seed sample data if requested
+    // Seed sample data if requested. This is the ONLY seeding path: startup
+    // no longer auto-seeds, so a fresh install that becomes a pairing target
+    // comes up empty and receives its workspace via sync. The paired
+    // onboarding flow (complete_onboarding_paired) never seeds.
     if data.seed_sample_data {
         crate::seed::seed_if_empty(state.db.as_ref())
             .await
             .str_err()?;
+
+        // Orchestrator context: fake "Alex" profile + multi-day session-log
+        // history, kept consistent with the DB sample data seeded above.
+        // (Previously seeded unconditionally at startup in init_backend.)
+        let orchestrator_profile_dir = profile_dir.join("orchestrator");
+        if let Err(e) = crate::seed::seed_profile_and_history(&orchestrator_profile_dir) {
+            tracing::warn!("Profile/history seed failed: {e}");
+        }
 
         // PII seed needs the AccountKey to encrypt vault values, so it
         // can only run on builds with the encryption feature and once

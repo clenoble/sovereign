@@ -166,6 +166,24 @@ pub fn redact_raw_regex(text: &str, locale: crate::pii::Locale) -> String {
     out
 }
 
+/// PII-001: read-time path for a SCANNED body. Resolves `[pii:<id>]` tokens to
+/// type-only labels (like [`resolve_to_preview`]), then runs the regex fail-safe
+/// over the result so any raw *structured* PII the ingest scan didn't tokenize
+/// is still masked before the content reaches the model.
+///
+/// A body can be flagged `pii_scanned_at == Some` yet still contain raw values:
+/// it may have been scanned under a narrower locale (e.g. Generic, which has no
+/// AVS rule) or before locale-aware ingest existed. The plain `resolve_to_preview`
+/// passes such residue through verbatim — this backstop closes that gap. Pass the
+/// deployment locale (currently Swiss) so AVS/Swiss-address residue is caught too.
+pub fn resolve_to_preview_redacted(
+    body: &str,
+    records: &[sovereign_db::schema::PiiRecord],
+    locale: crate::pii::Locale,
+) -> String {
+    redact_raw_regex(&resolve_to_preview(body, records), locale)
+}
+
 /// Apply a kind-specific masking transform to a plaintext PII value.
 /// Length-preserving where it makes sense; redacts everything for the
 /// catch-all kinds.
@@ -654,6 +672,27 @@ mod tests {
             redact_raw_regex("just some plain notes here", crate::pii::Locale::Generic),
             "just some plain notes here"
         );
+    }
+
+    #[test]
+    fn resolve_to_preview_redacted_masks_residual_avs() {
+        // PII-001: a SCANNED body can still carry a raw AVS if it was scanned
+        // under a locale without the AVS rule. The plain resolve passes it
+        // through; the redacted backstop must mask it while still resolving
+        // genuine tokens.
+        let rec = make_record("pii_record:rec1", PiiKind::Email, "CT");
+        let body = "Email [pii:pii_record:rec1], AVS 756.1234.5678.97 on file.";
+        // Setup: the plain path leaks the raw AVS.
+        let plain = resolve_to_preview(body, std::slice::from_ref(&rec));
+        assert!(plain.contains("756.1234.5678.97"), "setup: plain should leak");
+        // Backstop masks the AVS and still resolves the email token.
+        let out = resolve_to_preview_redacted(
+            body,
+            std::slice::from_ref(&rec),
+            crate::pii::Locale::Swiss,
+        );
+        assert!(!out.contains("756.1234.5678.97"), "AVS leaked through backstop: {out}");
+        assert!(out.contains("[Email]"), "token not resolved: {out}");
     }
 
     // --- resolve_body ---

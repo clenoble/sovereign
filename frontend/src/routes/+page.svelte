@@ -1,14 +1,16 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { getStatus, closeBrowserCmd, setBrowserVisible, listPendingSuggestions } from '$lib/api/commands';
+	import { getStatus, closeBrowserCmd, setBrowserVisible, listPendingSuggestions, listPeerReviews, auditPeerReviews } from '$lib/api/commands';
 	import { app } from '$lib/stores/app.svelte';
 	import { setSuggestions, type LinkSuggestion } from '$lib/stores/suggestions.svelte';
+	import { setPeerReviews, fromDto } from '$lib/stores/peerReviews.svelte';
 	import { chat } from '$lib/stores/chat.svelte';
 	import { panels } from '$lib/stores/documents.svelte';
 	import { browser, openBrowser, closeBrowser } from '$lib/stores/browser.svelte';
 	import DocumentPanel from '$lib/components/DocumentPanel.svelte';
 	import BrowserPanel from '$lib/components/BrowserPanel.svelte';
 	import SuggestionPanel from '$lib/components/SuggestionPanel.svelte';
+	import PeerReviewPanel from '$lib/components/PeerReviewPanel.svelte';
 	import VisionPanel from '$lib/components/VisionPanel.svelte';
 	import { vision } from '$lib/stores/vision.svelte';
 	import Canvas from '$lib/components/Canvas.svelte';
@@ -41,6 +43,15 @@
 					source: d.source
 				}))
 			);
+
+			// Load pending peer-write reviews (p2p-no-per-doc-authz). Best-effort
+			// audit first to fill verdicts when a model is loaded (errors when no
+			// orchestrator — e.g. mobile w/o GGUF — so ignore), then list.
+			try {
+				await auditPeerReviews();
+			} catch { /* no model / orchestrator — list unaudited */ }
+			const reviews = await listPeerReviews();
+			setPeerReviews(reviews.map(fromDto));
 		} catch (e) {
 			error = String(e);
 		}
@@ -93,6 +104,9 @@
 
 	<!-- AI-suggested links panel (floats near bubble) -->
 	<SuggestionPanel />
+
+	<!-- Peer-write review panel (p2p-no-per-doc-authz) -->
+	<PeerReviewPanel />
 
 	{#if vision.open}
 		<VisionPanel />

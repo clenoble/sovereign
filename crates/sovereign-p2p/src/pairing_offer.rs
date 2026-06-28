@@ -45,10 +45,11 @@ use crate::error::{P2pError, P2pResult};
 /// formats can't be confused.
 const OFFER_VERSION: u8 = 2;
 
-/// Offer lifetime. Longer than the old QR's 60s because the new flow
-/// includes dialing + the typed code + (on slow devices) two Argon2id
-/// stretches before the first message arrives.
-pub const OFFER_TTL_SECONDS: i64 = 120;
+/// Offer lifetime. 10 minutes: when the QR can't be scanned the user
+/// copy/pastes the offer text and types the code across two devices, which
+/// takes well over the old 2 minutes. The 3-attempt proof cap (below) is
+/// what bounds brute-force, not the TTL, so a longer window is safe.
+pub const OFFER_TTL_SECONDS: i64 = 600;
 
 /// How many wrong proofs are tolerated before the offer self-destructs.
 /// With a 50-bit code, 3 online guesses are negligible (~2⁻⁴⁸).

@@ -71,7 +71,15 @@ impl SessionLog {
     /// previous entry for tamper detection. The hash of the last existing line
     /// is read from the file to maintain chain continuity.
     #[cfg(feature = "encrypted-log")]
-    pub fn open_encrypted(dir: &Path, key: [u8; 32]) -> Result<Self> {
+    /// `beacon` is a path OUTSIDE the log dir (the crypto dir, alongside
+    /// `auth.store`) that records "this account's encrypted session log has had
+    /// content". It is created here once the log is non-empty and consulted to
+    /// catch the genesis-wipe (sessionlog-genesis-wipe): deleting BOTH the log
+    /// and its anchor reverts the dir to a pristine genesis state the in-dir
+    /// checks can't distinguish from a fresh account — but the beacon, living
+    /// elsewhere, survives that delete and proves the wipe. `None` disables the
+    /// beacon (tests).
+    pub fn open_encrypted(dir: &Path, key: [u8; 32], beacon: Option<&Path>) -> Result<Self> {
         fs::create_dir_all(dir)?;
         let path = dir.join("session_log.jsonl");
         let anchor_path = dir.join("session_log.anchor");
@@ -98,11 +106,11 @@ impl SessionLog {
         // anchor bookkeeping.
         let (chain_count, prev_hash) = Self::read_tail(&path);
 
-        // SESSIONLOG-003: if a valid anchor says the file should have MORE lines
-        // than it does (or the anchored line is gone), it was truncated/rolled
-        // back while we were closed. Surface it loudly; the read path
-        // (load_recent_encrypted) is the hard gate that refuses to feed such a
-        // log to the model — here we just record the tamper before appending.
+        // SESSIONLOG-001/003: if a valid anchor says the file should have MORE
+        // lines than it does (truncation/rollback), the anchor MAC is forged, or
+        // the anchor was deleted while encrypted entries remain, the log was
+        // tampered while we were closed.
+        let mut tamper: Option<String> = None;
         match crate::encrypted_log::read_chain_anchor(&anchor_path, &key) {
             crate::encrypted_log::AnchorStatus::Valid { count, head } => {
                 if let Err(e) = crate::encrypted_log::check_no_truncation(
@@ -110,34 +118,62 @@ impl SessionLog {
                     count,
                     &head,
                 ) {
-                    tracing::error!("SESSIONLOG-003: session log integrity anchor mismatch on open ({e})");
+                    tamper = Some(format!("anchor/file mismatch: {e}"));
                 }
             }
             crate::encrypted_log::AnchorStatus::Forged => {
-                tracing::error!("SESSIONLOG-003: session log anchor MAC invalid on open (forged/corrupt)");
+                tamper = Some("anchor MAC invalid (forged/corrupt)".into());
             }
             crate::encrypted_log::AnchorStatus::Missing => {
-                // SESSIONLOG-001: missing anchor + existing encrypted lines = a
-                // likely deleted anchor. Surface it before the first append mints
-                // a fresh anchor over the (possibly truncated) state. The read
-                // path (load_recent_encrypted) is the hard gate that refuses such
-                // a log; this is the loud warning at the write side.
                 if Self::read_all_lines(&path)
                     .iter()
                     .any(|l| crate::encrypted_log::is_encrypted_line(l))
                 {
-                    tracing::error!(
-                        "SESSIONLOG-001: session log anchor MISSING on open but encrypted entries \
-                         exist — possible anchor deletion / rollback"
-                    );
+                    tamper = Some("anchor missing but encrypted entries exist (deleted anchor)".into());
+                } else if beacon.map(|b| b.exists()).unwrap_or(false) {
+                    // sessionlog-genesis-wipe: the log AND its anchor are both
+                    // gone (a pristine genesis state the in-dir checks would
+                    // wave through as a fresh account), yet the out-of-dir
+                    // beacon says this account's log previously had content.
+                    // Both files were wiped together — fail closed.
+                    tamper = Some("session log + anchor wiped (genesis beacon present)".into());
                 }
             }
+        }
+
+        // SESSIONLOG-001: FAIL CLOSED. Opening the file for append would let the
+        // first write re-mint a fully-valid anchor over the truncated/forged
+        // prefix — permanently laundering the rollback so even a cold reload
+        // can't detect it. Refuse instead: never lower the anchor's high-water,
+        // never re-anchor a tampered file. The caller degrades to no encrypted
+        // logging for the session rather than trusting laundered history.
+        if let Some(reason) = tamper {
+            tracing::error!("SESSIONLOG-001: session log tamper on open ({reason}); refusing to append");
+            return Err(anyhow::anyhow!(
+                "session log tamper detected ({reason}); refusing to append (SESSIONLOG-001)"
+            ));
         }
 
         let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)?;
+
+        // sessionlog-genesis-wipe: once the log has real content, drop the
+        // out-of-dir beacon (created at open-time; the residual window is a wipe
+        // between a log's first content and the next open). Best-effort — a
+        // failure here only weakens future wipe detection, never blocks logging.
+        if chain_count > 0 {
+            if let Some(b) = beacon {
+                if !b.exists() {
+                    if let Some(parent) = b.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(b, b"1");
+                }
+            }
+        }
+
         tracing::info!("Session log (encrypted): {}", path.display());
         Ok(Self {
             writer: BufWriter::new(file),
@@ -581,13 +617,62 @@ mod tests {
         const TEST_KEY: [u8; 32] = [42u8; 32];
 
         #[test]
+        fn genesis_wipe_with_beacon_fails_closed() {
+            let pid = std::process::id();
+            let dir = std::env::temp_dir().join(format!("session-log-wipe-{pid}"));
+            let beacon = std::env::temp_dir().join(format!("session-log-wipe-beacon-{pid}"));
+            let _ = fs::remove_dir_all(&dir);
+            let _ = fs::remove_file(&beacon);
+
+            // Session 1: write real content (log + anchor get written).
+            {
+                let mut log =
+                    SessionLog::open_encrypted(&dir, TEST_KEY, Some(&beacon)).unwrap();
+                log.log_user_input("chat", "real activity", "chat");
+            }
+            // Session 2: reopen — content present → beacon is created out-of-dir.
+            {
+                let _log =
+                    SessionLog::open_encrypted(&dir, TEST_KEY, Some(&beacon)).unwrap();
+            }
+            assert!(beacon.exists(), "beacon must appear once the log has content");
+
+            // Genesis wipe: delete BOTH log + anchor; the beacon (different dir)
+            // survives.
+            let _ = fs::remove_file(dir.join("session_log.jsonl"));
+            let _ = fs::remove_file(dir.join("session_log.anchor"));
+
+            // Reopen → the surviving beacon exposes the wipe → fail closed.
+            assert!(
+                SessionLog::open_encrypted(&dir, TEST_KEY, Some(&beacon)).is_err(),
+                "a genesis wipe with a surviving beacon must fail closed"
+            );
+
+            // A genuinely fresh account (genesis, no beacon) still opens fine.
+            let fresh = std::env::temp_dir().join(format!("session-log-fresh-{pid}"));
+            let fresh_beacon =
+                std::env::temp_dir().join(format!("session-log-fresh-beacon-{pid}"));
+            let _ = fs::remove_dir_all(&fresh);
+            let _ = fs::remove_file(&fresh_beacon);
+            assert!(
+                SessionLog::open_encrypted(&fresh, TEST_KEY, Some(&fresh_beacon)).is_ok(),
+                "a fresh account at genesis (no beacon) must open normally"
+            );
+
+            let _ = fs::remove_dir_all(&dir);
+            let _ = fs::remove_file(&beacon);
+            let _ = fs::remove_dir_all(&fresh);
+            let _ = fs::remove_file(&fresh_beacon);
+        }
+
+        #[test]
         fn encrypted_write_and_read_roundtrip() {
             let dir =
                 std::env::temp_dir().join(format!("session-log-enc-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
 
             {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY).unwrap();
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
                 log.log_user_input("chat", "secret message", "chat");
                 log.log_chat_response("secret reply");
             }
@@ -613,7 +698,7 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
 
             {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY).unwrap();
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
                 for i in 0..5 {
                     log.log_user_input("chat", &format!("msg {i}"), "chat");
                 }
@@ -633,7 +718,7 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
 
             {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY).unwrap();
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
                 for i in 0..3 {
                     log.log_user_input("chat", &format!("msg {i}"), "chat");
                 }
@@ -656,11 +741,11 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
 
             {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY).unwrap();
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
                 log.log_user_input("chat", "first session", "chat");
             }
             {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY).unwrap();
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
                 log.log_user_input("chat", "second session", "chat");
             }
 
@@ -691,7 +776,7 @@ mod tests {
 
             // Then write encrypted
             {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY).unwrap();
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
                 log.log_user_input("chat", "encrypted msg", "chat");
             }
 
@@ -711,7 +796,7 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
 
             {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY).unwrap();
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
                 log.log_user_input("chat", "secret", "chat");
             }
 
@@ -732,7 +817,7 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
 
             {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY).unwrap();
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
                 for i in 0..4 {
                     log.log_user_input("chat", &format!("msg {i}"), "chat");
                 }
@@ -759,6 +844,15 @@ mod tests {
                 "tail truncation must be detected via the anchor and the log discarded"
             );
 
+            // SESSIONLOG-001 (write side): reopening for append must ALSO refuse,
+            // otherwise the next append re-mints a valid anchor over the truncated
+            // prefix and the rollback is laundered for good (a later cold load
+            // would see a self-consistent, fully-anchored — but rolled-back — log).
+            assert!(
+                SessionLog::open_encrypted(&dir, TEST_KEY, None).is_err(),
+                "reopen over a truncated log must fail closed (never re-anchor)"
+            );
+
             let _ = fs::remove_dir_all(&dir);
         }
 
@@ -769,7 +863,7 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
 
             {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY).unwrap();
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
                 log.log_user_input("chat", "m", "chat");
             }
             // Corrupt the anchor's MAC (still valid JSON, bad tag).
@@ -794,7 +888,7 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
 
             {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY).unwrap();
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
                 log.log_user_input("chat", "secret entry", "chat");
             }
             // Attacker deletes the anchor sidecar (trivially easier than forging).
@@ -838,11 +932,11 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
 
             {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY).unwrap();
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
                 log.log_user_input("chat", "one", "chat");
             }
             {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY).unwrap();
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
                 log.log_user_input("chat", "two", "chat");
                 log.log_user_input("chat", "three", "chat");
             }

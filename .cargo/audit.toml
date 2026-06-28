@@ -14,4 +14,12 @@ ignore = [
     # hickory-proto >=0.26.1 lands.
     "RUSTSEC-2026-0118",
     "RUSTSEC-2026-0119",
+    # lopdf stack overflow on deeply-nested PDF objects (a PARSING bug). The
+    # exploitable path — pdf-extract, which parses untrusted imported PDFs — was
+    # upgraded to lopdf 0.42.0 (fixed). The only remaining lopdf 0.26.0 comes via
+    # genpdf 0.2.0 (abandoned upstream, pins lopdf 0.26; 0.2.0 is its last
+    # release), used solely to GENERATE export PDFs from our own content — it
+    # never parses untrusted input, so the overflow is unreachable on that path.
+    # Drop this ignore by replacing genpdf in skills/pdf_export.rs.
+    "RUSTSEC-2026-0187",
 ]

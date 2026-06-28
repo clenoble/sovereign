@@ -202,9 +202,21 @@ impl Orchestrator {
     /// Re-opens the session log in encrypted mode. Each subsequent entry will be
     /// encrypted with XChaCha20-Poly1305 and hash-chained to the previous entry
     /// for tamper detection.
+    /// Path of the out-of-dir session-log beacon (sessionlog-genesis-wipe). It
+    /// lives in the crypto dir next to `auth.store`, so wiping the log dir
+    /// (`profile_dir`) doesn't remove it — its presence proves the encrypted
+    /// log previously had content, exposing a genesis wipe.
+    #[cfg(feature = "encrypted-log")]
+    fn session_log_beacon() -> std::path::PathBuf {
+        sovereign_core::sovereign_dir()
+            .join("crypto")
+            .join("session_log.beacon")
+    }
+
     #[cfg(feature = "encrypted-log")]
     pub fn set_session_log_key(&self, key: [u8; 32]) {
-        match SessionLog::open_encrypted(&self.profile_dir, key) {
+        let beacon = Self::session_log_beacon();
+        match SessionLog::open_encrypted(&self.profile_dir, key, Some(&beacon)) {
             Ok(log) => {
                 if let Ok(mut guard) = self.session_log.lock() {
                     *guard = Some(log);
@@ -480,7 +492,15 @@ impl Orchestrator {
         // auto-approve for the rest of the turn — every write is forced through
         // the user-confirmation path so data-plane content can't silently
         // trigger control-plane mutations.
-        let mut loop_ingested_data_plane = false;
+        //
+        // gating-context-trust-autowrite (v0.0.8 audit): the INITIAL workspace
+        // context (recent doc titles + thread names) is itself ingested
+        // data-plane content — it can carry injection from synced/imported docs
+        // — but the read-tool arming below only fires AFTER a read tool runs. A
+        // write proposed straight off the initial context would otherwise skip
+        // the gate. Arm it up front whenever any context was gathered.
+        let mut loop_ingested_data_plane = !workspace_ctx.thread_names.is_empty()
+            || !workspace_ctx.recent_doc_titles.is_empty();
         let mut iterations = 0;
         loop {
             iterations += 1;
@@ -1064,8 +1084,14 @@ impl Orchestrator {
                                 .list_pii_records(None, None, None)
                                 .await
                                 .unwrap_or_default();
-                            let resolved =
-                                crate::pii::resolve::resolve_to_preview(&doc.content, &records);
+                            // PII-001: backstop token resolution with a regex pass
+                            // so raw structured PII (e.g. AVS) the scan missed can't
+                            // reach the summarizer.
+                            let resolved = crate::pii::resolve::resolve_to_preview_redacted(
+                                &doc.content,
+                                &records,
+                                crate::pii::Locale::Swiss,
+                            );
                             // External docs (e.g. saved web pages) can also carry
                             // instructions aimed at the summarizer — fence them as
                             // data-only and surface any match (INJECTION-004).
@@ -1584,6 +1610,21 @@ impl Orchestrator {
     ///
     /// Uses adaptive gating from the user profile — if the user consistently
     /// dismisses consolidation suggestions, they are shown less often.
+    /// Audit pending peer-synced changes (p2p-no-per-doc-authz), filling each
+    /// review's assessment. Uses the router model when available; degrades to
+    /// the deterministic heuristic otherwise (the audit never blocks on the
+    /// model). Returns the number of reviews audited. Call after a sync round.
+    pub async fn audit_peer_reviews(&self) -> Result<usize> {
+        let classifier = self.classifier.lock().await;
+        let n = crate::peer_audit::audit_pending_reviews(
+            self.db.as_ref(),
+            Some(&classifier.router),
+            Some(&*classifier.formatter),
+        )
+        .await;
+        Ok(n)
+    }
+
     pub async fn consolidate_memory(&self) -> Result<()> {
         // Check adaptive gating
         {

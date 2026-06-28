@@ -184,6 +184,11 @@ pub enum P2pCommand {
         for_user: String,
         epoch: u32,
     },
+    /// Re-apply the preserved prior value of a row recovery, undoing a peer
+    /// overwrite (p2p-no-per-doc-authz). Routed here because the SyncService —
+    /// which holds the transport key to unseal the stashed prior — lives on the
+    /// node.
+    RestoreRowRecovery { recovery_id: String },
     SendRequest { peer_id: PeerId, request: SovereignRequest },
     /// Dial a peer's multiaddr directly (bypassing mDNS discovery).
     /// Used for tests and for explicit "connect to address" UI flows.
@@ -269,6 +274,11 @@ pub struct SovereignNode {
     backup_host: Option<Arc<crate::backup_host::BackupHost>>,
     /// In-flight backup placement jobs per peer (P4.2).
     backup_jobs: HashMap<PeerId, BackupJob>,
+    /// Per-peer inbound sync-request token bucket (dos-p2p-pushflood). A paired
+    /// peer is otherwise free to flood PushCommits/PushRows/GetManifest; this
+    /// caps the sustained rate (with a small burst) so one device can't pin the
+    /// node or balloon the DB. `(last_refill, tokens)`.
+    sync_buckets: HashMap<String, (std::time::Instant, f64)>,
 }
 
 impl SovereignNode {
@@ -356,7 +366,32 @@ impl SovereignNode {
             pairing_offer: None,
             backup_host,
             backup_jobs: HashMap::new(),
+            sync_buckets: HashMap::new(),
         })
+    }
+
+    /// Token-bucket admission for an inbound sync request from a paired peer
+    /// (dos-p2p-pushflood). Returns false when the peer has exceeded its rate,
+    /// so the caller refuses the request. Burst of [`SYNC_BURST`], refilled at
+    /// [`SYNC_REFILL_PER_SEC`]/s — generous for real sync (a manifest + a
+    /// handful of push rounds) but fatal to a flood loop.
+    fn allow_sync_request(&mut self, peer: &str) -> bool {
+        const SYNC_BURST: f64 = 30.0;
+        const SYNC_REFILL_PER_SEC: f64 = 10.0;
+        let now = std::time::Instant::now();
+        let (last, tokens) = self
+            .sync_buckets
+            .entry(peer.to_string())
+            .or_insert((now, SYNC_BURST));
+        let refill = now.duration_since(*last).as_secs_f64() * SYNC_REFILL_PER_SEC;
+        *tokens = (*tokens + refill).min(SYNC_BURST);
+        *last = now;
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
     }
 
     /// Start listening on the configured port.
@@ -490,6 +525,20 @@ impl SovereignNode {
                             );
                             SovereignResponse::Error {
                                 message: "peer not paired".into(),
+                            }
+                        } else if self.is_sync_request(&request)
+                            && !self.allow_sync_request(&peer.to_string())
+                        {
+                            // dos-p2p-pushflood: a paired peer exceeded its
+                            // inbound sync-request rate. Refuse rather than let
+                            // it pin the node / balloon the DB.
+                            warn!(
+                                "Rate-limiting {:?} from paired peer {} (dos-p2p-pushflood)",
+                                std::mem::discriminant(&request),
+                                peer
+                            );
+                            SovereignResponse::Error {
+                                message: "rate limit exceeded".into(),
                             }
                         } else {
                             process_request(
@@ -954,6 +1003,16 @@ impl SovereignNode {
                         }
                     }
                     Err(e) => warn!("Invalid Multiaddr {address}: {e}"),
+                }
+            }
+            P2pCommand::RestoreRowRecovery { recovery_id } => {
+                // p2p-no-per-doc-authz: undo a peer overwrite by re-applying the
+                // preserved prior row value. Runs on the node because the
+                // SyncService (which holds the transport key needed to unseal
+                // the recovery) lives here.
+                match self.sync_service.restore_row_recovery(&recovery_id).await {
+                    Ok(()) => info!("restored row recovery {recovery_id}"),
+                    Err(e) => warn!("restore row recovery {recovery_id} failed: {e}"),
                 }
             }
             P2pCommand::Shutdown => unreachable!("handled in run()"),

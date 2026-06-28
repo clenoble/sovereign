@@ -25,8 +25,8 @@ use chrono::{DateTime, Utc};
 use crate::error::DbResult;
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, Entity, EntityKind, Message, Milestone,
-    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, ShareRecord, SourceRef,
-    SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
+    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, RowRecovery, ShareRecord,
+    SourceRef, SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -91,6 +91,7 @@ impl GraphDB for ArcWrapper {
     async fn update_document(&self, id: &str, title: Option<&str>, content: Option<&str>) -> DbResult<Document> { self.0.update_document(id, title, content).await }
     async fn delete_document(&self, id: &str) -> DbResult<()> { self.0.delete_document(id).await }
     async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> { self.0.update_document_position(id, x, y).await }
+    async fn set_document_pinned(&self, id: &str, pinned: bool) -> DbResult<()> { self.0.set_document_pinned(id, pinned).await }
     async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>> { self.0.search_documents_by_title(query).await }
     async fn search_documents_by_title_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Document>> { self.0.search_documents_by_title_token_hashes(hashes).await }
     async fn set_document_title_encryption(&self, id: &str, title_ciphertext: &str, title_nonce: &str, title_token_hashes: &[String]) -> DbResult<()> {
@@ -102,6 +103,15 @@ impl GraphDB for ArcWrapper {
     async fn update_document_reliability(&self, id: &str, source_url: Option<&str>, classification: Option<&str>, score: Option<f32>, assessment_json: Option<&str>) -> DbResult<Document> {
         self.0.update_document_reliability(id, source_url, classification, score, assessment_json).await
     }
+    async fn set_document_peer_review(&self, doc_id: &str, peer: &str, prior_commit: Option<&str>) -> DbResult<()> { self.0.set_document_peer_review(doc_id, peer, prior_commit).await }
+    async fn set_document_peer_review_assessment(&self, doc_id: &str, assessment_json: &str) -> DbResult<()> { self.0.set_document_peer_review_assessment(doc_id, assessment_json).await }
+    async fn clear_document_peer_review(&self, doc_id: &str) -> DbResult<()> { self.0.clear_document_peer_review(doc_id).await }
+    async fn list_documents_pending_peer_review(&self) -> DbResult<Vec<Document>> { self.0.list_documents_pending_peer_review().await }
+    async fn stash_row_recovery(&self, row_id: &str, table: &str, prior_ciphertext: &str, prior_nonce: &str, peer: &str) -> DbResult<String> { self.0.stash_row_recovery(row_id, table, prior_ciphertext, prior_nonce, peer).await }
+    async fn set_row_recovery_assessment(&self, recovery_id: &str, assessment_json: &str) -> DbResult<()> { self.0.set_row_recovery_assessment(recovery_id, assessment_json).await }
+    async fn list_pending_row_recoveries(&self) -> DbResult<Vec<RowRecovery>> { self.0.list_pending_row_recoveries().await }
+    async fn get_row_recovery(&self, recovery_id: &str) -> DbResult<RowRecovery> { self.0.get_row_recovery(recovery_id).await }
+    async fn resolve_row_recovery(&self, recovery_id: &str) -> DbResult<()> { self.0.resolve_row_recovery(recovery_id).await }
 
     async fn create_thread(&self, thread: Thread) -> DbResult<Thread> { self.0.create_thread(thread).await }
     async fn get_thread(&self, id: &str) -> DbResult<Thread> { self.0.get_thread(id).await }
@@ -239,6 +249,7 @@ impl GraphDB for LayeredGraphDB {
     async fn update_document(&self, id: &str, title: Option<&str>, content: Option<&str>) -> DbResult<Document> { self.current().update_document(id, title, content).await }
     async fn delete_document(&self, id: &str) -> DbResult<()> { self.current().delete_document(id).await }
     async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> { self.current().update_document_position(id, x, y).await }
+    async fn set_document_pinned(&self, id: &str, pinned: bool) -> DbResult<()> { self.current().set_document_pinned(id, pinned).await }
     async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>> { self.current().search_documents_by_title(query).await }
     async fn search_documents_by_title_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Document>> { self.current().search_documents_by_title_token_hashes(hashes).await }
     async fn set_document_title_encryption(&self, id: &str, title_ciphertext: &str, title_nonce: &str, title_token_hashes: &[String]) -> DbResult<()> {
@@ -250,6 +261,15 @@ impl GraphDB for LayeredGraphDB {
     async fn update_document_reliability(&self, id: &str, source_url: Option<&str>, classification: Option<&str>, score: Option<f32>, assessment_json: Option<&str>) -> DbResult<Document> {
         self.current().update_document_reliability(id, source_url, classification, score, assessment_json).await
     }
+    async fn set_document_peer_review(&self, doc_id: &str, peer: &str, prior_commit: Option<&str>) -> DbResult<()> { self.current().set_document_peer_review(doc_id, peer, prior_commit).await }
+    async fn set_document_peer_review_assessment(&self, doc_id: &str, assessment_json: &str) -> DbResult<()> { self.current().set_document_peer_review_assessment(doc_id, assessment_json).await }
+    async fn clear_document_peer_review(&self, doc_id: &str) -> DbResult<()> { self.current().clear_document_peer_review(doc_id).await }
+    async fn list_documents_pending_peer_review(&self) -> DbResult<Vec<Document>> { self.current().list_documents_pending_peer_review().await }
+    async fn stash_row_recovery(&self, row_id: &str, table: &str, prior_ciphertext: &str, prior_nonce: &str, peer: &str) -> DbResult<String> { self.current().stash_row_recovery(row_id, table, prior_ciphertext, prior_nonce, peer).await }
+    async fn set_row_recovery_assessment(&self, recovery_id: &str, assessment_json: &str) -> DbResult<()> { self.current().set_row_recovery_assessment(recovery_id, assessment_json).await }
+    async fn list_pending_row_recoveries(&self) -> DbResult<Vec<RowRecovery>> { self.current().list_pending_row_recoveries().await }
+    async fn get_row_recovery(&self, recovery_id: &str) -> DbResult<RowRecovery> { self.current().get_row_recovery(recovery_id).await }
+    async fn resolve_row_recovery(&self, recovery_id: &str) -> DbResult<()> { self.current().resolve_row_recovery(recovery_id).await }
 
     async fn create_thread(&self, thread: Thread) -> DbResult<Thread> { self.current().create_thread(thread).await }
     async fn get_thread(&self, id: &str) -> DbResult<Thread> { self.current().get_thread(id).await }

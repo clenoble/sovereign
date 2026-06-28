@@ -26,6 +26,22 @@ use crate::version_store::{RowVersion, VersionStore};
 /// own clock. The deep fix (signed monotonic counters) is deferred.
 const MAX_FUTURE_SKEW: chrono::Duration = chrono::Duration::hours(24);
 
+/// Maximum amount a remote row's Lamport `version_counter` may exceed our
+/// local high-water (`VersionStore::own_counter`) in a single apply.
+///
+/// `p2p-no-per-doc-authz`: the envelope signature only proves the *sender*
+/// signed the row, and a paired peer freely chooses `version_counter` and
+/// signs it with its own key — so neither the signature nor the
+/// `version_device == sender` gate stops a forged-high counter (e.g.
+/// `u64::MAX`) from winning every `(counter, device_id)` LWW race and
+/// silently overwriting any record cluster-wide. We bound the trusted
+/// advance: an honest device's counter is a Lamport clock that bumps by one
+/// per local edit and merges to the max it has seen, so it never leaps this
+/// far ahead of what we've already synced. This kills the instant-win forge;
+/// the non-destructive apply path (preserve prior version + LLM audit +
+/// surface) covers the residual bounded-overwrite case.
+const MAX_COUNTER_ADVANCE: u64 = 1_000_000;
+
 /// Middleware between the P2P networking layer and the database.
 ///
 /// Owns an `Arc<dyn GraphDB>` and exposes async methods for building
@@ -414,6 +430,7 @@ impl SyncService {
             document_id: doc_id.to_string(),
             title: doc.title,
             content: doc.content,
+            thread_id: doc.thread_id,
         };
         let mut commit = seal_snapshot(
             head_commit.unwrap_or("").to_string(),
@@ -503,30 +520,75 @@ impl SyncService {
 
             let snapshot = transport_to_snapshot(ec, &key)?;
 
-            if self.db.get_document(&ec.document_id).await.is_ok() {
-                self.db
-                    .update_document(
-                        &ec.document_id,
-                        Some(&snapshot.title),
-                        Some(&snapshot.content),
-                    )
-                    .await
-                    .map_err(|e| P2pError::SyncError(format!("failed to update doc: {e}")))?;
+            if let Ok(local) = self.db.get_document(&ec.document_id).await {
+                // p2p-no-per-doc-authz: a paired peer's overwrite is
+                // NON-DESTRUCTIVE. Skip identical re-syncs (the common case —
+                // every round re-pushes); otherwise snapshot the current local
+                // version as a commit FIRST so it stays restorable, apply the
+                // peer's content, then flag the doc so the change is surfaced
+                // for review on next open instead of silently replacing it.
+                let changed =
+                    local.title != snapshot.title || local.content != snapshot.content;
+                if changed {
+                    let prior_commit = self
+                        .db
+                        .commit_document(&ec.document_id, "pre-sync snapshot (peer overwrite)")
+                        .await
+                        .ok()
+                        .and_then(|c| c.id_string());
+                    self.db
+                        .update_document(
+                            &ec.document_id,
+                            Some(&snapshot.title),
+                            Some(&snapshot.content),
+                        )
+                        .await
+                        .map_err(|e| P2pError::SyncError(format!("failed to update doc: {e}")))?;
+                    // Best-effort: a failure to flag must not abort the sync,
+                    // but the content is already preserved in the commit above.
+                    if let Err(e) = self
+                        .db
+                        .set_document_peer_review(
+                            &ec.document_id,
+                            &sender_id,
+                            prior_commit.as_deref(),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "failed to flag doc {} for peer review: {e}",
+                            ec.document_id
+                        );
+                    }
+                    docs_updated.insert(ec.document_id.clone());
+                }
             } else {
                 // Recreate the document under its ORIGIN id so both devices
                 // agree on the identity (no duplication on re-sync).
                 let id = sovereign_db::schema::raw_to_thing(&ec.document_id).ok_or_else(|| {
                     P2pError::SyncError(format!("bad document id {}", ec.document_id))
                 })?;
-                let mut doc = Document::new(snapshot.title.clone(), "default".to_string(), false);
+                // A document synced from a paired device is the user's OWN
+                // content (same account / AccountKey), so it's owned — not
+                // external. Marking it `false` here made it render with the
+                // external (parallelogram) provenance cue on the receiver.
+                // Thread membership now rides in the sealed snapshot; older
+                // commits predate the field and decode to "" → fall back to
+                // "default" so they still land somewhere renderable.
+                let thread_id = if snapshot.thread_id.is_empty() {
+                    "default".to_string()
+                } else {
+                    snapshot.thread_id.clone()
+                };
+                let mut doc = Document::new(snapshot.title.clone(), thread_id, true);
                 doc.id = Some(id);
                 doc.content = snapshot.content.clone();
                 self.db
                     .create_document_with_id(doc)
                     .await
                     .map_err(|e| P2pError::SyncError(format!("failed to create doc: {e}")))?;
+                docs_updated.insert(ec.document_id.clone());
             }
-            docs_updated.insert(ec.document_id.clone());
         }
 
         Ok(docs_updated.len() as u32)
@@ -672,6 +734,12 @@ impl SyncService {
                 skipped += 1;
                 continue;
             }
+            // p2p-no-per-doc-authz: rows have no commit history, so before a
+            // peer overwrite REPLACES an existing row we capture its prior
+            // serialized state. We only stash it (sealed) if the apply actually
+            // overwrote (Ok(true) AND the row pre-existed) — a fresh create has
+            // nothing to recover, and a lost LWW race never touched the row.
+            let prior = self.capture_prior_row(table, &row.id).await;
             let result = match table {
                 SyncTable::Thread => self.apply_thread_row(&row, &key).await,
                 SyncTable::Entity => self.apply_entity_row(&row, &key).await,
@@ -685,7 +753,12 @@ impl SyncService {
                 SyncTable::SuggestedLink => self.apply_suggested_link_row(&row, &key).await,
             };
             match result {
-                Ok(true) => written += 1,
+                Ok(true) => {
+                    written += 1;
+                    if let Some(prior_json) = prior {
+                        self.stash_prior_row(&row.id, table, &prior_json, &sender_id).await;
+                    }
+                }
                 Ok(false) => skipped += 1,
                 Err(e) => {
                     tracing::warn!(
@@ -731,6 +804,23 @@ impl SyncService {
             content_hash: remote_hash,
         };
         let mut versions = self.versions.lock().expect("version store lock poisoned");
+        // p2p-no-per-doc-authz: bound how far a remote counter may jump beyond
+        // our Lamport high-water. A paired peer signs its OWN counter, so the
+        // signature/authorship gates can't stop a forged-high value (u64::MAX)
+        // from winning the LWW race and overwriting any row. An honest device
+        // never leaps this far ahead of what we've already synced.
+        let high_water = versions.own_counter();
+        if remote.counter > high_water.saturating_add(MAX_COUNTER_ADVANCE) {
+            tracing::warn!(
+                "rejecting row {} from {}: version_counter {} exceeds high-water {} + cap {} (forged-counter overwrite attempt, p2p-no-per-doc-authz)",
+                row_id,
+                remote.device_id,
+                remote.counter,
+                high_water,
+                MAX_COUNTER_ADVANCE
+            );
+            return None;
+        }
         let local = versions.current_version(row_id, local_hash, &self.device_id);
         if remote.ordering_key() > local.ordering_key() {
             Some(remote)
@@ -755,6 +845,122 @@ impl SyncService {
             .lock()
             .expect("version store lock poisoned")
             .record_applied(row_id, version);
+    }
+
+    /// Capture the current local copy of an overwritable row as serialized
+    /// JSON, BEFORE a peer overwrite replaces it (p2p-no-per-doc-authz row
+    /// shadow-recovery). Returns `None` if the row doesn't exist locally (a
+    /// fresh create — nothing to preserve) or for the append-only tables
+    /// (ShareRecord / Milestone / Relationship / SuggestedLink), which the
+    /// apply path never overwrites.
+    async fn capture_prior_row(&self, table: SyncTable, row_id: &str) -> Option<Vec<u8>> {
+        match table {
+            SyncTable::Thread => self.db.get_thread(row_id).await.ok().and_then(|r| serde_json::to_vec(&r).ok()),
+            SyncTable::Entity => self.db.get_entity(row_id).await.ok().and_then(|r| serde_json::to_vec(&r).ok()),
+            SyncTable::PiiRecord => self.db.get_pii_record(row_id).await.ok().and_then(|r| serde_json::to_vec(&r).ok()),
+            SyncTable::Contact => self.db.get_contact(row_id).await.ok().and_then(|r| serde_json::to_vec(&r).ok()),
+            SyncTable::Message => self.db.get_message(row_id).await.ok().and_then(|r| serde_json::to_vec(&r).ok()),
+            SyncTable::Conversation => self.db.get_conversation(row_id).await.ok().and_then(|r| serde_json::to_vec(&r).ok()),
+            SyncTable::ShareRecord
+            | SyncTable::Milestone
+            | SyncTable::Relationship
+            | SyncTable::SuggestedLink => None,
+        }
+    }
+
+    /// Seal a captured prior row (under the account transport key, so it is
+    /// never plaintext at rest) and stash it as a recovery entry. Best-effort:
+    /// a failure here must not abort the sync — the row is already updated, and
+    /// losing the shadow only forfeits one-click restore, never correctness.
+    async fn stash_prior_row(&self, row_id: &str, table: SyncTable, prior_json: &[u8], peer: &str) {
+        use base64::Engine;
+        let (ct, nonce) = match sovereign_crypto::aead::encrypt(prior_json, &self.transport_key) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("row-recovery seal {row_id} failed: {e}");
+                return;
+            }
+        };
+        let ct_b64 = base64::engine::general_purpose::STANDARD.encode(&ct);
+        let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
+        if let Err(e) = self
+            .db
+            .stash_row_recovery(row_id, table.as_str(), &ct_b64, &nonce_b64, peer)
+            .await
+        {
+            tracing::warn!("row-recovery stash {row_id} failed: {e}");
+        }
+    }
+
+    /// Re-apply the preserved prior value of a row recovery, undoing a peer
+    /// overwrite (p2p-no-per-doc-authz). Unseals the stashed prior (under the
+    /// account transport key — this is the only place that key lives), restores
+    /// the record's content fields via the per-table setter, and marks the
+    /// recovery reviewed. Restore for the content-bearing sensitive tables
+    /// (PII vault, threads, contacts) is wired; other tables return an error
+    /// (their prior is still preserved and inspectable for manual recovery).
+    pub async fn restore_row_recovery(&self, recovery_id: &str) -> P2pResult<()> {
+        use base64::Engine;
+        let rec = self
+            .db
+            .get_row_recovery(recovery_id)
+            .await
+            .map_err(|e| P2pError::SyncError(format!("get_row_recovery {recovery_id}: {e}")))?;
+        let ct = base64::engine::general_purpose::STANDARD
+            .decode(&rec.prior_ciphertext)
+            .map_err(|e| P2pError::SyncError(format!("recovery base64 ct: {e}")))?;
+        let nonce_v = base64::engine::general_purpose::STANDARD
+            .decode(&rec.prior_nonce)
+            .map_err(|e| P2pError::SyncError(format!("recovery base64 nonce: {e}")))?;
+        if nonce_v.len() != 24 {
+            return Err(P2pError::SyncError(format!(
+                "recovery nonce wrong length: {}",
+                nonce_v.len()
+            )));
+        }
+        let mut nonce = [0u8; 24];
+        nonce.copy_from_slice(&nonce_v);
+        let prior_json = sovereign_crypto::aead::decrypt(&ct, &nonce, &self.transport_key)
+            .map_err(|e| P2pError::SyncError(format!("recovery unseal: {e}")))?;
+
+        match rec.table.as_str() {
+            "thread" => {
+                let t: Thread = serde_json::from_slice(&prior_json)
+                    .map_err(|e| P2pError::SyncError(format!("recovery decode thread: {e}")))?;
+                self.db
+                    .update_thread(&rec.row_id, Some(&t.name), Some(&t.description))
+                    .await
+                    .map_err(|e| P2pError::SyncError(format!("restore thread: {e}")))?;
+            }
+            "contact" => {
+                let c: Contact = serde_json::from_slice(&prior_json)
+                    .map_err(|e| P2pError::SyncError(format!("recovery decode contact: {e}")))?;
+                self.db
+                    .update_contact(&rec.row_id, Some(&c.name), Some(&c.notes), c.avatar.as_deref())
+                    .await
+                    .map_err(|e| P2pError::SyncError(format!("restore contact: {e}")))?;
+            }
+            "pii_record" => {
+                let p: PiiRecord = serde_json::from_slice(&prior_json)
+                    .map_err(|e| P2pError::SyncError(format!("recovery decode pii: {e}")))?;
+                self.db
+                    .update_pii_record_value(&rec.row_id, &p.value_encrypted, &p.value_nonce)
+                    .await
+                    .map_err(|e| P2pError::SyncError(format!("restore pii value: {e}")))?;
+            }
+            other => {
+                return Err(P2pError::SyncError(format!(
+                    "restore not yet supported for table '{other}'; the prior value is preserved \
+                     in recovery {recovery_id} and can be inspected manually"
+                )));
+            }
+        }
+
+        self.db
+            .resolve_row_recovery(recovery_id)
+            .await
+            .map_err(|e| P2pError::SyncError(format!("resolve_row_recovery: {e}")))?;
+        Ok(())
     }
 
     async fn apply_thread_row(&self, row: &EncryptedRow, key: &[u8; 32]) -> P2pResult<bool> {
@@ -2011,6 +2217,7 @@ mod tests {
                 document_id: "document:origin_abc".into(),
                 title: "Shared".into(),
                 content: "shared body".into(),
+                thread_id: "default".into(),
             },
             &TEST_PAIR_KEY,
         )
@@ -2033,6 +2240,7 @@ mod tests {
                 document_id: "document:origin_abc".into(),
                 title: "Shared".into(),
                 content: "shared body v2".into(),
+                thread_id: "default".into(),
             },
             &TEST_PAIR_KEY,
         )
@@ -2064,6 +2272,7 @@ mod tests {
                     document_id: "document:remote_doc".into(),
                     title: "Remote Doc".into(),
                     content: "synced content".into(),
+                    thread_id: "default".into(),
                 },
                 signature: None,
             },
@@ -2077,6 +2286,42 @@ mod tests {
         // Verify a document was created
         let docs = db.list_documents(None).await.unwrap();
         assert_eq!(docs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn apply_commits_new_doc_lands_in_transported_thread() {
+        // Membership fix: the sealed snapshot now carries thread_id, so a
+        // synced doc lands in its real lane instead of "default" (the root
+        // cause of "N docs synced but only one lane renders").
+        let (db, svc) = mock_sync_service();
+        let peer = remote_peer();
+        register_peer(&svc, &peer);
+
+        let ec = commit_to_transport(
+            &Commit {
+                id: None,
+                document_id: "document:in_thread".into(),
+                parent_commit: None,
+                message: "remote commit".into(),
+                timestamp: chrono::Utc::now(),
+                snapshot: sovereign_db::schema::DocumentSnapshot {
+                    document_id: "document:in_thread".into(),
+                    title: "Lane Doc".into(),
+                    content: "body".into(),
+                    thread_id: "thread:work".into(),
+                },
+                signature: None,
+            },
+            &[7u8; 32],
+        )
+        .unwrap();
+
+        svc.apply_commits(vec![sign_commit_as(ec, 0xD9)], &peer).await.unwrap();
+        let created = db.get_document("document:in_thread").await.unwrap();
+        assert_eq!(
+            created.thread_id, "thread:work",
+            "synced doc must land in its transported thread, not 'default'"
+        );
     }
 
     #[tokio::test]
@@ -2101,6 +2346,7 @@ mod tests {
                     document_id: doc_id.clone(),
                     title: "Updated Title".into(),
                     content: "updated content".into(),
+                    thread_id: "default".into(),
                 },
                 signature: None,
             },
@@ -2115,6 +2361,69 @@ mod tests {
         let updated = db.get_document(&doc_id).await.unwrap();
         assert_eq!(updated.title, "Updated Title");
         assert_eq!(updated.content, "updated content");
+    }
+
+    #[tokio::test]
+    async fn apply_commits_peer_overwrite_is_nondestructive_and_flagged() {
+        // p2p-no-per-doc-authz: a paired peer's overwrite must NOT silently
+        // destroy the local version. The prior content is preserved as a
+        // restorable commit, the new content is applied, and the doc is flagged
+        // for review (surfaced on next open).
+        let (db, svc) = mock_sync_service();
+        let peer = remote_peer();
+        register_peer(&svc, &peer);
+        let t = db.create_thread(Thread::new("T".into(), "".into())).await.unwrap();
+        let tid = t.id_string().unwrap();
+        let doc = db
+            .create_document(Document::new("Mine".into(), tid, true))
+            .await
+            .unwrap();
+        let doc_id = doc.id_string().unwrap();
+        db.update_document(&doc_id, Some("Mine"), Some("local body"))
+            .await
+            .unwrap();
+
+        let ec = commit_to_transport(
+            &Commit {
+                id: None,
+                document_id: doc_id.clone(),
+                parent_commit: None,
+                message: "peer change".into(),
+                timestamp: chrono::Utc::now(),
+                snapshot: sovereign_db::schema::DocumentSnapshot {
+                    document_id: doc_id.clone(),
+                    title: "Mine".into(),
+                    content: "PEER BODY".into(),
+                    thread_id: "default".into(),
+                },
+                signature: None,
+            },
+            &[7u8; 32],
+        )
+        .unwrap();
+        svc.apply_commits(vec![sign_commit_as(ec, 0xD9)], &peer)
+            .await
+            .unwrap();
+
+        let after = db.get_document(&doc_id).await.unwrap();
+        assert_eq!(after.content, "PEER BODY", "peer content is applied");
+        assert!(after.peer_review_pending, "doc must be flagged for review");
+        assert_eq!(
+            after.peer_review_peer.as_deref(),
+            Some(peer.to_string().as_str()),
+            "the originating peer must be recorded"
+        );
+        let prior = after
+            .peer_review_prior_commit
+            .clone()
+            .expect("prior local version must be recorded as a commit");
+
+        // The prior local version is fully restorable.
+        let restored = db.restore_document(&doc_id, &prior).await.unwrap();
+        assert_eq!(
+            restored.content, "local body",
+            "the pre-overwrite local version must be restorable"
+        );
     }
 
     #[tokio::test]
@@ -2133,6 +2442,7 @@ mod tests {
                     document_id: "document:victim".into(),
                     title: "T".into(),
                     content: "x".into(),
+                    thread_id: "default".into(),
                 },
                 &TEST_PAIR_KEY,
             )
@@ -2189,6 +2499,7 @@ mod tests {
                 document_id: "document:abc".into(),
                 title: "Test Doc".into(),
                 content: r#"{"body":"hello","images":[]}"#.into(),
+                thread_id: "default".into(),
             },
             signature: None,
         };
@@ -2581,6 +2892,161 @@ mod tests {
             db_b.get_thread(&tid).await.unwrap().name,
             "Victim",
             "the victim's row must be untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_rows_caps_forged_high_counter_from_paired_peer() {
+        // p2p-no-per-doc-authz: a row CORRECTLY signed by the sender AND claiming
+        // authorship by the sender's REAL peer id (so it passes both the
+        // signature and the version_device==sender gates) but carrying a
+        // forged-high counter must be rejected by the counter-delta cap —
+        // otherwise it wins the (counter, device) LWW race and silently
+        // overwrites the victim's row. This is the bypass the two earlier
+        // defensive tests do NOT cover (they use a ghost device / post-sign
+        // tamper, both caught earlier in apply_rows).
+        let (db_b, svc_b) = mock_sync_service_with(0xB2, "b");
+        let a_keypair = test_keypair(0xA1);
+        let a_peer = a_keypair.public().to_peer_id();
+        register_peer(&svc_b, &a_peer);
+
+        let t = db_b
+            .create_thread(Thread::new("Victim".into(), String::new()))
+            .await
+            .unwrap();
+        let tid = t.id_string().unwrap();
+
+        // A signs a row for B's thread id with its REAL peer id as
+        // version_device (passes the authorship gate) and a u64::MAX counter.
+        let mut forged =
+            row_from_thread(&Thread::new("PWNED".into(), String::new()), &TEST_PAIR_KEY).unwrap();
+        forged.id = tid.clone();
+        forged.version_counter = u64::MAX;
+        forged.version_device = a_peer.to_string();
+        sign_row(&mut forged, SyncTable::Thread, &a_keypair).unwrap();
+
+        let (written, skipped) = svc_b
+            .apply_rows(SyncTable::Thread, vec![forged], &a_peer)
+            .await
+            .unwrap();
+        assert_eq!(
+            (written, skipped),
+            (0, 1),
+            "a forged-high counter from a legitimately-paired peer must be capped"
+        );
+        assert_eq!(
+            db_b.get_thread(&tid).await.unwrap().name,
+            "Victim",
+            "the victim's row must be untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_overwrite_of_row_stashes_sealed_recovery() {
+        // p2p-no-per-doc-authz row shadow-recovery: when a peer overwrites an
+        // existing row, the prior value is preserved (sealed, pending review)
+        // so it's never silently lost. A fresh create stashes nothing.
+        use base64::Engine;
+        let (db_a, svc_a) = mock_sync_service_with(0xA1, "device-a");
+        let (db_b, svc_b) = mock_sync_service_with(0xB2, "device-b");
+        let a_peer = test_keypair(0xA1).public().to_peer_id();
+        let b_peer = test_keypair(0xB2).public().to_peer_id();
+        register_peer(&svc_a, &b_peer);
+        register_peer(&svc_b, &a_peer);
+
+        // A creates a thread; B receives it (create — no recovery).
+        let t = db_a
+            .create_thread(Thread::new("Original".into(), "".into()))
+            .await
+            .unwrap();
+        let tid = t.id_string().unwrap();
+        let rows = svc_a
+            .get_rows(SyncTable::Thread, &[tid.clone()], &b_peer)
+            .await
+            .unwrap();
+        let (w, _) = svc_b.apply_rows(SyncTable::Thread, rows, &a_peer).await.unwrap();
+        assert_eq!(w, 1);
+        assert!(
+            db_b.list_pending_row_recoveries().await.unwrap().is_empty(),
+            "a fresh create must not stash a recovery"
+        );
+
+        // A edits the thread; B applies the overwrite → prior preserved.
+        db_a.update_thread(&tid, Some("Updated"), None).await.unwrap();
+        let rows2 = svc_a
+            .get_rows(SyncTable::Thread, &[tid.clone()], &b_peer)
+            .await
+            .unwrap();
+        let (w2, _) = svc_b.apply_rows(SyncTable::Thread, rows2, &a_peer).await.unwrap();
+        assert_eq!(w2, 1, "overwrite must apply");
+        assert_eq!(db_b.get_thread(&tid).await.unwrap().name, "Updated");
+
+        let recs = db_b.list_pending_row_recoveries().await.unwrap();
+        assert_eq!(recs.len(), 1, "overwrite must stash exactly one recovery");
+        let rec = &recs[0];
+        assert_eq!(rec.row_id, tid);
+        assert_eq!(rec.table, "thread");
+        assert_eq!(rec.peer, a_peer.to_string());
+        assert!(rec.review_pending);
+
+        // The sealed prior round-trips to the pre-overwrite value (and is NOT
+        // plaintext on disk — it only decrypts under the transport key).
+        let ct = base64::engine::general_purpose::STANDARD
+            .decode(&rec.prior_ciphertext)
+            .unwrap();
+        let nonce_v = base64::engine::general_purpose::STANDARD
+            .decode(&rec.prior_nonce)
+            .unwrap();
+        let mut nonce = [0u8; 24];
+        nonce.copy_from_slice(&nonce_v);
+        let plain = sovereign_crypto::aead::decrypt(&ct, &nonce, &TEST_PAIR_KEY).unwrap();
+        let prior: Thread = serde_json::from_slice(&plain).unwrap();
+        assert_eq!(prior.name, "Original", "prior value must be recoverable");
+    }
+
+    #[tokio::test]
+    async fn restore_row_recovery_reverts_to_prior() {
+        // The shadow-recovery is actually recoverable: restore re-applies the
+        // sealed prior value and resolves the recovery.
+        let (db_a, svc_a) = mock_sync_service_with(0xA1, "device-a");
+        let (db_b, svc_b) = mock_sync_service_with(0xB2, "device-b");
+        let a_peer = test_keypair(0xA1).public().to_peer_id();
+        let b_peer = test_keypair(0xB2).public().to_peer_id();
+        register_peer(&svc_a, &b_peer);
+        register_peer(&svc_b, &a_peer);
+
+        let t = db_a
+            .create_thread(Thread::new("Original".into(), "orig desc".into()))
+            .await
+            .unwrap();
+        let tid = t.id_string().unwrap();
+        let rows = svc_a
+            .get_rows(SyncTable::Thread, &[tid.clone()], &b_peer)
+            .await
+            .unwrap();
+        svc_b.apply_rows(SyncTable::Thread, rows, &a_peer).await.unwrap();
+
+        // Peer overwrites the thread → recovery stashed.
+        db_a.update_thread(&tid, Some("Hijacked"), Some("bad desc")).await.unwrap();
+        let rows2 = svc_a
+            .get_rows(SyncTable::Thread, &[tid.clone()], &b_peer)
+            .await
+            .unwrap();
+        svc_b.apply_rows(SyncTable::Thread, rows2, &a_peer).await.unwrap();
+        assert_eq!(db_b.get_thread(&tid).await.unwrap().name, "Hijacked");
+
+        let recs = db_b.list_pending_row_recoveries().await.unwrap();
+        let rec_id = recs[0].id_string().unwrap();
+        svc_b.restore_row_recovery(&rec_id).await.unwrap();
+
+        assert_eq!(
+            db_b.get_thread(&tid).await.unwrap().name,
+            "Original",
+            "restore must revert the row to its prior value"
+        );
+        assert!(
+            db_b.list_pending_row_recoveries().await.unwrap().is_empty(),
+            "the recovery must be resolved after restore"
         );
     }
 

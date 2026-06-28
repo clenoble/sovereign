@@ -18,7 +18,7 @@
 	import { app } from '$lib/stores/app.svelte';
 	import { load as canvasLoad } from '$lib/stores/canvas.svelte';
 	import { panels } from '$lib/stores/documents.svelte';
-	import { listPendingSuggestions, getStatus } from '$lib/api/commands';
+	import { listPendingSuggestions, getStatus, setConnectivityState } from '$lib/api/commands';
 	import { setSuggestions, type LinkSuggestion } from '$lib/stores/suggestions.svelte';
 	import LaneHeader from './LaneHeader.svelte';
 	import MobileCanvas from './MobileCanvas.svelte';
@@ -29,6 +29,34 @@
 	import SharePickerSheet from './SharePickerSheet.svelte';
 
 	let error = $state('');
+
+	// Report network class to the P2P sync gate. On Android the gate holds
+	// auto-sync at `Unknown` until it hears a real state; the proper source is
+	// the Kotlin SovereignSyncPlugin (NetworkCallback), but until that's wired
+	// the WebView's own signals open the gate on Wi-Fi.
+	function reportConnectivity() {
+		let kind = 'wifi';
+		if (typeof navigator !== 'undefined') {
+			if (navigator.onLine === false) kind = 'offline';
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			else if ((navigator as any).connection?.type === 'cellular') kind = 'cellular';
+		}
+		setConnectivityState(kind).catch(() => {});
+	}
+
+	onMount(() => {
+		reportConnectivity();
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const conn = (navigator as any)?.connection;
+		window.addEventListener('online', reportConnectivity);
+		window.addEventListener('offline', reportConnectivity);
+		conn?.addEventListener?.('change', reportConnectivity);
+		return () => {
+			window.removeEventListener('online', reportConnectivity);
+			window.removeEventListener('offline', reportConnectivity);
+			conn?.removeEventListener?.('change', reportConnectivity);
+		};
+	});
 
 	onMount(async () => {
 		try {

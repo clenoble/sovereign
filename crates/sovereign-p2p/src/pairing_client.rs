@@ -80,17 +80,21 @@ pub async fn pair_with_source(
         .with_tokio()
         .with_quic()
         .with_behaviour(|key| {
-            // mDNS only as a discovery fallback when the offer carries no
-            // dial hints.
-            let mdns = if offer.addrs.is_empty() {
-                let m = libp2p::mdns::tokio::Behaviour::new(
-                    libp2p::mdns::Config::default(),
-                    key.public().to_peer_id(),
-                )
-                .map_err(|e| P2pError::Transport(e.to_string()))?;
-                libp2p::swarm::behaviour::toggle::Toggle::from(Some(m))
-            } else {
-                libp2p::swarm::behaviour::toggle::Toggle::from(None)
+            // Always run mDNS — not just when the offer lacks dial hints. The
+            // offer's addresses can be stale or unreachable (the source rebound
+            // to a new ephemeral port, Wi-Fi vs cellular interface, a NAT'd
+            // address, etc.); mDNS discovers the source's *current* LAN address
+            // in parallel and dials it (see the Discovered handler below), so a
+            // bad offer address self-heals instead of hard-timing-out.
+            let mdns = match libp2p::mdns::tokio::Behaviour::new(
+                libp2p::mdns::Config::default(),
+                key.public().to_peer_id(),
+            ) {
+                Ok(m) => libp2p::swarm::behaviour::toggle::Toggle::from(Some(m)),
+                Err(e) => {
+                    warn!("pairing-client mDNS unavailable, relying on offer addrs: {e}");
+                    libp2p::swarm::behaviour::toggle::Toggle::from(None)
+                }
             };
             let request_response = libp2p::request_response::cbor::Behaviour::new(
                 [(

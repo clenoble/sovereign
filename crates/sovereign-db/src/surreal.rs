@@ -12,7 +12,7 @@ use crate::error::{DbError, DbResult};
 use crate::schema::{
     ChannelType, Commit, Contact, Conversation, Document, DocumentSnapshot,
     Entity, EntityKind, Message, Milestone, PiiRecord, ReadStatus, RelatedTo, RelationType,
-    ReviewState, ShareRecord, SourceRef, SuggestedLink, SuggestionSource,
+    ReviewState, RowRecovery, ShareRecord, SourceRef, SuggestedLink, SuggestionSource,
     SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
@@ -323,6 +323,121 @@ impl GraphDB for SurrealGraphDB {
         updated.ok_or_else(|| DbError::Query("Failed to update document reliability".into()))
     }
 
+    async fn set_document_peer_review(
+        &self,
+        doc_id: &str,
+        peer: &str,
+        prior_commit: Option<&str>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(doc_id, "document")?;
+        let current: Option<Document> = self.db.select((table, key)).await?;
+        let mut doc = current.ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
+        doc.peer_review_pending = true;
+        doc.peer_review_peer = Some(peer.to_string());
+        doc.peer_review_at = Some(Utc::now());
+        doc.peer_review_prior_commit = prior_commit.map(|c| c.to_string());
+        doc.peer_review_assessment = None;
+        let _: Option<Document> = self.db.update((table, key)).content(doc).await?;
+        Ok(())
+    }
+
+    async fn set_document_peer_review_assessment(
+        &self,
+        doc_id: &str,
+        assessment_json: &str,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(doc_id, "document")?;
+        let current: Option<Document> = self.db.select((table, key)).await?;
+        let mut doc = current.ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
+        doc.peer_review_assessment = Some(assessment_json.to_string());
+        let _: Option<Document> = self.db.update((table, key)).content(doc).await?;
+        Ok(())
+    }
+
+    async fn clear_document_peer_review(&self, doc_id: &str) -> DbResult<()> {
+        let (table, key) = parse_and_validate(doc_id, "document")?;
+        let current: Option<Document> = self.db.select((table, key)).await?;
+        let mut doc = current.ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
+        doc.peer_review_pending = false;
+        doc.peer_review_peer = None;
+        doc.peer_review_at = None;
+        doc.peer_review_prior_commit = None;
+        doc.peer_review_assessment = None;
+        let _: Option<Document> = self.db.update((table, key)).content(doc).await?;
+        Ok(())
+    }
+
+    async fn list_documents_pending_peer_review(&self) -> DbResult<Vec<Document>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM document WHERE peer_review_pending = true AND deleted_at IS NONE ORDER BY peer_review_at DESC")
+            .await?;
+        let docs: Vec<Document> = result.take(0)?;
+        Ok(docs)
+    }
+
+    async fn stash_row_recovery(
+        &self,
+        row_id: &str,
+        table: &str,
+        prior_ciphertext: &str,
+        prior_nonce: &str,
+        peer: &str,
+    ) -> DbResult<String> {
+        let rec = RowRecovery {
+            id: None,
+            row_id: row_id.to_string(),
+            table: table.to_string(),
+            prior_ciphertext: prior_ciphertext.to_string(),
+            prior_nonce: prior_nonce.to_string(),
+            peer: peer.to_string(),
+            overwritten_at: Utc::now(),
+            review_pending: true,
+            assessment: None,
+        };
+        let created: Option<RowRecovery> = self.db.create("row_recovery").content(rec).await?;
+        created
+            .and_then(|r| r.id_string())
+            .ok_or_else(|| DbError::Query("Failed to create row recovery".into()))
+    }
+
+    async fn set_row_recovery_assessment(
+        &self,
+        recovery_id: &str,
+        assessment_json: &str,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(recovery_id, "row_recovery")?;
+        let current: Option<RowRecovery> = self.db.select((table, key)).await?;
+        let mut rec = current.ok_or_else(|| DbError::NotFound(recovery_id.to_string()))?;
+        rec.assessment = Some(assessment_json.to_string());
+        let _: Option<RowRecovery> = self.db.update((table, key)).content(rec).await?;
+        Ok(())
+    }
+
+    async fn list_pending_row_recoveries(&self) -> DbResult<Vec<RowRecovery>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM row_recovery WHERE review_pending = true ORDER BY overwritten_at DESC")
+            .await?;
+        let recs: Vec<RowRecovery> = result.take(0)?;
+        Ok(recs)
+    }
+
+    async fn get_row_recovery(&self, recovery_id: &str) -> DbResult<RowRecovery> {
+        let (table, key) = parse_and_validate(recovery_id, "row_recovery")?;
+        let rec: Option<RowRecovery> = self.db.select((table, key)).await?;
+        rec.ok_or_else(|| DbError::NotFound(recovery_id.to_string()))
+    }
+
+    async fn resolve_row_recovery(&self, recovery_id: &str) -> DbResult<()> {
+        let (table, key) = parse_and_validate(recovery_id, "row_recovery")?;
+        let current: Option<RowRecovery> = self.db.select((table, key)).await?;
+        let mut rec = current.ok_or_else(|| DbError::NotFound(recovery_id.to_string()))?;
+        rec.review_pending = false;
+        let _: Option<RowRecovery> = self.db.update((table, key)).content(rec).await?;
+        Ok(())
+    }
+
     async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
         parse_and_validate(id, "document")?;
         self.db
@@ -330,6 +445,16 @@ impl GraphDB for SurrealGraphDB {
             .bind(("id", id.to_string()))
             .bind(("x", x))
             .bind(("y", y))
+            .await?;
+        Ok(())
+    }
+
+    async fn set_document_pinned(&self, id: &str, pinned: bool) -> DbResult<()> {
+        parse_and_validate(id, "document")?;
+        self.db
+            .query("UPDATE $id SET pinned = $pinned")
+            .bind(("id", id.to_string()))
+            .bind(("pinned", pinned))
             .await?;
         Ok(())
     }
@@ -847,6 +972,7 @@ impl GraphDB for SurrealGraphDB {
             document_id: doc_id.to_string(),
             title: doc.title,
             content: doc.content,
+            thread_id: doc.thread_id,
         };
 
         let commit = Commit {

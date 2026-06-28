@@ -28,6 +28,7 @@
 	} from '$lib/api/commands';
 	import BubblePreview from './BubblePreview.svelte';
 	import PairQrPanel from './PairQrPanel.svelte';
+	import { device } from '$lib/stores/device.svelte';
 	import { focusTrap } from '$lib/actions/focusTrap';
 	import { sync, clearError, dismissConflict } from '$lib/stores/sync.svelte';
 	import { pairing } from '$lib/stores/pairing.svelte';
@@ -289,8 +290,12 @@
 				nickname: nickname || undefined,
 				bubble_style: bubbleStyle
 			};
-			await saveProfile(data);
+			// Reflect the new name/style in the live UI immediately, before the
+			// await — keeps the chat-drawer label ("Chat with <name>") in sync
+			// without a restart. Mirrors +layout's refreshProfileUi fallback.
 			app.bubbleStyle = bubbleStyle;
+			app.aiName = nickname.trim() || designation.trim() || 'AI';
+			await saveProfile(data);
 		} catch (e) {
 			error = String(e);
 		}
@@ -441,21 +446,25 @@
 					<span class="designation-value">{designation || 'Not set'}</span>
 				</div>
 
-				<div class="form-section">
-					<label class="field-label">Bubble style</label>
-					<div class="bubble-grid">
-						{#each BUBBLE_STYLES as s}
-							<button
-								class="bubble-cell"
-								class:selected={bubbleStyle === s}
-								onclick={() => (bubbleStyle = s)}
-								title={s}
-							>
-								<BubblePreview style={s} size={60} />
-							</button>
-						{/each}
+				<!-- The orchestrator bubble isn't rendered in the mobile UI, so its
+				     style picker is desktop-only. -->
+				{#if !device.isMobile}
+					<div class="form-section">
+						<label class="field-label">Bubble style</label>
+						<div class="bubble-grid">
+							{#each BUBBLE_STYLES as s}
+								<button
+									class="bubble-cell"
+									class:selected={bubbleStyle === s}
+									onclick={() => (bubbleStyle = s)}
+									title={s}
+								>
+									<BubblePreview style={s} size={60} />
+								</button>
+							{/each}
+						</div>
 					</div>
-				</div>
+				{/if}
 
 				<button
 					class="save-btn"
@@ -828,7 +837,11 @@
 					</div>
 
 					<!-- Pair-new affordance / panel -->
-					{#if !pairPanelOpen}
+					{#if p2pSettings && !p2pSettings.available}
+						<span class="readonly-value muted">
+							Device pairing isn't available in this build yet.
+						</span>
+					{:else if !pairPanelOpen}
 						<button class="primary-btn" onclick={() => (pairPanelOpen = true)}>
 							Pair a new device
 						</button>
@@ -943,6 +956,9 @@
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
+		/* Edge-to-edge mobile: keep the header (and its close button) below the
+		   Android status bar. Resolves to 0 on desktop. */
+		padding-top: env(safe-area-inset-top);
 	}
 
 	.panel-header {

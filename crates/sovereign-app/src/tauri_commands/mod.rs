@@ -9,6 +9,7 @@ pub mod documents;
 pub mod mobile;
 #[cfg(feature = "encryption")]
 pub mod pairing;
+pub mod peer_review;
 pub mod pii;
 pub mod suggestions;
 pub mod threads;

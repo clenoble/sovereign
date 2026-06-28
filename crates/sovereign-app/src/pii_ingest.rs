@@ -101,7 +101,14 @@ pub async fn maybe_ingest_document_body(
     // orchestrator's backend is shareable from a Tauri command —
     // tracked separately. Regex-only is the plan's documented
     // fallback for low-priority paths.
-    let config = PipelineConfig::default();
+    // PII-001: scan at the deployment locale (Swiss) so structured kinds like
+    // AVS are tokenized at ingest, not left raw in a body that's then flagged
+    // "scanned". (Locale should become profile-driven once the profile carries a
+    // country — for now it matches the read tools' hardcoded Swiss.)
+    let config = PipelineConfig {
+        locale: sovereign_ai::pii::Locale::Swiss,
+        ..PipelineConfig::default()
+    };
 
     let result = ingest_text(
         body,

@@ -1,5 +1,7 @@
 @echo off
-REM Portable run wrapper. See _build.bat for the env vars honored.
+REM Portable run wrapper — launches the DEFAULT UI: the native shell (crate
+REM sovereign-shell, binary `sovereign`). For the Tauri UI use _run-tauri.bat
+REM (or _dev.bat for Tauri with frontend HMR). See _build.bat for env vars.
 
 if not defined SOVEREIGN_LLVM_DIR  set "SOVEREIGN_LLVM_DIR=C:\Program Files\LLVM\bin"
 if not defined SOVEREIGN_CMAKE_DIR set "SOVEREIGN_CMAKE_DIR=C:\Program Files\CMake\bin"
@@ -14,5 +16,5 @@ powershell -NoProfile -Command "Get-Process -Name cargo,rustc -ErrorAction Silen
 
 if defined SOVEREIGN_TARGET_DIR set "CARGO_TARGET_DIR=%SOVEREIGN_TARGET_DIR%"
 
-cargo run -p sovereign-app -j 2 -- run 2>&1
+cargo run -p sovereign-shell -j 4 2>&1
 echo EXIT_CODE=%ERRORLEVEL%
