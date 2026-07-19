@@ -118,6 +118,18 @@ pub struct InjectionDetectedPayload {
     pub severity: u8,
 }
 
+/// INJECTION-002: the agent loop paused on a high-severity injection in tool
+/// output and needs the user's redact/pass/abort choice. The UI renders this and
+/// replies via a `submit_injection_decision` command (frontend TODO — see the
+/// injection-decision channel handover).
+#[derive(Debug, Clone, Serialize)]
+pub struct InjectionDecisionRequestedPayload {
+    pub source: String,
+    pub indicators: Vec<String>,
+    pub severity: u8,
+    pub preview: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BrowserNavigatedPayload {
     pub url: String,
@@ -315,6 +327,20 @@ pub fn spawn_event_forwarder(
                             source,
                             indicators,
                             severity,
+                        },
+                    );
+                }
+
+                OrchestratorEvent::InjectionDecisionRequested {
+                    source, indicators, severity, preview, ..
+                } => {
+                    let _ = app_handle.emit(
+                        "injection-decision-requested",
+                        InjectionDecisionRequestedPayload {
+                            source,
+                            indicators,
+                            severity,
+                            preview,
                         },
                     );
                 }

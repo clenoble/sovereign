@@ -446,6 +446,9 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 			onPairingFailed(e.payload.reason, e.payload.offer_dead);
 		})
 	);
+	// Guardian Access Recovery (F1) is poll-based — no event bridge. The
+	// roster refreshes on a short timer while an enrollment offer is open,
+	// and the recovery wizard drives access_recovery_poll on its own timer.
 
 	// Return a combined unlisten function
 	return () => {

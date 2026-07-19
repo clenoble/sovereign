@@ -20,6 +20,19 @@ use sovereign_db::traits::GraphDB;
 /// Label that identifies the email-account password in the PII vault.
 pub(crate) const EMAIL_PW_LABEL: &str = "Email account password";
 
+/// Email is **disabled for v0.0.9**. The IMAP/SMTP engine below stays compiled
+/// (and unit-tested) but is never reached from the running shell — no
+/// `EmailChannel::new`, no network, no mail fetched. The plan deferred email to
+/// v0.0.10; it briefly went live here and shipped nothing hardened, so it is
+/// gated back to dormant. It returns in **v0.0.10** across all surfaces together
+/// with the COMMS work the audit deferred on the (now-corrected) belief that
+/// email was already dormant: the PII fence (COMMS-003 — the shell builds
+/// `EmailChannel` without `.with_pii_hook()`, so synced mail bypasses the
+/// vault/dashboard), TLS pinning (COMMS-002), Message-ID dedup (COMMS-004), raw
+/// addresses (COMMS-008). One runtime flag rather than a cargo feature keeps the
+/// engine + tests building and makes the v0.0.10 re-enable a one-line change.
+pub(crate) const EMAIL_ENABLED: bool = false;
+
 /// Path to the comms config file (host/port/username; never the password).
 fn comms_config_path() -> std::path::PathBuf {
     sovereign_core::sovereign_dir().join("comms.toml")

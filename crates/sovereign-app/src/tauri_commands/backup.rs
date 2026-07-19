@@ -86,6 +86,8 @@ pub async fn backup_now(
             .unwrap_or(1);
 
         let db: std::sync::Arc<dyn sovereign_db::GraphDB> = state.db.clone();
+        // A1: the manifest is signed with the account-derived Ed25519 key.
+        let signing_key = account_key.derive_backup_signing_key();
         let prepared = sovereign_p2p::backup::prepare_backup(
             db.as_ref(),
             &device_id,
@@ -96,6 +98,7 @@ pub async fn backup_now(
             threshold,
             sovereign_p2p::backup::DEFAULT_DATA_FRAGMENTS,
             sovereign_p2p::backup::DEFAULT_PARITY_FRAGMENTS,
+            &signing_key,
         )
         .await
         .str_err()?;

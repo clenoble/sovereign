@@ -4,10 +4,14 @@ import {
 	canvas,
 	computeViewport,
 	getVisibleDocuments,
+	computeDeckRoles,
 	panBy,
 	zoomAt,
 	CARD_W,
-	CARD_H
+	CARD_H,
+	LANE_HEIGHT,
+	DECK_PEEK,
+	DECK_VISIBLE
 } from './canvas.svelte';
 
 const ZOOM_MIN = 0.02;
@@ -197,5 +201,102 @@ describe('canvas constants (regression guard)', () => {
 	it('CARD_W and CARD_H are positive', () => {
 		expect(CARD_W).toBeGreaterThan(0);
 		expect(CARD_H).toBeGreaterThan(0);
+	});
+
+	it('deck fan stays within the lane top margin (containment invariant)', () => {
+		// The up-left peek fan must never leave the lane: the deepest peek offset
+		// (DECK_VISIBLE − 1 peeks) must fit in the lane's top slack.
+		expect((DECK_VISIBLE - 1) * DECK_PEEK).toBeLessThanOrEqual((LANE_HEIGHT - CARD_H) / 2);
+	});
+});
+
+describe('computeDeckRoles', () => {
+	it('a lone card is its own front, count 1, not hidden', () => {
+		const roles = computeDeckRoles([makeDoc({ id: 'a', spatial_x: 0 })], 1);
+		expect(roles.get('a')).toEqual({
+			count: 1,
+			peekIndex: 0,
+			isFront: true,
+			hidden: false,
+			frontId: 'a'
+		});
+	});
+
+	it('same-position cards in one lane form a single deck; overflow is hidden', () => {
+		const docs = Array.from({ length: 7 }, (_, i) =>
+			makeDoc({ id: `d${i}`, thread_id: 't:1', spatial_x: 0 })
+		);
+		const roles = computeDeckRoles(docs, 1);
+		const all = docs.map((d) => roles.get(d.id)!);
+		// One deck of 7.
+		expect(all.every((r) => r.count === 7)).toBe(true);
+		// Exactly one front.
+		expect(all.filter((r) => r.isFront).length).toBe(1);
+		// Exactly DECK_VISIBLE rendered (front + peeks), the rest hidden.
+		expect(all.filter((r) => !r.hidden).length).toBe(DECK_VISIBLE);
+		expect(all.filter((r) => r.hidden).length).toBe(7 - DECK_VISIBLE);
+	});
+
+	it('the most-recent (max-x) card is the front', () => {
+		const docs = [
+			makeDoc({ id: 'old', thread_id: 't:1', spatial_x: 0 }),
+			makeDoc({ id: 'mid', thread_id: 't:1', spatial_x: 10 }),
+			makeDoc({ id: 'new', thread_id: 't:1', spatial_x: 20 })
+		];
+		const roles = computeDeckRoles(docs, 1);
+		expect(roles.get('new')!.isFront).toBe(true);
+		expect(roles.get('old')!.peekIndex).toBe(2);
+	});
+
+	it('every card in a deck carries the front card id (for expand/collapse)', () => {
+		const roles = computeDeckRoles(
+			[
+				makeDoc({ id: 'old', thread_id: 't:1', spatial_x: 0 }),
+				makeDoc({ id: 'new', thread_id: 't:1', spatial_x: 10 })
+			],
+			1
+		);
+		expect(roles.get('old')!.frontId).toBe('new');
+		expect(roles.get('new')!.frontId).toBe('new');
+	});
+
+	it('cards farther apart than a card-width do NOT deck', () => {
+		const docs = [
+			makeDoc({ id: 'a', thread_id: 't:1', spatial_x: 0 }),
+			makeDoc({ id: 'b', thread_id: 't:1', spatial_x: CARD_W + 1 })
+		];
+		const roles = computeDeckRoles(docs, 1);
+		expect(roles.get('a')!.count).toBe(1);
+		expect(roles.get('b')!.count).toBe(1);
+	});
+
+	it('zooming in dissolves a deck (screen-space threshold shrinks with zoom)', () => {
+		// Gap 150 world px: < CARD_W (200) at zoom 1 → decked; the screen gap is
+		// 150*zoom, so at zoom 2 it is 300 > 200 → separate.
+		const docs = [
+			makeDoc({ id: 'a', thread_id: 't:1', spatial_x: 0 }),
+			makeDoc({ id: 'b', thread_id: 't:1', spatial_x: 150 })
+		];
+		expect(computeDeckRoles(docs, 1).get('a')!.count).toBe(2); // zoomed out: decked
+		expect(computeDeckRoles(docs, 2).get('a')!.count).toBe(1); // zoomed in: dissolved
+	});
+
+	it('identical-timestamp cards stay decked at any zoom', () => {
+		const docs = [
+			makeDoc({ id: 'a', thread_id: 't:1', spatial_x: 42 }),
+			makeDoc({ id: 'b', thread_id: 't:1', spatial_x: 42 })
+		];
+		// Even at extreme zoom the gap is 0, so they never separate.
+		expect(computeDeckRoles(docs, 20).get('a')!.count).toBe(2);
+	});
+
+	it('cards in different lanes never merge, even at the same position', () => {
+		const docs = [
+			makeDoc({ id: 'a', thread_id: 't:1', spatial_x: 0 }),
+			makeDoc({ id: 'b', thread_id: 't:2', spatial_x: 0 })
+		];
+		const roles = computeDeckRoles(docs, 1);
+		expect(roles.get('a')!.count).toBe(1);
+		expect(roles.get('b')!.count).toBe(1);
 	});
 });

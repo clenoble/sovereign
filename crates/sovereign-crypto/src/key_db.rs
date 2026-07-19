@@ -9,8 +9,13 @@ use crate::kek::Kek;
 
 /// Persistent key database storing wrapped document keys.
 ///
-/// The entire database is encrypted at rest with the DeviceKey.
-/// File format: `nonce (24 bytes) || ciphertext (AES of JSON)`.
+/// The entire database file is sealed at rest under the **KEK** — the root of
+/// the at-rest content chain (see spec §Encryption Scheme). Sealing it under the
+/// KEK (rather than the passphrase-bound DeviceKey) is what lets guardian
+/// recovery restore access to content: reconstructing the KEK opens this store
+/// without the passphrase. [`load_legacy`] reads the pre-migration
+/// DeviceKey-sealed form so callers can transparently re-seal it under the KEK.
+/// File format: `nonce (24 bytes) || ciphertext (AEAD of JSON)`.
 #[derive(Debug)]
 pub struct KeyDatabase {
     /// doc_id → list of wrapped keys (current + rotated old keys)
@@ -33,8 +38,19 @@ impl KeyDatabase {
         }
     }
 
-    /// Load an existing key database from disk, decrypting with the DeviceKey.
-    pub fn load(path: &Path, device_key: &DeviceKey) -> CryptoResult<Self> {
+    /// Load an existing key database from disk, decrypting under the KEK.
+    pub fn load(path: &Path, kek: &Kek) -> CryptoResult<Self> {
+        Self::load_with_key(path, kek.as_bytes())
+    }
+
+    /// Migration read: load a database sealed under the legacy DeviceKey. Used
+    /// only to re-seal it under the KEK ([`save`]) at the next login; never the
+    /// primary path. See spec §Encryption Scheme (Device-Key → KEK migration).
+    pub fn load_legacy(path: &Path, device_key: &DeviceKey) -> CryptoResult<Self> {
+        Self::load_with_key(path, device_key.as_bytes())
+    }
+
+    fn load_with_key(path: &Path, key: &[u8; 32]) -> CryptoResult<Self> {
         let data = std::fs::read(path)
             .map_err(|e| CryptoError::KeyDbIo(e.to_string()))?;
 
@@ -46,7 +62,7 @@ impl KeyDatabase {
         nonce.copy_from_slice(&data[..NONCE_SIZE]);
         let ciphertext = &data[NONCE_SIZE..];
 
-        let plaintext = aead::decrypt(ciphertext, &nonce, device_key.as_bytes())?;
+        let plaintext = aead::decrypt(ciphertext, &nonce, key)?;
         let contents: KeyDbContents = serde_json::from_slice(&plaintext)
             .map_err(|e| CryptoError::Serialization(e.to_string()))?;
 
@@ -56,15 +72,15 @@ impl KeyDatabase {
         })
     }
 
-    /// Save the key database to disk, encrypting with the DeviceKey.
-    pub fn save(&self, device_key: &DeviceKey) -> CryptoResult<()> {
+    /// Save the key database to disk, sealing it under the KEK.
+    pub fn save(&self, kek: &Kek) -> CryptoResult<()> {
         let contents = KeyDbContents {
             entries: self.entries.clone(),
         };
         let json = serde_json::to_vec(&contents)
             .map_err(|e| CryptoError::Serialization(e.to_string()))?;
 
-        let (ciphertext, nonce) = aead::encrypt(&json, device_key.as_bytes())?;
+        let (ciphertext, nonce) = aead::encrypt(&json, kek.as_bytes())?;
 
         let mut output = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
         output.extend_from_slice(&nonce);
@@ -194,7 +210,7 @@ mod tests {
 
     #[test]
     fn save_load_roundtrip() {
-        let (device_key, kek) = test_keys();
+        let (_device_key, kek) = test_keys();
         let dir = std::env::temp_dir().join("sovereign-crypto-test-keydb");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -203,11 +219,11 @@ mod tests {
         let dk = {
             let mut db = KeyDatabase::new(path.clone());
             let dk = db.create_document_key("doc:test", &kek, 1).unwrap();
-            db.save(&device_key).unwrap();
+            db.save(&kek).unwrap();
             dk
         };
 
-        let db2 = KeyDatabase::load(&path, &device_key).unwrap();
+        let db2 = KeyDatabase::load(&path, &kek).unwrap();
         let recovered = db2.unwrap_current("doc:test", &kek).unwrap();
         assert_eq!(dk.as_bytes(), recovered.as_bytes());
 
@@ -215,8 +231,8 @@ mod tests {
     }
 
     #[test]
-    fn wrong_device_key_cannot_load() {
-        let (device_key, kek) = test_keys();
+    fn wrong_kek_cannot_load() {
+        let (_device_key, kek) = test_keys();
         let dir = std::env::temp_dir().join("sovereign-crypto-test-keydb-wrong");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -224,11 +240,53 @@ mod tests {
 
         let mut db = KeyDatabase::new(path.clone());
         let _ = db.create_document_key("doc:test", &kek, 1).unwrap();
-        db.save(&device_key).unwrap();
+        db.save(&kek).unwrap();
 
-        let wrong_mk = MasterKey::from_passphrase(b"wrong", b"salt").unwrap();
-        let wrong_dk = DeviceKey::derive(&wrong_mk, "dev-01").unwrap();
-        assert!(KeyDatabase::load(&path, &wrong_dk).is_err());
+        // A different KEK — e.g. one NOT restored by guardian recovery —
+        // cannot open the store.
+        let wrong_kek = Kek::generate();
+        assert!(KeyDatabase::load(&path, &wrong_kek).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A store written by the pre-migration build (sealed under the DeviceKey)
+    /// is readable via `load_legacy` and, once re-saved under the KEK, opens on
+    /// the primary KEK path — the transparent on-login migration.
+    #[test]
+    fn legacy_device_key_store_migrates_to_kek() {
+        let (device_key, kek) = test_keys();
+        let dir = std::env::temp_dir().join("sovereign-crypto-test-keydb-migrate");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys.db");
+
+        // Legacy on-disk form: file AEAD-sealed under the DeviceKey.
+        let dk_doc = {
+            let mut db = KeyDatabase::new(path.clone());
+            let dk = db.create_document_key("doc:legacy", &kek, 1).unwrap();
+            // simulate the old save: seal the file under the device key.
+            let json = serde_json::to_vec(&KeyDbContents {
+                entries: db.entries.clone(),
+            })
+            .unwrap();
+            let (ct, nonce) = aead::encrypt(&json, device_key.as_bytes()).unwrap();
+            let mut out = nonce.to_vec();
+            out.extend_from_slice(&ct);
+            std::fs::write(&path, out).unwrap();
+            dk
+        };
+
+        // KEK path fails on the legacy file; legacy path reads it.
+        assert!(KeyDatabase::load(&path, &kek).is_err());
+        let migrated = KeyDatabase::load_legacy(&path, &device_key).unwrap();
+        migrated.save(&kek).unwrap();
+
+        // After re-seal, the primary KEK path opens it and the document key
+        // survives intact.
+        let db = KeyDatabase::load(&path, &kek).unwrap();
+        let recovered = db.unwrap_current("doc:legacy", &kek).unwrap();
+        assert_eq!(dk_doc.as_bytes(), recovered.as_bytes());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

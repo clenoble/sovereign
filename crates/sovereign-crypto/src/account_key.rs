@@ -63,6 +63,27 @@ impl AccountKey {
         out
     }
 
+    /// Derive the 32-byte key that seals the encrypted, tamper-evident session
+    /// log (SESSIONLOG-001/002/003).
+    ///
+    /// Lives here, shared, on purpose (SEAM D, v0.0.9 audit): it was defined in
+    /// `sovereign-app::setup` and called only on the Tauri path, so the native
+    /// shell — the *default* desktop UI — never derived it and logged
+    /// everything in cleartext (SESSIONLOG-010). Both faces now call this one
+    /// method.
+    ///
+    /// The info string `sovereign-session-log` is **unchanged** from the app's
+    /// original derivation — existing session logs stay readable. Keyed off the
+    /// AccountKey (not the DeviceKey, since v0.0.5) so paired devices can share
+    /// the log forward-compatibly.
+    pub fn derive_session_log_key(&self) -> [u8; KEY_SIZE] {
+        let hk = Hkdf::<Sha256>::new(None, &self.bytes);
+        let mut out = [0u8; KEY_SIZE];
+        hk.expand(b"sovereign-session-log", &mut out)
+            .expect("32 bytes is within HKDF output limit");
+        out
+    }
+
     /// Derive the sealing key for one device **pair** (P1.4 / P2P-005).
     ///
     /// Replaces the single account-wide transport key for row/commit
@@ -102,6 +123,22 @@ impl AccountKey {
         hk.expand(b"sovereign-backup-owner-tag:v1", &mut out)
             .expect("16 bytes is within HKDF output limit");
         out.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Derive the Ed25519 **backup manifest signing key** (A1 of the
+    /// backup plan). Seed comes from HKDF like every other derived key,
+    /// so all of a user's devices sign identically — and a recovering
+    /// device (passphrase + salt → MasterKey → AccountKey) can re-derive
+    /// the verifying key independently of anything an untrusted host or
+    /// guardian handed it. Domain-separated (`:v1`).
+    pub fn derive_backup_signing_key(&self) -> ed25519_dalek::SigningKey {
+        let hk = Hkdf::<Sha256>::new(None, &self.bytes);
+        let mut seed = [0u8; 32];
+        hk.expand(b"sovereign-backup-signing-seed:v1", &mut seed)
+            .expect("32 bytes is within HKDF output limit");
+        let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        seed.zeroize();
+        key
     }
 
     /// Access the raw key bytes.
@@ -261,5 +298,38 @@ mod tests {
         let mk2 = MasterKey::from_passphrase(b"other", b"shared-salt").unwrap();
         let ak2 = AccountKey::derive(&mk2).unwrap();
         assert_ne!(ab, ak2.derive_pair_key("12D3KooWPeerA", "12D3KooWPeerB"));
+    }
+
+    #[test]
+    fn session_log_key_is_deterministic_and_domain_separated() {
+        let mk = MasterKey::from_passphrase(b"pw", b"shared-salt").unwrap();
+        let ak = AccountKey::derive(&mk).unwrap();
+
+        // Deterministic — a device re-deriving it opens its own prior log.
+        assert_eq!(ak.derive_session_log_key(), ak.derive_session_log_key());
+        // Domain-separated from every other AccountKey-derived key: a leak of
+        // one must not yield another.
+        assert_ne!(ak.derive_session_log_key(), ak.derive_transport_key());
+        assert_ne!(ak.derive_session_log_key(), *ak.as_bytes());
+        assert_ne!(
+            ak.derive_session_log_key(),
+            ak.derive_pair_key("12D3KooWPeerA", "12D3KooWPeerB")
+        );
+        // A different account → a different log key.
+        let mk2 = MasterKey::from_passphrase(b"other", b"shared-salt").unwrap();
+        let ak2 = AccountKey::derive(&mk2).unwrap();
+        assert_ne!(ak.derive_session_log_key(), ak2.derive_session_log_key());
+
+        // The info string is load-bearing: this is the byte-for-byte value the
+        // app's original setup::derive_session_log_key produced for this key, so
+        // logs sealed before the SEAM-D lift stay readable. If this vector
+        // changes, the info string changed and existing logs are bricked.
+        let expect = {
+            let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, ak.as_bytes());
+            let mut out = [0u8; 32];
+            hk.expand(b"sovereign-session-log", &mut out).unwrap();
+            out
+        };
+        assert_eq!(ak.derive_session_log_key(), expect);
     }
 }

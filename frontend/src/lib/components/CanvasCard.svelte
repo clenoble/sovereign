@@ -1,17 +1,38 @@
 <script lang="ts">
 	import type { CanvasDocDto } from '$lib/api/commands';
-	import { canvas, selectCard, setDragging, moveCard, snapToLane, hoverCard, MAX_VISUAL_ZOOM } from '$lib/stores/canvas.svelte';
+	import { canvas, selectCard, setDragging, moveCard, snapToLane, hoverCard, expandDeck, MAX_VISUAL_ZOOM, DECK_PEEK, type DeckRole } from '$lib/stores/canvas.svelte';
 	import { openById } from '$lib/stores/documents.svelte';
 	import { app } from '$lib/stores/app.svelte';
 
 	interface Props {
 		doc: CanvasDocDto;
+		role?: DeckRole;
 		isHovered: boolean;
 		isSelected: boolean;
 		zoom: number;
 	}
 
-	let { doc, isHovered, isSelected, zoom = 1 }: Props = $props();
+	let { doc, role, isHovered, isSelected, zoom = 1 }: Props = $props();
+
+	// Default role for a lone card (no deck): it is its own front.
+	const r = $derived<DeckRole>(
+		role ?? { count: 1, peekIndex: 0, isFront: true, hidden: false, frontId: doc.id }
+	);
+
+	// Peeking cards sit up-left behind the front card. The offset is in WORLD
+	// units (not screen px), so it scales with zoom and stays a constant fraction
+	// of the lane — this is what keeps the fan inside the lane's top margin at
+	// EVERY zoom (containment invariant: (DECK_VISIBLE−1)·DECK_PEEK ≤ top slack).
+	// The front card (peekIndex 0) stays at its true timeline position.
+	const deckShift = $derived(r.peekIndex > 0 ? r.peekIndex * DECK_PEEK : 0);
+	const lx = $derived(doc.spatial_x - deckShift);
+	const ly = $derived(doc.spatial_y - deckShift);
+	// Front sits above its peeks; hover/selection still win.
+	const zBase = $derived(isSelected ? 100 : isHovered ? 50 : 10 - r.peekIndex);
+	const isPeek = $derived(!r.isFront);
+	// Badge on every multi-card deck: gives each stack a count AND its expand
+	// handle (a numberless stack couldn't be counted or fanned open).
+	const showCount = $derived(r.isFront && r.count > 1);
 
 	// Counter-scale once zoom exceeds MAX_VISUAL_ZOOM so the card stops
 	// growing visually. Parent layer is scaled by `zoom`; we apply
@@ -20,6 +41,9 @@
 	const cardTransform = $derived(
 		cardScale === 1 ? '' : `transform: scale(${cardScale}); transform-origin: top left;`
 	);
+
+	// Shared absolute-position style for every LOD tier (true pos minus peek shift).
+	const posStyle = $derived(`left: ${lx}px; top: ${ly}px; z-index: ${zBase}; ${cardTransform}`);
 
 	let dragging = false;
 	let dragStart = { x: 0, y: 0 };
@@ -88,7 +112,9 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-{#if zoom < 0.15}
+{#if r.hidden}
+	<!-- Buried behind the deck's front card + badge; not rendered. -->
+{:else if zoom < 0.15}
 	<!-- Heatmap mode: rendered on background canvas, nothing here -->
 {:else if zoom < 0.3}
 	<!-- LOD: dot only -->
@@ -96,7 +122,8 @@
 		class="canvas-dot"
 		class:owned={doc.is_owned}
 		class:external={!doc.is_owned}
-		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px; z-index: {isSelected ? 100 : isHovered ? 50 : 1}; {cardTransform}"
+		class:peek={isPeek}
+		style={posStyle}
 		onpointerdown={handlePointerDown}
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}
@@ -112,7 +139,8 @@
 		class:external={!doc.is_owned}
 		class:hovered={isHovered}
 		class:selected={isSelected}
-		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px; z-index: {isSelected ? 100 : isHovered ? 50 : 1}; {cardTransform}"
+		class:peek={isPeek}
+		style={posStyle}
 		onpointerdown={handlePointerDown}
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}
@@ -122,6 +150,12 @@
 		onpointerleave={() => hoverCard(null)}
 	>
 		<div class="card-title">{doc.title}</div>
+		{#if showCount}<button
+				class="deck-badge"
+				title="Fan out {r.count} stacked documents"
+				onpointerdown={(e) => e.stopPropagation()}
+				onclick={(e) => { e.stopPropagation(); expandDeck(r.frontId); }}
+			>{r.count}</button>{/if}
 		{#if doc.reliability_score != null}
 			<span
 				class="reliability-badge"
@@ -139,7 +173,8 @@
 		class:external={!doc.is_owned}
 		class:hovered={isHovered}
 		class:selected={isSelected}
-		style="left: {doc.spatial_x}px; top: {doc.spatial_y}px; z-index: {isSelected ? 100 : isHovered ? 50 : 1}; {cardTransform}"
+		class:peek={isPeek}
+		style={posStyle}
 		onpointerdown={handlePointerDown}
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}
@@ -150,6 +185,12 @@
 	>
 		<div class="card-title">{doc.title}</div>
 		<div class="card-meta">{timeAgo(doc.modified_at)}</div>
+		{#if showCount}<button
+				class="deck-badge"
+				title="Fan out {r.count} stacked documents"
+				onpointerdown={(e) => e.stopPropagation()}
+				onclick={(e) => { e.stopPropagation(); expandDeck(r.frontId); }}
+			>{r.count}</button>{/if}
 		{#if doc.reliability_score != null}
 			<span
 				class="reliability-badge"
@@ -227,6 +268,43 @@
 	.card-meta {
 		font-size: 0.7rem;
 		color: var(--text-muted);
+	}
+
+	/* Cards peeking behind a deck's front card: dimmed but clickable — where the
+	   deck is fanned open (high zoom) each peek is directly reachable; where it's
+	   collapsed only their slivers show, and the front (higher z) still wins the
+	   click on its body. Hovering un-dims the peek so it's clear it's live. */
+	.peek {
+		opacity: 0.5;
+	}
+	.peek:hover {
+		opacity: 1;
+	}
+
+	/* Total-count badge on a deck's front card ("12" = twelve stacked here). */
+	.deck-badge {
+		position: absolute;
+		bottom: 4px;
+		right: 6px;
+		font-size: 0.7rem;
+		font-weight: 700;
+		font-family: inherit;
+		padding: 1px 7px;
+		border: none;
+		border-radius: 9px;
+		line-height: 1.4;
+		color: #fff;
+		background: var(--accent);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+		cursor: pointer;
+	}
+	.deck-badge:hover {
+		filter: brightness(1.12);
+		box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+	}
+	/* Un-skew on external (parallelogram) cards, like the reliability badge. */
+	.external .deck-badge {
+		transform: skewX(5deg);
 	}
 
 	.canvas-dot {

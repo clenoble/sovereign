@@ -196,6 +196,11 @@ pub struct P2pConfig {
     pub backup_host_enabled: bool,
     /// Per-owner storage quota for hosted backup fragments, in MiB.
     pub backup_quota_mb: u64,
+    /// M1.5: seed relay multiaddrs (each ending `/p2p/<relay-peer-id>`) the
+    /// node reserves circuit slots on, so NATed peers stay reachable. Empty
+    /// = LAN/mDNS only.
+    #[serde(default)]
+    pub seed_relays: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -213,6 +218,7 @@ impl Default for P2pConfig {
             wifi_only: cfg!(target_os = "android"),
             backup_host_enabled: false,
             backup_quota_mb: 64,
+            seed_relays: Vec::new(),
         }
     }
 }

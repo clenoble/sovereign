@@ -131,13 +131,19 @@ impl SyncService {
     /// Build a SyncManifest from all syncable tables in the database.
     /// Documents track via commit chain; threads/entities/pii_records/
     /// share_records use the row-level last-writer-wins protocol.
+    ///
+    /// H-p2p1: soft-deleted rows are INCLUDED (via the `*_including_deleted`
+    /// sync-scope lists) with their LWW timestamp advanced to the deletion
+    /// time. A tombstone omitted from the manifest looks merely absent, so a
+    /// peer still holding the row live re-pushes it and resurrects deleted
+    /// data — including deleted PII.
     pub async fn build_manifest(&self) -> P2pResult<SyncManifest> {
         let mut manifest = SyncManifest::new(self.device_id.clone());
 
         // --- Documents (commit-chain tracked) ---
         let docs = self
             .db
-            .list_documents(None)
+            .list_documents_including_deleted()
             .await
             .map_err(|e| P2pError::SyncError(format!("failed to list documents: {e}")))?;
         for doc in &docs {
@@ -150,12 +156,19 @@ impl SyncService {
                 .list_document_commits(&doc_id)
                 .await
                 .unwrap_or_default();
+            // The deleted state must be part of the content identity, or two
+            // copies with equal content but different deleted state read as
+            // "in sync" and the deletion never propagates.
+            let mut ch = content_hash(&doc.content);
+            if doc.deleted_at.is_some() {
+                ch.push_str(":tombstone");
+            }
             manifest.documents.push(DocumentManifestEntry {
                 doc_id,
                 head_commit: doc.head_commit.clone(),
                 commit_count: commits.len() as u32,
-                content_hash: content_hash(&doc.content),
-                modified_at: doc.modified_at.to_rfc3339(),
+                content_hash: ch,
+                modified_at: lww_ts(doc.modified_at.to_rfc3339(), &doc.deleted_at),
                 deleted_at: doc.deleted_at.clone(),
             });
         }
@@ -163,7 +176,7 @@ impl SyncService {
         // --- Threads ---
         let threads = self
             .db
-            .list_threads()
+            .list_threads_including_deleted()
             .await
             .map_err(|e| P2pError::SyncError(format!("failed to list threads: {e}")))?;
         for t in &threads {
@@ -173,7 +186,7 @@ impl SyncService {
             };
             manifest.threads.push(ThreadManifestEntry {
                 thread_id: id,
-                modified_at: t.modified_at.to_rfc3339(),
+                modified_at: lww_ts(t.modified_at.to_rfc3339(), &t.deleted_at),
                 content_hash: hash_thread(t),
                 deleted_at: t.deleted_at.clone(),
             });
@@ -182,7 +195,7 @@ impl SyncService {
         // --- Entities ---
         let entities = self
             .db
-            .list_entities()
+            .list_entities_including_deleted()
             .await
             .map_err(|e| P2pError::SyncError(format!("failed to list entities: {e}")))?;
         for e in &entities {
@@ -192,7 +205,7 @@ impl SyncService {
             };
             manifest.entities.push(EntityManifestEntry {
                 entity_id: id,
-                modified_at: e.modified_at.to_rfc3339(),
+                modified_at: lww_ts(e.modified_at.to_rfc3339(), &e.deleted_at),
                 content_hash: hash_entity(e),
                 deleted_at: e.deleted_at.clone(),
             });
@@ -201,7 +214,7 @@ impl SyncService {
         // --- PII records ---
         let pii_records = self
             .db
-            .list_pii_records(None, None, None)
+            .list_pii_records_including_deleted()
             .await
             .map_err(|e| P2pError::SyncError(format!("failed to list pii_records: {e}")))?;
         for r in &pii_records {
@@ -211,7 +224,7 @@ impl SyncService {
             };
             manifest.pii_records.push(PiiRecordManifestEntry {
                 record_id: id,
-                discovered_at: r.discovered_at.to_rfc3339(),
+                discovered_at: lww_ts(r.discovered_at.to_rfc3339(), &r.deleted_at),
                 content_hash: hash_pii_record(r),
                 deleted_at: r.deleted_at.clone(),
             });
@@ -239,14 +252,14 @@ impl SyncService {
 
         let contacts = self
             .db
-            .list_contacts()
+            .list_contacts_including_deleted()
             .await
             .map_err(|e| P2pError::SyncError(format!("failed to list contacts: {e}")))?;
         for c in &contacts {
             let Some(id) = c.id_string() else { continue };
             manifest.contacts.push(RowManifestEntry {
                 id,
-                modified_at: c.modified_at.to_rfc3339(),
+                modified_at: lww_ts(c.modified_at.to_rfc3339(), &c.deleted_at),
                 content_hash: hash_contact(c),
                 deleted_at: c.deleted_at.clone(),
             });
@@ -254,14 +267,14 @@ impl SyncService {
 
         let messages = self
             .db
-            .list_all_messages()
+            .list_messages_including_deleted()
             .await
             .map_err(|e| P2pError::SyncError(format!("failed to list messages: {e}")))?;
         for m in &messages {
             let Some(id) = m.id_string() else { continue };
             manifest.messages.push(RowManifestEntry {
                 id,
-                modified_at: m.created_at.to_rfc3339(),
+                modified_at: lww_ts(m.created_at.to_rfc3339(), &m.deleted_at),
                 content_hash: hash_message(m),
                 deleted_at: m.deleted_at.clone(),
             });
@@ -269,14 +282,17 @@ impl SyncService {
 
         let conversations = self
             .db
-            .list_conversations(None)
+            .list_conversations_including_deleted()
             .await
             .map_err(|e| P2pError::SyncError(format!("failed to list conversations: {e}")))?;
         for v in &conversations {
             let Some(id) = v.id_string() else { continue };
             manifest.conversations.push(RowManifestEntry {
                 id,
-                modified_at: v.last_message_at.unwrap_or(v.created_at).to_rfc3339(),
+                modified_at: lww_ts(
+                    v.last_message_at.unwrap_or(v.created_at).to_rfc3339(),
+                    &v.deleted_at,
+                ),
                 content_hash: hash_conversation(v),
                 deleted_at: v.deleted_at.clone(),
             });
@@ -431,6 +447,15 @@ impl SyncService {
             title: doc.title,
             content: doc.content,
             thread_id: doc.thread_id,
+            // Transport snapshots carry PLAINTEXT state (sealed under the
+            // pair key, re-encrypted by the receiver under its own keys) —
+            // the at-rest nonce fields (C1) don't apply here.
+            content_nonce: None,
+            title_nonce: None,
+            title_token_hashes: Vec::new(),
+            // H-p2p1: the deleted state travels with the snapshot so the
+            // receiving device converges on the deletion.
+            deleted_at: doc.deleted_at.clone(),
         };
         let mut commit = seal_snapshot(
             head_commit.unwrap_or("").to_string(),
@@ -527,9 +552,11 @@ impl SyncService {
                 // version as a commit FIRST so it stays restorable, apply the
                 // peer's content, then flag the doc so the change is surfaced
                 // for review on next open instead of silently replacing it.
-                let changed =
+                let content_changed =
                     local.title != snapshot.title || local.content != snapshot.content;
-                if changed {
+                let remote_deleted = snapshot.deleted_at.is_some();
+                let locally_deleted = local.deleted_at.is_some();
+                if content_changed {
                     let prior_commit = self
                         .db
                         .commit_document(&ec.document_id, "pre-sync snapshot (peer overwrite)")
@@ -562,6 +589,45 @@ impl SyncService {
                     }
                     docs_updated.insert(ec.document_id.clone());
                 }
+                // H-p2p1: converge on the deleted state. Deletion is
+                // NON-DESTRUCTIVE too — soft-delete only (trash, restorable),
+                // preceded by a pre-delete commit, and flagged for review
+                // like any other peer overwrite.
+                if remote_deleted && !locally_deleted {
+                    let prior_commit = self
+                        .db
+                        .commit_document(&ec.document_id, "pre-sync snapshot (peer delete)")
+                        .await
+                        .ok()
+                        .and_then(|c| c.id_string());
+                    self.db
+                        .soft_delete_document(&ec.document_id)
+                        .await
+                        .map_err(|e| P2pError::SyncError(format!("peer soft-delete: {e}")))?;
+                    if let Err(e) = self
+                        .db
+                        .set_document_peer_review(
+                            &ec.document_id,
+                            &sender_id,
+                            prior_commit.as_deref(),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "failed to flag doc {} deletion for peer review: {e}",
+                            ec.document_id
+                        );
+                    }
+                    docs_updated.insert(ec.document_id.clone());
+                } else if !remote_deleted && locally_deleted {
+                    // The winning remote state is live (e.g. the user restored
+                    // the doc from trash on the other device) — un-delete.
+                    self.db
+                        .restore_soft_deleted_document(&ec.document_id)
+                        .await
+                        .map_err(|e| P2pError::SyncError(format!("peer un-delete: {e}")))?;
+                    docs_updated.insert(ec.document_id.clone());
+                }
             } else {
                 // Recreate the document under its ORIGIN id so both devices
                 // agree on the identity (no duplication on re-sync).
@@ -583,6 +649,9 @@ impl SyncService {
                 let mut doc = Document::new(snapshot.title.clone(), thread_id, true);
                 doc.id = Some(id);
                 doc.content = snapshot.content.clone();
+                // H-p2p1: a snapshot of a deleted document lands as a
+                // tombstone, not as a live resurrection.
+                doc.deleted_at = snapshot.deleted_at.clone();
                 self.db
                     .create_document_with_id(doc)
                     .await
@@ -686,13 +755,13 @@ impl SyncService {
     /// skipped, never applied. Conflict resolution orders by the signed
     /// `(version_counter, version_device)` stamp, not by `modified_at`;
     /// the 24h future-skew bound on timestamps stays as belt-and-
-    /// suspenders. Returns (written, skipped).
+    /// suspenders.
     pub async fn apply_rows(
         &self,
         table: SyncTable,
         rows: Vec<EncryptedRow>,
         sender: &PeerId,
-    ) -> P2pResult<(u32, u32)> {
+    ) -> P2pResult<RowApplyReport> {
         let key = self.pair_key_for(sender)?;
         let sender_key = match public_key_from_peer_id(sender) {
             Some(k) => k,
@@ -705,6 +774,7 @@ impl SyncService {
         let sender_id = sender.to_string();
         let mut written = 0u32;
         let mut skipped = 0u32;
+        let mut review_flagged = 0u32;
         for row in rows {
             if !verify_row(&row, table, &sender_key) {
                 tracing::warn!(
@@ -757,6 +827,7 @@ impl SyncService {
                     written += 1;
                     if let Some(prior_json) = prior {
                         self.stash_prior_row(&row.id, table, &prior_json, &sender_id).await;
+                        review_flagged += 1;
                     }
                 }
                 Ok(false) => skipped += 1,
@@ -782,7 +853,11 @@ impl SyncService {
         {
             tracing::warn!("version store save after apply_rows failed: {e}");
         }
-        Ok((written, skipped))
+        Ok(RowApplyReport {
+            written,
+            skipped,
+            review_flagged,
+        })
     }
 
     /// Decide whether a remote row version beats the local one, stamping
@@ -851,8 +926,8 @@ impl SyncService {
     /// JSON, BEFORE a peer overwrite replaces it (p2p-no-per-doc-authz row
     /// shadow-recovery). Returns `None` if the row doesn't exist locally (a
     /// fresh create — nothing to preserve) or for the append-only tables
-    /// (ShareRecord / Milestone / Relationship / SuggestedLink), which the
-    /// apply path never overwrites.
+    /// (ShareRecord / Milestone / Relationship), which the apply path never
+    /// overwrites. SuggestedLink IS overwritable (status/resolved_at) — C2.
     async fn capture_prior_row(&self, table: SyncTable, row_id: &str) -> Option<Vec<u8>> {
         match table {
             SyncTable::Thread => self.db.get_thread(row_id).await.ok().and_then(|r| serde_json::to_vec(&r).ok()),
@@ -861,10 +936,10 @@ impl SyncService {
             SyncTable::Contact => self.db.get_contact(row_id).await.ok().and_then(|r| serde_json::to_vec(&r).ok()),
             SyncTable::Message => self.db.get_message(row_id).await.ok().and_then(|r| serde_json::to_vec(&r).ok()),
             SyncTable::Conversation => self.db.get_conversation(row_id).await.ok().and_then(|r| serde_json::to_vec(&r).ok()),
+            SyncTable::SuggestedLink => self.db.get_suggested_link(row_id).await.ok().and_then(|r| serde_json::to_vec(&r).ok()),
             SyncTable::ShareRecord
             | SyncTable::Milestone
-            | SyncTable::Relationship
-            | SyncTable::SuggestedLink => None,
+            | SyncTable::Relationship => None,
         }
     }
 
@@ -948,6 +1023,72 @@ impl SyncService {
                     .await
                     .map_err(|e| P2pError::SyncError(format!("restore pii value: {e}")))?;
             }
+            "entity" => {
+                let en: Entity = serde_json::from_slice(&prior_json)
+                    .map_err(|e| P2pError::SyncError(format!("recovery decode entity: {e}")))?;
+                self.db
+                    .update_entity(
+                        &rec.row_id,
+                        Some(&en.name),
+                        Some(en.kind.clone()),
+                        Some(en.domains.clone()),
+                        Some(en.contact_ids.clone()),
+                        Some(&en.notes),
+                        Some(en.is_owned),
+                        Some(en.deleted_at.clone()),
+                    )
+                    .await
+                    .map_err(|e| P2pError::SyncError(format!("restore entity: {e}")))?;
+            }
+            "message" => {
+                let m: Message = serde_json::from_slice(&prior_json)
+                    .map_err(|e| P2pError::SyncError(format!("recovery decode message: {e}")))?;
+                // The mutable message fields are the body (canonical PII
+                // rewrite) and the read status — restore both.
+                self.db
+                    .update_message_body(&rec.row_id, &m.body, m.body_html.as_deref())
+                    .await
+                    .map_err(|e| P2pError::SyncError(format!("restore message body: {e}")))?;
+                self.db
+                    .update_message_read_status(&rec.row_id, m.read_status.clone())
+                    .await
+                    .map_err(|e| P2pError::SyncError(format!("restore message status: {e}")))?;
+            }
+            "conversation" => {
+                let v: Conversation = serde_json::from_slice(&prior_json)
+                    .map_err(|e| P2pError::SyncError(format!("recovery decode conversation: {e}")))?;
+                // Restore the fields the apply path can overwrite: unread
+                // count, last_message_at, thread link.
+                self.db
+                    .update_conversation_unread(&rec.row_id, v.unread_count)
+                    .await
+                    .map_err(|e| P2pError::SyncError(format!("restore conversation unread: {e}")))?;
+                if let Some(at) = v.last_message_at {
+                    self.db
+                        .update_conversation_last_message_at(&rec.row_id, at)
+                        .await
+                        .map_err(|e| {
+                            P2pError::SyncError(format!("restore conversation last_message_at: {e}"))
+                        })?;
+                }
+                if let Some(tid) = v.linked_thread_id.as_deref() {
+                    self.db
+                        .link_conversation_to_thread(&rec.row_id, tid)
+                        .await
+                        .map_err(|e| {
+                            P2pError::SyncError(format!("restore conversation thread link: {e}"))
+                        })?;
+                }
+            }
+            "suggested_link" => {
+                let l: SuggestedLink = serde_json::from_slice(&prior_json)
+                    .map_err(|e| P2pError::SyncError(format!("recovery decode suggested_link: {e}")))?;
+                // Status + resolved_at are the only peer-overwritable fields.
+                self.db
+                    .set_suggested_link_status(&rec.row_id, l.status.clone(), l.resolved_at)
+                    .await
+                    .map_err(|e| P2pError::SyncError(format!("restore suggested_link: {e}")))?;
+            }
             other => {
                 return Err(P2pError::SyncError(format!(
                     "restore not yet supported for table '{other}'; the prior value is preserved \
@@ -1005,6 +1146,19 @@ impl SyncService {
                     )
                     .await
                     .map_err(|e| P2pError::SyncError(format!("update_thread: {e}")))?;
+                // H-p2p1: converge on the winner's deleted state (soft-delete
+                // only — restorable from trash on this device too).
+                if remote.deleted_at.is_some() && local.deleted_at.is_none() {
+                    self.db
+                        .soft_delete_thread(&row.id)
+                        .await
+                        .map_err(|e| P2pError::SyncError(format!("soft_delete_thread: {e}")))?;
+                } else if remote.deleted_at.is_none() && local.deleted_at.is_some() {
+                    self.db
+                        .restore_soft_deleted_thread(&row.id)
+                        .await
+                        .map_err(|e| P2pError::SyncError(format!("restore_soft_deleted_thread: {e}")))?;
+                }
                 self.record_row_applied(&row.id, version);
                 Ok(true)
             }
@@ -1140,6 +1294,17 @@ impl SyncService {
                     .map_err(|e| {
                         P2pError::SyncError(format!("update_pii_record_value: {e}"))
                     })?;
+                // H-p2p1: a redacted (soft-deleted) PII record must not stay
+                // live on other devices — the review's headline resurrection
+                // case. Forward-only: PiiRecord has no restore method, so an
+                // un-delete does not propagate (the redact action is L5 and
+                // deliberate; resurrecting PII by sync would be worse).
+                if remote.deleted_at.is_some() && local.deleted_at.is_none() {
+                    self.db
+                        .soft_delete_pii_record(&row.id)
+                        .await
+                        .map_err(|e| P2pError::SyncError(format!("soft_delete_pii_record: {e}")))?;
+                }
                 self.record_row_applied(&row.id, version);
                 Ok(true)
             }
@@ -1744,6 +1909,31 @@ fn decode_row_inner<T: serde::de::DeserializeOwned>(
         .map_err(|e| P2pError::SyncError(format!("row decode: {e}")))
 }
 
+/// Outcome of applying one batch of peer rows (returned by
+/// [`SyncService::apply_rows`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RowApplyReport {
+    pub written: u32,
+    pub skipped: u32,
+    /// Rows whose prior local value was stashed for review — a peer
+    /// overwrote an existing row. Surfaced as a [`crate::P2pEvent`] so the
+    /// UI can badge the review panel instead of the change staying
+    /// invisible until the user happens to open it (review C2).
+    pub review_flagged: u32,
+}
+
+/// Effective LWW timestamp for a manifest entry: the deletion time when it
+/// is the latest state change. A soft-delete doesn't bump `modified_at`, so
+/// without this a tombstone always loses the manifest diff to the peer's
+/// live copy and the deletion never propagates (H-p2p1). Both values are
+/// RFC3339 UTC strings, so lexicographic comparison is chronological.
+fn lww_ts(modified: String, deleted_at: &Option<String>) -> String {
+    match deleted_at {
+        Some(d) if *d > modified => d.clone(),
+        _ => modified,
+    }
+}
+
 /// Compute a SHA-256 hash of document content.
 pub fn content_hash(content: &str) -> String {
     let mut hasher = Sha256::new();
@@ -2218,6 +2408,7 @@ mod tests {
                 title: "Shared".into(),
                 content: "shared body".into(),
                 thread_id: "default".into(),
+                ..Default::default()
             },
             &TEST_PAIR_KEY,
         )
@@ -2241,6 +2432,7 @@ mod tests {
                 title: "Shared".into(),
                 content: "shared body v2".into(),
                 thread_id: "default".into(),
+                ..Default::default()
             },
             &TEST_PAIR_KEY,
         )
@@ -2273,6 +2465,7 @@ mod tests {
                     title: "Remote Doc".into(),
                     content: "synced content".into(),
                     thread_id: "default".into(),
+                    ..Default::default()
                 },
                 signature: None,
             },
@@ -2309,6 +2502,7 @@ mod tests {
                     title: "Lane Doc".into(),
                     content: "body".into(),
                     thread_id: "thread:work".into(),
+                    ..Default::default()
                 },
                 signature: None,
             },
@@ -2347,6 +2541,7 @@ mod tests {
                     title: "Updated Title".into(),
                     content: "updated content".into(),
                     thread_id: "default".into(),
+                    ..Default::default()
                 },
                 signature: None,
             },
@@ -2395,6 +2590,7 @@ mod tests {
                     title: "Mine".into(),
                     content: "PEER BODY".into(),
                     thread_id: "default".into(),
+                    ..Default::default()
                 },
                 signature: None,
             },
@@ -2443,6 +2639,7 @@ mod tests {
                     title: "T".into(),
                     content: "x".into(),
                     thread_id: "default".into(),
+                    ..Default::default()
                 },
                 &TEST_PAIR_KEY,
             )
@@ -2500,6 +2697,7 @@ mod tests {
                 title: "Test Doc".into(),
                 content: r#"{"body":"hello","images":[]}"#.into(),
                 thread_id: "default".into(),
+                ..Default::default()
             },
             signature: None,
         };
@@ -2817,7 +3015,7 @@ mod tests {
         assert_eq!(signed_rows[0].version_device, a_peer.to_string());
 
         // 1. Valid: signed by A, presented as coming from A's peer id.
-        let (written, skipped) = svc_b
+        let RowApplyReport { written, skipped, .. } = svc_b
             .apply_rows(SyncTable::Thread, signed_rows.clone(), &a_peer)
             .await
             .unwrap();
@@ -2828,7 +3026,7 @@ mod tests {
         // a pre-P1.3 build would send).
         let mut unsigned = signed_rows[0].clone();
         unsigned.signature = String::new();
-        let (written, skipped) = svc_b
+        let RowApplyReport { written, skipped, .. } = svc_b
             .apply_rows(SyncTable::Thread, vec![unsigned], &a_peer)
             .await
             .unwrap();
@@ -2842,7 +3040,7 @@ mod tests {
         forged.version_counter = 9;
         forged.version_device = "device-x".into();
         sign_row(&mut forged, SyncTable::Thread, &test_keypair(0xC7)).unwrap();
-        let (written, skipped) = svc_b
+        let RowApplyReport { written, skipped, .. } = svc_b
             .apply_rows(SyncTable::Thread, vec![forged], &a_peer)
             .await
             .unwrap();
@@ -2879,7 +3077,7 @@ mod tests {
         forged.version_device = "ghost-device-never-existed".into();
         sign_row(&mut forged, SyncTable::Thread, &test_keypair(0xA1)).unwrap();
 
-        let (written, skipped) = svc_b
+        let RowApplyReport { written, skipped, .. } = svc_b
             .apply_rows(SyncTable::Thread, vec![forged], &a_peer)
             .await
             .unwrap();
@@ -2925,7 +3123,7 @@ mod tests {
         forged.version_device = a_peer.to_string();
         sign_row(&mut forged, SyncTable::Thread, &a_keypair).unwrap();
 
-        let (written, skipped) = svc_b
+        let RowApplyReport { written, skipped, .. } = svc_b
             .apply_rows(SyncTable::Thread, vec![forged], &a_peer)
             .await
             .unwrap();
@@ -2964,7 +3162,7 @@ mod tests {
             .get_rows(SyncTable::Thread, &[tid.clone()], &b_peer)
             .await
             .unwrap();
-        let (w, _) = svc_b.apply_rows(SyncTable::Thread, rows, &a_peer).await.unwrap();
+        let RowApplyReport { written: w, .. } = svc_b.apply_rows(SyncTable::Thread, rows, &a_peer).await.unwrap();
         assert_eq!(w, 1);
         assert!(
             db_b.list_pending_row_recoveries().await.unwrap().is_empty(),
@@ -2977,7 +3175,7 @@ mod tests {
             .get_rows(SyncTable::Thread, &[tid.clone()], &b_peer)
             .await
             .unwrap();
-        let (w2, _) = svc_b.apply_rows(SyncTable::Thread, rows2, &a_peer).await.unwrap();
+        let RowApplyReport { written: w2, .. } = svc_b.apply_rows(SyncTable::Thread, rows2, &a_peer).await.unwrap();
         assert_eq!(w2, 1, "overwrite must apply");
         assert_eq!(db_b.get_thread(&tid).await.unwrap().name, "Updated");
 
@@ -3069,7 +3267,7 @@ mod tests {
         // Inflate the signed counter — signature must no longer verify.
         let mut tampered = rows[0].clone();
         tampered.version_counter = 999;
-        let (written, skipped) = svc_b
+        let RowApplyReport { written, skipped, .. } = svc_b
             .apply_rows(SyncTable::Thread, vec![tampered], &a_peer)
             .await
             .unwrap();
@@ -3135,7 +3333,8 @@ mod tests {
     async fn pull_table(p: &SyncPair, table: SyncTable, ids: &[String]) -> (u32, u32) {
         let rows = p.svc_a.get_rows(table, ids, &p.b_peer).await.unwrap();
         assert_eq!(rows.len(), ids.len(), "every requested {table:?} row must be served");
-        p.svc_b.apply_rows(table, rows, &p.a_peer).await.unwrap()
+        let r = p.svc_b.apply_rows(table, rows, &p.a_peer).await.unwrap();
+        (r.written, r.skipped)
     }
 
     /// Per-table id lists from a manifest, in a fixed order.
@@ -3288,7 +3487,7 @@ mod tests {
         // version_device must be A's verified peer id.
         let mut row = stamp(row, 99, &p.a_peer.to_string());
         sign_row(&mut row, SyncTable::Contact, &test_keypair(0xA1)).unwrap();
-        let (w, _) = p
+        let RowApplyReport { written: w, .. } = p
             .svc_b
             .apply_rows(SyncTable::Contact, vec![row], &p.a_peer)
             .await
@@ -3297,6 +3496,197 @@ mod tests {
         assert!(
             p.db_b.get_contact(&cid).await.unwrap().deleted_at.is_some(),
             "soft delete must propagate when the row is applied"
+        );
+    }
+
+    // ── Deletion convergence (v0.0.9 H-p2p1: no resurrection of deleted data) ──
+
+    #[tokio::test]
+    async fn manifest_includes_tombstones() {
+        let (db, svc) = mock_sync_service();
+        let t = db.create_thread(Thread::new("T".into(), "".into())).await.unwrap();
+        let tid = t.id_string().unwrap();
+        let doc = db
+            .create_document(Document::new("D".into(), tid.clone(), true))
+            .await
+            .unwrap();
+        let did = doc.id_string().unwrap();
+
+        db.soft_delete_document(&did).await.unwrap();
+        db.soft_delete_thread(&tid).await.unwrap();
+
+        let m = svc.build_manifest().await.unwrap();
+        let de = m
+            .documents
+            .iter()
+            .find(|e| e.doc_id == did)
+            .expect("a deleted document must STAY in the manifest (H-p2p1)");
+        assert!(de.deleted_at.is_some());
+        assert!(
+            de.content_hash.ends_with(":tombstone"),
+            "deleted state must be part of the document's content identity"
+        );
+        let te = m
+            .threads
+            .iter()
+            .find(|e| e.thread_id == tid)
+            .expect("a deleted thread must stay in the manifest");
+        assert!(te.deleted_at.is_some());
+        // The LWW timestamp must advance to the deletion time, or the
+        // tombstone loses every diff to the peer's live copy.
+        let thread_row = db.get_thread(&tid).await.unwrap();
+        let expected = std::cmp::max(
+            thread_row.modified_at.to_rfc3339(),
+            thread_row.deleted_at.clone().unwrap_or_default(),
+        );
+        assert_eq!(te.modified_at, expected);
+    }
+
+    #[tokio::test]
+    async fn thread_deletion_converges_via_full_row_loop() {
+        let p = sync_pair();
+        let t = p.db_a.create_thread(Thread::new("Doomed".into(), "".into())).await.unwrap();
+        let tid = t.id_string().unwrap();
+
+        // Round 1: B receives the live thread.
+        let (w, _) = pull_table(&p, SyncTable::Thread, &[tid.clone()]).await;
+        assert_eq!(w, 1);
+        assert!(p.db_b.get_thread(&tid).await.unwrap().deleted_at.is_none());
+
+        // A deletes; round 2 re-pulls the same id (the manifest still lists
+        // it — see manifest_includes_tombstones). The tombstone row gets a
+        // fresh Lamport stamp (its content hash changed) and must win.
+        p.db_a.soft_delete_thread(&tid).await.unwrap();
+        let (w, s) = pull_table(&p, SyncTable::Thread, &[tid.clone()]).await;
+        assert_eq!((w, s), (1, 0), "the tombstone row must apply");
+        assert!(
+            p.db_b.get_thread(&tid).await.unwrap().deleted_at.is_some(),
+            "thread deletion must converge instead of B keeping the live copy"
+        );
+        assert!(
+            p.db_b.list_threads().await.unwrap().iter().all(|x| x.id_string() != Some(tid.clone())),
+            "the deleted thread must not list on B"
+        );
+    }
+
+    #[tokio::test]
+    async fn pii_redaction_converges_and_does_not_resurrect() {
+        use sovereign_db::schema::{PiiKind, ReviewState};
+        let p = sync_pair();
+        let rec = p
+            .db_a
+            .create_pii_record(PiiRecord {
+                id: None,
+                kind: PiiKind::Email,
+                value_encrypted: "ENC_SECRET".into(),
+                value_nonce: "NONCE".into(),
+                label: Some("work email".into()),
+                entity_id: None,
+                stored_secret: true,
+                confidence: 1.0,
+                sources: vec![],
+                discovered_at: chrono::Utc::now(),
+                last_revealed_at: None,
+                use_count: 0,
+                review_state: ReviewState::Confirmed,
+                deleted_at: None,
+            })
+            .await
+            .unwrap();
+        let pid = rec.id_string().unwrap();
+
+        let (w, _) = pull_table(&p, SyncTable::PiiRecord, &[pid.clone()]).await;
+        assert_eq!(w, 1);
+
+        // The user redacts (L5) on A — the review's headline resurrection
+        // case: B's live copy must not survive, let alone flow back.
+        p.db_a.soft_delete_pii_record(&pid).await.unwrap();
+        let (w, s) = pull_table(&p, SyncTable::PiiRecord, &[pid.clone()]).await;
+        assert_eq!((w, s), (1, 0), "the redaction tombstone must apply");
+        assert!(
+            p.db_b.get_pii_record(&pid).await.unwrap().deleted_at.is_some(),
+            "redacted PII must be soft-deleted on the peer too"
+        );
+    }
+
+    #[tokio::test]
+    async fn document_deletion_propagates_via_commits_nondestructively() {
+        let (db, svc) = mock_sync_service();
+        let peer = remote_peer();
+        register_peer(&svc, &peer);
+        let doc = db
+            .create_document(Document::new("Mine".into(), "default".into(), true))
+            .await
+            .unwrap();
+        let doc_id = doc.id_string().unwrap();
+        db.update_document(&doc_id, Some("Mine"), Some("precious body")).await.unwrap();
+
+        // Peer's snapshot: same content, but deleted.
+        let ec = commit_to_transport(
+            &Commit {
+                id: None,
+                document_id: doc_id.clone(),
+                parent_commit: None,
+                message: "peer delete".into(),
+                timestamp: chrono::Utc::now(),
+                snapshot: sovereign_db::schema::DocumentSnapshot {
+                    document_id: doc_id.clone(),
+                    title: "Mine".into(),
+                    content: "precious body".into(),
+                    thread_id: "default".into(),
+                    deleted_at: Some(chrono::Utc::now().to_rfc3339()),
+                    ..Default::default()
+                },
+                signature: None,
+            },
+            &[7u8; 32],
+        )
+        .unwrap();
+        svc.apply_commits(vec![sign_commit_as(ec, 0xD9)], &peer).await.unwrap();
+
+        let after = db.get_document(&doc_id).await.unwrap();
+        assert!(after.deleted_at.is_some(), "peer deletion must apply as a soft delete");
+        assert!(after.peer_review_pending, "a peer deletion must be flagged for review");
+        let prior = after
+            .peer_review_prior_commit
+            .clone()
+            .expect("pre-delete state must be preserved as a commit");
+        // Non-destructive: the content is fully restorable.
+        let restored = db.restore_document(&doc_id, &prior).await.unwrap();
+        assert_eq!(restored.content, "precious body");
+    }
+
+    #[tokio::test]
+    async fn deleted_document_lands_as_tombstone_on_fresh_device() {
+        let (db, svc) = mock_sync_service();
+        let peer = remote_peer();
+        register_peer(&svc, &peer);
+
+        let ec = seal_snapshot(
+            "commit:head".into(),
+            "document:was_deleted".into(),
+            "2026-03-01T00:00:00Z".into(),
+            sovereign_db::schema::DocumentSnapshot {
+                document_id: "document:was_deleted".into(),
+                title: "Gone".into(),
+                content: "body".into(),
+                thread_id: "default".into(),
+                deleted_at: Some("2026-03-02T00:00:00Z".into()),
+                ..Default::default()
+            },
+            &TEST_PAIR_KEY,
+        )
+        .unwrap();
+        svc.apply_commits(vec![sign_commit_as(ec, 0xD9)], &peer).await.unwrap();
+
+        let got = db.get_document("document:was_deleted").await.unwrap();
+        assert!(
+            got.deleted_at.is_some(),
+            "a deleted document syncing to a fresh device must land as a tombstone, not resurrect"
+        );
+        assert!(
+            db.list_documents(None).await.unwrap().is_empty(),
+            "the tombstone must not render as a live document"
         );
     }
 

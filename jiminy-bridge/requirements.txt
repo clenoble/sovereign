@@ -1,7 +1,16 @@
-reachy-mini>=1.2.0
-fastapi>=0.129.0
-uvicorn[standard]>=0.34.0
-datasets>=3.0.0
-huggingface_hub>=0.28.0
-scipy>=1.14.0
-opencv-python-headless>=4.10.0
+# Jiminy Bridge (reachy sidecar) dependencies.
+# Pinned 2026-07-08 from the working venv (Python 3.12.10, PANDA2).
+# Full transitive set: requirements.lock.txt.
+#
+# DRIFT FLAG: this file declares opencv-python-headless (deliberate: server
+# sidecar, no GUI stack), but the working venv actually contains the full
+# opencv-python==4.13.0.92 — headless was never exercised in the verified env.
+# Pinning the declared intent at the venv's version; if the sidecar misbehaves
+# with headless, install opencv-python==4.13.0.92 to match the venv exactly.
+reachy-mini==1.3.1
+fastapi==0.129.2
+uvicorn[standard]==0.41.0
+datasets==4.5.0
+huggingface_hub==1.3.0
+scipy==1.17.0
+opencv-python-headless==4.13.0.92

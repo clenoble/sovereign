@@ -16,7 +16,7 @@ use super::*;
 ///   - `p2p_identity_key` (per-device) — consumed by libp2p identity
 ///     derivation. Different on every device.
 #[cfg(feature = "encryption")]
-async fn install_session(
+pub(crate) async fn install_session(
     state: &AppState,
     auth_store: &sovereign_crypto::auth::AuthStore,
     password: &[u8],
@@ -104,7 +104,7 @@ async fn install_session(
         let encrypted = match crate::setup::build_encrypted_db(
             raw_for_persona,
             device_key_arc.clone(),
-            kek_arc,
+            kek_arc.clone(),
             core_persona,
         ) {
             Ok(encrypted) => encrypted,
@@ -134,6 +134,12 @@ async fn install_session(
         }
         state.db.swap(encrypted);
         tracing::info!("EncryptedGraphDB installed for {core_persona:?} persona");
+        // Feature 1: retain the KEK so recovery-setup can seal it (+ AccountKey)
+        // into the guardian Recovery Bundle. Only the PRIMARY persona's KEK —
+        // the duress persona must never provision real-account recovery.
+        if core_persona == sovereign_core::auth::PersonaKind::Primary {
+            state.set_kek(kek_arc).await;
+        }
     }
 
     // 3. Encryption is installed: mark the session unlocked by installing both
@@ -142,6 +148,27 @@ async fn install_session(
     //    this point means require_session_unlocked() will now return Ok.
     state.set_account_key(account_key_arc.clone()).await;
     state.set_p2p_identity_key(device_key_arc.clone()).await;
+
+    // Feature 1 anti-fraud (invalidate-by-passphrase, spec §Guardian Social
+    // Recovery): a successful login proves the owner has their passphrase, so
+    // any access-recovery in progress ON THIS DEVICE is moot — clear it. This
+    // is the LOCAL half of the spec's "the owner invalidates a concurrent
+    // takeover by authenticating"; it defeats a fraudulent recovery started on
+    // the owner's own device the moment they remember the passphrase.
+    //
+    // SCOPE (recorded 2026-07-11): the CROSS-DEVICE half — the owner's login
+    // signalling guardians to auto-deny a recovery running on an *attacker's*
+    // device — needs an owner→guardian liveness channel and is deferred. Until
+    // then the cross-device case still relies on the (already-built) all-5
+    // notification + 72h window + guardian deny.
+    #[cfg(feature = "p2p")]
+    if persona == sovereign_crypto::auth::PersonaKind::Primary {
+        let access_dir = sovereign_core::sovereign_dir().join("recovery");
+        if sovereign_p2p::access_recovery::AccessRecovery::load(&access_dir).is_some() {
+            sovereign_p2p::access_recovery::AccessRecovery::cancel(&access_dir);
+            tracing::info!("login cancelled an in-progress local access recovery (owner has the passphrase)");
+        }
+    }
 
     // 3b. MODELTRUST-002: install the model-integrity unlock key + TOFU store
     //     path now that a session is unlocked. This enables trust-on-first-use
@@ -158,13 +185,18 @@ async fn install_session(
     //    the account_key now (was device_key in v0.0.4).
     if let Some(ref orch) = state.orchestrator {
         orch.set_pii_account_key(account_key_arc.clone());
+        // ai-safety M1: authenticate the persisted trust state (keyed off
+        // the AccountKey, like the TOFU store) — auto-approval only works
+        // on MAC-verified counts.
+        orch.arm_trust_state(*account_key_arc.as_bytes());
     }
 
     // 4. Enable encrypted session log if the feature is on.
     #[cfg(feature = "encrypted-log")]
     if let Some(ref orch) = state.orchestrator {
-        let session_key = crate::setup::derive_session_log_key(&account_key_arc);
-        orch.set_session_log_key(session_key);
+        // SEAM D (v0.0.9 audit): derivation lifted to sovereign-crypto so the
+        // native shell shares it — same info string, same key.
+        orch.set_session_log_key(account_key_arc.derive_session_log_key());
     }
 
     // 5. v0.0.4 → v0.0.5 migration: re-encrypt at-rest data under the
@@ -394,10 +426,10 @@ pub async fn complete_onboarding(
 
         let salt: [u8; 32] = rand::random();
         let device_id = uuid::Uuid::new_v4().to_string();
-        let duress = data
-            .duress_password
-            .as_deref()
-            .unwrap_or("duress-fallback-unused");
+        // Duress optional → RANDOM unreachable decoy, never the shared
+        // source-visible literal (H-shell1 theme; matches the wizard).
+        let random_duress = sovereign_crypto::random_hex_32();
+        let duress = data.duress_password.as_deref().unwrap_or(&random_duress);
 
         let auth_store = sovereign_crypto::auth::AuthStore::create(
             password.as_bytes(),

@@ -724,4 +724,35 @@ pub trait GraphDB: Send + Sync {
         status: SuggestionStatus,
         resolved_at: Option<DateTime<Utc>>,
     ) -> DbResult<()>;
+
+    // -- Sync-scope lists: tombstones INCLUDED (v0.0.9 H-p2p1) --
+    //
+    // The regular list_* methods hide soft-deleted rows (correct for the UI).
+    // The sync layer must see them: a deleted row omitted from the manifest
+    // looks merely absent, so a peer that still holds it live re-pushes it
+    // and resurrects deleted data — including deleted PII. Default impls
+    // fall back to the filtered lists so test stubs keep compiling; every
+    // real backend overrides them.
+
+    async fn list_documents_including_deleted(&self) -> DbResult<Vec<Document>> {
+        self.list_documents(None).await
+    }
+    async fn list_threads_including_deleted(&self) -> DbResult<Vec<Thread>> {
+        self.list_threads().await
+    }
+    async fn list_entities_including_deleted(&self) -> DbResult<Vec<Entity>> {
+        self.list_entities().await
+    }
+    async fn list_pii_records_including_deleted(&self) -> DbResult<Vec<PiiRecord>> {
+        self.list_pii_records(None, None, None).await
+    }
+    async fn list_contacts_including_deleted(&self) -> DbResult<Vec<Contact>> {
+        self.list_contacts().await
+    }
+    async fn list_messages_including_deleted(&self) -> DbResult<Vec<Message>> {
+        self.list_all_messages().await
+    }
+    async fn list_conversations_including_deleted(&self) -> DbResult<Vec<Conversation>> {
+        self.list_conversations(None).await
+    }
 }

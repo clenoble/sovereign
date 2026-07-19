@@ -42,6 +42,17 @@ pub fn crypto_dir() -> std::path::PathBuf {
     sovereign_core::sovereign_dir().join("crypto")
 }
 
+/// This app's face onto the shared F1 recovery store.
+///
+/// The implementation lives in `sovereign-crypto` so the native shell — which
+/// cannot depend on this crate — runs the same code against its own
+/// `crypto_dir()`. Binding the directory here keeps that the only difference
+/// between the two faces.
+#[cfg(feature = "encryption")]
+pub fn recovery_store() -> sovereign_crypto::recovery_store::RecoveryStore {
+    sovereign_crypto::recovery_store::RecoveryStore::new(crypto_dir())
+}
+
 /// Load or create a stable device ID for this machine.
 #[cfg(feature = "encryption")]
 pub fn load_or_create_device_id() -> Result<String> {
@@ -139,10 +150,19 @@ pub fn init_crypto() -> Result<(
         kek
     };
 
-    // Load or create KeyDatabase
+    // Load or create KeyDatabase, sealed under the KEK (content-chain root;
+    // spec §Encryption Scheme). A legacy DeviceKey-sealed file is read once and
+    // re-sealed under the KEK.
     let key_db_path = dir.join("keys.db");
     let key_db = if key_db_path.exists() {
-        KeyDatabase::load(&key_db_path, &device_key)?
+        match KeyDatabase::load(&key_db_path, &kek) {
+            Ok(db) => db,
+            Err(_) => {
+                let db = KeyDatabase::load_legacy(&key_db_path, &device_key)?;
+                db.save(&kek)?;
+                db
+            }
+        }
     } else {
         KeyDatabase::new(key_db_path.clone())
     };
@@ -155,9 +175,9 @@ pub fn init_crypto() -> Result<(
         let new_master = MasterKey::derive(pass.as_bytes(), &salt, &current)?;
         let new_device_key = DeviceKey::derive(&new_master, &device_id)?;
         sovereign_crypto::fs_private::write_private(&kek_path, serde_json::to_vec(&kek.wrap(&new_device_key)?)?)?;
-        if key_db_path.exists() {
-            key_db.save(&new_device_key)?;
-        }
+        // keys.db is sealed under the KEK (value unchanged by the device-key
+        // rotation), so it needs no re-save here — only the KEK's wrapping
+        // moves to the new device key above.
         sovereign_crypto::fs_private::write_private(&cli_kdf_path(), serde_json::to_vec(&current)?)?;
         tracing::info!("Upgraded CLI key store from legacy HKDF to Argon2id");
         new_device_key
@@ -239,7 +259,16 @@ pub fn complete_auth(
     };
     let key_db_path = dir.join(format!("keys{suffix}.db"));
     let key_db = if key_db_path.exists() {
-        KeyDatabase::load(&key_db_path, device_key)?
+        // Sealed under the KEK (content-chain root); migrate a legacy
+        // DeviceKey-sealed file transparently. Spec §Encryption Scheme.
+        match KeyDatabase::load(&key_db_path, kek) {
+            Ok(db) => db,
+            Err(_) => {
+                let db = KeyDatabase::load_legacy(&key_db_path, device_key)?;
+                db.save(kek)?;
+                db
+            }
+        }
     } else {
         KeyDatabase::new(key_db_path)
     };
@@ -272,7 +301,7 @@ pub fn complete_auth(
 /// coerced login can never decrypt the primary persona's rows — it decrypts a
 /// physically separate database (see [`persona_db_path`]) under separate keys.
 #[cfg(feature = "encryption")]
-fn persona_key_db_filename(persona: sovereign_core::auth::PersonaKind, base: &str) -> String {
+pub(crate) fn persona_key_db_filename(persona: sovereign_core::auth::PersonaKind, base: &str) -> String {
     match persona {
         sovereign_core::auth::PersonaKind::Primary => base.to_string(),
         // "keys.messages.db" -> "keys.messages.duress.db"
@@ -305,18 +334,27 @@ pub fn build_encrypted_db(
     let dir = crypto_dir();
     std::fs::create_dir_all(&dir)?;
 
-    // Load-or-create each per-entity-type KeyDatabase. `KeyDatabase::load`
-    // returns an existing file decrypted under DeviceKey; absent files start
+    // Load-or-create each per-entity-type KeyDatabase, sealed under the KEK —
+    // the root of the at-rest content chain, so guardian recovery (which
+    // restores the KEK) can reopen these without the passphrase. A file still
+    // sealed under the legacy DeviceKey is read once and re-sealed under the
+    // KEK (transparent migration; spec §Encryption Scheme). Absent files start
     // empty and are persisted on first key creation by EncryptedGraphDB.
     // CRYPTO-001: filenames are persona-suffixed so the duress persona's keys
     // never collide with (or decrypt) the primary persona's.
     let load_or_new = |filename: &str| -> Result<KeyDatabase> {
         let path = dir.join(filename);
-        Ok(if path.exists() {
-            KeyDatabase::load(&path, &device_key)?
-        } else {
-            KeyDatabase::new(path)
-        })
+        if !path.exists() {
+            return Ok(KeyDatabase::new(path));
+        }
+        match KeyDatabase::load(&path, &kek) {
+            Ok(db) => Ok(db),
+            Err(_) => {
+                let db = KeyDatabase::load_legacy(&path, &device_key)?;
+                db.save(&kek)?;
+                Ok(db)
+            }
+        }
     };
 
     let documents_kdb = load_or_new(&persona_key_db_filename(persona, "keys.db"))?;
@@ -334,7 +372,7 @@ pub fn build_encrypted_db(
     // leakage is bounded. Persona-suffixed (index.duress.key) for the same
     // isolation reason as the key DBs above.
     let index_key_path = dir.join(persona_index_filename(persona));
-    let index_key = IndexKey::load_or_create(index_key_path, &device_key, kek.as_ref())?;
+    let index_key = IndexKey::load_or_create(index_key_path, &kek, &device_key)?;
 
     Ok(Arc::new(sovereign_db::encrypted::EncryptedGraphDB::new(
         raw_db,
@@ -369,24 +407,9 @@ pub fn persona_db_path(
     }
 }
 
-/// Derive a 32-byte session log encryption key from the account key via HKDF-SHA256.
-///
-/// The session log derivation moved from DeviceKey to AccountKey in v0.0.5
-/// so paired devices can read each other's session log entries (currently
-/// the session log is per-device, but this is forward-compat for v0.0.6
-/// which may sync it). The HKDF info string is unchanged.
-#[cfg(all(feature = "encryption", feature = "encrypted-log"))]
-pub fn derive_session_log_key(
-    account_key: &sovereign_crypto::account_key::AccountKey,
-) -> [u8; 32] {
-    use sovereign_crypto::aead::KEY_SIZE;
-
-    let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, account_key.as_bytes());
-    let mut key = [0u8; KEY_SIZE];
-    hk.expand(b"sovereign-session-log", &mut key)
-        .expect("HKDF expand for session log key");
-    key
-}
+// derive_session_log_key moved to sovereign_crypto::account_key::AccountKey
+// (v0.0.9 audit, SEAM D) so the native shell shares one derivation. Call
+// `account_key.derive_session_log_key()`.
 
 /// Wrap an orchestrator method call into a spawn-and-log callback.
 pub fn orch_callback(

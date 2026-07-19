@@ -28,13 +28,14 @@
 	} from '$lib/api/commands';
 	import BubblePreview from './BubblePreview.svelte';
 	import PairQrPanel from './PairQrPanel.svelte';
+	import RecoveryPanel from './RecoveryPanel.svelte';
 	import { device } from '$lib/stores/device.svelte';
 	import { focusTrap } from '$lib/actions/focusTrap';
 	import { sync, clearError, dismissConflict } from '$lib/stores/sync.svelte';
 	import { pairing } from '$lib/stores/pairing.svelte';
 	import { vision, setWindowSeconds } from '$lib/stores/vision.svelte';
 
-	type Tab = 'profile' | 'ai' | 'security' | 'trust' | 'comms' | 'devices' | 'vision';
+	type Tab = 'profile' | 'ai' | 'security' | 'trust' | 'comms' | 'devices' | 'recovery' | 'vision';
 
 	const BUBBLE_STYLES = ['icon', 'wave', 'spin', 'pulse', 'blink', 'rings', 'matrix', 'orbit', 'morph'];
 
@@ -376,6 +377,13 @@
 				onclick={() => (activeTab = 'devices')}
 			>
 				Devices
+			</button>
+			<button
+				class="tab"
+				class:active={activeTab === 'recovery'}
+				onclick={() => (activeTab = 'recovery')}
+			>
+				Recovery
 			</button>
 			<button
 				class="tab"
@@ -930,6 +938,10 @@
 						</div>
 					{/if}
 				{/if}
+
+			<!-- Recovery Tab (Surface 1: Guardian Access Recovery setup) -->
+			{:else if activeTab === 'recovery'}
+				<RecoveryPanel />
 			{/if}
 		</div>
 	</div>
@@ -1019,7 +1031,10 @@
 	.panel-body {
 		flex: 1;
 		overflow-y: auto;
-		padding: 16px 18px;
+		/* Bottom padding clears the fixed 44px taskbar (+ margin), so the last
+		   control in a tall tab — e.g. the recovery "Done" button — can scroll
+		   above it instead of sitting in dead space behind it. */
+		padding: 16px 18px calc(44px + env(safe-area-inset-bottom) + 20px);
 	}
 
 	.loading {

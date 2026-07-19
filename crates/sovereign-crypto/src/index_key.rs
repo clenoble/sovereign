@@ -64,10 +64,21 @@ impl IndexKey {
     }
 
     /// Load + decrypt an IndexKey file. File format mirrors KeyDatabase:
-    /// `nonce (24 bytes) || ciphertext(JSON{WrappedDocumentKey})`.
-    /// The outer layer is encrypted by DeviceKey; the inner WrappedDocumentKey
-    /// is unwrapped with the KEK to yield the 32-byte HMAC secret.
-    pub fn load(path: &Path, device_key: &DeviceKey, kek: &Kek) -> CryptoResult<Self> {
+    /// `nonce (24 bytes) || ciphertext(JSON{WrappedDocumentKey})`. Both layers
+    /// are keyed off the **KEK**: the outer AEAD is under the KEK, and the inner
+    /// WrappedDocumentKey is unwrapped with the KEK to yield the HMAC secret.
+    pub fn load(path: &Path, kek: &Kek) -> CryptoResult<Self> {
+        Self::load_with_outer(path, kek.as_bytes(), kek)
+    }
+
+    /// Migration read: the pre-migration form had the outer AEAD under the
+    /// DeviceKey (inner already under the KEK). Read it so the caller can
+    /// re-save under the KEK. See spec §Encryption Scheme.
+    pub fn load_legacy(path: &Path, device_key: &DeviceKey, kek: &Kek) -> CryptoResult<Self> {
+        Self::load_with_outer(path, device_key.as_bytes(), kek)
+    }
+
+    fn load_with_outer(path: &Path, outer_key: &[u8; 32], kek: &Kek) -> CryptoResult<Self> {
         let data = std::fs::read(path)
             .map_err(|e| CryptoError::KeyDbIo(e.to_string()))?;
         if data.len() < NONCE_SIZE {
@@ -78,7 +89,7 @@ impl IndexKey {
         nonce.copy_from_slice(&data[..NONCE_SIZE]);
         let ciphertext = &data[NONCE_SIZE..];
 
-        let plaintext = aead::decrypt(ciphertext, &nonce, device_key.as_bytes())?;
+        let plaintext = aead::decrypt(ciphertext, &nonce, outer_key)?;
         let wrapped: WrappedDocumentKey = serde_json::from_slice(&plaintext)
             .map_err(|e| CryptoError::Serialization(e.to_string()))?;
 
@@ -88,14 +99,14 @@ impl IndexKey {
         Ok(Self { bytes })
     }
 
-    /// Save this key wrapped under KEK and outer-encrypted by DeviceKey.
-    pub fn save(&self, path: &Path, device_key: &DeviceKey, kek: &Kek) -> CryptoResult<()> {
+    /// Save this key wrapped under the KEK and outer-sealed under the KEK.
+    pub fn save(&self, path: &Path, kek: &Kek) -> CryptoResult<()> {
         let dk = DocumentKey::from_bytes(self.bytes);
         let wrapped = dk.wrap(kek, 1)?;
         let json = serde_json::to_vec(&wrapped)
             .map_err(|e| CryptoError::Serialization(e.to_string()))?;
 
-        let (ciphertext, nonce) = aead::encrypt(&json, device_key.as_bytes())?;
+        let (ciphertext, nonce) = aead::encrypt(&json, kek.as_bytes())?;
         let mut output = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
         output.extend_from_slice(&nonce);
         output.extend_from_slice(&ciphertext);
@@ -109,17 +120,28 @@ impl IndexKey {
         Ok(())
     }
 
-    /// Load if the file exists, otherwise generate-and-save a fresh key.
+    /// Load if the file exists (migrating a legacy DeviceKey-sealed file to the
+    /// KEK transparently), otherwise generate-and-save a fresh key.
     pub fn load_or_create(
         path: PathBuf,
-        device_key: &DeviceKey,
         kek: &Kek,
+        legacy_device_key: &DeviceKey,
     ) -> CryptoResult<Self> {
         if path.exists() {
-            Self::load(&path, device_key, kek)
+            match Self::load(&path, kek) {
+                Ok(key) => Ok(key),
+                Err(_) => {
+                    // Legacy file: outer layer under the DeviceKey. Read it,
+                    // then re-seal under the KEK so future logins (and guardian
+                    // recovery) can open it without the passphrase.
+                    let key = Self::load_legacy(&path, legacy_device_key, kek)?;
+                    key.save(&path, kek)?;
+                    Ok(key)
+                }
+            }
         } else {
             let key = Self::generate();
-            key.save(&path, device_key, kek)?;
+            key.save(&path, kek)?;
             Ok(key)
         }
     }
@@ -182,7 +204,7 @@ mod tests {
 
     #[test]
     fn save_load_roundtrip() {
-        let (dk, kek) = test_keys();
+        let (_dk, kek) = test_keys();
         let dir = std::env::temp_dir().join("sovereign-crypto-test-indexkey");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -190,9 +212,9 @@ mod tests {
 
         let k1 = IndexKey::generate();
         let h_before = k1.hash_token(b"sample");
-        k1.save(&path, &dk, &kek).unwrap();
+        k1.save(&path, &kek).unwrap();
 
-        let k2 = IndexKey::load(&path, &dk, &kek).unwrap();
+        let k2 = IndexKey::load(&path, &kek).unwrap();
         assert_eq!(h_before, k2.hash_token(b"sample"));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -200,15 +222,15 @@ mod tests {
 
     #[test]
     fn wrong_kek_cannot_load() {
-        let (dk, kek) = test_keys();
+        let (_dk, kek) = test_keys();
         let dir = std::env::temp_dir().join("sovereign-crypto-test-indexkey-wrong");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("index.key");
 
-        IndexKey::generate().save(&path, &dk, &kek).unwrap();
+        IndexKey::generate().save(&path, &kek).unwrap();
         let wrong_kek = Kek::generate();
-        assert!(IndexKey::load(&path, &dk, &wrong_kek).is_err());
+        assert!(IndexKey::load(&path, &wrong_kek).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -221,11 +243,45 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("index.key");
 
-        let k1 = IndexKey::load_or_create(path.clone(), &dk, &kek).unwrap();
+        let k1 = IndexKey::load_or_create(path.clone(), &kek, &dk).unwrap();
         let h1 = k1.hash_token(b"x");
-        let k2 = IndexKey::load_or_create(path.clone(), &dk, &kek).unwrap();
+        let k2 = IndexKey::load_or_create(path.clone(), &kek, &dk).unwrap();
         let h2 = k2.hash_token(b"x");
         assert_eq!(h1, h2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A legacy index-key file (outer layer under the DeviceKey) is migrated to
+    /// the KEK by `load_or_create`, after which it opens on the KEK-only path.
+    #[test]
+    fn legacy_index_key_migrates_to_kek() {
+        let (dk, kek) = test_keys();
+        let dir = std::env::temp_dir().join("sovereign-crypto-test-indexkey-migrate");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.key");
+
+        // Legacy on-disk form: inner WrappedDocumentKey under the KEK, outer
+        // AEAD under the DeviceKey.
+        let key = IndexKey::generate();
+        let h_before = key.hash_token(b"sample");
+        {
+            let doc = DocumentKey::from_bytes(key.bytes);
+            let wrapped = doc.wrap(&kek, 1).unwrap();
+            let json = serde_json::to_vec(&wrapped).unwrap();
+            let (ct, nonce) = aead::encrypt(&json, dk.as_bytes()).unwrap();
+            let mut out = nonce.to_vec();
+            out.extend_from_slice(&ct);
+            std::fs::write(&path, out).unwrap();
+        }
+
+        // KEK-only load fails; load_or_create migrates it, then KEK load works.
+        assert!(IndexKey::load(&path, &kek).is_err());
+        let migrated = IndexKey::load_or_create(path.clone(), &kek, &dk).unwrap();
+        assert_eq!(h_before, migrated.hash_token(b"sample"));
+        let reopened = IndexKey::load(&path, &kek).unwrap();
+        assert_eq!(h_before, reopened.hash_token(b"sample"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

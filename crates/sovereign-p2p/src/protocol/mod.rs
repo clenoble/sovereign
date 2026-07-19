@@ -66,6 +66,21 @@ pub enum SovereignRequest {
         device_name: String,
         mac: Vec<u8>,
     },
+    /// Guardian enrollment step 1 (G2): a guardian app opens the
+    /// handshake against the owner's active enrollment offer.
+    /// `guardian_label` names the guardian on the owner's roster.
+    GuardianHello {
+        offer_id: String,
+        guardian_label: String,
+    },
+    /// Guardian enrollment step 2: prove knowledge of the spoken short
+    /// code (see `guardian_enroll::proof_mac`).
+    GuardianProof { offer_id: String, proof: Vec<u8> },
+    /// Guardian enrollment step 3: custody receipt — the guardian has
+    /// unsealed AND durably persisted the shard (see
+    /// `guardian_enroll::receipt_mac`). Only on this does the owner mark
+    /// the guardian enrolled.
+    GuardianComplete { offer_id: String, receipt: Vec<u8> },
 }
 
 /// Top-level response type for the Sovereign sync protocol.
@@ -108,6 +123,17 @@ pub enum SovereignResponse {
     /// Pairing rejected (bad offer/proof/mac, expired, or attempts
     /// exhausted).
     PairRejected { reason: String },
+    /// Guardian enrollment: challenge nonce for a valid `GuardianHello`.
+    GuardianChallenge { nonce: Vec<u8> },
+    /// Guardian enrollment: the shard + custody metadata, AEAD-sealed
+    /// under the handshake key, released after a valid `GuardianProof`.
+    GuardianGranted { ciphertext: String, nonce: String },
+    /// Guardian enrollment: final ack — the owner has recorded this
+    /// guardian (peer id + shard id) on its roster.
+    GuardianDone,
+    /// Guardian enrollment rejected (bad offer/proof/receipt, expired,
+    /// busy, or attempts exhausted).
+    GuardianRejected { reason: String },
 }
 
 /// Wire view of one hosted backup (P4): the public manifest + salt and

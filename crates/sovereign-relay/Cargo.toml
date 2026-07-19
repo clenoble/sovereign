@@ -1,0 +1,40 @@
+[package]
+name = "sovereign-relay"
+version = "0.1.0"
+edition = "2021"
+description = "Deployable Sovereign relay: relay-v2 + store-and-forward mailbox. Sees only opaque traffic (ciphertext + routing metadata), never keys or plaintext."
+publish = false
+
+[[bin]]
+name = "sovereign-relay"
+path = "src/main.rs"
+
+[dependencies]
+# Relay stays lean: libp2p + core wire types only. NO db / crypto / ai.
+sovereign-core = { workspace = true }
+libp2p = { version = "0.56", features = [
+    "tokio",
+    "tcp",
+    "quic",
+    "dns",
+    "noise",
+    "yamux",
+    "identify",
+    "ping",
+    "relay",
+    "request-response",
+    "cbor",
+    "macros",
+    "ed25519",
+] }
+tokio = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

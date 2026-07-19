@@ -196,7 +196,13 @@ pub async fn encrypt_data(
     // single-pass HKDF here would undo the Argon2id brute-force hardening.
     let master = MasterKey::derive(pass.as_bytes(), &salt, &crate::setup::cli_kdf())?;
     let device_key = DeviceKey::derive(&master, &device_id)?;
-    key_db_guard.save(&device_key)?;
+    // keys.db is sealed under the KEK (content-chain root); unwrap the KEK
+    // (stored wrapped under the device key) to re-seal the store.
+    let kek_path = crypto_dir.join("kek.wrapped");
+    let wrapped: sovereign_crypto::kek::WrappedKek =
+        serde_json::from_slice(&std::fs::read(&kek_path)?)?;
+    let kek = sovereign_crypto::kek::Kek::unwrap(&wrapped, &device_key)?;
+    key_db_guard.save(&kek)?;
 
     println!("Encrypted {total} documents. Key database saved.");
     Ok(())
@@ -236,6 +242,101 @@ pub async fn list_conversations(config: &AppConfig, channel: Option<String>) -> 
         println!("{id}\t{}\t{}\tunread={}", c.title, last, c.unread_count);
     }
     println!("({} conversations)", convs.len());
+    Ok(())
+}
+
+// ── Bulk import (stub-first migration) ───────────────────────────────────
+
+fn import_options(single_thread: Option<String>) -> sovereign_import::ImportOptions {
+    let mut opts = sovereign_import::ImportOptions::default();
+    if let Some(name) = single_thread {
+        opts.thread_mode = sovereign_import::ThreadMode::SingleThread(name);
+    }
+    opts
+}
+
+/// Dry-run: scan the folder and print the plan. Writes nothing, needs no auth.
+pub fn import_dry_run(dir: &std::path::Path, single_thread: Option<String>) -> Result<()> {
+    let opts = import_options(single_thread);
+    let manifest = sovereign_import::plan(dir, &opts)?;
+    print!("{}", sovereign_import::render_manifest(&manifest));
+    println!(
+        "\nDry-run only — nothing was written. Re-run with --execute to import \
+         (you'll be prompted for your password)."
+    );
+    Ok(())
+}
+
+/// Execute the import against the PRIMARY persona's encrypted workspace.
+/// Authenticates (prompts for the passphrase), builds the same
+/// `EncryptedGraphDB` the app uses, and lands the corpus encrypted at rest.
+#[cfg(feature = "encryption")]
+pub async fn import_execute(
+    config: &AppConfig,
+    dir: &std::path::Path,
+    single_thread: Option<String>,
+) -> Result<()> {
+    use sovereign_crypto::auth::{AuthStore, PersonaKind};
+
+    let opts = import_options(single_thread);
+    let manifest = sovereign_import::plan(dir, &opts)?;
+    // Show the plan first, then act on it.
+    print!("{}", sovereign_import::render_manifest(&manifest));
+
+    let auth_path = crate::setup::crypto_dir().join("auth.store");
+    if !auth_path.exists() {
+        anyhow::bail!(
+            "no account found ({}). Onboard in the app first, then re-run import.",
+            auth_path.display()
+        );
+    }
+    let store = AuthStore::load(&auth_path)?;
+    // IMPORT-002: the passphrase entry is the affirmative consent. Restate the
+    // trust boundary right before it so the choice is informed, not buried above.
+    println!(
+        "\n⚠  Proceeding imports the document(s) above as OWNED (trusted) content — see the trust notice."
+    );
+    let pass = rpassword::prompt_password("Sovereign passphrase (or Ctrl-C to cancel): ")?;
+    let auth = store
+        .authenticate(pass.as_bytes())
+        .map_err(|_| anyhow::anyhow!("authentication failed"))?;
+
+    // Import targets the primary workspace. If the duress password was
+    // entered, refuse rather than silently land the corpus in the decoy.
+    let core_persona = match auth.persona {
+        PersonaKind::Primary => sovereign_core::auth::PersonaKind::Primary,
+        PersonaKind::Duress => {
+            anyhow::bail!("import targets your primary workspace — use your primary password");
+        }
+    };
+
+    // Side effects (key DB load), then the full 6-key EncryptedGraphDB the app
+    // reads from — so imported docs land encrypted and visible in the UI.
+    let device_key = std::sync::Arc::new(auth.device_key);
+    let kek = std::sync::Arc::new(auth.kek);
+    if let Err(e) = crate::setup::complete_auth(auth.persona, &device_key, &kek) {
+        tracing::warn!("complete_auth side-effect failed: {e}");
+    }
+    let raw: std::sync::Arc<dyn GraphDB> = std::sync::Arc::new(create_db(config).await?);
+    let db = crate::setup::build_encrypted_db(raw, device_key, kek, core_persona)?;
+
+    let outcome = sovereign_import::execute(db.as_ref(), &manifest).await?;
+    println!(
+        "\nImported: {} document(s) ({} stub), {} thread(s) created, {} reused, {} skipped (already present).",
+        outcome.docs_created,
+        outcome.stubs_created,
+        outcome.threads_created,
+        outcome.threads_reused,
+        outcome.docs_skipped_existing,
+    );
+    // Surface WHICH files were skipped, not just the count — a skip must be
+    // visible, never a silent truncation (GRAM-0010).
+    if !outcome.skipped_paths.is_empty() {
+        println!("Skipped (already present in the workspace):");
+        for p in &outcome.skipped_paths {
+            println!("  {p}");
+        }
+    }
     Ok(())
 }
 

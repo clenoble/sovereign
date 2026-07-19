@@ -1,0 +1,38 @@
+[package]
+name = "sovereign-guardian-app"
+version = "0.1.0"
+edition = "2021"
+description = "Guardian app (desktop Tauri, mobile-portable): shows incoming recovery requests and lets the human approve or deny after verifying the requester out of band. Wraps the audited sovereign-guardian serving engine."
+publish = false
+
+# Same lib+bin shape as sovereign-app so the identical code can build as a
+# desktop `bin` today and an Android `cdylib` later (tauri android).
+[lib]
+name = "sovereign_guardian_app"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "sovereign-guardian-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+tauri = { workspace = true }
+sovereign-core = { workspace = true }
+sovereign-crypto = { workspace = true }
+sovereign-p2p = { workspace = true }
+sovereign-guardian = { path = "../sovereign-guardian" }
+# Matches the guardian engine: SovereignNode's SyncService needs a GraphDB,
+# and the guardian never syncs, so an empty in-memory MockGraphDB satisfies it.
+sovereign-db = { workspace = true, features = ["test-utils"] }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

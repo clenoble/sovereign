@@ -8,7 +8,6 @@
 //! unlock auto-approval for the same action proposed by the chat agent loop,
 //! and vice versa (audit GATING-003).
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -38,15 +37,39 @@ fn parse_rfc3339_utc(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
+/// Domain separator for the trust-state MAC (ai-safety M1 — same scheme as
+/// the model-TOFU store; see `sovereign_crypto::mac`).
+const TRUST_MAC_DOMAIN: &[u8] = b"sovereign-trust-state:v1";
+
 /// Tracks approval history for action patterns.
+///
+/// ai-safety M1: `trust_state.json` was plaintext-unauthenticated — a
+/// disk-write attacker could write `consecutive_approvals: 99` and earn
+/// silent auto-approval of Level-3 writes. The file now carries a keyed MAC
+/// (the key is installed post-login via [`TrustTracker::arm_key`]); an
+/// unverified tracker NEVER auto-approves, and a file whose MAC fails is
+/// discarded (trust is cheap to re-earn; integrity is not).
 #[derive(Serialize, Deserialize)]
 pub struct TrustTracker {
-    entries: HashMap<String, TrustEntry>,
+    /// base64 keyed MAC over the canonical JSON of `(entries, threshold)`.
+    /// Empty on legacy files (which then never auto-approve until re-earned
+    /// and re-saved under a key).
+    #[serde(default)]
+    mac: String,
+    /// `BTreeMap` so the JSON the MAC covers is deterministic.
+    entries: std::collections::BTreeMap<String, TrustEntry>,
     auto_approve_threshold: u32,
+    /// Session MAC key, installed post-login. Never serialized.
+    #[serde(skip)]
+    mac_key: Option<[u8; 32]>,
+    /// True only when the loaded state was authenticated (or is fresh under
+    /// an armed key). Gates auto-approval. Never serialized.
+    #[serde(skip)]
+    verified: bool,
 }
 
 /// Per-action trust accumulator.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct TrustEntry {
     consecutive_approvals: u32,
     /// ISO-8601 timestamp of the last rejection (replaces `Instant` for serializability).
@@ -61,17 +84,66 @@ struct TrustEntry {
 impl TrustTracker {
     /// Create a new tracker with default threshold (5 consecutive approvals).
     pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-            auto_approve_threshold: 5,
-        }
+        Self::with_threshold(5)
     }
 
     /// Create a tracker with a custom threshold.
     pub fn with_threshold(threshold: u32) -> Self {
         Self {
-            entries: HashMap::new(),
+            mac: String::new(),
+            entries: std::collections::BTreeMap::new(),
             auto_approve_threshold: threshold,
+            mac_key: None,
+            // A fresh tracker holds only live-session approvals, which are
+            // authentic by construction (they came through the decision
+            // channel). Only DISK-loaded state is untrusted until its MAC
+            // verifies — see `load` / `arm_key` (M1).
+            verified: true,
+        }
+    }
+
+    /// Canonical bytes the MAC covers: the JSON of `(entries, threshold)`.
+    fn mac_body(&self) -> Vec<u8> {
+        serde_json::to_vec(&(&self.entries, self.auto_approve_threshold)).unwrap_or_default()
+    }
+
+    /// Install the session MAC key (post-login) and re-authenticate the
+    /// on-disk state (ai-safety M1). A valid MAC adopts the file's counts;
+    /// a missing or invalid MAC (legacy file, or tampering) DISCARDS them —
+    /// auto-approval is re-earned rather than granted on unauthenticated
+    /// counts. The state is re-saved MAC'd either way.
+    pub fn arm_key(&mut self, dir: &Path, key: [u8; 32]) {
+        self.mac_key = Some(key);
+        let path = dir.join(TRUST_FILENAME);
+        if path.exists() {
+            let reloaded = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|d| serde_json::from_str::<Self>(&d).ok());
+            match reloaded {
+                Some(t)
+                    if sovereign_crypto::mac::verify_keyed_mac(
+                        &key,
+                        TRUST_MAC_DOMAIN,
+                        &serde_json::to_vec(&(&t.entries, t.auto_approve_threshold))
+                            .unwrap_or_default(),
+                        &t.mac,
+                    ) =>
+                {
+                    self.entries = t.entries;
+                    self.auto_approve_threshold = t.auto_approve_threshold;
+                }
+                _ => {
+                    tracing::warn!(
+                        "trust_state.json is unauthenticated (legacy) or its MAC failed — \
+                         discarding persisted trust; auto-approval must be re-earned (M1)"
+                    );
+                    self.entries.clear();
+                }
+            }
+        }
+        self.verified = true;
+        if let Err(e) = self.save(dir) {
+            tracing::warn!("failed to re-save MAC'd trust state: {e}");
         }
     }
 
@@ -82,6 +154,13 @@ impl TrustTracker {
     pub fn should_auto_approve(&self, workflow: &str, action: &str, level: ActionLevel) -> bool {
         // Only Level 3 can be auto-approved through trust
         if level != ActionLevel::Modify {
+            return false;
+        }
+
+        // ai-safety M1: auto-approval requires AUTHENTICATED trust state. An
+        // unverified tracker (pre-login, legacy file, failed MAC) records
+        // approvals normally but never grants unattended writes.
+        if !self.verified {
             return false;
         }
 
@@ -139,17 +218,35 @@ impl TrustTracker {
             .unwrap_or(0)
     }
 
-    /// Save trust state to `dir/trust_state.json`.
+    /// Save trust state to `dir/trust_state.json`, MAC'd when a key is armed
+    /// (ai-safety M1). A keyless save writes an empty MAC — such a file loads
+    /// but never auto-approves.
     pub fn save(&self, dir: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;
         let path = dir.join(TRUST_FILENAME);
-        let json = serde_json::to_string_pretty(self)?;
+        let mac = match &self.mac_key {
+            Some(key) => sovereign_crypto::mac::keyed_mac(key, TRUST_MAC_DOMAIN, &self.mac_body()),
+            None => String::new(),
+        };
+        let out = Self {
+            mac,
+            entries: self.entries.clone(),
+            auto_approve_threshold: self.auto_approve_threshold,
+            mac_key: None,
+            verified: false,
+        };
+        let json = serde_json::to_string_pretty(&out)?;
         std::fs::write(path, json)?;
         Ok(())
     }
 
     /// Load trust state from `dir/trust_state.json`.
     /// Returns a fresh default if the file doesn't exist.
+    ///
+    /// M1: disk state loads UNVERIFIED (the `#[serde(skip)]` `verified`
+    /// field defaults to false) — counts display and accumulate, but
+    /// auto-approval stays off until [`Self::arm_key`] authenticates the
+    /// file post-login.
     pub fn load(dir: &Path) -> anyhow::Result<Self> {
         let path = dir.join(TRUST_FILENAME);
         if !path.exists() {
@@ -336,16 +433,74 @@ mod tests {
     }
 
     #[test]
-    fn loaded_tracker_retains_approval_counts() {
+    fn armed_tracker_retains_approval_counts_across_reload() {
+        // M1: the full authenticated lifecycle — arm, earn, save (MAC'd),
+        // reload, re-arm with the same key → counts survive and auto-approve.
         let dir = test_dir("retain");
+        let key = [3u8; 32];
         let mut tracker = TrustTracker::with_threshold(3);
+        tracker.arm_key(&dir, key);
         for _ in 0..3 {
             tracker.record_approval(WORKFLOW_QUERY, "rename_thread");
         }
         tracker.save(&dir).unwrap();
 
-        let loaded = TrustTracker::load(&dir).unwrap();
+        let mut loaded = TrustTracker::load(&dir).unwrap();
+        // Straight off disk: counts visible but NOT auto-approving (M1).
+        assert_eq!(loaded.approval_count(WORKFLOW_QUERY, "rename_thread"), 3);
+        assert!(!loaded.should_auto_approve(WORKFLOW_QUERY, "rename_thread", ActionLevel::Modify));
+        // Authenticated: the MAC verifies, auto-approval resumes.
+        loaded.arm_key(&dir, key);
+        assert_eq!(loaded.approval_count(WORKFLOW_QUERY, "rename_thread"), 3);
         assert!(loaded.should_auto_approve(WORKFLOW_QUERY, "rename_thread", ActionLevel::Modify));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn forged_trust_counts_are_discarded_on_arm() {
+        // M1: the attack from the review — a disk-write attacker plants
+        // consecutive_approvals: 99. No valid MAC → discarded at arm time,
+        // and never auto-approves even before arming.
+        let dir = test_dir("forged_trust");
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        std::fs::write(
+            dir.join(TRUST_FILENAME),
+            format!(
+                r#"{{"entries":{{"query:create_document":{{"consecutive_approvals":99,"last_rejection":null,"last_approval":"{now}"}}}},"auto_approve_threshold":5}}"#
+            ),
+        )
+        .unwrap();
+
+        let mut loaded = TrustTracker::load(&dir).unwrap();
+        assert!(
+            !loaded.should_auto_approve(WORKFLOW_QUERY, "create_document", ActionLevel::Modify),
+            "unauthenticated disk counts must never auto-approve (M1)"
+        );
+        loaded.arm_key(&dir, [5u8; 32]);
+        assert_eq!(
+            loaded.approval_count(WORKFLOW_QUERY, "create_document"),
+            0,
+            "forged/legacy counts must be discarded when the key arms (M1)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wrong_key_discards_trust_state() {
+        // A MAC'd file authenticated under a different key (e.g. tampered
+        // key material) must not be adopted.
+        let dir = test_dir("wrong_key_trust");
+        let mut tracker = TrustTracker::with_threshold(2);
+        tracker.arm_key(&dir, [1u8; 32]);
+        tracker.record_approval(WORKFLOW_QUERY, "move_document");
+        tracker.record_approval(WORKFLOW_QUERY, "move_document");
+        tracker.save(&dir).unwrap();
+
+        let mut loaded = TrustTracker::load(&dir).unwrap();
+        loaded.arm_key(&dir, [2u8; 32]);
+        assert_eq!(loaded.approval_count(WORKFLOW_QUERY, "move_document"), 0);
+        assert!(!loaded.should_auto_approve(WORKFLOW_QUERY, "move_document", ActionLevel::Modify));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -59,6 +59,7 @@ async fn spawn_node(device_id: &str, seed: [u8; 32], transport_key: [u8; 32]) ->
         device_name: device_id.into(),
         enable_mdns: false,
         wifi_only: false,
+            seed_relays: Vec::new(),
     };
     let peer_id = kp.public().to_peer_id();
     let mut node =

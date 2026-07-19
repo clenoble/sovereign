@@ -251,9 +251,44 @@ impl PairSecrets {
     }
 }
 
+/// Whether a listen-address dial hint is worth advertising in an offer.
+///
+/// Drops loopback (`127.0.0.0/8`, `::1`) and unspecified (`0.0.0.0`, `::`)
+/// addresses: a remote peer can never reach them, and a loopback hint makes
+/// a joiner that races every offered address dial *itself* on that port
+/// instead of the offering device. Routable LAN addresses are kept as-is.
+///
+/// The single home for this predicate: every offer-arming path — app device
+/// pairing, app guardian enrollment, shell device pairing, shell guardian
+/// enrollment — filters its `PairingOffer`/`GuardianEnrollOffer` dial hints
+/// through this one copy, so the filtering can never drift between them.
+/// (Consolidated here from a `sovereign-app`-private copy after the four-way
+/// scatter was found; see coord `from-windows/0059`.)
+pub fn is_routable_listen_addr(addr: &str) -> bool {
+    !(addr.contains("/ip4/127.")
+        || addr.contains("/ip4/0.0.0.0/")
+        || addr.contains("/ip6/::1/")
+        || addr.contains("/ip6/::/"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routable_addrs_are_kept() {
+        assert!(is_routable_listen_addr("/ip4/192.168.1.39/udp/60933/quic-v1"));
+        assert!(is_routable_listen_addr("/ip4/10.0.0.5/udp/4001/quic-v1"));
+        assert!(is_routable_listen_addr("/ip4/172.16.4.2/udp/4001/quic-v1"));
+    }
+
+    #[test]
+    fn loopback_and_unspecified_are_dropped() {
+        assert!(!is_routable_listen_addr("/ip4/127.0.0.1/udp/60933/quic-v1"));
+        assert!(!is_routable_listen_addr("/ip4/0.0.0.0/udp/0/quic-v1"));
+        assert!(!is_routable_listen_addr("/ip6/::1/udp/60933/quic-v1"));
+        assert!(!is_routable_listen_addr("/ip6/::/udp/0/quic-v1"));
+    }
 
     fn offer() -> PairingOffer {
         PairingOffer::new(

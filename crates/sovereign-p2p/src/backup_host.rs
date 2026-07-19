@@ -38,6 +38,18 @@ pub const DEFAULT_QUOTA_BYTES: u64 = 64 * 1024 * 1024;
 /// social recovery — do not lower in production.
 pub const DEFAULT_RELEASE_DELAY_HOURS: i64 = 72;
 
+/// A2: per-peer token bucket over the recovery read verbs
+/// (`ListBackups` / `FetchBackupFragment` / `RequestShard`). Recovery is
+/// a low-frequency human flow — a burst of 30 with 30/min sustained is
+/// generous for a legitimate recovery and useless for enumeration.
+pub const RECOVERY_BUCKET_CAPACITY: f64 = 30.0;
+pub const RECOVERY_BUCKET_REFILL_PER_SEC: f64 = 0.5;
+
+/// A2: per-owner-tag daily egress cap on fragment bytes served — bounds
+/// what a stolen/replayed tag can exfiltrate per day to a handful of
+/// full-snapshot recoveries (quota is 64 MiB/owner).
+pub const DEFAULT_DAILY_EGRESS_PER_TAG: u64 = 512 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostedFragmentMeta {
     pub index: u8,
@@ -100,19 +112,44 @@ pub struct HostedAccount {
 pub struct BackupHost {
     dir: PathBuf,
     quota_bytes: u64,
-    release_delay_hours: i64,
+    release_delay: chrono::Duration,
     state: Mutex<HostState>,
+    /// A2: peer_id → (tokens, last_refill). In-memory on purpose — a
+    /// restart refills buckets, which is harmless at these rates.
+    recovery_buckets: Mutex<HashMap<String, (f64, std::time::Instant)>>,
+    /// A2: owner_tag → (utc day, bytes served today). In-memory; the cap
+    /// is a daily abuse bound, not an accounting ledger.
+    egress_today: Mutex<HashMap<String, (String, u64)>>,
 }
 
 impl BackupHost {
     /// Open (or initialize) the host store under `dir`.
+    ///
+    /// Dev/e2e knob: `SOVEREIGN_RELEASE_DELAY_SECS` overrides the 72h
+    /// release delay (seconds granularity, so a live run can use minutes).
+    /// Unset — the production case — means [`DEFAULT_RELEASE_DELAY_HOURS`].
     pub fn open(dir: PathBuf, quota_bytes: u64) -> Self {
-        Self::open_with_delay(dir, quota_bytes, DEFAULT_RELEASE_DELAY_HOURS)
+        let delay = std::env::var("SOVEREIGN_RELEASE_DELAY_SECS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .map(|secs| {
+                tracing::warn!(
+                    secs,
+                    "SOVEREIGN_RELEASE_DELAY_SECS set — shard release delay overridden (dev/e2e only)"
+                );
+                chrono::Duration::seconds(secs)
+            })
+            .unwrap_or_else(|| chrono::Duration::hours(DEFAULT_RELEASE_DELAY_HOURS));
+        Self::open_with_release_delay(dir, quota_bytes, delay)
     }
 
-    /// Test hook: a configurable release delay. Production uses
+    /// Test hook: a configurable release delay in hours. Production uses
     /// [`DEFAULT_RELEASE_DELAY_HOURS`] via [`Self::open`].
     pub fn open_with_delay(dir: PathBuf, quota_bytes: u64, release_delay_hours: i64) -> Self {
+        Self::open_with_release_delay(dir, quota_bytes, chrono::Duration::hours(release_delay_hours))
+    }
+
+    fn open_with_release_delay(dir: PathBuf, quota_bytes: u64, release_delay: chrono::Duration) -> Self {
         let state = std::fs::read_to_string(dir.join("backup_host.json"))
             .ok()
             .and_then(|json| serde_json::from_str(&json).ok())
@@ -120,9 +157,51 @@ impl BackupHost {
         Self {
             dir,
             quota_bytes,
-            release_delay_hours,
+            release_delay,
             state: Mutex::new(state),
+            recovery_buckets: Mutex::new(HashMap::new()),
+            egress_today: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// A2: spend one token from `peer`'s recovery bucket. `false` means
+    /// the verb should be refused (empty/None response, no state change).
+    pub fn allow_recovery_request(&self, peer: &str) -> bool {
+        let mut buckets = self
+            .recovery_buckets
+            .lock()
+            .expect("recovery bucket lock poisoned");
+        let now = std::time::Instant::now();
+        let (tokens, last) = buckets
+            .entry(peer.to_string())
+            .or_insert((RECOVERY_BUCKET_CAPACITY, now));
+        *tokens = (*tokens + now.duration_since(*last).as_secs_f64() * RECOVERY_BUCKET_REFILL_PER_SEC)
+            .min(RECOVERY_BUCKET_CAPACITY);
+        *last = now;
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A2: record `bytes` of fragment egress for `owner_tag` if today's
+    /// cap allows it; `false` means refuse the fetch.
+    pub fn allow_egress(&self, owner_tag: &str, bytes: u64) -> bool {
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let mut egress = self.egress_today.lock().expect("egress lock poisoned");
+        let entry = egress
+            .entry(owner_tag.to_string())
+            .or_insert_with(|| (today.clone(), 0));
+        if entry.0 != today {
+            *entry = (today, 0);
+        }
+        if entry.1.saturating_add(bytes) > DEFAULT_DAILY_EGRESS_PER_TAG {
+            return false;
+        }
+        entry.1 += bytes;
+        true
     }
 
     fn save_state(&self, state: &HostState) -> P2pResult<()> {
@@ -342,7 +421,7 @@ impl BackupHost {
         epoch: u32,
     ) -> P2pResult<Option<String>> {
         let mut state = self.state.lock().expect("backup host lock poisoned");
-        let delay = chrono::Duration::hours(self.release_delay_hours);
+        let delay = self.release_delay;
         let now = chrono::Utc::now();
 
         let Some(shard) = state
@@ -437,6 +516,29 @@ mod tests {
 
     fn frag(bytes: &[u8]) -> String {
         sha256_hex(bytes)
+    }
+
+    #[test]
+    fn recovery_bucket_limits_burst_then_refills() {
+        let (host, _d) = temp_host(DEFAULT_QUOTA_BYTES, 72);
+        // Full bucket allows the burst, then refuses.
+        for _ in 0..RECOVERY_BUCKET_CAPACITY as usize {
+            assert!(host.allow_recovery_request("peerX"));
+        }
+        assert!(!host.allow_recovery_request("peerX"), "bucket should be empty");
+        // A different peer has its own bucket.
+        assert!(host.allow_recovery_request("peerY"));
+    }
+
+    #[test]
+    fn egress_cap_refuses_over_daily_limit() {
+        let (host, _d) = temp_host(DEFAULT_QUOTA_BYTES, 72);
+        let half = DEFAULT_DAILY_EGRESS_PER_TAG / 2;
+        assert!(host.allow_egress("tagA", half));
+        assert!(host.allow_egress("tagA", half)); // exactly at cap
+        assert!(!host.allow_egress("tagA", 1), "one byte over the cap is refused");
+        // Independent per tag.
+        assert!(host.allow_egress("tagB", half));
     }
 
     #[test]

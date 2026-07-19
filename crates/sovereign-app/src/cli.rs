@@ -131,6 +131,23 @@ pub enum Commands {
     #[cfg(feature = "encryption")]
     InitiateRecovery,
 
+    /// Bulk-import a folder tree into the workspace (stub-first migration).
+    ///
+    /// Dry-run by default: prints the plan (which files land as text vs stubs,
+    /// folder→lane mapping, what's skipped) and writes nothing. Pass
+    /// `--execute` to authenticate and land the corpus encrypted.
+    Import {
+        /// Root folder to scan (recursively).
+        #[arg(long)]
+        dir: PathBuf,
+        /// Actually perform the import (default is a dry-run preview).
+        #[arg(long, default_value_t = false)]
+        execute: bool,
+        /// Put every file in one named thread instead of folder-as-lane.
+        #[arg(long)]
+        single_thread: Option<String>,
+    },
+
     /// List all contacts
     ListContacts,
 

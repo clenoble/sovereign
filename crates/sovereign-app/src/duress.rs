@@ -1,10 +1,25 @@
 use anyhow::Result;
+use rand::{Rng, RngExt};
 use sovereign_db::schema::{
     ChannelAddress, ChannelType, Contact, Conversation, Document, Message, MessageDirection,
     Thread,
 };
 use sovereign_db::surreal::SurrealGraphDB;
 use sovereign_db::GraphDB;
+
+/// A random UTC timestamp within the past `max_days`, used to spread the
+/// decoy's items over a believable history. Duress-theme: seeding everything
+/// at one instant is an obvious synthetic tell — a real workspace accumulates
+/// over months — and identical timestamps across installs are a fingerprint.
+/// Uses `fill_bytes` (the codebase's rand idiom) to avoid rand-version range
+/// API differences.
+fn past_ts(max_days: i64) -> chrono::DateTime<chrono::Utc> {
+    let mut b = [0u8; 4];
+    rand::rng().fill_bytes(&mut b);
+    let span = (max_days * 24 * 60).max(31) as u32;
+    let mins = 30 + (u32::from_le_bytes(b) % span) as i64;
+    chrono::Utc::now() - chrono::Duration::minutes(mins)
+}
 
 /// Seed the duress persona database with plausible but innocuous data.
 /// Called when the duress password is used and the duress DB is empty.
@@ -84,6 +99,11 @@ pub async fn seed_duress_db(db: &SurrealGraphDB) -> Result<()> {
     for (title, body, thread_idx) in &docs {
         let mut doc = Document::new(title.to_string(), thread_ids[*thread_idx].clone(), true);
         doc.content = body.to_string();
+        // Spread over the past ~6 months so the decoy reads as lived-in and
+        // differs per install (see past_ts).
+        let ts = past_ts(180);
+        doc.created_at = ts;
+        doc.modified_at = ts;
         db.create_document(doc).await?;
     }
 
@@ -125,7 +145,7 @@ pub async fn seed_duress_db(db: &SurrealGraphDB) -> Result<()> {
                 ("Perfect, see you there!", MessageDirection::Inbound),
             ];
             for (body, direction) in &msgs {
-                let msg = Message::new(
+                let mut msg = Message::new(
                     conv_id.clone(),
                     ChannelType::Email,
                     direction.clone(),
@@ -133,6 +153,8 @@ pub async fn seed_duress_db(db: &SurrealGraphDB) -> Result<()> {
                     vec![],
                     body.to_string(),
                 );
+                // Recent, spread over the past few weeks.
+                msg.sent_at = past_ts(30);
                 db.create_message(msg).await?;
             }
         }

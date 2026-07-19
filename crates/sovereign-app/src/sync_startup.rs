@@ -43,6 +43,7 @@ fn p2p_config_from_app(app_p2p: &sovereign_core::config::P2pConfig) -> P2pConfig
         device_name: app_p2p.device_name.clone(),
         enable_mdns: app_p2p.enable_mdns,
         wifi_only: app_p2p.wifi_only,
+        seed_relays: app_p2p.seed_relays.clone(),
     }
 }
 
@@ -366,6 +367,14 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
                 );
                 Some(OrchestratorEvent::PairingFailed { reason, offer_dead })
             }
+            P2pEvent::RowsFlaggedForReview { peer_id, count } => {
+                // C2: a peer overwrite was stashed — surface it instead of
+                // leaving it invisible until the review panel is opened.
+                Some(OrchestratorEvent::SyncStatus {
+                    peer_id,
+                    status: format!("{count} change(s) stashed for review"),
+                })
+            }
             P2pEvent::ListenAddr { address } => {
                 let mut addrs = ctx
                     .listen_addrs
@@ -378,6 +387,41 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
             }
             P2pEvent::ShardReceived { shard_id, .. } => {
                 tracing::info!("Shard received: {shard_id}");
+                None
+            }
+            // M1.5: mailbox events consumed by the backup/guardian layer (M2).
+            P2pEvent::MailboxDeposited { .. } | P2pEvent::MailboxItems { .. } => None,
+            // G2 guardian enrollment: driven by the sovereign-guardian app +
+            // owner roster UI (PLANNED); logged until that UI lands.
+            P2pEvent::GuardianEnrollRequested { peer_id, guardian_label } => {
+                tracing::info!("Guardian enrollment requested by {peer_id} ({guardian_label})");
+                None
+            }
+            P2pEvent::GuardianEnrolled {
+                guardian_peer_id,
+                guardian_label,
+                shard_id,
+                ..
+            } => {
+                tracing::info!("Guardian enrolled: {guardian_label} ({guardian_peer_id})");
+                // The translator has no KEK, so queue a non-secret confirmation
+                // for the owner commands (which hold the KEK) to fold into the
+                // encrypted roster (Feature 1). Best-effort.
+                #[cfg(feature = "encryption")]
+                if let Err(e) = crate::setup::recovery_store().append_pending(
+                    &sovereign_crypto::recovery_store::PendingEnrollment {
+                        shard_id,
+                        guardian_peer_id,
+                        guardian_label,
+                        enrolled_at: chrono::Utc::now().to_rfc3339(),
+                    },
+                ) {
+                    tracing::warn!("failed to queue guardian enrollment: {e}");
+                }
+                None
+            }
+            P2pEvent::GuardianEnrollFailed { reason, offer_dead } => {
+                tracing::warn!("Guardian enrollment failed (offer dead: {offer_dead}): {reason}");
                 None
             }
             P2pEvent::BackupPlaced { peer_id, accepted, rejected } => {

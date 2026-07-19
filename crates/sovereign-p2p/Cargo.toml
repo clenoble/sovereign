@@ -5,6 +5,7 @@ edition = "2021"
 description = "P2P device sync and Guardian shard transport for Sovereign GE"
 
 [dependencies]
+sovereign-core = { workspace = true }
 sovereign-crypto = { workspace = true }
 sovereign-db = { workspace = true }
 async-trait = { workspace = true }
@@ -19,6 +20,10 @@ libp2p = { version = "0.56", features = [
     "request-response",
     "cbor",
     "identify",
+    "relay",
+    "dcutr",
+    "tcp",
+    "dns",
     "macros",
     "ed25519",
 ] }

@@ -772,8 +772,17 @@
 				<div class="step-password">
 					<h2 class="step-title">Set your password</h2>
 					<p class="description">
-						This password encrypts your local data. Choose something strong — there is no recovery mechanism.
+						This password encrypts your local data. Choose something strong.
 					</p>
+					<div class="recovery-note">
+						<p>
+							If you ever lose it, social recovery has your back: after setup,
+							enrol five trusted guardians (Settings &rarr; Recovery). Each holds
+							an encrypted key shard — never your data — and any 3 of the 5
+							can help you restore your account. Your secrets stay yours as
+							long as <strong>fewer than 3 of your 5 guardians collude</strong>.
+						</p>
+					</div>
 					<div class="field-group">
 						<label class="field-label" for="pw-main">Password</label>
 						<input
@@ -1121,6 +1130,26 @@
 		color: var(--text-muted, #666);
 		font-size: 0.8rem;
 		margin: 8px 0 0 0;
+	}
+
+	.recovery-note {
+		background: var(--bg-input, #1e1e26);
+		border: 1px solid var(--border, #2a2a35);
+		border-radius: 8px;
+		padding: 12px 14px;
+		margin: 0 0 20px 0;
+	}
+
+	.recovery-note p {
+		color: var(--text-secondary, #999);
+		font-size: 0.82rem;
+		line-height: 1.5;
+		margin: 0;
+	}
+
+	.recovery-note strong {
+		color: var(--text-primary, #eee);
+		font-weight: 600;
 	}
 
 	/* ===================================================================

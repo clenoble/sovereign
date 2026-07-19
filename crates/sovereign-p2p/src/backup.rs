@@ -368,6 +368,14 @@ pub struct BackupManifest {
     pub key_threshold: u8,
     /// guardian_id → shard_id of the backup-key shards.
     pub guardian_shards: Vec<(String, String)>,
+    /// A1: base64 Ed25519 verifying key of the account that signed this
+    /// manifest ([`AccountKey::derive_backup_signing_key`]). `default` so
+    /// pre-A1 manifests still parse — verification then rejects them.
+    #[serde(default)]
+    pub signer_pubkey_b64: String,
+    /// A1: base64 Ed25519 signature over [`Self::canonical_bytes`].
+    #[serde(default)]
+    pub signature_b64: String,
 }
 
 impl BackupManifest {
@@ -379,6 +387,51 @@ impl BackupManifest {
     pub fn from_json(json: &str) -> P2pResult<Self> {
         serde_json::from_str(json)
             .map_err(|e| P2pError::SyncError(format!("manifest decode: {e}")))
+    }
+
+    /// A1: the exact bytes the signature covers — the manifest serialized
+    /// with an empty `signature_b64` (the signer pubkey IS covered, binding
+    /// the manifest to one signing identity). Struct-field order is the
+    /// canonical form; serde_json emits it deterministically.
+    pub fn canonical_bytes(&self) -> P2pResult<Vec<u8>> {
+        let mut unsigned = self.clone();
+        unsigned.signature_b64 = String::new();
+        serde_json::to_vec(&unsigned)
+            .map_err(|e| P2pError::SyncError(format!("manifest canonicalize: {e}")))
+    }
+
+    /// A1: sign in place with the account's backup signing key.
+    pub fn sign(&mut self, key: &sovereign_crypto::ed25519_dalek::SigningKey) -> P2pResult<()> {
+        self.signer_pubkey_b64 = sovereign_crypto::backup_signing::verifying_key_b64(key);
+        self.signature_b64 = String::new();
+        let bytes = self.canonical_bytes()?;
+        self.signature_b64 = sovereign_crypto::backup_signing::sign_b64(key, &bytes);
+        Ok(())
+    }
+
+    /// A1: verify the embedded signature. If `expected_signer_b64` is given
+    /// (a recovering device re-derives it from passphrase+salt), the
+    /// embedded pubkey must also match it — origin, not just integrity.
+    pub fn verify_signature(&self, expected_signer_b64: Option<&str>) -> P2pResult<()> {
+        if self.signature_b64.is_empty() || self.signer_pubkey_b64.is_empty() {
+            return Err(P2pError::SyncError(
+                "manifest is unsigned (pre-A1 or stripped) — refusing".into(),
+            ));
+        }
+        if let Some(expected) = expected_signer_b64 {
+            if expected != self.signer_pubkey_b64 {
+                return Err(P2pError::SyncError(
+                    "manifest signer does not match the account's derived signing key".into(),
+                ));
+            }
+        }
+        let bytes = self.canonical_bytes()?;
+        sovereign_crypto::backup_signing::verify_b64(
+            &self.signer_pubkey_b64,
+            &bytes,
+            &self.signature_b64,
+        )
+        .map_err(|e| P2pError::SyncError(format!("manifest signature: {e}")))
     }
 }
 
@@ -451,6 +504,7 @@ pub async fn prepare_backup(
     key_threshold: u8,
     data_fragments: usize,
     parity_fragments: usize,
+    signing_key: &sovereign_crypto::ed25519_dalek::SigningKey,
 ) -> P2pResult<PreparedBackup> {
     use base64::Engine;
 
@@ -493,19 +547,30 @@ pub async fn prepare_backup(
         fragment_digests: fragments.iter().map(|f| f.digest.clone()).collect(),
         key_threshold,
         guardian_shards: Vec::new(),
+        signer_pubkey_b64: String::new(),
+        signature_b64: String::new(),
     };
 
-    let manifest_json_placeholder = manifest.to_json()?;
+    // A1 ordering fix: complete the manifest (incl. guardian_shards) FIRST,
+    // sign it, and only then embed the final signed JSON in every guardian
+    // payload — the pre-A1 code shipped guardians a placeholder serialized
+    // before the shard list existed.
+    for (i, gid) in guardian_ids.iter().enumerate() {
+        manifest
+            .guardian_shards
+            .push((gid.clone(), format!("{snapshot_id}-k{i}")));
+    }
+    manifest.sign(signing_key)?;
+    let manifest_json = manifest.to_json()?;
+
     let mut guardian_payloads = Vec::with_capacity(guardian_ids.len());
-    for (i, (gid, share)) in guardian_ids.iter().zip(shares.iter()).enumerate() {
-        let shard_id = format!("{snapshot_id}-k{i}");
-        manifest.guardian_shards.push((gid.clone(), shard_id));
+    for (gid, share) in guardian_ids.iter().zip(shares.iter()) {
         let payload = BackupGuardianPayload::new(
             owner_tag.to_string(),
             epoch,
             &sovereign_crypto::guardian::shamir::share_to_bytes(share),
             salt,
-            manifest_json_placeholder.clone(),
+            manifest_json.clone(),
         );
         guardian_payloads.push((gid.clone(), payload.encode()?));
     }
@@ -597,6 +662,8 @@ mod tests {
     async fn prepare_backup_key_reconstructs_via_guardian_payloads() {
         let db = seeded_db().await;
         let guardians: Vec<String> = (1..=5).map(|i| format!("guardian-{i}")).collect();
+        let signing_key = sovereign_crypto::account_key::AccountKey::from_bytes([0x42; 32])
+            .derive_backup_signing_key();
         let prepared = prepare_backup(
             db.as_ref(),
             "device-1",
@@ -607,6 +674,7 @@ mod tests {
             3,
             3,
             2,
+            &signing_key,
         )
         .await
         .unwrap();
@@ -675,5 +743,69 @@ mod tests {
         // Restoring again over the same db is a no-op (idempotent).
         let again = restore_snapshot(&fresh, &snapshot).await.unwrap();
         assert_eq!(again, 0);
+    }
+
+    // ---- A1: signed manifest adversarial coverage ----
+
+    fn signed_manifest() -> (BackupManifest, sovereign_crypto::ed25519_dalek::SigningKey) {
+        let sk = sovereign_crypto::account_key::AccountKey::from_bytes([0x11; 32])
+            .derive_backup_signing_key();
+        let mut m = BackupManifest {
+            snapshot_id: "snap1".into(),
+            epoch: 5,
+            created_at: "2026-07-08T00:00:00Z".into(),
+            owner_tag: "tagAAA".into(),
+            ciphertext_digest: "dd".into(),
+            ciphertext_len: 10,
+            nonce_b64: "bm9uY2U=".into(),
+            data_fragments: 3,
+            parity_fragments: 2,
+            fragment_digests: vec!["a".into(), "b".into()],
+            key_threshold: 3,
+            guardian_shards: vec![("g1".into(), "s1".into())],
+            signer_pubkey_b64: String::new(),
+            signature_b64: String::new(),
+        };
+        m.sign(&sk).unwrap();
+        (m, sk)
+    }
+
+    #[test]
+    fn a1_valid_signature_verifies() {
+        let (m, sk) = signed_manifest();
+        let expected = sovereign_crypto::backup_signing::verifying_key_b64(&sk);
+        m.verify_signature(Some(&expected)).unwrap();
+        m.verify_signature(None).unwrap();
+    }
+
+    #[test]
+    fn a1_tampered_field_rejected() {
+        let (mut m, _sk) = signed_manifest();
+        m.epoch = 99; // any change to a covered field breaks the sig
+        assert!(m.verify_signature(None).is_err());
+    }
+
+    #[test]
+    fn a1_stripped_signature_rejected() {
+        let (mut m, _sk) = signed_manifest();
+        m.signature_b64 = String::new();
+        assert!(m.verify_signature(None).is_err(), "unsigned manifest must be refused");
+    }
+
+    #[test]
+    fn a1_wrong_signer_rejected_when_expected_given() {
+        let (m, _sk) = signed_manifest();
+        let other = sovereign_crypto::account_key::AccountKey::from_bytes([0x22; 32])
+            .derive_backup_signing_key();
+        let other_pub = sovereign_crypto::backup_signing::verifying_key_b64(&other);
+        // Signature itself is valid, but it isn't the account we expected.
+        assert!(m.verify_signature(Some(&other_pub)).is_err());
+    }
+
+    #[test]
+    fn a1_signature_survives_json_roundtrip() {
+        let (m, _sk) = signed_manifest();
+        let restored = BackupManifest::from_json(&m.to_json().unwrap()).unwrap();
+        restored.verify_signature(None).unwrap();
     }
 }

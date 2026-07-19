@@ -8,7 +8,9 @@ use sovereign_core::interfaces::{
     CommitSummary, FeedbackEvent, MilestoneSummary, ModelBackend, OrchestratorEvent,
 };
 use sovereign_core::profile::{AdaptiveParams, SuggestionFeedback, UserProfile};
-use sovereign_core::security::{self, ActionDecision, BubbleVisualState, ProposedAction};
+use sovereign_core::security::{
+    self, ActionDecision, BubbleVisualState, InjectionDecision, ProposedAction,
+};
 use sovereign_db::schema::{Milestone, Thread};
 use sovereign_db::GraphDB;
 
@@ -17,6 +19,14 @@ use crate::injection;
 use crate::intent::IntentClassifier;
 use crate::session_log::SessionLog;
 use crate::trust::TrustTracker;
+
+/// Outcome of gating a piece of tool output for injection (INJECTION-002):
+/// either content to feed the model (still `fence_external`-wrapped by the
+/// caller) or an abort signal that stops the agent loop.
+enum GatedOutput {
+    Content(String),
+    Aborted,
+}
 
 /// Central AI orchestrator. Owns the intent classifier and DB handle.
 /// Receives queries (text from search overlay or voice pipeline),
@@ -30,6 +40,11 @@ pub struct Orchestrator {
     /// encrypted log over the existing plaintext one).
     session_log: Mutex<Option<SessionLog>>,
     decision_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ActionDecision>>>,
+    /// INJECTION-002: the user's redact/pass/abort choice on a flagged tool
+    /// output. Separate channel from `decision_rx` so an injection choice is
+    /// never answered by a write-approval, or vice-versa.
+    injection_decision_rx:
+        Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<InjectionDecision>>>,
     feedback_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<FeedbackEvent>>>,
     trust: Mutex<TrustTracker>,
     profile: Mutex<UserProfile>,
@@ -108,6 +123,7 @@ impl Orchestrator {
             event_tx,
             session_log,
             decision_rx: None,
+            injection_decision_rx: None,
             feedback_rx: None,
             trust: Mutex::new(trust),
             profile: Mutex::new(profile),
@@ -136,6 +152,17 @@ impl Orchestrator {
     /// Attach a decision channel for user confirmations of Level 3+ actions.
     pub fn set_decision_rx(&mut self, rx: tokio::sync::mpsc::Receiver<ActionDecision>) {
         self.decision_rx = Some(tokio::sync::Mutex::new(rx));
+    }
+
+    /// Attach the injection-decision channel (INJECTION-002). Hosts wire this so
+    /// the user can choose redact / pass-through / abort on a flagged tool
+    /// output. Without it the gate fails closed to `Redact` (today's behavior),
+    /// so the feature is safe before the UI lands.
+    pub fn set_injection_decision_rx(
+        &mut self,
+        rx: tokio::sync::mpsc::Receiver<InjectionDecision>,
+    ) {
+        self.injection_decision_rx = Some(tokio::sync::Mutex::new(rx));
     }
 
     /// Attach the shared vision state so the chat context can include what
@@ -211,6 +238,17 @@ impl Orchestrator {
         sovereign_core::sovereign_dir()
             .join("crypto")
             .join("session_log.beacon")
+    }
+
+    /// Install the ACCOUNT key for the trust-state MAC (ai-safety M1) and
+    /// re-authenticate the persisted trust file — auto-approval only works
+    /// on authenticated counts. Called post-login by both hosts; keyed off
+    /// the AccountKey (like the model-TOFU store) so the same trust file
+    /// verifies whichever UI opens the profile.
+    pub fn arm_trust_state(&self, account_key: [u8; 32]) {
+        if let Ok(mut trust) = self.trust.lock() {
+            trust.arm_key(&self.profile_dir, account_key);
+        }
     }
 
     #[cfg(feature = "encrypted-log")]
@@ -598,7 +636,13 @@ impl Orchestrator {
                             // created/renamed title echoes back into the loop;
                             // like read results it must re-enter as untrusted
                             // data, not authoritative tool output.
-                            let body = self.surface_and_filter_injection(&call.name, result.output);
+                            let body = match self
+                                .surface_and_gate_injection(&call.name, result.output)
+                                .await
+                            {
+                                GatedOutput::Content(c) => c,
+                                GatedOutput::Aborted => return self.injection_abort(),
+                            };
                             let (fenced, _) = injection::fence_external(
                                 &format!("{} result", result.tool_name),
                                 &body,
@@ -666,8 +710,13 @@ impl Orchestrator {
                                     // INJECTION-003: fence write-tool output, as
                                     // the read path does — the result may echo an
                                     // attacker-influenced title back into the loop.
-                                    let body = self
-                                        .surface_and_filter_injection(&call.name, result.output);
+                                    let body = match self
+                                        .surface_and_gate_injection(&call.name, result.output)
+                                        .await
+                                    {
+                                        GatedOutput::Content(c) => c,
+                                        GatedOutput::Aborted => return self.injection_abort(),
+                                    };
                                     let (fenced, _) = injection::fence_external(
                                         &format!("{} result", result.tool_name),
                                         &body,
@@ -715,7 +764,13 @@ impl Orchestrator {
                         // would re-enter the prompt as authoritative tool
                         // output (the workspace context is already fenced;
                         // tool results must be too).
-                        let body = self.surface_and_filter_injection(&call.name, result.output);
+                        let body = match self
+                            .surface_and_gate_injection(&call.name, result.output)
+                            .await
+                        {
+                            GatedOutput::Content(c) => c,
+                            GatedOutput::Aborted => return self.injection_abort(),
+                        };
                         let (fenced, _) = injection::fence_external(
                             &format!("{} result", result.tool_name),
                             &body,
@@ -765,15 +820,6 @@ impl Orchestrator {
             .send(OrchestratorEvent::BubbleState(BubbleVisualState::Idle));
 
         Ok(())
-    }
-
-    /// Log a chat response to the session log for persistent conversation history.
-    fn log_chat_response(&self, response: &str) {
-        if let Ok(mut guard) = self.session_log.lock() {
-            if let Some(log) = guard.as_mut() {
-                log.log_chat_response(response);
-            }
-        }
     }
 
     /// Run PII ingest over a session-log text (user input or chat
@@ -855,17 +901,23 @@ impl Orchestrator {
         }
     }
 
-    /// Scan tool output for injection attempts, surface any indicators to the
-    /// user (Injection Surfacing principle), and replace the content entirely
-    /// when a high-severity pattern is found.
-    fn surface_and_filter_injection(&self, source: &str, output: String) -> String {
+    /// Scan tool output for injection, surface any indicators (Injection
+    /// Surfacing principle), and — on a high-severity hit — let the USER decide
+    /// how to handle it instead of auto-redacting (INJECTION-002, 2026-07-18).
+    ///
+    /// The whole-content nuke is now the user's choice (redact / pass / abort);
+    /// the `fence_external` wrapping the caller applies to the result is a
+    /// separate, always-on hard barrier and is unaffected. Returns [`GatedOutput`]
+    /// so an abort can stop the loop rather than being smuggled into a string.
+    async fn surface_and_gate_injection(&self, source: &str, output: String) -> GatedOutput {
         let matches = injection::scan_for_injection(&output);
         if matches.is_empty() {
-            return output;
+            return GatedOutput::Content(output);
         }
         let max_severity = matches.iter().map(|m| m.severity).max().unwrap_or(0);
         let indicators: Vec<String> = matches.iter().map(|m| m.pattern_name.clone()).collect();
 
+        // Surface every detection (Principle 7).
         let _ = self.event_tx.send(OrchestratorEvent::InjectionDetected {
             source: source.to_string(),
             pattern: indicators.first().cloned().unwrap_or_default(),
@@ -873,18 +925,68 @@ impl Orchestrator {
             severity: max_severity,
         });
 
-        if max_severity >= injection::HIGH_SEVERITY {
-            format!(
+        if max_severity < injection::HIGH_SEVERITY {
+            // Low-severity heuristics: surfaced above, nothing to gate.
+            return GatedOutput::Content(output);
+        }
+
+        // High-severity: surface the request and let the user choose — never
+        // auto-redact.
+        let preview: String = output.chars().take(500).collect();
+        let _ = self.event_tx.send(OrchestratorEvent::InjectionDecisionRequested {
+            source: source.to_string(),
+            pattern: indicators.first().cloned().unwrap_or_default(),
+            indicators: indicators.clone(),
+            severity: max_severity,
+            preview,
+        });
+        match self.wait_for_injection_decision().await {
+            InjectionDecision::Redact => GatedOutput::Content(format!(
                 "[CONTENT FILTERED — injection indicators detected: {}]",
                 indicators.join(", ")
-            )
-        } else {
-            output
+            )),
+            InjectionDecision::PassThrough => GatedOutput::Content(output),
+            InjectionDecision::Abort => GatedOutput::Aborted,
         }
     }
 
-    /// Wait for a user decision on the decision channel (30s timeout).
-    /// If no channel is configured, auto-approve (for backward compatibility/testing).
+    /// Await the user's injection-handling decision (120s timeout). FAILS CLOSED
+    /// to `Redact` — the protective option — on timeout, closed channel, or no
+    /// channel wired, so the gate is safe before the UI wires the real choice.
+    async fn wait_for_injection_decision(&self) -> InjectionDecision {
+        if let Some(ref rx_mutex) = self.injection_decision_rx {
+            let mut rx = rx_mutex.lock().await;
+            match tokio::time::timeout(Duration::from_secs(120), rx.recv()).await {
+                Ok(Some(decision)) => return decision,
+                Ok(None) => {
+                    tracing::warn!("Injection-decision channel closed — redacting (fail closed)");
+                }
+                Err(_) => {
+                    tracing::warn!("Injection-decision timeout — redacting (fail closed)");
+                }
+            }
+        } else {
+            tracing::warn!("No injection-decision channel wired — redacting (fail closed)");
+        }
+        InjectionDecision::Redact
+    }
+
+    /// Common handling when the user aborts the turn on a detected injection in
+    /// tool output: tell them, reset the bubble, and end the turn cleanly.
+    fn injection_abort(&self) -> Result<()> {
+        let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
+            text: "⚠ Stopped this turn — you chose to abort on a detected injection in tool output."
+                .into(),
+        });
+        let _ = self
+            .event_tx
+            .send(OrchestratorEvent::BubbleState(BubbleVisualState::Idle));
+        Ok(())
+    }
+
+    /// Wait for a user decision on the decision channel (120s timeout).
+    /// FAILS CLOSED in every path — timeout, closed channel, and missing
+    /// channel all reject.
     async fn wait_for_decision(&self) -> ActionDecision {
         if let Some(ref rx_mutex) = self.decision_rx {
             let mut rx = rx_mutex.lock().await;
@@ -900,8 +1002,23 @@ impl Orchestrator {
                 }
             }
         }
-        // No decision channel — auto-approve (backward compat)
-        ActionDecision::Approve
+        // ai-orch M2: no decision channel wired — FAIL CLOSED. Auto-approving
+        // here turned a missing-wiring bug into an unattended authorization of
+        // Level 3+ writes (a Hard Barriers violation). Hosts that want
+        // unattended writes must wire a channel that approves explicitly.
+        tracing::warn!("No decision channel wired — rejecting action (fail closed)");
+        ActionDecision::Reject("No confirmation channel available".into())
+    }
+
+    /// ai-orch M7: a failed action must be reported as failed — log it, tell
+    /// the user in chat (so a confirmed-but-failed write is never silently
+    /// "done"), and return `false` for the ActionExecuted event.
+    fn report_action_failure(&self, what: &str, e: &dyn std::fmt::Display) -> bool {
+        tracing::error!("{what}: {e}");
+        let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
+            text: format!("⚠ {what}: {e}"),
+        });
+        false
     }
 
     /// Execute a classified action by name.
@@ -911,6 +1028,9 @@ impl Orchestrator {
         target: Option<&str>,
         query: &str,
     ) -> Result<()> {
+        // ai-orch M7: tracked through every arm — the tail ActionExecuted
+        // event must report what actually happened, not unconditional success.
+        let mut success = true;
         match action {
             "search" => {
                 let search_term = target.unwrap_or(query);
@@ -956,7 +1076,7 @@ impl Orchestrator {
                             name,
                         });
                     }
-                    Err(e) => tracing::error!("Failed to create thread: {e}"),
+                    Err(e) => success = self.report_action_failure("Failed to create thread", &e),
                 }
             }
             "rename_thread" => {
@@ -977,7 +1097,7 @@ impl Orchestrator {
                                             name: new_name,
                                         });
                                 }
-                                Err(e) => tracing::error!("Failed to rename thread: {e}"),
+                                Err(e) => success = self.report_action_failure("Failed to rename thread", &e),
                             }
                         }
                     }
@@ -995,7 +1115,7 @@ impl Orchestrator {
                                             thread_id: tid,
                                         });
                                 }
-                                Err(e) => tracing::error!("Failed to soft-delete thread: {e}"),
+                                Err(e) => success = self.report_action_failure("Failed to delete thread", &e),
                             }
                         }
                     }
@@ -1019,7 +1139,7 @@ impl Orchestrator {
                                         new_thread_id: tid,
                                     });
                             }
-                            Err(e) => tracing::error!("Failed to move document: {e}"),
+                            Err(e) => success = self.report_action_failure("Failed to move document", &e),
                         }
                     }
                 }
@@ -1096,6 +1216,17 @@ impl Orchestrator {
                             // instructions aimed at the summarizer — fence them as
                             // data-only and surface any match (INJECTION-004).
                             let content = if doc.is_owned {
+                                // INJECTION-002: owned content is NOT fenced or
+                                // redacted — the user owns it (informed-consent
+                                // decision 2026-07-18) — but a high-confidence
+                                // injection is still surfaced so the choice stays
+                                // informed. Responsible up to a point.
+                                let surfacing =
+                                    injection::scan_owned_for_surfacing(&resolved);
+                                self.emit_injection_if_any(
+                                    "summarize: owned document",
+                                    &surfacing,
+                                );
                                 resolved
                             } else {
                                 let (fenced, top) =
@@ -1127,7 +1258,7 @@ impl Orchestrator {
                                         data: json.to_string(),
                                     });
                                 }
-                                Err(e) => tracing::error!("Summarize failed: {e}"),
+                                Err(e) => success = self.report_action_failure("Summarize failed", &e),
                             }
                         }
                     }
@@ -1252,7 +1383,7 @@ impl Orchestrator {
                                     source_id,
                                 });
                             }
-                            Err(e) => tracing::error!("Failed to merge threads: {e}"),
+                            Err(e) => success = self.report_action_failure("Failed to merge threads", &e),
                         }
                     }
                 }
@@ -1283,7 +1414,7 @@ impl Orchestrator {
                                         doc_ids: vec![],
                                     });
                                 }
-                                Err(e) => tracing::error!("Failed to split thread: {e}"),
+                                Err(e) => success = self.report_action_failure("Failed to split thread", &e),
                             }
                         }
                     }
@@ -1308,7 +1439,7 @@ impl Orchestrator {
                                         },
                                     );
                                 }
-                                Err(e) => tracing::error!("Failed to adopt: {e}"),
+                                Err(e) => success = self.report_action_failure("Failed to adopt document", &e),
                             }
                         }
                     }
@@ -1345,7 +1476,7 @@ impl Orchestrator {
                                     thread_id: tid,
                                 });
                             }
-                            Err(e) => tracing::error!("Failed to create milestone: {e}"),
+                            Err(e) => success = self.report_action_failure("Failed to create milestone", &e),
                         }
                     }
                 }
@@ -1438,10 +1569,7 @@ impl Orchestrator {
                         }
                     }
                 }
-                let _ = self.event_tx.send(OrchestratorEvent::ActionExecuted {
-                    action: action.to_string(),
-                    success: true,
-                });
+                // ActionExecuted is emitted once by the tail below.
             }
             "create_document" => {
                 let title = target
@@ -1472,7 +1600,7 @@ impl Orchestrator {
                             thread_id,
                         });
                     }
-                    Err(e) => tracing::error!("Failed to create document: {e}"),
+                    Err(e) => success = self.report_action_failure("Failed to create document", &e),
                 }
             }
             "word_count" | "find_replace" | "duplicate" | "import_file" => {
@@ -1505,7 +1633,7 @@ impl Orchestrator {
                                             OrchestratorEvent::DocumentOpened { doc_id },
                                         );
                                     }
-                                    Err(e) => tracing::error!("Restore failed: {e}"),
+                                    Err(e) => success = self.report_action_failure("Restore failed", &e),
                                 }
                             } else {
                                 let commits =
@@ -1526,11 +1654,23 @@ impl Orchestrator {
                                                 OrchestratorEvent::DocumentOpened { doc_id },
                                             );
                                         }
-                                        Err(e) => tracing::error!("Restore failed: {e}"),
+                                        Err(e) => success = self.report_action_failure("Restore failed", &e),
                                     }
+                                } else {
+                                    // M7: restoring with no previous version did
+                                    // nothing — say so instead of reporting success.
+                                    success = self.report_action_failure(
+                                        "Restore failed",
+                                        &format!("'{doc_name}' has no previous version to restore"),
+                                    );
                                 }
                             }
                         }
+                    } else {
+                        success = self.report_action_failure(
+                            "Restore failed",
+                            &format!("no document matching '{doc_name}'"),
+                        );
                     }
                 }
             }
@@ -1550,10 +1690,7 @@ impl Orchestrator {
                 let _ = self.event_tx.send(OrchestratorEvent::OpenPanel {
                     name: panel.to_string(),
                 });
-                let _ = self.event_tx.send(OrchestratorEvent::ActionExecuted {
-                    action: action.to_string(),
-                    success: true,
-                });
+                // ActionExecuted is emitted once by the tail below.
             }
             "chat" | "unknown" => {
                 // Delegate to the agent loop which handles context, tools, and history
@@ -1576,7 +1713,7 @@ impl Orchestrator {
 
         let _ = self.event_tx.send(OrchestratorEvent::ActionExecuted {
             action: action.to_string(),
-            success: true,
+            success,
         });
 
         Ok(())

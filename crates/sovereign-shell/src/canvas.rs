@@ -89,6 +89,76 @@ pub(crate) struct Card {
     pub(crate) layout: Layout<Brush>, // card-title shaped once, redrawn each frame
 }
 
+// ---- Deck layout (zoom-reactive, screen-space) --------------------------
+// Same model as the Tauri canvas (computeDeckRoles): within a lane, cards whose
+// on-screen X gap is under CARD_W collapse into a deck — the most-recent card is
+// the front, older cards peek up-left behind it, overflow hides behind a count
+// badge. The grouping threshold is CARD_W / zoom world px (== CARD_W screen px),
+// so decks dissolve as you zoom in, down to cards sharing an identical time.
+
+/// World-px offset per peeking card. In world units (scales with zoom) so the
+/// fan stays a constant fraction of the lane at every zoom. Contained iff
+/// (DECK_VISIBLE - 1) * DECK_PEEK <= (LANE_H - CARD_H) / 2  (= 15 <= 16 here).
+pub(crate) const DECK_PEEK: f64 = 5.0;
+/// Front card + up to (DECK_VISIBLE - 1) peeks are drawn; the rest hide.
+pub(crate) const DECK_VISIBLE: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DeckRole {
+    pub(crate) count: u32,
+    pub(crate) peek: usize,      // 0 = front (at true position), 1.. = peeks behind
+    pub(crate) hidden: bool,     // peek >= DECK_VISIBLE -> not drawn
+    pub(crate) front_idx: usize, // index (into the input slice) of this deck's front
+}
+impl DeckRole {
+    pub(crate) fn is_front(&self) -> bool {
+        self.peek == 0
+    }
+}
+
+/// Assign a [`DeckRole`] to each card (indexed identically). Convenience wrapper
+/// over [`deck_roles`] that projects cards to their (x, lane).
+pub(crate) fn compute_deck_roles(cards: &[Card], zoom: f64) -> Vec<DeckRole> {
+    let pos: Vec<(f64, usize)> = cards.iter().map(|c| (c.x, c.lane)).collect();
+    deck_roles(&pos, zoom)
+}
+
+/// Pure decking core over (world-x, lane) pairs — unit-testable without shaping
+/// real `Card`s. Returns roles indexed to `pos`.
+pub(crate) fn deck_roles(pos: &[(f64, usize)], zoom: f64) -> Vec<DeckRole> {
+    let mut roles = vec![DeckRole { count: 1, peek: 0, hidden: false, front_idx: 0 }; pos.len()];
+    // world gap that projects to exactly CARD_W screen px at this zoom
+    let threshold = CARD_W / zoom.max(1e-6);
+
+    let mut by_lane: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, (_, lane)) in pos.iter().enumerate() {
+        by_lane.entry(*lane).or_default().push(i);
+    }
+    for idxs in by_lane.values_mut() {
+        idxs.sort_by(|&a, &b| {
+            pos[a].0.partial_cmp(&pos[b].0).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut i = 0;
+        while i < idxs.len() {
+            let anchor_x = pos[idxs[i]].0;
+            let mut j = i + 1;
+            while j < idxs.len() && pos[idxs[j]].0 - anchor_x < threshold {
+                j += 1;
+            }
+            let count = (j - i) as u32;
+            let front_idx = idxs[j - 1]; // max x = most recent = front
+            for k in i..j {
+                // ascending by x -> last (max x, most recent) is the front
+                let peek = j - 1 - k;
+                roles[idxs[k]] =
+                    DeckRole { count, peek, hidden: peek >= DECK_VISIBLE, front_idx };
+            }
+            i = j;
+        }
+    }
+    roles
+}
+
 // ---- Synthetic data -----------------------------------------------------
 
 pub(crate) struct Lcg(pub(crate) u64);
@@ -658,5 +728,72 @@ mod time_axis_tests {
         assert!(ticks.len() >= 5, "expected several day ticks over a week");
         assert!(ticks.iter().all(|&t| t >= t0 && t <= t1));
         assert!(ticks.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    // ---- deck layout --------------------------------------------------
+
+    #[test]
+    fn deck_fan_stays_within_lane_top_margin() {
+        // Containment: the deepest peek must fit the lane's top slack.
+        assert!((DECK_VISIBLE - 1) as f64 * DECK_PEEK <= (LANE_H - CARD_H) / 2.0);
+    }
+
+    #[test]
+    fn lone_card_is_its_own_front() {
+        let roles = deck_roles(&[(0.0, 0)], 1.0);
+        assert_eq!(roles[0], DeckRole { count: 1, peek: 0, hidden: false, front_idx: 0 });
+    }
+
+    #[test]
+    fn deck_members_point_at_the_front_index() {
+        // Three cards in one lane, close in x -> one deck; front is the max-x (idx 2).
+        let roles = deck_roles(&[(0.0, 0), (10.0, 0), (20.0, 0)], 1.0);
+        assert!(roles.iter().all(|r| r.front_idx == 2));
+    }
+
+    #[test]
+    fn same_position_cards_form_one_deck_with_hidden_overflow() {
+        let pos: Vec<(f64, usize)> = (0..7).map(|_| (0.0, 0)).collect();
+        let roles = deck_roles(&pos, 1.0);
+        assert!(roles.iter().all(|r| r.count == 7));
+        assert_eq!(roles.iter().filter(|r| r.is_front()).count(), 1);
+        assert_eq!(roles.iter().filter(|r| !r.hidden).count(), DECK_VISIBLE);
+        assert_eq!(roles.iter().filter(|r| r.hidden).count(), 7 - DECK_VISIBLE);
+    }
+
+    #[test]
+    fn most_recent_card_is_front() {
+        let roles = deck_roles(&[(0.0, 0), (10.0, 0), (20.0, 0)], 1.0);
+        assert!(roles[2].is_front()); // max x
+        assert_eq!(roles[0].peek, 2); // oldest deepest
+    }
+
+    #[test]
+    fn cards_farther_than_a_card_width_do_not_deck() {
+        let roles = deck_roles(&[(0.0, 0), (CARD_W + 1.0, 0)], 1.0);
+        assert_eq!(roles[0].count, 1);
+        assert_eq!(roles[1].count, 1);
+    }
+
+    #[test]
+    fn zooming_in_dissolves_a_deck() {
+        // Gap 150 world px: < CARD_W(176) at zoom 1 → decked; screen gap 150*z,
+        // so at zoom 2 it is 300 > 176 → separate.
+        let pos = [(0.0, 0), (150.0, 0)];
+        assert_eq!(deck_roles(&pos, 1.0)[0].count, 2);
+        assert_eq!(deck_roles(&pos, 2.0)[0].count, 1);
+    }
+
+    #[test]
+    fn identical_position_stays_decked_at_any_zoom() {
+        let pos = [(42.0, 0), (42.0, 0)];
+        assert_eq!(deck_roles(&pos, 80.0)[0].count, 2);
+    }
+
+    #[test]
+    fn different_lanes_never_merge() {
+        let roles = deck_roles(&[(0.0, 0), (0.0, 1)], 1.0);
+        assert_eq!(roles[0].count, 1);
+        assert_eq!(roles[1].count, 1);
     }
 }

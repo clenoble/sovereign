@@ -235,6 +235,15 @@ impl GraphDB for ArcWrapper {
     async fn get_suggested_link(&self, id: &str) -> DbResult<SuggestedLink> { self.0.get_suggested_link(id).await }
     async fn list_all_suggested_links(&self) -> DbResult<Vec<SuggestedLink>> { self.0.list_all_suggested_links().await }
     async fn set_suggested_link_status(&self, id: &str, status: SuggestionStatus, resolved_at: Option<DateTime<Utc>>) -> DbResult<()> { self.0.set_suggested_link_status(id, status, resolved_at).await }
+
+    // Sync-scope lists (tombstones included, H-p2p1)
+    async fn list_documents_including_deleted(&self) -> DbResult<Vec<Document>> { self.0.list_documents_including_deleted().await }
+    async fn list_threads_including_deleted(&self) -> DbResult<Vec<Thread>> { self.0.list_threads_including_deleted().await }
+    async fn list_entities_including_deleted(&self) -> DbResult<Vec<Entity>> { self.0.list_entities_including_deleted().await }
+    async fn list_pii_records_including_deleted(&self) -> DbResult<Vec<PiiRecord>> { self.0.list_pii_records_including_deleted().await }
+    async fn list_contacts_including_deleted(&self) -> DbResult<Vec<Contact>> { self.0.list_contacts_including_deleted().await }
+    async fn list_messages_including_deleted(&self) -> DbResult<Vec<Message>> { self.0.list_messages_including_deleted().await }
+    async fn list_conversations_including_deleted(&self) -> DbResult<Vec<Conversation>> { self.0.list_conversations_including_deleted().await }
 }
 
 #[async_trait]
@@ -393,6 +402,15 @@ impl GraphDB for LayeredGraphDB {
     async fn get_suggested_link(&self, id: &str) -> DbResult<SuggestedLink> { self.current().get_suggested_link(id).await }
     async fn list_all_suggested_links(&self) -> DbResult<Vec<SuggestedLink>> { self.current().list_all_suggested_links().await }
     async fn set_suggested_link_status(&self, id: &str, status: SuggestionStatus, resolved_at: Option<DateTime<Utc>>) -> DbResult<()> { self.current().set_suggested_link_status(id, status, resolved_at).await }
+
+    // Sync-scope lists (tombstones included, H-p2p1)
+    async fn list_documents_including_deleted(&self) -> DbResult<Vec<Document>> { self.current().list_documents_including_deleted().await }
+    async fn list_threads_including_deleted(&self) -> DbResult<Vec<Thread>> { self.current().list_threads_including_deleted().await }
+    async fn list_entities_including_deleted(&self) -> DbResult<Vec<Entity>> { self.current().list_entities_including_deleted().await }
+    async fn list_pii_records_including_deleted(&self) -> DbResult<Vec<PiiRecord>> { self.current().list_pii_records_including_deleted().await }
+    async fn list_contacts_including_deleted(&self) -> DbResult<Vec<Contact>> { self.current().list_contacts_including_deleted().await }
+    async fn list_messages_including_deleted(&self) -> DbResult<Vec<Message>> { self.current().list_messages_including_deleted().await }
+    async fn list_conversations_including_deleted(&self) -> DbResult<Vec<Conversation>> { self.current().list_conversations_including_deleted().await }
 }
 
 #[cfg(test)]

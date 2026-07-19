@@ -84,32 +84,16 @@ impl SessionLog {
         let path = dir.join("session_log.jsonl");
         let anchor_path = dir.join("session_log.anchor");
 
-        // Rotate if needed. Rotation legitimately empties the current file, so
-        // the anchor must be reset to match — otherwise the next load would see
-        // "0 lines on disk < N anchored" and fail closed on a benign rotation
-        // (this is the SESSIONLOG-001-reopen hazard the audit flagged).
-        if path.exists() {
-            if let Ok(meta) = fs::metadata(&path) {
-                if meta.len() > MAX_LOG_SIZE {
-                    Self::rotate(&path);
-                    let _ = crate::encrypted_log::write_chain_anchor(
-                        &anchor_path,
-                        &key,
-                        0,
-                        crate::encrypted_log::GENESIS_HASH,
-                    );
-                }
-            }
-        }
-
-        // Read the line count + hash of the last line for chain continuity and
-        // anchor bookkeeping.
-        let (chain_count, prev_hash) = Self::read_tail(&path);
-
-        // SESSIONLOG-001/003: if a valid anchor says the file should have MORE
-        // lines than it does (truncation/rollback), the anchor MAC is forged, or
-        // the anchor was deleted while encrypted entries remain, the log was
-        // tampered while we were closed.
+        // SESSIONLOG-001/003 + H-log1: verify the log BEFORE any rotation.
+        // Rotation legitimately empties the file and re-mints a genesis
+        // anchor — running it first let a disk-write attacker LAUNDER
+        // tampering: truncate/rewrite the log, pad it past MAX_LOG_SIZE, and
+        // the next open rotated the evidence away and re-anchored clean,
+        // defeating the entire anti-rollback machinery. Only a VERIFIED log
+        // may rotate. Checks: a valid anchor claiming MORE lines than the
+        // file has (truncation/rollback), a forged anchor MAC, a deleted
+        // anchor with encrypted entries remaining, or a genesis wipe caught
+        // by the out-of-dir beacon.
         let mut tamper: Option<String> = None;
         match crate::encrypted_log::read_chain_anchor(&anchor_path, &key) {
             crate::encrypted_log::AnchorStatus::Valid { count, head } => {
@@ -153,6 +137,29 @@ impl SessionLog {
                 "session log tamper detected ({reason}); refusing to append (SESSIONLOG-001)"
             ));
         }
+
+        // Rotate if needed — the log verified clean above. Rotation
+        // legitimately empties the current file, so the anchor is reset to
+        // match; otherwise the next load would see "0 lines on disk < N
+        // anchored" and fail closed on a benign rotation (the
+        // SESSIONLOG-001-reopen hazard).
+        if path.exists() {
+            if let Ok(meta) = fs::metadata(&path) {
+                if meta.len() > MAX_LOG_SIZE {
+                    Self::rotate(&path);
+                    let _ = crate::encrypted_log::write_chain_anchor(
+                        &anchor_path,
+                        &key,
+                        0,
+                        crate::encrypted_log::GENESIS_HASH,
+                    );
+                }
+            }
+        }
+
+        // Read the line count + hash of the last line for chain continuity and
+        // anchor bookkeeping (post-rotation state).
+        let (chain_count, prev_hash) = Self::read_tail(&path);
 
         let file = OpenOptions::new()
             .create(true)
@@ -498,6 +505,69 @@ pub struct SessionEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// H-log1: forced rotation ran BEFORE the tamper check, so a disk-write
+    /// attacker could truncate/rewrite the log, pad it past MAX_LOG_SIZE,
+    /// and the next open rotated the evidence away and re-minted a clean
+    /// genesis anchor — laundering the rollback. Verification now runs
+    /// first: an oversize tampered log FAILS CLOSED instead of rotating.
+    #[cfg(feature = "encrypted-log")]
+    #[test]
+    fn oversize_padding_does_not_launder_tampering() {
+        let dir = std::env::temp_dir()
+            .join(format!("session-log-launder-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let key = [7u8; 32];
+        {
+            let mut log = SessionLog::open_encrypted(&dir, key, None).unwrap();
+            log.log_user_input("keyboard", "sensitive action", "search");
+            log.log_action("search", "found 1 document");
+        }
+        // Attacker: drop the last (anchored) line…
+        let path = dir.join("session_log.jsonl");
+        let content = fs::read_to_string(&path).unwrap();
+        let first_line = content.lines().next().unwrap().to_string();
+        // …and pad past MAX_LOG_SIZE so the next open wants to rotate.
+        let mut padded = first_line;
+        padded.push('\n');
+        let filler = "x".repeat(1024 * 1024);
+        while (padded.len() as u64) <= MAX_LOG_SIZE {
+            padded.push_str(&filler);
+            padded.push('\n');
+        }
+        fs::write(&path, padded).unwrap();
+
+        let res = SessionLog::open_encrypted(&dir, key, None);
+        assert!(
+            res.is_err(),
+            "padding a tampered log past the rotation threshold must fail closed, not rotate the evidence away (H-log1)"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The benign-rotation path still works: a clean oversize log rotates
+    /// and re-opens without tripping the tamper check.
+    #[cfg(feature = "encrypted-log")]
+    #[test]
+    fn clean_oversize_log_rotates_normally() {
+        let dir = std::env::temp_dir()
+            .join(format!("session-log-cleanrotate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let key = [8u8; 32];
+        {
+            let mut log = SessionLog::open_encrypted(&dir, key, None).unwrap();
+            // Enough entries to exceed MAX_LOG_SIZE legitimately.
+            let big = "y".repeat(1024 * 1024);
+            for _ in 0..11 {
+                log.log_action("bulk", &big);
+            }
+        }
+        let log = SessionLog::open_encrypted(&dir, key, None);
+        assert!(log.is_ok(), "a clean oversize log must rotate, not fail: {:?}", log.err());
+        let rotated = dir.join("session_log.1.jsonl");
+        assert!(rotated.exists(), "rotation must have produced the .1 file");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn creates_log_file_and_writes() {

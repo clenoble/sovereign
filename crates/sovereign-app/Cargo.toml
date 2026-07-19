@@ -1,6 +1,6 @@
 [package]
 name = "sovereign-app"
-version = "0.0.6"
+version = "0.0.9"
 edition = "2021"
 description = "Sovereign GE binary — CLI and GUI entry point"
 
@@ -23,6 +23,7 @@ path = "src/lib.rs"
 sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
 sovereign-skills = { workspace = true }
+sovereign-import = { workspace = true }
 sovereign-ai = { workspace = true, default-features = false }
 tokio = { workspace = true }
 async-trait = { workspace = true }

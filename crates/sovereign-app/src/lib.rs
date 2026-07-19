@@ -21,6 +21,8 @@ mod tauri_commands;
 mod tauri_events;
 #[cfg(feature = "p2p")]
 mod sync_startup;
+// recovery_setup moved to sovereign_crypto::recovery_store (2026-07-16) so the
+// native shell can share one implementation; reached via setup::recovery_store().
 mod pii_ingest;
 #[cfg(all(feature = "comms", feature = "encryption"))]
 mod pii_contact_hook;
@@ -56,9 +58,6 @@ use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent};
 use sovereign_core::security::ActionDecision;
 use sovereign_core::lifecycle;
 use sovereign_db::GraphDB;
-
-#[cfg(feature = "comms")]
-use sovereign_comms::CommsSync;
 
 use cli::{Cli, Commands};
 use setup::create_db;
@@ -195,6 +194,21 @@ pub fn run_cli() -> Result<()> {
         }
         Commands::ListConversations { channel } => {
             rt.block_on(commands::list_conversations(&config, channel))?;
+        }
+        Commands::Import { dir, execute, single_thread } => {
+            if execute {
+                #[cfg(feature = "encryption")]
+                {
+                    rt.block_on(commands::import_execute(&config, &dir, single_thread))?;
+                }
+                #[cfg(not(feature = "encryption"))]
+                {
+                    let _ = single_thread;
+                    anyhow::bail!("import --execute requires the encryption feature");
+                }
+            } else {
+                commands::import_dry_run(&dir, single_thread)?;
+            }
         }
     }
 
@@ -374,6 +388,31 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::backup::approve_shard_release,
             #[cfg(feature = "encryption")]
             tauri_commands::backup::deny_shard_release,
+            // Recovery (B2, pre-login)
+            #[cfg(feature = "encryption")]
+            tauri_commands::recovery::start_recovery,
+            #[cfg(feature = "encryption")]
+            tauri_commands::recovery::recovery_status,
+            #[cfg(feature = "encryption")]
+            tauri_commands::recovery::recovery_poll,
+            #[cfg(feature = "encryption")]
+            tauri_commands::recovery::cancel_recovery,
+            #[cfg(feature = "encryption")]
+            tauri_commands::recovery::recovery_finalize,
+            // Guardian enrollment (Feature 1 — owner side)
+            #[cfg(feature = "encryption")]
+            tauri_commands::guardian::begin_guardian_enrollment,
+            #[cfg(feature = "encryption")]
+            tauri_commands::guardian::list_guardians,
+            // Guardian ACCESS recovery (Feature 1 — pre-login)
+            tauri_commands::access_recovery::access_recovery_available,
+            tauri_commands::access_recovery::start_access_recovery,
+            tauri_commands::access_recovery::resume_access_recovery,
+            tauri_commands::access_recovery::access_recovery_poll,
+            tauri_commands::access_recovery::access_recovery_status,
+            #[cfg(feature = "encryption")]
+            tauri_commands::access_recovery::access_recovery_finalize,
+            tauri_commands::access_recovery::cancel_access_recovery,
             // Mobile: voice transcription + share-sheet receiver + connectivity
             tauri_commands::mobile::voice_transcribe_buffer,
             tauri_commands::mobile::receive_shared_content,
@@ -502,6 +541,10 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 profile_dir: backend.profile_dir,
                 #[cfg(feature = "encryption")]
                 account_key: tokio::sync::RwLock::new(None),
+                #[cfg(feature = "encryption")]
+                kek: tokio::sync::RwLock::new(None),
+                #[cfg(feature = "encryption")]
+                recovery_session: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "encryption")]
                 p2p_identity_key: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "encryption")]

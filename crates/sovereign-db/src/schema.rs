@@ -253,7 +253,7 @@ impl SuggestedLink {
 }
 
 /// A snapshot of a single document at commit time
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DocumentSnapshot {
     pub document_id: String,
     pub title: String,
@@ -265,6 +265,28 @@ pub struct DocumentSnapshot {
     /// empty string and the apply path falls back to `"default"`.
     #[serde(default)]
     pub thread_id: String,
+    /// Nonce paired with `content` when the snapshotted row was encrypted
+    /// (v0.0.8 review C1: without it, restore pairs old ciphertext with the
+    /// live row's newer nonce → AEAD failure and unrecoverable data loss).
+    /// `None` on snapshots of plaintext rows and on pre-fix legacy commits —
+    /// the encrypted layer refuses to restore an encrypted row from a legacy
+    /// nonce-less snapshot rather than corrupt it.
+    #[serde(default)]
+    pub content_nonce: Option<String>,
+    /// Nonce paired with `title` at snapshot time (same C1 contract).
+    #[serde(default)]
+    pub title_nonce: Option<String>,
+    /// Blind-index token hashes for the snapshotted title, restored together
+    /// with the title ciphertext so encrypted title search keeps matching the
+    /// restored document.
+    #[serde(default)]
+    pub title_token_hashes: Vec<String>,
+    /// Soft-delete marker at snapshot time. Used by P2P transport snapshots
+    /// so document deletions propagate to paired devices (H-p2p1); local
+    /// version-history commits leave it `None` (restoring a version is not
+    /// an un/delete operation).
+    #[serde(default)]
+    pub deleted_at: Option<String>,
 }
 
 /// A per-document version control commit with parent chain.

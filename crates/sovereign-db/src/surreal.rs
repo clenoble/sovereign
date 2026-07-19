@@ -439,23 +439,28 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn update_document_position(&self, id: &str, x: f32, y: f32) -> DbResult<()> {
-        parse_and_validate(id, "document")?;
+        // H-db1: `UPDATE $id` with a string bind is not a record pointer — it
+        // silently updates nothing. Address the record via type::thing and
+        // .check() so statement errors surface instead of vanishing.
+        let (_, key) = parse_and_validate(id, "document")?;
         self.db
-            .query("UPDATE $id SET spatial_x = $x, spatial_y = $y")
-            .bind(("id", id.to_string()))
+            .query("UPDATE type::thing('document', $key) SET spatial_x = $x, spatial_y = $y")
+            .bind(("key", key.to_string()))
             .bind(("x", x))
             .bind(("y", y))
-            .await?;
+            .await?
+            .check()?;
         Ok(())
     }
 
     async fn set_document_pinned(&self, id: &str, pinned: bool) -> DbResult<()> {
-        parse_and_validate(id, "document")?;
+        let (_, key) = parse_and_validate(id, "document")?;
         self.db
-            .query("UPDATE $id SET pinned = $pinned")
-            .bind(("id", id.to_string()))
+            .query("UPDATE type::thing('document', $key) SET pinned = $pinned")
+            .bind(("key", key.to_string()))
             .bind(("pinned", pinned))
-            .await?;
+            .await?
+            .check()?;
         Ok(())
     }
 
@@ -615,7 +620,8 @@ impl GraphDB for SurrealGraphDB {
             .query("UPDATE document SET thread_id = $target WHERE thread_id = $source")
             .bind(("target", target_id_str))
             .bind(("source", source_id_str))
-            .await?;
+            .await?
+            .check()?;
 
         // Soft-delete the source thread
         self.soft_delete_thread(source_id).await?;
@@ -643,7 +649,8 @@ impl GraphDB for SurrealGraphDB {
                     .bind(("key", key.to_string()))
                     .bind(("tid", new_tid.clone()))
                     .bind(("now", now))
-                    .await?;
+                    .await?
+                    .check()?;
             }
         }
 
@@ -815,17 +822,51 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn traverse(&self, doc_id: &str, depth: u32, limit: u32) -> DbResult<Vec<Document>> {
-        let arrow_path = "->related_to->document".repeat(depth as usize);
-        let query = format!("SELECT {arrow_path} FROM $id LIMIT $lim");
-        let id = doc_id.to_string();
-        let mut result = self
-            .db
-            .query(&query)
-            .bind(("id", id))
-            .bind(("lim", limit))
-            .await?;
-        let docs: Vec<Document> = result.take(0)?;
-        Ok(docs)
+        // M4: the old `SELECT ->related_to->document...` returned projection
+        // objects, not Document rows — deserialization failed on the real
+        // backend (`missing field title`). BFS hop-by-hop instead: each hop
+        // resolves neighbor record links (the same working pattern as
+        // list_outgoing_relationships), then the documents are fetched by id.
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        visited.insert(doc_id.to_string());
+        let mut frontier: Vec<Thing> = vec![id_to_thing(doc_id)];
+        let mut out: Vec<Document> = Vec::new();
+
+        'hops: for _ in 0..depth {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut next: Vec<Thing> = Vec::new();
+            for node in frontier {
+                let mut result = self
+                    .db
+                    .query("SELECT VALUE ->related_to->document FROM $doc")
+                    .bind(("doc", node))
+                    .await?;
+                let nested: Vec<Vec<Thing>> = result.take(0)?;
+                for neighbor in nested.into_iter().flatten() {
+                    let raw = crate::schema::thing_to_raw(&neighbor);
+                    if !visited.insert(raw) {
+                        continue;
+                    }
+                    let doc: Option<Document> = self
+                        .db
+                        .select((neighbor.tb.clone(), neighbor.id.to_raw()))
+                        .await?;
+                    if let Some(doc) = doc {
+                        if doc.deleted_at.is_none() {
+                            out.push(doc);
+                            if out.len() >= limit as usize {
+                                break 'hops;
+                            }
+                        }
+                    }
+                    next.push(neighbor);
+                }
+            }
+            frontier = next;
+        }
+        Ok(out)
     }
 
     // -- Suggested Links ---
@@ -840,13 +881,14 @@ impl GraphDB for SurrealGraphDB {
         source: SuggestionSource,
     ) -> DbResult<SuggestedLink> {
         let now = Utc::now();
-        let relation_type_str = relation_type.to_string();
-        let source_str = serde_json::to_string(&source)
-            .map_err(|e| DbError::Query(format!("Failed to serialize source: {e}")))?;
-
         let from = id_to_thing(from_id);
         let to = id_to_thing(to_id);
 
+        // C2: bind the enum DIRECTLY (serde → bare "consolidation"/"chat").
+        // serde_json::to_string binds a JSON-*quoted* string, which fails
+        // RETURN AFTER deserialization AND persists a malformed row whose
+        // status never matches queries. Same pitfall documented on
+        // create_suggested_link_with_id below.
         let mut result = self
             .db
             .query(
@@ -862,12 +904,13 @@ impl GraphDB for SurrealGraphDB {
             )
             .bind(("from", from))
             .bind(("to", to))
-            .bind(("rtype", relation_type_str))
+            .bind(("rtype", relation_type.to_string()))
             .bind(("strength", strength))
             .bind(("rationale", rationale.to_string()))
-            .bind(("source", source_str))
+            .bind(("source", source))
             .bind(("created_at", now))
-            .await?;
+            .await?
+            .check()?;
 
         let links: Vec<SuggestedLink> = result.take(0)?;
         links
@@ -886,7 +929,9 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn list_suggestions_for_document(&self, doc_id: &str) -> DbResult<Vec<SuggestedLink>> {
-        let id = doc_id.to_string();
+        // C2: `in`/`out` are record links — compare against a Thing, not a
+        // bound string (string comparison is always false on the real backend).
+        let id = id_to_thing(doc_id);
         let mut result = self
             .db
             .query("SELECT * FROM suggested_link WHERE in = $id OR out = $id ORDER BY created_at DESC")
@@ -902,23 +947,23 @@ impl GraphDB for SurrealGraphDB {
         status: SuggestionStatus,
     ) -> DbResult<SuggestedLink> {
         let now = Utc::now();
-        let status_str = serde_json::to_string(&status)
-            .map_err(|e| DbError::Query(format!("Failed to serialize status: {e}")))?;
 
         // Fetch the suggestion first
         let link: Option<SuggestedLink> = self.db.select(("suggested_link", id)).await?;
         let link = link.ok_or_else(|| DbError::NotFound(id.to_string()))?;
 
-        // Update status and resolved_at
+        // Update status and resolved_at. C2: bind the enum directly — a
+        // serde_json string binds *quoted* and breaks read-back forever.
         let mut result = self
             .db
             .query(
-                "UPDATE $id SET status = $status, resolved_at = $resolved_at RETURN AFTER",
+                "UPDATE type::thing('suggested_link', $key) SET status = $status, resolved_at = $resolved_at RETURN AFTER",
             )
-            .bind(("id", Thing::from(("suggested_link".to_string(), id.to_string()))))
-            .bind(("status", status_str))
+            .bind(("key", id.to_string()))
+            .bind(("status", status.clone()))
             .bind(("resolved_at", now))
-            .await?;
+            .await?
+            .check()?;
 
         let updated: Vec<SuggestedLink> = result.take(0)?;
         let updated = updated
@@ -926,11 +971,13 @@ impl GraphDB for SurrealGraphDB {
             .next()
             .ok_or_else(|| DbError::Query("Failed to update suggestion".into()))?;
 
-        // If accepted, promote to a real relationship
+        // If accepted, promote to a real relationship. DB-M3: RELATE stores
+        // in = from, out = to — promote in the SUGGESTED direction (in → out),
+        // not inverted.
         if status == SuggestionStatus::Accepted {
             if let (Some(in_thing), Some(out_thing)) = (&link.in_, &link.out) {
-                let from_str = crate::schema::thing_to_raw(out_thing);
-                let to_str = crate::schema::thing_to_raw(in_thing);
+                let from_str = crate::schema::thing_to_raw(in_thing);
+                let to_str = crate::schema::thing_to_raw(out_thing);
                 self.create_relationship(&from_str, &to_str, link.relation_type, link.strength)
                     .await?;
             }
@@ -940,8 +987,11 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn suggestion_exists(&self, from_id: &str, to_id: &str) -> DbResult<bool> {
-        let from = from_id.to_string();
-        let to = to_id.to_string();
+        // C2: record-link fields compare against Things, not strings —
+        // string binds made this always-false, so consolidation dedup never
+        // suppressed re-suggestions.
+        let from = id_to_thing(from_id);
+        let to = id_to_thing(to_id);
         let mut result = self
             .db
             .query(
@@ -968,11 +1018,19 @@ impl GraphDB for SurrealGraphDB {
     async fn commit_document(&self, doc_id: &str, message: &str) -> DbResult<Commit> {
         let doc = self.get_document(doc_id).await?;
 
+        // C1: the snapshot copies the at-rest row, which may be ciphertext —
+        // the nonces (and the title blind-index) must travel with it, or a
+        // restore after any post-commit edit pairs old ciphertext with a
+        // newer nonce and destroys the document.
         let snapshot = DocumentSnapshot {
             document_id: doc_id.to_string(),
             title: doc.title,
             content: doc.content,
             thread_id: doc.thread_id,
+            content_nonce: doc.encryption_nonce,
+            title_nonce: doc.title_nonce,
+            title_token_hashes: doc.title_token_hashes,
+            deleted_at: None,
         };
 
         let commit = Commit {
@@ -994,7 +1052,8 @@ impl GraphDB for SurrealGraphDB {
             .query("UPDATE type::thing('document', $key) SET head_commit = $cid")
             .bind(("key", parse_thing(doc_id)?.1.to_string()))
             .bind(("cid", commit_id))
-            .await?;
+            .await?
+            .check()?;
 
         Ok(created)
     }
@@ -1025,6 +1084,11 @@ impl GraphDB for SurrealGraphDB {
         let mut doc = current.ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
         doc.title = commit.snapshot.title.clone();
         doc.content = commit.snapshot.content.clone();
+        // C1: ciphertext is only readable with the nonce it was sealed under —
+        // restore them as a pair (None for plaintext-row snapshots).
+        doc.encryption_nonce = commit.snapshot.content_nonce.clone();
+        doc.title_nonce = commit.snapshot.title_nonce.clone();
+        doc.title_token_hashes = commit.snapshot.title_token_hashes.clone();
         doc.modified_at = Utc::now();
 
         let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
@@ -2062,6 +2126,59 @@ impl GraphDB for SurrealGraphDB {
             return Err(DbError::NotFound(id.to_string()));
         }
         Ok(())
+    }
+
+    // -- Sync-scope lists (tombstones included, H-p2p1) --
+
+    async fn list_documents_including_deleted(&self) -> DbResult<Vec<Document>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM document ORDER BY created_at DESC")
+            .await?;
+        let docs: Vec<Document> = result.take(0)?;
+        Ok(docs)
+    }
+
+    async fn list_threads_including_deleted(&self) -> DbResult<Vec<Thread>> {
+        let mut result = self.db.query("SELECT * FROM thread").await?;
+        let threads: Vec<Thread> = result.take(0)?;
+        Ok(threads)
+    }
+
+    async fn list_entities_including_deleted(&self) -> DbResult<Vec<Entity>> {
+        let mut result = self.db.query("SELECT * FROM entity ORDER BY name ASC").await?;
+        let entities: Vec<Entity> = result.take(0)?;
+        Ok(entities)
+    }
+
+    async fn list_pii_records_including_deleted(&self) -> DbResult<Vec<PiiRecord>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM pii_record ORDER BY discovered_at DESC")
+            .await?;
+        let recs: Vec<PiiRecord> = result.take(0)?;
+        Ok(recs)
+    }
+
+    async fn list_contacts_including_deleted(&self) -> DbResult<Vec<Contact>> {
+        let mut result = self.db.query("SELECT * FROM contact ORDER BY name ASC").await?;
+        let contacts: Vec<Contact> = result.take(0)?;
+        Ok(contacts)
+    }
+
+    async fn list_messages_including_deleted(&self) -> DbResult<Vec<Message>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM message ORDER BY sent_at DESC")
+            .await?;
+        let msgs: Vec<Message> = result.take(0)?;
+        Ok(msgs)
+    }
+
+    async fn list_conversations_including_deleted(&self) -> DbResult<Vec<Conversation>> {
+        let mut result = self.db.query("SELECT * FROM conversation").await?;
+        let convs: Vec<Conversation> = result.take(0)?;
+        Ok(convs)
     }
 }
 

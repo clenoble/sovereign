@@ -48,6 +48,26 @@ pub enum ActionDecision {
     Reject(String),
 }
 
+/// The user's decision on how to handle a high-severity injection detected in
+/// agent-loop tool output. Deliberately *separate* from [`ActionDecision`] so
+/// injection handling never gets conflated with write-approval.
+///
+/// Decision 2026-07-18 (INJECTION-002): the agent loop must not silently
+/// auto-redact — it surfaces the injection and lets the user choose. This gates
+/// only the *extra* whole-content nuke; the structural `fence_external`
+/// untrusted-data wrapping around tool output stays always-on regardless.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InjectionDecision {
+    /// Replace the flagged content before it reaches the model. Also the
+    /// fail-closed default (timeout / no channel wired).
+    Redact,
+    /// Let the content through (still `fence_external`-wrapped downstream) —
+    /// the user accepts it.
+    PassThrough,
+    /// Abort the current turn; the flagged content never reaches the model.
+    Abort,
+}
+
 /// Map an intent action string to its gravity level.
 pub fn action_level(action: &str) -> ActionLevel {
     match action {

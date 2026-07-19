@@ -10,10 +10,25 @@ use crate::master_key::{Kdf, MasterKey};
 
 /// Tagged probe plaintexts — embedded in each persona entry so we can
 /// identify which persona a passphrase unlocks after decryption.
-/// An attacker who cracks one passphrase already knows there are exactly
-/// 2 entries, so tagging leaks nothing additional.
-const PRIMARY_PROBE: &[u8] = b"sovereign-auth-probe-v1-primary";
-const DURESS_PROBE: &[u8] = b"sovereign-auth-probe-v1-duress";
+///
+/// H-crypto1: the probes MUST be equal length. XChaCha20-Poly1305 is
+/// length-preserving, so a 31-byte primary tag and a 30-byte duress tag
+/// produced 47- vs 46-byte ciphertexts — anyone who had seen the public
+/// source could tell which on-disk entry was the decoy *before* cracking
+/// anything, defeating the whole plausible-deniability feature. Both tags
+/// are now zero-padded to a fixed length, so the two entries are
+/// byte-for-byte indistinguishable in size.
+const PROBE_LEN: usize = 32;
+const PRIMARY_TAG: &[u8] = b"sovereign-auth-probe-v1-primary";
+const DURESS_TAG: &[u8] = b"sovereign-auth-probe-v1-duress";
+
+/// Zero-pad a tag to the fixed probe length. A tag longer than `PROBE_LEN`
+/// would be a compile-time authoring error (both current tags are < 32).
+fn padded_probe(tag: &[u8]) -> [u8; PROBE_LEN] {
+    let mut out = [0u8; PROBE_LEN];
+    out[..tag.len()].copy_from_slice(tag);
+    out
+}
 
 // ── Password policy ──────────────────────────────────────────────────
 
@@ -146,9 +161,9 @@ impl AuthStore {
     ) -> CryptoResult<Self> {
         let kdf = Kdf::current();
         let primary_entry =
-            Self::build_entry(primary_passphrase, salt, device_id, PRIMARY_PROBE, &kdf)?;
+            Self::build_entry(primary_passphrase, salt, device_id, &padded_probe(PRIMARY_TAG), &kdf)?;
         let duress_entry =
-            Self::build_entry(duress_passphrase, salt, device_id, DURESS_PROBE, &kdf)?;
+            Self::build_entry(duress_passphrase, salt, device_id, &padded_probe(DURESS_TAG), &kdf)?;
 
         // Randomize order so file inspection can't correlate position with kind.
         let mut personas = vec![primary_entry, duress_entry];
@@ -183,9 +198,12 @@ impl AuthStore {
                 &entry.probe_nonce,
                 device_key.as_bytes(),
             ) {
-                let persona = if plaintext == PRIMARY_PROBE {
+                // Match the fixed-length padded probe (H-crypto1). Legacy
+                // stores (v<=0.0.8) hold the OLD unpadded tag, so accept that
+                // form too — they open, and get re-padded on the next save.
+                let persona = if plaintext == padded_probe(PRIMARY_TAG) || plaintext == PRIMARY_TAG {
                     PersonaKind::Primary
-                } else if plaintext == DURESS_PROBE {
+                } else if plaintext == padded_probe(DURESS_TAG) || plaintext == DURESS_TAG {
                     PersonaKind::Duress
                 } else {
                     continue;
@@ -252,9 +270,34 @@ impl AuthStore {
         account_key: &AccountKey,
         kdf: &Kdf,
     ) -> CryptoResult<PersonaEntry> {
+        // Fresh random KEK (the default new-store / imported-account path).
+        let kek = Kek::generate();
+        Self::build_entry_with_secrets(
+            passphrase,
+            salt,
+            device_id,
+            probe_plaintext,
+            account_key,
+            &kek,
+            kdf,
+        )
+    }
+
+    /// Build a persona entry wrapping BOTH provided secrets — the recovered
+    /// KEK and AccountKey — under the passphrase's DeviceKey. Feature-1
+    /// recovery uses this so the restored content (encrypted under the
+    /// original KEK) still decrypts after the passphrase changes.
+    fn build_entry_with_secrets(
+        passphrase: &[u8],
+        salt: &[u8],
+        device_id: &str,
+        probe_plaintext: &[u8],
+        account_key: &AccountKey,
+        kek: &Kek,
+        kdf: &Kdf,
+    ) -> CryptoResult<PersonaEntry> {
         let master = MasterKey::derive(passphrase, salt, kdf)?;
         let device_key = DeviceKey::derive(&master, device_id)?;
-        let kek = Kek::generate();
         let wrapped_kek = kek.wrap(&device_key)?;
         let wrapped_account_key = account_key.wrap(&device_key)?;
         let (probe_ciphertext, probe_nonce) =
@@ -268,6 +311,48 @@ impl AuthStore {
             wrapped_kek,
             wrapped_account_key: Some(wrapped_account_key),
             label,
+        })
+    }
+
+    /// Feature-1 recovery install: create an AuthStore whose **primary**
+    /// persona wraps EXISTING account secrets (a KEK + AccountKey recovered
+    /// via guardians) under a **new** passphrase and fresh salt. The old
+    /// passphrase is never involved — that is the whole point of recovery.
+    /// The duress persona is a fresh random decoy, as in normal creation.
+    pub fn create_with_secrets(
+        primary_passphrase: &[u8],
+        duress_passphrase: &[u8],
+        salt: &[u8],
+        device_id: &str,
+        account_key: &AccountKey,
+        kek: &Kek,
+    ) -> CryptoResult<Self> {
+        let kdf = Kdf::current();
+        let primary_entry = Self::build_entry_with_secrets(
+            primary_passphrase,
+            salt,
+            device_id,
+            &padded_probe(PRIMARY_TAG),
+            account_key,
+            kek,
+            &kdf,
+        )?;
+        let duress_entry = Self::build_entry(
+            duress_passphrase,
+            salt,
+            device_id,
+            &padded_probe(DURESS_TAG),
+            &kdf,
+        )?;
+        let mut personas = vec![primary_entry, duress_entry];
+        if rand::rng().random_bool(0.5) {
+            personas.swap(0, 1);
+        }
+        Ok(Self {
+            salt: salt.to_vec(),
+            device_id: device_id.to_string(),
+            kdf,
+            personas,
         })
     }
 
@@ -292,12 +377,12 @@ impl AuthStore {
             primary_passphrase,
             salt,
             device_id,
-            PRIMARY_PROBE,
+            &padded_probe(PRIMARY_TAG),
             imported_account_key,
             &kdf,
         )?;
         let duress_entry =
-            Self::build_entry(duress_passphrase, salt, device_id, DURESS_PROBE, &kdf)?;
+            Self::build_entry(duress_passphrase, salt, device_id, &padded_probe(DURESS_TAG), &kdf)?;
 
         let mut personas = vec![primary_entry, duress_entry];
         if rand::rng().random_bool(0.5) {
@@ -578,11 +663,13 @@ mod tests {
             device_id: TEST_DEVICE.to_string(),
             kdf,
             personas: vec![
+                // Legacy store: UNPADDED tags (the v<=0.0.8 on-disk form).
+                // authenticate() must still open these (H-crypto1 compat).
                 AuthStore::build_entry(
                     b"Primary!Pass1234",
                     TEST_SALT,
                     TEST_DEVICE,
-                    PRIMARY_PROBE,
+                    PRIMARY_TAG,
                     &Kdf::LegacyHkdf,
                 )
                 .unwrap(),
@@ -590,7 +677,7 @@ mod tests {
                     b"Duress!Pass5678",
                     TEST_SALT,
                     TEST_DEVICE,
-                    DURESS_PROBE,
+                    DURESS_TAG,
                     &Kdf::LegacyHkdf,
                 )
                 .unwrap(),
@@ -664,10 +751,10 @@ mod tests {
         // authenticate() must re-derive with HKDF and open it.
         let kdf = Kdf::LegacyHkdf;
         let primary =
-            AuthStore::build_entry(b"Primary!Pass1234", TEST_SALT, TEST_DEVICE, PRIMARY_PROBE, &kdf)
+            AuthStore::build_entry(b"Primary!Pass1234", TEST_SALT, TEST_DEVICE, &padded_probe(PRIMARY_TAG), &kdf)
                 .unwrap();
         let duress =
-            AuthStore::build_entry(b"Duress!Pass5678", TEST_SALT, TEST_DEVICE, DURESS_PROBE, &kdf)
+            AuthStore::build_entry(b"Duress!Pass5678", TEST_SALT, TEST_DEVICE, &padded_probe(DURESS_TAG), &kdf)
                 .unwrap();
         let store = AuthStore {
             salt: TEST_SALT.to_vec(),
@@ -687,10 +774,10 @@ mod tests {
         // LegacyHkdf (serde default) and still authenticate.
         let kdf = Kdf::LegacyHkdf;
         let primary =
-            AuthStore::build_entry(b"Primary!Pass1234", TEST_SALT, TEST_DEVICE, PRIMARY_PROBE, &kdf)
+            AuthStore::build_entry(b"Primary!Pass1234", TEST_SALT, TEST_DEVICE, &padded_probe(PRIMARY_TAG), &kdf)
                 .unwrap();
         let duress =
-            AuthStore::build_entry(b"Duress!Pass5678", TEST_SALT, TEST_DEVICE, DURESS_PROBE, &kdf)
+            AuthStore::build_entry(b"Duress!Pass5678", TEST_SALT, TEST_DEVICE, &padded_probe(DURESS_TAG), &kdf)
                 .unwrap();
         let store = AuthStore {
             salt: TEST_SALT.to_vec(),
@@ -707,6 +794,121 @@ mod tests {
             reparsed.authenticate(b"Primary!Pass1234").unwrap().persona,
             PersonaKind::Primary
         );
+    }
+
+    #[test]
+    fn recovery_install_rewraps_exact_secrets_under_new_passphrase() {
+        // Feature 1: create_with_secrets must round-trip the RECOVERED
+        // KEK + AccountKey — logging in with the NEW passphrase yields the
+        // exact secrets the backed-up content was encrypted under, and the
+        // OLD passphrase is irrelevant (fresh salt, new store).
+        let recovered_kek = Kek::from_bytes([0xAB; 32]);
+        let recovered_ak = AccountKey::from_bytes([0xCD; 32]);
+        let store = AuthStore::create_with_secrets(
+            b"BrandNew!Pass9999",
+            b"Duress!Pass5678",
+            TEST_SALT,
+            TEST_DEVICE,
+            &recovered_ak,
+            &recovered_kek,
+        )
+        .unwrap();
+
+        let auth = store.authenticate(b"BrandNew!Pass9999").unwrap();
+        assert_eq!(auth.persona, PersonaKind::Primary);
+        assert_eq!(auth.kek.as_bytes(), &[0xAB; 32], "recovered KEK preserved");
+        assert_eq!(auth.account_key.as_bytes(), &[0xCD; 32], "recovered AccountKey preserved");
+        // A wrong passphrase still fails; the duress persona is a decoy.
+        assert!(store.authenticate(b"WrongPass").is_err());
+    }
+
+    #[test]
+    fn persona_probe_ciphertexts_are_equal_length() {
+        // H-crypto1: the two persona entries must be byte-for-byte
+        // indistinguishable in size — otherwise the shorter ciphertext
+        // outs the decoy on disk before any cracking. This is the test
+        // that would have caught the 47-vs-46-byte leak.
+        let store = AuthStore::create(
+            b"Primary!Pass1234",
+            b"Duress!Pass5678",
+            TEST_SALT,
+            TEST_DEVICE,
+        )
+        .unwrap();
+        assert_eq!(
+            store.personas[0].probe_ciphertext.len(),
+            store.personas[1].probe_ciphertext.len(),
+            "persona probe ciphertexts must be equal length (H-crypto1)"
+        );
+        // And both open to the right persona.
+        assert_eq!(
+            store.authenticate(b"Primary!Pass1234").unwrap().persona,
+            PersonaKind::Primary
+        );
+        assert_eq!(
+            store.authenticate(b"Duress!Pass5678").unwrap().persona,
+            PersonaKind::Duress
+        );
+    }
+
+    #[test]
+    fn legacy_unpadded_probe_store_still_opens() {
+        // A v<=0.0.8 store holds the OLD unpadded tags. authenticate() must
+        // accept both the padded and legacy forms (H-crypto1 back-compat).
+        let kdf = Kdf::current();
+        let primary =
+            AuthStore::build_entry(b"Primary!Pass1234", TEST_SALT, TEST_DEVICE, PRIMARY_TAG, &kdf)
+                .unwrap();
+        let duress =
+            AuthStore::build_entry(b"Duress!Pass5678", TEST_SALT, TEST_DEVICE, DURESS_TAG, &kdf)
+                .unwrap();
+        let store = AuthStore {
+            salt: TEST_SALT.to_vec(),
+            device_id: TEST_DEVICE.to_string(),
+            kdf,
+            personas: vec![primary, duress],
+        };
+        assert_eq!(
+            store.authenticate(b"Primary!Pass1234").unwrap().persona,
+            PersonaKind::Primary
+        );
+        assert_eq!(
+            store.authenticate(b"Duress!Pass5678").unwrap().persona,
+            PersonaKind::Duress
+        );
+    }
+
+    #[test]
+    fn index_key_survives_authstore_save_load_cycle() {
+        // Reproduce the onboarding→import failure: onboarding creates index.key
+        // under the IN-MEMORY store's device_key/kek; a later process (the
+        // import CLI, or a relaunch) LOADS the store from disk, authenticates,
+        // and must reproduce the SAME KEK to read index.key — which is sealed
+        // under the KEK, the content-chain root (spec §Encryption Scheme). If the
+        // saved store deserializes to different key material, this fails with
+        // "AEAD decryption failed" — exactly the reported symptom.
+        use crate::index_key::IndexKey;
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("auth.store");
+        let idx_path = dir.path().join("index.key");
+
+        // Onboarding.
+        let store =
+            AuthStore::create(b"Primary!Pass1234", b"Duress!Pass5678", TEST_SALT, TEST_DEVICE)
+                .unwrap();
+        store.save(&store_path).unwrap();
+        let a_mem = store.authenticate(b"Primary!Pass1234").unwrap();
+        let idx1 =
+            IndexKey::load_or_create(idx_path.clone(), &a_mem.kek, &a_mem.device_key).unwrap();
+
+        // Fresh process: load from disk, authenticate, load index.key.
+        let loaded = AuthStore::load(&store_path).unwrap();
+        let a_disk = loaded.authenticate(b"Primary!Pass1234").unwrap();
+        let idx2 = IndexKey::load(&idx_path, &a_disk.kek)
+            .expect("index.key must decrypt after auth.store save/load (the import bug)");
+
+        // Same key → same blind-index hashes.
+        assert_eq!(idx1.hash_token(b"needle"), idx2.hash_token(b"needle"));
     }
 
     #[test]

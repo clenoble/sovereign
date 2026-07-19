@@ -2492,6 +2492,13 @@ pub(crate) fn auth_layout(w: f64, h: f64, n_fields: usize) -> (Rect, Vec<Rect>) 
     (card, fields)
 }
 
+/// The "Recover with guardians" link on the login screen, just below the auth
+/// card. Same width as a field row. (F1 Surface 2.)
+pub(crate) fn recovery_link_rect(w: f64, h: f64, n_fields: usize) -> Rect {
+    let (card, _fields) = auth_layout(w, h, n_fields);
+    Rect::new(card.x0 + 28.0, card.y1 + 14.0, card.x1 - 28.0, card.y1 + 40.0)
+}
+
 /// The show/hide ("eye") toggle inside a masked field, right-aligned.
 pub(crate) fn auth_reveal_btn(field: Rect) -> Rect {
     let bw = 48.0;
@@ -3014,34 +3021,8 @@ pub(crate) fn draw_pairing_modal(scene: &mut Scene, m: &PairingModal, w: f64, h:
         draw_text(scene, p, Affine::translate((tx, card.y0 + 92.0)), Color::from_rgb8(120, 200, 235));
     }
 
-    // QR: black modules on a white card (high contrast for scanners). A white
-    // quiet-zone border is included by insetting the module grid.
-    let white = Color::from_rgb8(255, 255, 255);
-    let black = Color::from_rgb8(0, 0, 0);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, white, None, &RoundedRect::from_rect(qr, 6.0));
-    if m.qr_width > 0 {
-        let quiet = 3.0; // modules of white margin on each side
-        let modules = m.qr_width as f64 + quiet * 2.0;
-        let cell = qr.width() / modules;
-        let origin_x = qr.x0 + quiet * cell;
-        let origin_y = qr.y0 + quiet * cell;
-        for row in 0..m.qr_width {
-            for col in 0..m.qr_width {
-                if m.qr_dark[row * m.qr_width + col] {
-                    let cx = origin_x + col as f64 * cell;
-                    let cy = origin_y + row as f64 * cell;
-                    // +0.5 overdraw avoids hairline seams between cells.
-                    scene.fill(
-                        Fill::NonZero,
-                        Affine::IDENTITY,
-                        black,
-                        None,
-                        &Rect::new(cx, cy, cx + cell + 0.5, cy + cell + 0.5),
-                    );
-                }
-            }
-        }
-    }
+    // QR: black modules on a white card (high contrast for scanners).
+    draw_qr_modules(scene, qr, &m.qr_dark, m.qr_width);
 
     if let Some(f) = &m.footer {
         draw_text(scene, f, Affine::translate((card.x0 + 28.0, qr.y1 + 14.0)), pal().text_dim);
@@ -3062,6 +3043,621 @@ pub(crate) fn draw_pairing_modal(scene: &mut Scene, m: &PairingModal, w: f64, h:
     };
     btn(scene, copy, copy_lbl, pal().surface, copy_fg);
     btn(scene, close, &m.close_lbl, pal().surface_alt, pal().text);
+}
+
+/// Draw a QR as black modules on a white card, with a 3-module white quiet zone.
+/// Shared by the pairing and guardian-enrollment modals so the module rendering
+/// lives in one place. `qr_dark` is row-major, `width*width`, `true` = dark.
+fn draw_qr_modules(scene: &mut Scene, qr: Rect, qr_dark: &[bool], qr_width: usize) {
+    let white = Color::from_rgb8(255, 255, 255);
+    let black = Color::from_rgb8(0, 0, 0);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, white, None, &RoundedRect::from_rect(qr, 6.0));
+    if qr_width == 0 {
+        return;
+    }
+    let quiet = 3.0; // modules of white margin on each side
+    let modules = qr_width as f64 + quiet * 2.0;
+    let cell = qr.width() / modules;
+    let origin_x = qr.x0 + quiet * cell;
+    let origin_y = qr.y0 + quiet * cell;
+    for row in 0..qr_width {
+        for col in 0..qr_width {
+            if qr_dark[row * qr_width + col] {
+                let cx = origin_x + col as f64 * cell;
+                let cy = origin_y + row as f64 * cell;
+                // +0.5 overdraw avoids hairline seams between cells.
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    black,
+                    None,
+                    &Rect::new(cx, cy, cx + cell + 0.5, cy + cell + 0.5),
+                );
+            }
+        }
+    }
+}
+
+/// Build the (row-major dark-module vector, width) for a QR of `payload`.
+/// `(Vec::new(), 0)` if encoding fails, which the draw path renders as a blank
+/// white card rather than panicking.
+fn build_qr(payload: &str) -> (Vec<bool>, usize) {
+    match qrcode::QrCode::new(payload.as_bytes()) {
+        Ok(c) => {
+            let w = c.width();
+            let dark = c.to_colors().into_iter().map(|m| m == qrcode::Color::Dark).collect();
+            (dark, w)
+        }
+        Err(_) => (Vec::new(), 0),
+    }
+}
+
+// ---- Guardian enrollment (F1 Surface 1b) --------------------------------
+// The owner arms an in-person offer for one guardian: a QR (the base64url
+// GuardianEnrollOffer) + a spoken code the owner reads aloud. The guardian's
+// device scans + hears the code and completes the handshake, at which point it
+// receives one Shamir share of the Recovery Key. The distinguishing copy — and
+// the reason this is not just the pairing modal — is the RECOGNITION PROOF:
+// each owner<->guardian pair agrees, out of band, something only they know, so
+// the guardian can tell it is really the owner at recovery time. Sovereign
+// stores nothing about it (spec §Identity proof). It is the anti-impersonation
+// control, not flavour text, so it is required on this screen.
+
+pub(crate) fn guardian_modal_layout(w: f64, h: f64) -> (Rect, Rect, Rect) {
+    let cw = 470.0_f64.min(w - 80.0);
+    let ch = 648.0_f64.min(h - 40.0);
+    let x0 = ((w - cw) * 0.5).round();
+    let y0 = ((h - ch) * 0.5).round().max(24.0);
+    let card = Rect::new(x0, y0, x0 + cw, y0 + ch);
+    let qr_side = 240.0_f64.min(cw - 120.0);
+    let qx0 = (x0 + (cw - qr_side) * 0.5).round();
+    let qy0 = y0 + 132.0;
+    let qr = Rect::new(qx0, qy0, qx0 + qr_side, qy0 + qr_side);
+    let bh = 34.0;
+    let done = Rect::new(card.x1 - 28.0 - 120.0, card.y1 - 46.0, card.x1 - 28.0, card.y1 - 46.0 + bh);
+    (card, qr, done)
+}
+
+pub(crate) struct GuardianEnrollModal {
+    pub(crate) code: String, // spoken code (XXXXX-XXXXX)
+    qr_dark: Vec<bool>,
+    qr_width: usize,
+    /// `enrolled_before + 1` .. of 5 — which guardian this offer is for.
+    slot_ordinal: usize,
+    title: Option<Layout<Brush>>,
+    instr: Option<Layout<Brush>>,
+    code_lbl: Option<Layout<Brush>>,
+    proof_head: Option<Layout<Brush>>,
+    proof_body: Option<Layout<Brush>>,
+    footer: Option<Layout<Brush>>,
+    close_lbl: Option<Layout<Brush>>,
+    shaped: bool,
+}
+impl GuardianEnrollModal {
+    /// `qr_payload` is the base64url `GuardianEnrollOffer`; `code` the spoken
+    /// code; `slot_ordinal` which of the 5 this is (1-based).
+    pub(crate) fn new(qr_payload: String, code: String, slot_ordinal: usize) -> Self {
+        let (qr_dark, qr_width) = build_qr(&qr_payload);
+        Self {
+            code,
+            qr_dark,
+            qr_width,
+            slot_ordinal,
+            title: None,
+            instr: None,
+            code_lbl: None,
+            proof_head: None,
+            proof_body: None,
+            footer: None,
+            close_lbl: None,
+            shaped: false,
+        }
+    }
+
+    pub(crate) fn a11y_lines(&self) -> Vec<String> {
+        vec![
+            format!("Enroll guardian {} of 5", self.slot_ordinal),
+            format!("Spoken code {}", self.code),
+            "Have them scan the QR, then read the code aloud".into(),
+            "Agree a recognition proof out loud: something only the two of you \
+             know, that Sovereign never stores"
+                .into(),
+        ]
+    }
+
+    pub(crate) fn ensure_shaped(&mut self, shaper: &mut TextShaper) {
+        if self.shaped {
+            return;
+        }
+        self.title = Some(shaper.shape(
+            &format!("Enroll guardian {} of 5", self.slot_ordinal),
+            4000.0,
+            18.0,
+        ));
+        self.instr = Some(shaper.shape(
+            "In person: have them scan this QR in their guardian app, then read this code aloud.",
+            414.0,
+            13.0,
+        ));
+        self.code_lbl = Some(shaper.shape(&self.code, 4000.0, 30.0));
+        self.proof_head = Some(shaper.shape("Agree a recognition proof, out loud", 414.0, 13.5));
+        self.proof_body = Some(shaper.shape(
+            "Decide together on something only the two of you know \u{2014} a shared \
+             memory, a private question, an object \u{2014} that isn't findable online. \
+             It is how they will know it is really you if you ever recover. Sovereign \
+             never stores it; it lives only between you.",
+            414.0,
+            12.5,
+        ));
+        self.footer = Some(shaper.shape(
+            "The share goes to them over the live connection, never in the QR. Valid 10 minutes.",
+            414.0,
+            11.5,
+        ));
+        self.close_lbl = Some(shaper.shape("Done", 120.0, 13.0));
+        self.shaped = true;
+    }
+}
+
+pub(crate) fn draw_guardian_enroll_modal(scene: &mut Scene, m: &GuardianEnrollModal, w: f64, h: f64) {
+    let (card, qr, close) = guardian_modal_layout(w, h);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, pal().scrim.with_alpha(0.5), None, &Rect::new(0.0, 0.0, w, h));
+    let rr = RoundedRect::from_rect(card, 12.0);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, pal().modal, None, &rr);
+    scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &rr);
+
+    if let Some(t) = &m.title {
+        draw_text(scene, t, Affine::translate((card.x0 + 28.0, card.y0 + 22.0)), pal().text);
+    }
+    if let Some(i) = &m.instr {
+        draw_text(scene, i, Affine::translate((card.x0 + 28.0, card.y0 + 52.0)), pal().text_dim);
+    }
+    // Spoken code, centered above the QR.
+    if let Some(c) = &m.code_lbl {
+        let tx = card.x0 + (card.width() - c.width() as f64) * 0.5;
+        draw_text(scene, c, Affine::translate((tx, card.y0 + 92.0)), Color::from_rgb8(120, 200, 235));
+    }
+    draw_qr_modules(scene, qr, &m.qr_dark, m.qr_width);
+
+    // Recognition proof — the required anti-impersonation copy.
+    let mut y = qr.y1 + 16.0;
+    if let Some(ph) = &m.proof_head {
+        draw_text(scene, ph, Affine::translate((card.x0 + 28.0, y)), Color::from_rgb8(210, 180, 120));
+        y += 22.0;
+    }
+    if let Some(pb) = &m.proof_body {
+        draw_text(scene, pb, Affine::translate((card.x0 + 28.0, y)), pal().text_body);
+        y += 74.0;
+    }
+    if let Some(f) = &m.footer {
+        draw_text(scene, f, Affine::translate((card.x0 + 28.0, y)), pal().text_dim);
+    }
+
+    // Done button.
+    scene.fill(Fill::NonZero, Affine::IDENTITY, pal().surface_alt, None, &RoundedRect::from_rect(close, 7.0));
+    if let Some(l) = &m.close_lbl {
+        let tx = close.x0 + (close.width() - l.width() as f64) * 0.5;
+        let ty = close.y0 + (close.height() - l.height() as f64) * 0.5;
+        draw_text(scene, l, Affine::translate((tx, ty)), pal().text);
+    }
+}
+
+// ---- Guardian access recovery wizard (F1 Surface 2) ---------------------
+// Pre-login. The user forgot their passphrase; their guardians release shares
+// of the Recovery Key over a multi-day (72h/guardian) window; once ≥threshold
+// are in, the user sets a NEW passphrase and the account is re-wrapped +
+// unlocked. NO old-password field, NO data-fragment badge (that is Feature 2,
+// deferred). The waiting screen is deliberately legible — a live countdown, a
+// "checking…" state, and a manual "Check now" — because the first version of
+// this wizard (Svelte) polled silently every 45s and read as "stuck" for a
+// minute after approvals (0050 #6). Do not rebuild the silent version.
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecoveryPhase {
+    /// FIRST: set the new password, BEFORE any guardian is contacted
+    /// (RECOVERY-001, SEAM A). The collected passphrase seals each guardian
+    /// share the moment it arrives, so `access_recovery.json` is never a
+    /// plaintext-reconstructable file — the vulnerable window is zero, not 72h.
+    /// On resume (relaunch mid-recovery) this phase re-prompts for the same
+    /// passphrase to re-derive the sealing key.
+    SetPassword,
+    /// Waiting for ≥threshold guardians to approve + release.
+    Awaiting,
+    /// Enough shares — confirm and recover (the password was already set).
+    Ready,
+    /// Hard failure (bad shares / bundle / at-rest verify); see `error`.
+    Failed,
+}
+
+pub(crate) struct RecoveryWizard {
+    pub(crate) phase: RecoveryPhase,
+    /// True when this is a resume (recovery already in progress on disk) — the
+    /// SetPassword phase re-prompts for the SAME passphrase to re-derive the
+    /// sealing key, rather than starting fresh.
+    pub(crate) resuming: bool,
+    pub(crate) shares: u8,
+    pub(crate) threshold: u8,
+    /// Released state per guardian, in roster order.
+    pub(crate) released: Vec<bool>,
+    /// The new passphrase, collected UP FRONT in the SetPassword phase and held
+    /// for the rest of the session (it seals the shares on arrival and unseals
+    /// them at finalize).
+    pub(crate) new_password: String,
+    pub(crate) reveal: bool,
+    /// A poll round is in flight — the UI says "checking…" instead of looking
+    /// stuck.
+    pub(crate) polling: bool,
+    /// Seconds until the next automatic poll (App recomputes each frame). `None`
+    /// while polling or on a terminal phase.
+    pub(crate) next_poll_secs: Option<u64>,
+    /// A finalize (reconstruct + re-install) is running.
+    pub(crate) finalizing: bool,
+    pub(crate) error: Option<String>,
+}
+
+impl RecoveryWizard {
+    fn blank() -> Self {
+        Self {
+            phase: RecoveryPhase::SetPassword,
+            resuming: false,
+            shares: 0,
+            threshold: 0,
+            released: Vec::new(),
+            new_password: String::new(),
+            reveal: false,
+            polling: false,
+            next_poll_secs: None,
+            finalizing: false,
+            error: None,
+        }
+    }
+
+    /// Open the wizard for a NEW recovery: set the password first, then start.
+    pub(crate) fn fresh() -> Self {
+        Self::blank()
+    }
+
+    /// Open the wizard to RESUME an in-progress recovery: re-prompt for the same
+    /// passphrase (to re-derive the sealing key) before showing the wait again.
+    pub(crate) fn resume() -> Self {
+        Self { resuming: true, ..Self::blank() }
+    }
+
+    /// Fold a fresh status in — called AFTER start/resume succeeds (never while
+    /// still on SetPassword). Preserves user-entered fields (new_password).
+    pub(crate) fn adopt(&mut self, status: &crate::recovery::RecoveryStatus) {
+        use sovereign_p2p::access_recovery::AccessRecoveryPhase as P;
+        self.shares = status.shares_collected;
+        self.threshold = status.threshold;
+        self.released = status.guardians.iter().map(|(_, r)| *r).collect();
+        self.error = status.error.clone();
+        self.phase = match status.phase {
+            P::Failed => RecoveryPhase::Failed,
+            _ if status.ready_to_finalize() => RecoveryPhase::Ready,
+            _ => RecoveryPhase::Awaiting,
+        };
+    }
+
+    pub(crate) fn a11y_lines(&self) -> Vec<String> {
+        match self.phase {
+            RecoveryPhase::SetPassword => vec![
+                if self.resuming {
+                    "Resume recovery: re-enter the new password you chose".into()
+                } else {
+                    "Recover access: first, set a new password".into()
+                },
+                "Your guardians are contacted only after this — the password \
+                 protects the collected shares at rest"
+                    .into(),
+            ],
+            RecoveryPhase::Awaiting => vec![
+                "Recovering access with guardians".into(),
+                format!("{} of {} guardians have approved", self.shares, self.threshold),
+                "Each guardian has a 72-hour window to approve or refuse".into(),
+                if self.polling { "Checking now".into() } else { "Waiting for the next check".into() },
+            ],
+            RecoveryPhase::Ready => vec![
+                "Enough guardians have approved".into(),
+                "Recover now to unlock your account under the new password".into(),
+            ],
+            RecoveryPhase::Failed => vec![
+                "Recovery could not be completed".into(),
+                self.error.clone().unwrap_or_default(),
+            ],
+        }
+    }
+}
+
+/// (card, password field, primary button, secondary button, check-now button,
+/// reveal eye). `check_now` is empty on non-Awaiting phases; `field`/`reveal`
+/// are empty off the Ready phase.
+pub(crate) fn recovery_wizard_layout(
+    w: f64,
+    h: f64,
+    phase: RecoveryPhase,
+) -> (Rect, Rect, Rect, Rect, Rect, Rect) {
+    let cw = 480.0_f64.min(w - 80.0);
+    let ch = 452.0_f64.min(h - 40.0);
+    let x0 = ((w - cw) * 0.5).round();
+    let y0 = ((h - ch) * 0.5).round().max(24.0);
+    let card = Rect::new(x0, y0, x0 + cw, y0 + ch);
+    let bh = 36.0;
+    let by = card.y1 - 52.0;
+    // Primary right, secondary left of it.
+    let primary = Rect::new(card.x1 - 28.0 - 140.0, by, card.x1 - 28.0, by + bh);
+    let secondary = Rect::new(card.x0 + 28.0, by, card.x0 + 28.0 + 110.0, by + bh);
+    let (field, reveal, check_now) = match phase {
+        // Password entry lives here now (up front), not on Ready.
+        RecoveryPhase::SetPassword => {
+            let f = Rect::new(card.x0 + 28.0, card.y0 + 150.0, card.x1 - 28.0, card.y0 + 188.0);
+            let eye = Rect::new(f.x1 - 52.0, f.y0 + 5.0, f.x1 - 4.0, f.y1 - 5.0);
+            (f, eye, Rect::ZERO)
+        }
+        RecoveryPhase::Awaiting => {
+            // "Check now" sits inline with the countdown, above the buttons.
+            let c = Rect::new(card.x1 - 28.0 - 120.0, card.y1 - 104.0, card.x1 - 28.0, card.y1 - 104.0 + 30.0);
+            (Rect::ZERO, Rect::ZERO, c)
+        }
+        // Ready is now a confirm — the password was already set up front.
+        RecoveryPhase::Ready | RecoveryPhase::Failed => (Rect::ZERO, Rect::ZERO, Rect::ZERO),
+    };
+    (card, field, primary, secondary, check_now, reveal)
+}
+
+pub(crate) fn draw_recovery_wizard(
+    scene: &mut Scene,
+    shaper: &mut TextShaper,
+    wiz: &RecoveryWizard,
+    w: f64,
+    h: f64,
+) {
+    let (card, field, primary, secondary, check_now, reveal) =
+        recovery_wizard_layout(w, h, wiz.phase);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, pal().scrim.with_alpha(0.5), None, &Rect::new(0.0, 0.0, w, h));
+    let rr = RoundedRect::from_rect(card, 12.0);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, pal().modal, None, &rr);
+    scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &rr);
+
+    let ix = card.x0 + 28.0;
+    let text = |scene: &mut Scene, shaper: &mut TextShaper, s: &str, size: f32, y: f64, c: Color, maxw: f64| {
+        let l = shaper.shape(s, maxw as f32, size);
+        draw_text(scene, &l, Affine::translate((ix, y)), c);
+    };
+    let btn = |scene: &mut Scene, shaper: &mut TextShaper, r: Rect, label: &str, bg: Color, fg: Color| {
+        scene.fill(Fill::NonZero, Affine::IDENTITY, bg, None, &RoundedRect::from_rect(r, 7.0));
+        let l = shaper.shape(label, r.width() as f32, 13.0);
+        let tx = r.x0 + (r.width() - l.width() as f64) * 0.5;
+        let ty = r.y0 + (r.height() - l.height() as f64) * 0.5;
+        draw_text(scene, &l, Affine::translate((tx, ty)), fg);
+    };
+    let maxw = card.width() - 56.0;
+    let accent = Color::from_rgb8(120, 200, 235);
+
+    match wiz.phase {
+        RecoveryPhase::Awaiting => {
+            text(scene, shaper, "Recover access with guardians", 18.0, card.y0 + 22.0, pal().text, maxw);
+            text(
+                scene, shaper,
+                "Your guardians are being asked to approve. Each has a 72-hour window; you can close this and come back — recovery keeps running.",
+                13.0, card.y0 + 52.0, pal().text_dim, maxw,
+            );
+            // Big progress line.
+            text(
+                scene, shaper,
+                &format!("{} of {} approvals", wiz.shares, wiz.threshold),
+                26.0, card.y0 + 108.0, accent, maxw,
+            );
+            // Per-guardian dots.
+            let mut gy = card.y0 + 160.0;
+            for (i, released) in wiz.released.iter().enumerate() {
+                let (mark, c) = if *released {
+                    ("\u{2713} released", Color::from_rgb8(150, 200, 150))
+                } else {
+                    ("waiting", pal().text_dim)
+                };
+                text(scene, shaper, &format!("Guardian {}  \u{00b7}  {mark}", i + 1), 13.0, gy, c, maxw);
+                gy += 24.0;
+            }
+            // Countdown / checking — the legibility fix.
+            let status_line = if wiz.polling {
+                "checking now\u{2026}".to_string()
+            } else if let Some(s) = wiz.next_poll_secs {
+                format!("next check in {s}s")
+            } else {
+                "waiting".to_string()
+            };
+            text(scene, shaper, &status_line, 12.5, card.y1 - 98.0, pal().text_dim, maxw - 130.0);
+            btn(scene, shaper, check_now, if wiz.polling { "Checking…" } else { "Check now" }, pal().surface, pal().text_body);
+            btn(scene, shaper, primary, "Close", pal().surface_alt, pal().text);
+            // (secondary = Cancel recovery)
+            btn(scene, shaper, secondary, "Cancel", pal().surface, pal().text_dim);
+        }
+        RecoveryPhase::SetPassword => {
+            let (title, instr) = if wiz.resuming {
+                (
+                    "Resume recovery",
+                    "Re-enter the new password you chose. Your guardians pick up where they left off.",
+                )
+            } else {
+                (
+                    "Recover access — set a new password",
+                    "Choose the password you'll recover into. Your guardians are contacted next; \
+                     this password protects the shares they send, at rest.",
+                )
+            };
+            text(scene, shaper, title, 18.0, card.y0 + 22.0, pal().text, maxw);
+            text(scene, shaper, instr, 13.0, card.y0 + 52.0, pal().text_dim, maxw);
+            text(scene, shaper, "New password", 12.0, card.y0 + 126.0, pal().text_dim, maxw);
+            // The password field (moved up front from the old Ready phase).
+            let fr = RoundedRect::from_rect(field, 7.0);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, pal().surface, None, &fr);
+            scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &fr);
+            let shown = if wiz.reveal {
+                wiz.new_password.clone()
+            } else {
+                "\u{2022}".repeat(wiz.new_password.chars().count())
+            };
+            let fl = shaper.shape(&shown, (field.width() - 60.0) as f32, 15.0);
+            draw_text(scene, &fl, Affine::translate((field.x0 + 12.0, field.y0 + 9.0)), pal().text);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, pal().surface_alt, None, &RoundedRect::from_rect(reveal, 5.0));
+            let eye = shaper.shape(if wiz.reveal { "hide" } else { "show" }, reveal.width() as f32, 11.0);
+            draw_text(scene, &eye, Affine::translate((reveal.x0 + 6.0, reveal.y0 + 6.0)), pal().text_dim);
+
+            if let Some(e) = &wiz.error {
+                text(scene, shaper, e, 12.0, card.y0 + 210.0, Color::from_rgb8(230, 130, 130), maxw);
+            }
+            let plabel = if wiz.finalizing {
+                "Working…"
+            } else if wiz.resuming {
+                "Resume"
+            } else {
+                "Start recovery"
+            };
+            btn(scene, shaper, primary, plabel, accent, Color::from_rgb8(10, 20, 26));
+            btn(scene, shaper, secondary, "Cancel", pal().surface, pal().text_dim);
+        }
+        RecoveryPhase::Ready => {
+            text(scene, shaper, "Recover now", 18.0, card.y0 + 22.0, pal().text, maxw);
+            text(
+                scene, shaper,
+                &format!("{} of {} guardians approved. Recover to unlock your account under the password you already set.", wiz.shares, wiz.threshold),
+                13.0, card.y0 + 52.0, pal().text_dim, maxw,
+            );
+            if let Some(e) = &wiz.error {
+                text(scene, shaper, e, 12.0, card.y0 + 120.0, Color::from_rgb8(230, 130, 130), maxw);
+            }
+            btn(
+                scene, shaper, primary,
+                if wiz.finalizing { "Recovering…" } else { "Recover" },
+                accent, Color::from_rgb8(10, 20, 26),
+            );
+            btn(scene, shaper, secondary, "Cancel", pal().surface, pal().text_dim);
+        }
+        RecoveryPhase::Failed => {
+            text(scene, shaper, "Recovery couldn't finish", 18.0, card.y0 + 22.0, pal().text, maxw);
+            text(
+                scene, shaper,
+                wiz.error.as_deref().unwrap_or("Something went wrong reaching your guardians."),
+                13.0, card.y0 + 56.0, Color::from_rgb8(230, 130, 130), maxw,
+            );
+            text(
+                scene, shaper,
+                "Your account was left unchanged — your old password still works if you remember it.",
+                12.5, card.y0 + 120.0, pal().text_dim, maxw,
+            );
+            btn(scene, shaper, primary, "Start over", pal().surface_alt, pal().text);
+            btn(scene, shaper, secondary, "Close", pal().surface, pal().text_dim);
+        }
+    }
+}
+
+// ---- Injection-decision gate (INJECTION-002) ----------------------------
+// A high-severity injection was found in agent-loop tool output; the loop is
+// PAUSED and the user chooses. The `preview` is UNTRUSTED attacker content shown
+// verbatim so the user can judge — it is rendered as PLAIN TEXT (never markup,
+// no interpretation) and clipped, so the preview itself can do nothing (the
+// render-path concern Fable 5 flagged in 0071).
+
+pub(crate) struct InjectionPrompt {
+    pub(crate) source: String,
+    pub(crate) severity: u8,
+    pub(crate) indicators: Vec<String>,
+    pub(crate) preview: String,
+}
+
+/// (panel, redact btn, pass-through btn, abort btn).
+pub(crate) fn injection_prompt_geom(w: f64, h: f64) -> (Rect, Rect, Rect, Rect) {
+    let cw = 540.0_f64.min(w - 80.0);
+    let ch = 440.0_f64.min(h - 40.0);
+    let x0 = ((w - cw) * 0.5).round();
+    let y0 = ((h - ch) * 0.5).round().max(24.0);
+    let panel = Rect::new(x0, y0, x0 + cw, y0 + ch);
+    let bh = 36.0;
+    let by = panel.y1 - 52.0;
+    let gap = 8.0;
+    let bw = ((cw - 56.0) - gap * 2.0) / 3.0;
+    let redact = Rect::new(panel.x0 + 28.0, by, panel.x0 + 28.0 + bw, by + bh);
+    let pass = Rect::new(redact.x1 + gap, by, redact.x1 + gap + bw, by + bh);
+    let abort = Rect::new(pass.x1 + gap, by, panel.x1 - 28.0, by + bh);
+    (panel, redact, pass, abort)
+}
+
+/// Collapse to a single line and clip so untrusted preview text can't blow the
+/// layout or inject control characters into the render.
+fn one_line_clip(s: &str, max: usize) -> String {
+    let flat: String = s
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        flat
+    } else {
+        let keep: String = flat.chars().take(max.saturating_sub(1)).collect();
+        format!("{keep}\u{2026}")
+    }
+}
+
+pub(crate) fn draw_injection_prompt(
+    scene: &mut Scene,
+    shaper: &mut TextShaper,
+    p: &InjectionPrompt,
+    w: f64,
+    h: f64,
+) {
+    let (panel, redact, pass, abort) = injection_prompt_geom(w, h);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, pal().scrim.with_alpha(0.5), None, &Rect::new(0.0, 0.0, w, h));
+    let rr = RoundedRect::from_rect(panel, 12.0);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, pal().modal, None, &rr);
+    scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &rr);
+
+    let ix = panel.x0 + 28.0;
+    let maxw = (panel.width() - 56.0) as f32;
+    let mut line = |scene: &mut Scene, shaper: &mut TextShaper, s: &str, size: f32, y: f64, c: Color| {
+        let l = shaper.shape(s, maxw, size);
+        draw_text(scene, &l, Affine::translate((ix, y)), c);
+    };
+    let warn = Color::from_rgb8(230, 160, 90);
+
+    line(scene, shaper, "Possible prompt injection in tool output", 18.0, panel.y0 + 22.0, warn);
+    line(
+        scene, shaper,
+        &format!(
+            "From {}  \u{00b7}  severity {}/10. It may be trying to steer the assistant. Choose what reaches the model.",
+            one_line_clip(&p.source, 48),
+            p.severity
+        ),
+        13.0, panel.y0 + 52.0, pal().text_dim,
+    );
+    // Indicators (bounded).
+    let ind = if p.indicators.is_empty() {
+        "flagged by the injection scanner".to_string()
+    } else {
+        one_line_clip(&p.indicators.join(", "), 70)
+    };
+    line(scene, shaper, &format!("Signals: {ind}"), 12.5, panel.y0 + 88.0, pal().text_body);
+
+    // Untrusted preview — plain text, boxed + clipped.
+    line(scene, shaper, "Flagged content (preview):", 12.0, panel.y0 + 122.0, pal().text_dim);
+    let pv = Rect::new(panel.x0 + 28.0, panel.y0 + 144.0, panel.x1 - 28.0, panel.y0 + 300.0);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, pal().surface, None, &RoundedRect::from_rect(pv, 7.0));
+    scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &RoundedRect::from_rect(pv, 7.0));
+    // Wrap the preview to the box width, a few clipped lines. shape() wraps at
+    // maxw; draw_text renders it as text only (no markup interpretation).
+    let pv_layout = shaper.shape(&one_line_clip(&p.preview, 500), (pv.width() - 24.0) as f32, 12.5);
+    draw_text(scene, &pv_layout, Affine::translate((pv.x0 + 12.0, pv.y0 + 10.0)), pal().text_body);
+
+    let btn = |scene: &mut Scene, shaper: &mut TextShaper, r: Rect, label: &str, bg: Color, fg: Color| {
+        scene.fill(Fill::NonZero, Affine::IDENTITY, bg, None, &RoundedRect::from_rect(r, 7.0));
+        let l = shaper.shape(label, r.width() as f32, 12.5);
+        let tx = r.x0 + (r.width() - l.width() as f64) * 0.5;
+        let ty = r.y0 + (r.height() - l.height() as f64) * 0.5;
+        draw_text(scene, &l, Affine::translate((tx, ty)), fg);
+    };
+    // Redact is the safe default (accent); pass-through is the riskier choice.
+    btn(scene, shaper, redact, "Redact & continue", Color::from_rgb8(120, 200, 235), Color::from_rgb8(10, 20, 26));
+    btn(scene, shaper, pass, "Pass through", pal().surface_alt, pal().text);
+    btn(scene, shaper, abort, "Abort turn", pal().surface, pal().text_dim);
 }
 
 // ---- Email compose (Batch 6b) -------------------------------------------

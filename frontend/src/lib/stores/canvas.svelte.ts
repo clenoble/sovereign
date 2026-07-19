@@ -41,6 +41,8 @@ export interface CanvasState {
 	hoveredCardId: string | null;
 	selectedCardId: string | null;
 	draggingCardId: string | null;
+	/** Front id of the deck currently fanned open (lifted overlay), or null. */
+	expandedFrontId: string | null;
 	loaded: boolean;
 	loadError: string | null;
 	timelineScale: TimelineScale | null;
@@ -75,10 +77,21 @@ export const canvas: CanvasState = $state({
 	hoveredCardId: null,
 	selectedCardId: null,
 	draggingCardId: null,
+	expandedFrontId: null,
 	loaded: false,
 	loadError: null,
 	timelineScale: null
 });
+
+/** Fan a deck open into the lifted overlay (keyed by its front card id). */
+export function expandDeck(frontId: string) {
+	canvas.expandedFrontId = frontId;
+}
+
+/** Collapse the fanned deck back into a stack. */
+export function collapseDeck() {
+	canvas.expandedFrontId = null;
+}
 
 /** Interval handle for periodic "Now" line updates. */
 let nowTimer: ReturnType<typeof setInterval> | null = null;
@@ -306,11 +319,10 @@ function computeScale(docs: CanvasDocDto[]): TimelineScale {
 	};
 }
 
-/** Cascade offset for stacked cards. */
-const STACK_OFFSET_X = 20;
-const STACK_OFFSET_Y = 10;
-
-/** Position documents on the timeline with cascade stacking for same-date cards. */
+/** Position documents at their TRUE timeline position — X = real time, Y = lane
+ *  center. No cascade is baked in: same-time overlap is handled at render time by
+ *  the zoom-reactive deck pass (see computeDeckRoles), so zooming can dissolve a
+ *  pile back into individual cards. */
 function timelineLayout(docs: CanvasDocDto[], threads: ThreadDto[]): CanvasDocDto[] {
 	const scale = computeScale(docs);
 	canvas.timelineScale = scale;
@@ -318,37 +330,93 @@ function timelineLayout(docs: CanvasDocDto[], threads: ThreadDto[]): CanvasDocDt
 	const threadOrder = new Map<string, number>();
 	threads.forEach((t, i) => threadOrder.set(t.id, i));
 
-	// Group by lane, sort by date within each lane
-	const byLane = new Map<number, { doc: CanvasDocDto; baseX: number }[]>();
-	for (const d of docs) {
+	return docs.map((d) => {
 		const laneIdx = threadOrder.get(d.thread_id) ?? 0;
 		const t = new Date(d.modified_at).getTime();
-		const baseX = scale.originX + (t - scale.minDate) * scale.pxPerMs;
-		const list = byLane.get(laneIdx) || [];
-		list.push({ doc: d, baseX });
-		byLane.set(laneIdx, list);
+		return {
+			...d,
+			spatial_x: scale.originX + (t - scale.minDate) * scale.pxPerMs,
+			spatial_y: laneIdx * LANE_HEIGHT + (LANE_HEIGHT - CARD_H) / 2
+		};
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Deck layout (zoom-reactive, screen-space) — containment + count, no spill
+// ---------------------------------------------------------------------------
+
+/** Screen-px offset each peeking card is nudged up-left behind the front card. */
+export const DECK_PEEK = 5;
+/** Front card + up to (DECK_VISIBLE − 1) peeks are drawn; the rest hide behind
+ *  the count badge. Bounded so the up-left fan never leaves the lane's top
+ *  margin: (DECK_VISIBLE − 1) * DECK_PEEK ≤ (LANE_HEIGHT − CARD_H) / 2. */
+export const DECK_VISIBLE = 4;
+
+export interface DeckRole {
+	/** Total cards in this deck (what the badge shows). */
+	count: number;
+	/** 0 = front (fully visible, at true position); 1.. = peeks behind it. */
+	peekIndex: number;
+	isFront: boolean;
+	/** peekIndex ≥ DECK_VISIBLE → not rendered (behind the badge). */
+	hidden: boolean;
+	/** id of this deck's front card — the key used to expand/collapse the deck. */
+	frontId: string;
+}
+
+/**
+ * Zoom-reactive, screen-space decking. Within a lane, cards whose on-screen X
+ * gap is under CARD_W collapse into a deck: the most-recent card is the front
+ * (kept at its true position), older cards peek up-left behind it, and overflow
+ * is hidden behind a total-count badge. The grouping threshold is CARD_W / zoom
+ * world px (== CARD_W screen px), so as zoom rises the threshold shrinks and
+ * decks dissolve into individual cards — down to cards sharing an identical
+ * timestamp, which stay decked at any zoom.
+ *
+ * Pure (no rune/store access) so it is unit-testable and can be $derived from
+ * (documents, camera.zoom) at the call site.
+ */
+export function computeDeckRoles(docs: CanvasDocDto[], zoom: number): Map<string, DeckRole> {
+	const roles = new Map<string, DeckRole>();
+	// world gap that projects to exactly CARD_W screen px at this zoom
+	const threshold = CARD_W / Math.max(zoom, 1e-6);
+
+	// Group by lane. Same thread_id == same lane (matches timelineLayout's
+	// lane assignment, including the shared fallback lane for unfiled docs).
+	const byLane = new Map<string, CanvasDocDto[]>();
+	for (const d of docs) {
+		const list = byLane.get(d.thread_id) || [];
+		list.push(d);
+		byLane.set(d.thread_id, list);
 	}
 
-	const result: CanvasDocDto[] = [];
-	for (const [laneIdx, entries] of byLane) {
-		entries.sort((a, b) => a.baseX - b.baseX);
-		const baseY = laneIdx * LANE_HEIGHT + (LANE_HEIGHT - CARD_H) / 2;
-		const placed: { x: number }[] = [];
-
-		for (const { doc, baseX } of entries) {
-			// Count overlapping earlier cards
-			let stackIdx = 0;
-			for (const p of placed) {
-				if (Math.abs(baseX - p.x) < CARD_W) stackIdx++;
+	for (const list of byLane.values()) {
+		list.sort((a, b) => a.spatial_x - b.spatial_x);
+		let i = 0;
+		while (i < list.length) {
+			// A deck spans [anchorX, anchorX + threshold): the run of cards whose
+			// screen-X sits within one card-width of the deck's oldest card.
+			const anchorX = list[i].spatial_x;
+			let j = i + 1;
+			while (j < list.length && list[j].spatial_x - anchorX < threshold) j++;
+			const count = j - i;
+			const frontId = list[j - 1].id; // max x = most recent = front
+			for (let k = i; k < j; k++) {
+				// Ascending by x, so the LAST card (max x, most recent) is the front.
+				const peekIndex = j - 1 - k;
+				roles.set(list[k].id, {
+					count,
+					peekIndex,
+					isFront: peekIndex === 0,
+					hidden: peekIndex >= DECK_VISIBLE,
+					frontId
+				});
 			}
-			const x = baseX + stackIdx * STACK_OFFSET_X;
-			const y = baseY + stackIdx * STACK_OFFSET_Y;
-			placed.push({ x: baseX });
-			result.push({ ...doc, spatial_x: x, spatial_y: y });
+			i = j;
 		}
 	}
 
-	return result;
+	return roles;
 }
 
 /** Position messages on the timeline by sent_at. */

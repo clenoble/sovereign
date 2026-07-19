@@ -24,6 +24,7 @@ mod crypto;
 mod onboarding;
 mod p2p;
 mod panels;
+mod recovery;
 mod text;
 mod theme;
 

@@ -68,13 +68,19 @@ impl LlamaCppBackend {
         // MODELTRUST-002: refuse to load a model whose bytes fail integrity
         // verification (pinned-manifest mismatch, or a TOFU model that changed
         // since first use). This is the single choke point for every GGUF load.
-        let _pinned_format = crate::model_integrity::verify_path(path)?;
+        // M3: the guard is held across the load — llama re-opens the file by
+        // path, so without it a writer could swap the bytes between the hash
+        // and the load.
+        let (_pinned_format, load_guard) = crate::model_integrity::verify_path_guarded(path)?;
         let backend = get_or_init_backend()?;
 
         let model_params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers as u32);
 
         let model = LlamaModel::load_from_file(backend, path, &model_params)
             .map_err(|e| anyhow::anyhow!("Failed to load model: {:?}", e))?;
+
+        // M3: the bytes llama just consumed must be the verified bytes.
+        load_guard.confirm()?;
 
         // Create context once during load — avoids MB-scale KV cache re-allocation per generate().
         // Disable flash attention to avoid ggml symbol conflict with whisper-rs-sys.

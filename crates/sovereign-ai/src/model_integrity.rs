@@ -100,6 +100,12 @@ impl ModelVerifier {
     /// Verify a model file. Returns `Ok(Verified)` if it may load, or `Err`
     /// (the caller REFUSES the load) on a pinned/TOFU mismatch.
     pub fn verify(&self, path: &Path) -> anyhow::Result<Verified> {
+        self.verify_hashed(path).map(|(v, _)| v)
+    }
+
+    /// Like [`Self::verify`], additionally returning the verified hash so a
+    /// load guard can confirm the bytes didn't change afterwards (M3).
+    fn verify_hashed(&self, path: &Path) -> anyhow::Result<(Verified, String)> {
         let name = Self::file_name(path);
         let hash = sha256_file(path)?;
 
@@ -107,7 +113,7 @@ impl ModelVerifier {
         // a tamper/replacement; refuse outright.
         if let Some(entry) = self.pinned.get(&name) {
             if entry.sha256.eq_ignore_ascii_case(&hash) {
-                return Ok(Verified::Pinned { format: entry.format.clone() });
+                return Ok((Verified::Pinned { format: entry.format.clone() }, hash));
             }
             anyhow::bail!(
                 "model integrity check FAILED for pinned model '{name}': expected {}, got {hash} \
@@ -122,7 +128,7 @@ impl ModelVerifier {
                 let mut store = load_tofu(store_path, key);
                 match store.models.get(&name) {
                     Some(recorded) if recorded.eq_ignore_ascii_case(&hash) => {
-                        Ok(Verified::Tofu { first_use: false })
+                        Ok((Verified::Tofu { first_use: false }, hash))
                     }
                     Some(recorded) => anyhow::bail!(
                         "model integrity check FAILED for '{name}': recorded {recorded}, got {hash} \
@@ -132,7 +138,7 @@ impl ModelVerifier {
                         store.models.insert(name.clone(), hash.clone());
                         save_tofu(store_path, key, &store);
                         tracing::info!("model integrity: recorded first-use hash for '{name}' ({hash})");
-                        Ok(Verified::Tofu { first_use: true })
+                        Ok((Verified::Tofu { first_use: true }, hash))
                     }
                 }
             }
@@ -141,7 +147,75 @@ impl ModelVerifier {
                     "model integrity: '{name}' is unlisted and the session is locked — loading \
                      WITHOUT a TOFU anchor (it will be recorded on the next load after unlock)"
                 );
-                Ok(Verified::UnverifiedPreUnlock)
+                Ok((Verified::UnverifiedPreUnlock, hash))
+            }
+        }
+    }
+}
+
+/// Guard held across a model load to close the verify→load TOCTOU
+/// (ai-safety M3): `verify_path` hashed the file, but the loader re-opened
+/// it by path — a writer could swap the bytes in between, loading a model
+/// that was never verified.
+///
+/// - **Windows** (the shipping desktop): the guard holds the file open with
+///   share-mode READ only, so no other process can open it for writing for
+///   the guard's whole lifetime — the verified bytes are the loaded bytes.
+/// - **Other platforms** (no mandatory locking): [`ModelLoadGuard::confirm`]
+///   re-hashes the file AFTER the load and errors if the bytes changed; the
+///   caller drops the freshly loaded model instead of using it.
+pub struct ModelLoadGuard {
+    #[cfg_attr(windows, allow(dead_code))]
+    path: PathBuf,
+    #[cfg_attr(windows, allow(dead_code))]
+    expected_hash: String,
+    #[cfg(windows)]
+    _deny_write: std::fs::File,
+}
+
+impl ModelLoadGuard {
+    fn open(path: &Path) -> anyhow::Result<Self> {
+        #[cfg(windows)]
+        let deny_write = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_SHARE_READ: u32 = 0x00000001;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(path)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "model '{}' could not be locked against writers (M3): {e}",
+                        path.display()
+                    )
+                })?
+        };
+        Ok(Self {
+            path: path.to_path_buf(),
+            expected_hash: String::new(),
+            #[cfg(windows)]
+            _deny_write: deny_write,
+        })
+    }
+
+    /// Call AFTER the loader has consumed the file. Consumes the guard.
+    pub fn confirm(self) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        {
+            // Writers were denied for the guard's whole lifetime.
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            let now = sha256_file(&self.path)?;
+            if now.eq_ignore_ascii_case(&self.expected_hash) {
+                Ok(())
+            } else {
+                anyhow::bail!(
+                    "model '{}' changed between verification and load (M3 TOCTOU) — \
+                     discarding the loaded model",
+                    self.path.display()
+                )
             }
         }
     }
@@ -238,6 +312,26 @@ pub fn verify_path(path: &str) -> anyhow::Result<Option<String>> {
     }
 }
 
+/// M3: verify a model file AND return a guard that must be held across the
+/// load and [`ModelLoadGuard::confirm`]ed after it — closing the window in
+/// which a writer could swap the file between verification and the loader
+/// re-opening it. The guard is opened BEFORE hashing (on Windows it denies
+/// writers from that point on), so the verified bytes are the loaded bytes.
+pub fn verify_path_guarded(path: &str) -> anyhow::Result<(Option<String>, ModelLoadGuard)> {
+    ensure_init();
+    let p = Path::new(path);
+    let mut guard = ModelLoadGuard::open(p)?;
+    let g = VERIFIER.read().unwrap();
+    let v = g.as_ref().expect("model verifier initialized");
+    let (verified, hash) = v.verify_hashed(p)?;
+    guard.expected_hash = hash;
+    let format = match verified {
+        Verified::Pinned { format } => format,
+        Verified::Tofu { .. } | Verified::UnverifiedPreUnlock => None,
+    };
+    Ok((format, guard))
+}
+
 /// The pinned prompt format for a model filename, if it is listed in the
 /// embedded manifest with one. Lets the loader override filename-based format
 /// detection for KNOWN models (MODELTRUST format-confusion) — a rename can't
@@ -332,6 +426,41 @@ mod tests {
         let p = write_model(&dir, "custom.gguf", b"x");
         let v = verifier(&[], None, None); // no key = locked
         assert_eq!(v.verify(&p).unwrap(), Verified::UnverifiedPreUnlock);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// M3: the verify→load TOCTOU. On Windows the guard denies writers for
+    /// its whole lifetime; elsewhere `confirm()` detects a swap after the
+    /// fact and the caller discards the loaded model.
+    #[test]
+    fn load_guard_blocks_writers_or_detects_swap() {
+        let dir = std::env::temp_dir().join("sov_modeltrust_guard");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = write_model(&dir, "guarded.gguf", b"guarded bytes v1");
+
+        // Mirror verify_path_guarded: guard first, then hash.
+        let mut guard = ModelLoadGuard::open(&p).unwrap();
+        let v = verifier(&[], None, None);
+        let (_, hash) = v.verify_hashed(&p).unwrap();
+        guard.expected_hash = hash;
+
+        #[cfg(windows)]
+        {
+            assert!(
+                std::fs::write(&p, b"swapped during load").is_err(),
+                "the guard must deny writers while it lives (M3)"
+            );
+            guard.confirm().unwrap();
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::write(&p, b"swapped during load").unwrap();
+            assert!(
+                guard.confirm().is_err(),
+                "a swap between verify and load-complete must be detected (M3)"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

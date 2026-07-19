@@ -1,0 +1,24 @@
+[package]
+name = "sovereign-import"
+version = "0.1.0"
+edition = "2021"
+description = "Bulk import engine: scan a folder tree into the Sovereign graph (stub-first migration)"
+
+[dependencies]
+sovereign-db = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+# Format extraction. htmd: HTML → Markdown (turndown.js-style). pdf-extract:
+# PDF text (already in the workspace; panic-guarded at the call site since it
+# can panic on malformed input). zip + quick-xml: docx/pptx are Office-XML
+# zips — deflate-only to keep the dep tree lean (no aes/zstd/bzip2).
+htmd = "0.5"
+pdf-extract = { workspace = true }
+zip = { version = "6", default-features = false, features = ["deflate"] }
+quick-xml = "0.41"
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"

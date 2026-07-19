@@ -48,8 +48,14 @@ data/
 # Environment / secrets
 .env*
 
-# Bridge (Python venv + deps)
-jiminy-bridge/
+# Bridge (Python venv + caches) — NOT the whole dir: `jiminy-bridge/` here
+# shadowed the tracked sidecar source, so new .py files silently vanished
+# from git status (compounded by VSCode git.untrackedChanges=hidden).
+jiminy-bridge/.venv/
+jiminy-bridge/venv/
+jiminy-bridge/__pycache__/
+jiminy-bridge/**/__pycache__/
+jiminy-bridge/*.pyc
 
 # Model files
 models/
@@ -60,6 +66,11 @@ jiminy-bridge/.venv/
 frontend/node_modules/
 frontend/build/
 frontend/.svelte-kit/
+
+# Tauri build-generated ACL/permission schemas — regenerated every build from
+# capabilities/ + the installed plugin set (Tauri's own scaffold ignores these).
+# The source of truth is crates/sovereign-app/capabilities/. gen/android stays tracked.
+crates/sovereign-app/gen/schemas/
 
 # RAG chatbot index (deployed to HF Space, not tracked in git)
 sovereign-chatbot/chunks.json
@@ -75,3 +86,9 @@ website/marketing-plan.md
 **/zz_scratch_*.rs
 **/zzz_scratch_*.rs
 *_probe_out.txt
+crates/sovereign-guardian-app/frontend/dist/
+
+# guardian app frontend
+crates/sovereign-guardian-app/frontend/node_modules/
+crates/sovereign-guardian-app/frontend/dist/
+crates/sovereign-guardian-app/gen/schemas/

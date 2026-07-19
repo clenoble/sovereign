@@ -18,6 +18,8 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 # Argon2id for PIN-stretching in the pair_payload flow.
 argon2 = "0.5"
+# A1 (backup plan): Ed25519 manifest signing, seed-derived from AccountKey.
+ed25519-dalek = { version = "2.2", features = ["zeroize"] }
 
 [dependencies.blahaj]
 version = "0.6"

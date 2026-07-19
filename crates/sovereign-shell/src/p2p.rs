@@ -33,8 +33,8 @@ use sovereign_db::traits::GraphDB;
 use sovereign_p2p::pairing::{PairedDevice, PairingManager};
 use sovereign_p2p::pairing_offer::derive_handshake_key;
 use sovereign_p2p::{
-    ActivePairingOffer, P2pCommand, P2pConfig, P2pEvent, PairKeyMap, PairingOffer, SovereignNode,
-    SyncService,
+    ActiveGuardianOffer, ActivePairingOffer, P2pCommand, P2pConfig, P2pEvent, PairKeyMap,
+    PairingOffer, SovereignNode, SyncService,
 };
 use tokio::sync::mpsc;
 
@@ -216,10 +216,18 @@ impl P2pHandle {
             // handshake (it used to travel in the QR).
             let salt = std::fs::read(crate::crypto::crypto_dir().join("salt"))
                 .map_err(|e| format!("read salt: {e}"))?;
+            // Filter loopback/unspecified dial hints — a remote joiner can't
+            // reach them and a 127.0.0.1 hint makes it dial itself. Same one
+            // predicate the app offer paths use (sovereign_p2p).
+            let addrs = self
+                .listen_addrs()
+                .into_iter()
+                .filter(|a| sovereign_p2p::is_routable_listen_addr(a))
+                .collect::<Vec<_>>();
             let offer = PairingOffer::new(
                 self.local_peer_id.clone(),
                 self.device_name.clone(),
-                self.listen_addrs(),
+                addrs,
                 OFFER_TTL_SECS,
             );
             // High-entropy single-use code (50 bits, grouped XXXXX-XXXXX). Both
@@ -259,6 +267,131 @@ impl P2pHandle {
     }
 }
 
+/// A freshly-armed guardian-enrollment offer to show on the owner's device.
+pub(crate) struct GuardianOfferOut {
+    /// base64url `GuardianEnrollOffer` — rendered as the QR the guardian scans.
+    pub(crate) qr_payload: String,
+    /// Spoken code the owner reads aloud (XXXXX-XXXXX). Proven live; never in QR.
+    pub(crate) code: String,
+    /// Which of the 5 this offer is for (1-based), for the modal title.
+    pub(crate) slot_ordinal: usize,
+}
+
+impl P2pHandle {
+    /// Arm an in-person guardian-enrollment offer for the next un-enrolled slot.
+    ///
+    /// Mirrors the Tauri owner's `begin_guardian_enrollment` and this crate's
+    /// own `arm_pairing_offer`: read the roster under the KEK (the handle does
+    /// not hold it, so it is passed in), fold in any enrollments confirmed via
+    /// p2p events, refuse if already armed at 5, take the next pending share,
+    /// build + Argon2id-stretch the offer off the async worker, and hand it to
+    /// the node via `SetGuardianOffer`. The share travels only over the live
+    /// handshake, never in the QR.
+    ///
+    /// Listen addresses are filtered through
+    /// `sovereign_p2p::is_routable_listen_addr` — the one shared copy all four
+    /// offer paths now use (consolidated per coord from-windows/0059), so a
+    /// loopback hint never reaches a remote guardian's QR.
+    pub(crate) fn arm_guardian_offer(
+        &self,
+        rt: &tokio::runtime::Runtime,
+        kek: &sovereign_crypto::kek::Kek,
+        seed_relays: &[String],
+    ) -> Result<GuardianOfferOut, String> {
+        use sovereign_crypto::recovery_roster::{GUARDIAN_THRESHOLD, GUARDIAN_TOTAL};
+        use sovereign_p2p::guardian_enroll::{
+            derive_enroll_key, GuardianEnrollOffer, GUARDIAN_OFFER_TTL_SECONDS,
+        };
+
+        rt.block_on(async {
+            // Roster read + reconcile need the KEK (owner-side, login-only).
+            let store = crate::crypto::recovery_store();
+            let mut setup = store.load_or_create(kek, &self.account_key)?;
+            // Fold in guardians confirmed via GuardianEnrolled events (the
+            // translator has no KEK, so it only queued them).
+            let reconciled = store.reconcile_pending(&mut setup, kek)?;
+            if reconciled.needs_attention() {
+                eprintln!(
+                    "guardian roster: {} unreadable pending enrollment(s) kept for review: {}",
+                    reconciled.retained,
+                    reconciled.skipped.join("; ")
+                );
+            }
+            if setup.is_armed() {
+                return Err("All 5 guardians are already enrolled — recovery is ready.".to_string());
+            }
+            let enrolled_before = setup.enrolled_count();
+            let (shard_id, share_b64) = {
+                let slot = setup
+                    .next_pending_slot()
+                    .ok_or_else(|| "no share left to hand out".to_string())?;
+                (
+                    slot.shard_id.clone(),
+                    slot.pending_share_b64
+                        .clone()
+                        .ok_or_else(|| "slot has no pending share".to_string())?,
+                )
+            };
+
+            // Refresh the pre-login recovery card so a recovering device can
+            // reach the guardians we have so far (best-effort).
+            let owner_tag = self.account_key.derive_backup_tag();
+            if let Err(e) = store.write_recovery_card(&setup, &owner_tag, seed_relays) {
+                eprintln!("recovery card refresh failed (continuing): {e}");
+            }
+
+            // Filter loopback/unspecified dial hints — same one predicate the
+            // other three offer paths use (sovereign_p2p). Closes the four-way
+            // scatter this fn's doc comment flagged (coord from-windows/0059).
+            let addrs = self
+                .listen_addrs()
+                .into_iter()
+                .filter(|a| sovereign_p2p::is_routable_listen_addr(a))
+                .collect::<Vec<_>>();
+            let offer = GuardianEnrollOffer::new(
+                self.local_peer_id.clone(),
+                self.device_name.clone(),
+                addrs,
+                GUARDIAN_OFFER_TTL_SECONDS,
+            );
+            let code = sovereign_crypto::pair_payload::generate_pairing_code();
+
+            // Argon2id stretch (~0.5 s) — off the async worker.
+            let offer_for_kdf = offer.clone();
+            let code_for_kdf = code.clone();
+            let handshake_key =
+                tokio::task::spawn_blocking(move || derive_enroll_key(&code_for_kdf, &offer_for_kdf))
+                    .await
+                    .map_err(|e| format!("kdf task: {e}"))?
+                    .map_err(|e| format!("derive_enroll_key: {e}"))?;
+
+            self.command_tx
+                .send(P2pCommand::SetGuardianOffer {
+                    offer: Box::new(ActiveGuardianOffer::new(
+                        offer.offer_id.clone(),
+                        handshake_key,
+                        offer.expires_at,
+                        share_b64,
+                        shard_id,
+                        owner_tag,
+                        self.device_name.clone(),
+                        setup.epoch,
+                        GUARDIAN_THRESHOLD,
+                        GUARDIAN_TOTAL as u8,
+                    )),
+                })
+                .await
+                .map_err(|e| format!("arm guardian offer: {e}"))?;
+
+            Ok(GuardianOfferOut {
+                qr_payload: offer.encode().map_err(|e| format!("encode offer: {e}"))?,
+                code,
+                slot_ordinal: enrolled_before + 1,
+            })
+        })
+    }
+}
+
 /// Map the app-config P2P struct (`sovereign-core`, 8 fields incl. backup) onto
 /// the `sovereign-p2p` runtime config (6 fields). Kept identical to the app's
 /// `p2p_config_from_app`.
@@ -270,6 +403,7 @@ pub(crate) fn p2p_config_from_app(app_p2p: &sovereign_core::config::P2pConfig) -
         device_name: app_p2p.device_name.clone(),
         enable_mdns: app_p2p.enable_mdns,
         wifi_only: app_p2p.wifi_only,
+        seed_relays: app_p2p.seed_relays.clone(),
     }
 }
 
@@ -465,10 +599,20 @@ pub(crate) async fn accept_pairing(
     let imported_account_key = AccountKey::from_bytes(outcome.secrets.account_key_bytes);
 
     // Persist salt + auth.store (imported AccountKey wrapped under the new local
-    // passphrase). Duress is optional — fall back to an unused phrase.
+    // passphrase). Duress is optional — fall back to a RANDOM, unreachable
+    // decoy passphrase (as the onboarding wizard does), never the shared
+    // literal "duress-fallback-unused": that literal is public in the source,
+    // identical across installs, and would let a source-aware adversary unlock
+    // the decoy and confirm no real duress persona exists (H-shell1 theme).
     std::fs::write(crypto_dir.join("salt"), &outcome.secrets.salt)
         .map_err(|e| format!("write salt: {e}"))?;
-    let duress = if duress.is_empty() { "duress-fallback-unused" } else { &duress };
+    let random_duress;
+    let duress = if duress.is_empty() {
+        random_duress = sovereign_crypto::random_hex_32();
+        &random_duress
+    } else {
+        &duress
+    };
     let auth_store = AuthStore::create_with_imported_account_key(
         password.as_bytes(),
         duress.as_bytes(),
@@ -580,6 +724,16 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
                 eprintln!("Pairing attempt failed: {reason} (offer dead: {offer_dead})");
                 Some(OrchestratorEvent::PairingFailed { reason, offer_dead })
             }
+            P2pEvent::RowsFlaggedForReview { peer_id, count } => {
+                // C2: a peer overwrite was stashed — surface it instead of
+                // leaving it invisible until the review panel is opened.
+                Some(OrchestratorEvent::SyncStatus {
+                    peer_id,
+                    status: format!(
+                        "{count} change(s) from this device stashed for review — press r"
+                    ),
+                })
+            }
             P2pEvent::ListenAddr { address } => {
                 if let Ok(mut addrs) = ctx.listen_addrs.write() {
                     if !addrs.contains(&address) {
@@ -588,6 +742,9 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
                 }
                 None
             }
+            // M1.5: mailbox events are consumed by the backup/guardian
+            // layer (M2), not the shell sync UI. Ignore here for now.
+            P2pEvent::MailboxDeposited { .. } | P2pEvent::MailboxItems { .. } => None,
             P2pEvent::BackupPlaced {
                 peer_id,
                 accepted,
@@ -617,6 +774,13 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
                 println!("Pairing requested from {peer_id} ({device_name})");
                 None
             }
+            // F1 guardian enrollment events drive the Tauri owner UI (roster,
+            // enrollment QR). The native shell has no F1 owner surface yet —
+            // that arrives with the shell port of Surfaces 1/2 — so ignore them
+            // here rather than surfacing a half-wired status.
+            P2pEvent::GuardianEnrollRequested { .. }
+            | P2pEvent::GuardianEnrolled { .. }
+            | P2pEvent::GuardianEnrollFailed { .. } => None,
         };
         if let Some(e) = orch_event {
             let _ = ctx.orch_tx.send(e);

@@ -1,0 +1,7 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicholasio/tauri/dev/crates/tauri-utils/schema/capability.json",
+  "identifier": "default",
+  "description": "Default capabilities for the Sovereign Guardian app",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -205,10 +205,6 @@ impl OnboardingWizard {
         Ok(())
     }
 
-    pub(crate) fn is_skippable(&self) -> bool {
-        matches!(self.step, STEP_DURESS | STEP_CANARY)
-    }
-
     /// Resolve a click to an action (pure — the App mutates state).
     pub(crate) fn hit_test(&self, p: Point, w: f64, h: f64) -> WizAction {
         let card = wiz_card(w, h);
@@ -503,7 +499,7 @@ fn step_copy(step: usize) -> (&'static str, &'static str) {
         STEP_BUBBLE => ("Choose a bubble style", "Pick how your AI assistant appears on screen."),
         STEP_THEME => ("Choose your theme", "Select a visual theme for the interface. You can switch any time in settings."),
         STEP_SAMPLE => ("Sample data", "Load example documents, threads, and contacts so you can explore right away."),
-        STEP_PASSWORD => ("Set your password", "This password encrypts your local data. Choose something strong — there is no recovery."),
+        STEP_PASSWORD => ("Set your password", "This password encrypts your local data. Choose something strong. Lose it and social recovery has your back: enrol 5 trusted guardians after setup — your secrets stay yours as long as fewer than 3 of your 5 guardians collude. Later you can host encrypted fragments for friends, and they for you."),
         STEP_DURESS => ("Duress password", "A secondary password that opens a decoy workspace under coercion. Optional — you can skip it."),
         STEP_CANARY => ("Canary phrase", "A personal phrase shown after login. If it ever changes, you'll know the system was tampered with. Optional."),
         _ => ("", ""),

@@ -9,8 +9,12 @@ members = [
     "crates/sovereign-ai",
     "crates/sovereign-p2p",
     "crates/sovereign-comms",
+    "crates/sovereign-import",
     "crates/sovereign-app",
     "crates/sovereign-shell",
+    "crates/sovereign-relay",
+    "crates/sovereign-guardian",
+    "crates/sovereign-guardian-app",
 ]
 
 [workspace.dependencies]
@@ -52,6 +56,7 @@ sovereign-ai = { path = "crates/sovereign-ai", default-features = false }
 sovereign-crypto = { path = "crates/sovereign-crypto" }
 sovereign-p2p = { path = "crates/sovereign-p2p" }
 sovereign-comms = { path = "crates/sovereign-comms" }
+sovereign-import = { path = "crates/sovereign-import" }
 
 # LLM inference
 llama-cpp-2 = "0.1.136"

@@ -2,6 +2,7 @@
 	import { app } from '$lib/stores/app.svelte';
 	import { validatePassword, checkAuthState } from '$lib/api/commands';
 	import type { KeystrokeSampleDto } from '$lib/api/commands';
+	import { openRecovery, checkAvailable, recovery } from '$lib/stores/recovery.svelte';
 
 	let password = $state('');
 	let error = $state('');
@@ -22,6 +23,12 @@
 		checkAuthState().then((result) => {
 			// Config values come from the backend; defaults are fine
 		});
+	});
+
+	// Show the "forgot password?" recover option only if this device holds a
+	// recovery card + bundle (i.e. guardians were enrolled before the loss).
+	$effect(() => {
+		checkAvailable();
 	});
 
 	// Lockout countdown timer
@@ -160,6 +167,12 @@
 			{#if attempts > 0 && !lockedUntil}
 				<p class="attempts">{maxAttempts - attempts} attempts remaining</p>
 			{/if}
+
+			{#if recovery.available}
+				<button class="recover-link" onclick={openRecovery}>
+					Forgot your password? Recover with your guardians
+				</button>
+			{/if}
 		{/if}
 	</div>
 </div>
@@ -268,6 +281,20 @@
 		color: var(--text-muted, #666);
 		font-size: 0.8rem;
 		margin: 8px 0 0 0;
+	}
+
+	.recover-link {
+		background: none;
+		border: none;
+		color: var(--text-muted, #888);
+		font-size: 0.8rem;
+		cursor: pointer;
+		margin-top: 20px;
+		padding: 4px 0;
+		text-decoration: underline;
+	}
+	.recover-link:hover {
+		color: var(--accent, #4ea7e9);
 	}
 
 	.lockout {

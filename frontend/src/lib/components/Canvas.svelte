@@ -9,6 +9,8 @@
 		home,
 		getVisibleDocuments,
 		requestMessagesForViewport,
+		computeDeckRoles,
+		collapseDeck,
 		CARD_W,
 		CARD_H,
 		LANE_HEIGHT,
@@ -18,6 +20,7 @@
 	} from '$lib/stores/canvas.svelte';
 	import { createThread as apiCreateThread, importFile } from '$lib/api/commands';
 	import { app } from '$lib/stores/app.svelte';
+	import { openById } from '$lib/stores/documents.svelte';
 	import CanvasCard from './CanvasCard.svelte';
 	import Minimap from './Minimap.svelte';
 
@@ -32,6 +35,56 @@
 
 	// Viewport-culled documents (only mount DOM cards for visible docs)
 	let visibleDocs = $derived(getVisibleDocuments());
+
+	// Zoom-reactive deck assignment. Computed over ALL docs (so a deck's count is
+	// correct even when some members sit just off-viewport), keyed by camera.zoom
+	// so decks form when zoomed out and dissolve as you zoom in.
+	let deckRoles = $derived(computeDeckRoles(canvas.documents, canvas.camera.zoom));
+
+	function w2sX(wx: number): number {
+		return canvas.camera.panX + wx * canvas.camera.zoom;
+	}
+	function w2sY(wy: number): number {
+		return canvas.camera.panY + wy * canvas.camera.zoom;
+	}
+	function timeAgo(iso: string): string {
+		const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+		if (mins < 1) return 'just now';
+		if (mins < 60) return `${mins}m ago`;
+		const hrs = Math.floor(mins / 60);
+		if (hrs < 24) return `${hrs}h ago`;
+		return `${Math.floor(hrs / 24)}d ago`;
+	}
+
+	// The fanned-open deck (lifted overlay): its cards spread into a readable,
+	// screen-space column centered on the deck, each keeping a faint tether to
+	// its TRUE time position on the canvas. Screen-space so it stays legible at
+	// any zoom (a world-space fan would shrink into an unreadable cluster).
+	const FAN_W = 240;
+	const FAN_H = 58;
+	const FAN_GAP = 10;
+	const FAN_OFFSET_X = 130;
+	let expandedFan = $derived.by(() => {
+		const fid = canvas.expandedFrontId;
+		if (!fid) return null;
+		const cards = canvas.documents.filter((d) => deckRoles.get(d.id)?.frontId === fid);
+		if (cards.length === 0) return null;
+		cards.sort((a, b) => b.spatial_x - a.spatial_x); // newest (front) first
+		const front = cards[0];
+		const anchorX = w2sX(front.spatial_x);
+		const anchorY = w2sY(front.spatial_y);
+		const colH = cards.length * FAN_H + (cards.length - 1) * FAN_GAP;
+		const startY = anchorY + (CARD_H * canvas.camera.zoom) / 2 - colH / 2; // centered on deck
+		const halfW = (CARD_W * canvas.camera.zoom) / 2;
+		const halfH = (CARD_H * canvas.camera.zoom) / 2;
+		return cards.map((d, i) => ({
+			doc: d,
+			fanX: anchorX + FAN_OFFSET_X,
+			fanY: startY + i * (FAN_H + FAN_GAP),
+			trueX: w2sX(d.spatial_x) + halfW,
+			trueY: w2sY(d.spatial_y) + halfH
+		}));
+	});
 
 	// Load messages for the visible time range when camera moves
 	$effect(() => {
@@ -602,7 +655,9 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'h' || e.key === 'H') {
+		if (e.key === 'Escape' && canvas.expandedFrontId) {
+			collapseDeck();
+		} else if (e.key === 'h' || e.key === 'H') {
 			home();
 		} else if (e.key === '+' || e.key === '=') {
 			zoomAt(window.innerWidth / 2, window.innerHeight / 2, -100);
@@ -675,6 +730,7 @@
 		{#each visibleDocs as doc (doc.id)}
 			<CanvasCard
 				{doc}
+				role={deckRoles.get(doc.id)}
 				isHovered={canvas.hoveredCardId === doc.id}
 				isSelected={canvas.selectedCardId === doc.id}
 				zoom={canvas.camera.zoom}
@@ -682,12 +738,65 @@
 		{/each}
 	</div>
 
+	<!-- Fanned-open deck: lifted above the canvas, each card tethered to its true
+	     time position. Click the badge to open; click away / Esc to collapse. -->
+	{#if expandedFan}
+		<div
+			class="deck-fan-backdrop"
+			role="presentation"
+			onpointerdown={(e) => { e.stopPropagation(); collapseDeck(); }}
+		></div>
+		<svg class="deck-fan-tethers">
+			{#each expandedFan as f (f.doc.id)}
+				<line x1={f.fanX} y1={f.fanY + FAN_H / 2} x2={f.trueX} y2={f.trueY} />
+				<circle class="tether-anchor" cx={f.trueX} cy={f.trueY} r="3" />
+			{/each}
+		</svg>
+		{#each expandedFan as f (f.doc.id)}
+			<div
+				class="deck-fan-card"
+				class:owned={f.doc.is_owned}
+				class:external={!f.doc.is_owned}
+				style="left: {f.fanX}px; top: {f.fanY}px; width: {FAN_W}px; height: {FAN_H}px;"
+				role="button"
+				tabindex="0"
+				onclick={() => { openById(f.doc.id); collapseDeck(); }}
+				onkeydown={(e) => { if (e.key === 'Enter') { openById(f.doc.id); collapseDeck(); } }}
+			>
+				<div class="fan-card-title">{f.doc.title}</div>
+				<div class="fan-card-meta">{timeAgo(f.doc.modified_at)}</div>
+			</div>
+		{/each}
+	{/if}
+
 	<!-- Canvas toolbar -->
 	<div class="canvas-toolbar">
 		<button class="toolbar-btn" onclick={() => (showNewThread = !showNewThread)} title="New thread">
 			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 				<line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
 				<line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+			</svg>
+		</button>
+		<div class="toolbar-sep"></div>
+		<!-- Zoom controls: device-independent (no wheel / no keyboard needed). -->
+		<button class="toolbar-btn" onclick={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, -100)} title="Zoom in (+)">
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<circle cx="7" cy="7" r="4.3" stroke="currentColor" stroke-width="1.5" />
+				<line x1="10.4" y1="10.4" x2="14" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+				<line x1="7" y1="5" x2="7" y2="9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+				<line x1="5" y1="7" x2="9" y2="7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+			</svg>
+		</button>
+		<button class="toolbar-btn" onclick={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, 100)} title="Zoom out (−)">
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<circle cx="7" cy="7" r="4.3" stroke="currentColor" stroke-width="1.5" />
+				<line x1="10.4" y1="10.4" x2="14" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+				<line x1="5" y1="7" x2="9" y2="7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+			</svg>
+		</button>
+		<button class="toolbar-btn" onclick={() => home()} title="Fit to view (h)">
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<path d="M3 6 V3 H6 M10 3 H13 V6 M13 10 V13 H10 M6 13 H3 V10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
 			</svg>
 		</button>
 	</div>
@@ -780,6 +889,79 @@
 	.toolbar-btn:hover {
 		background: var(--bg-hover);
 		color: var(--text-primary);
+	}
+
+	.toolbar-sep {
+		width: 1px;
+		align-self: stretch;
+		margin: 2px 2px;
+		background: var(--border);
+	}
+
+	/* Fanned-open deck overlay: a dim scrim, faint tethers to true time, and the
+	   deck's cards lifted above the canvas at a fixed readable size. */
+	.deck-fan-backdrop {
+		position: absolute;
+		inset: 0;
+		z-index: 40;
+		background: rgba(0, 0, 0, 0.18);
+	}
+	.deck-fan-tethers {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		z-index: 41;
+		pointer-events: none;
+	}
+	.deck-fan-tethers line {
+		stroke: var(--text-muted);
+		stroke-width: 1;
+		stroke-dasharray: 3 4;
+		opacity: 0.55;
+	}
+	.deck-fan-tethers .tether-anchor {
+		fill: var(--accent);
+		opacity: 0.6;
+	}
+	.deck-fan-card {
+		position: absolute;
+		z-index: 42;
+		box-sizing: border-box;
+		display: flex;
+		flex-direction: column;
+		justify-content: center;
+		gap: 2px;
+		padding: 8px 12px;
+		border: 2px solid var(--border);
+		border-radius: 8px;
+		background: var(--bg-panel);
+		box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+		cursor: pointer;
+		overflow: hidden;
+		transition: box-shadow 0.12s, transform 0.12s;
+	}
+	.deck-fan-card:hover {
+		transform: translateY(-1px);
+		box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+	}
+	.deck-fan-card.owned {
+		border-color: var(--prov-owned);
+	}
+	.deck-fan-card.external {
+		border-color: var(--prov-external);
+	}
+	.fan-card-title {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--text-primary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.fan-card-meta {
+		font-size: 0.7rem;
+		color: var(--text-muted);
 	}
 
 	.new-thread-popup {

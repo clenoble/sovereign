@@ -37,7 +37,12 @@ tokio = { workspace = true }
 # Phase 1d.2: in-process AI orchestrator. default-features=false (via workspace)
 # => CPU llama-cpp (no CUDA) — avoids the cudart64_13.dll launch gotcha and the
 # warm CPU llama-cpp-sys build is reused (no fresh build script => no SAC trip).
-sovereign-ai = { workspace = true }
+# encrypted-log: the shell is the DEFAULT desktop UI, so it must seal the
+# session log at rest like the Tauri path (SESSIONLOG-010). The workspace pin is
+# default-features=false (drops cuda), so encrypted-log must be named explicitly
+# — it does NOT come back via the workspace default. Without it,
+# set_session_log_key does not exist and the log is plaintext.
+sovereign-ai = { workspace = true, features = ["encrypted-log"] }
 
 # Phase 3: auth (login/onboarding/duress) + the at-rest key stack feeding
 # EncryptedGraphDB. AuthStore, MasterKey/DeviceKey/Kek/AccountKey, KeyDatabase,

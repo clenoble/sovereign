@@ -146,9 +146,29 @@ impl EmailChannel {
             })
             .and_then(|p| p.get_body().ok());
 
-        // Collect all headers as JSON for reference
+        // H-db3: store ONLY non-sensitive threading/structural headers.
+        // The full header set duplicated Subject / From / To / Cc in
+        // plaintext next to the field-encrypted `subject`, defeating subject
+        // encryption for every synced email. Those content-bearing headers
+        // are already captured in dedicated fields (subject is encrypted;
+        // from/to are structured contact ids), so the raw blob only needs
+        // the metadata a threading view would use. Everything else — incl.
+        // X-* headers, which frequently carry content — is dropped.
+        const THREADING_HEADERS: [&str; 6] = [
+            "Message-ID",
+            "Message-Id",
+            "In-Reply-To",
+            "References",
+            "Date",
+            "MIME-Version",
+        ];
         let headers_json = serde_json::to_string(
             &headers.iter()
+                .filter(|h| {
+                    THREADING_HEADERS
+                        .iter()
+                        .any(|k| k.eq_ignore_ascii_case(&h.get_key()))
+                })
                 .map(|h| (h.get_key(), h.get_value()))
                 .collect::<Vec<_>>()
         ).ok();

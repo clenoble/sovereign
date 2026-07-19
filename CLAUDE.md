@@ -9,6 +9,27 @@ Before writing or modifying any code that uses an external library (crate, pip p
 
 This is critical — APIs change between versions and stale knowledge causes cascading build failures.
 
+## Source of truth: the SPEC, not the plans
+
+`doc/spec/sovereign_os_specification.md` is the **single source of truth** for
+what the system is and how it should behave. **Refer to the spec before starting
+any feature.** Plans are execution scaffolding only — they say *how/when*, never
+*what* — and they are ephemeral (session/memory or clearly-dated notes), not
+canonical. **If a plan and the spec disagree, the spec wins and the plan is
+wrong.**
+
+Why this rule exists (2026-07-10): the Social Backup & Recovery work drifted for
+weeks because two overlapping *plan* docs (`p2p-completion-plan.md`,
+`p2pbackupuserreadyplan.md`, now archived) quietly redefined the design — they
+had guardians sharding a *backup/data key* and framed recovery as "passphrase +
+guardian approval," when the spec says guardians shard the **Recovery Key** to
+restore *access* without the passphrase (data lives on synced devices; the crowd
+mesh is Phase 2). The code followed the plans, not the spec, and built the wrong
+(deferred) feature. Nobody caught it because **nothing diffed the plans against
+the spec.** The fix: design decisions live in the spec; plans don't get to
+redefine them; and "does this match the spec?" is a required check before
+building. When you find a plan-vs-spec conflict, treat it as a bug in the plan.
+
 ## Workspace Architecture
 
 8-crate Rust workspace (~12k lines):
@@ -161,8 +182,22 @@ Three batch wrappers in the project root set `LIBCLANG_PATH`, `CMAKE`, and `PATH
 
 The wrappers:
 - `_build.bat` — runs `cargo <args>` (pass any cargo subcommand + flags)
-- `_check.bat` — runs `cargo check -p sovereign-app` with `-j 4`
+- `_check.bat` — runs `cargo check --workspace --exclude sovereign-ai` with `-j 4`
 - `_run.bat` — runs the app
+
+**Why the check is `--workspace` and not a crate list.** It was
+`-p sovereign-app` until 2026-07-16, which left `sovereign-shell` — the
+*default desktop binary* — outside the gate. It stopped compiling when the F1
+backend added three `P2pEvent` variants and nobody noticed for a whole feature
+*and* a live e2e, because every build went through the Tauri owner. A named
+list has the same failure mode one crate later: `--workspace` fails **safe** (a
+new crate is checked by default), a list fails **silent**. Warm cost ~2s.
+
+`sovereign-ai` is excluded only as a *selected package* — its own
+`default = ["cuda"]` would force a CUDA toolchain on every checkout. Its lib is
+still checked, because every member pulls it through the workspace pin
+`default-features = false`. Only its cuda-gated code is out of scope: check that
+explicitly with `cargo check -p sovereign-ai --features cuda` when touching it.
 
 **From a native Windows shell (PowerShell / cmd):**
 ```powershell
@@ -199,6 +234,7 @@ cargo.exe build -p sovereign-app -j 2
 
 #### Key notes
 - `sovereign-ai` default feature is `cuda` — disable on machines without CUDA toolkit: `--no-default-features`
+- **Tauri crates and the frontend build — `devUrl` is what decides.** `generate_context!` needs *something* to serve. If `tauri.conf.json` declares a `devUrl`, dev builds (`cargo check`/`cargo build`) use it and **do not need the frontend output to exist**; only release builds embed `frontendDist`. If it declares **no** `devUrl`, `frontendDist` must exist even to `cargo check`, and the failure reads `The "frontendDist" configuration is set to "..." but this path doesn't exist` (older/less lucky cases surface only as "proc macro panicked"). Both apps declare one now (main app → `localhost:1420`, guardian app → `localhost:5175`, matching its vite `strictPort`), so a clean checkout checks without any `npm` step. `frontendDist` is relative to **the config file's directory**. *(Measured 2026-07-16 — an earlier note claimed the frontend output was needed before the macro in all cases; that is true only without a `devUrl`.)*
 - Set `CARGO_TARGET_DIR` (or `SOVEREIGN_TARGET_DIR` for the batch wrappers) if you want to redirect build artifacts to a faster drive or shared cache. Default is cargo's `./target`. Forward slashes in bash, backslashes in cmd/PowerShell.
 - Windows needs `/FORCE:MULTIPLE` linker flag (MSVC) because `llama-cpp-sys-2` and `whisper-rs-sys` both embed ggml — this is set in `.cargo/config.toml`
 - Before rebuilding after errors, kill stale processes and clean sovereign artifacts:
@@ -230,6 +266,15 @@ severity-ranked report + release verdict (find-only — it never edits source). 
 `args.depth` (`smoke`/`static`/`full`). The workflow script and its reports live under
 `.claude/` and are **gitignored — never published to the github mirror**; see
 `.claude/workflows/README.md` for the playbook.
+
+**Pre-release checklist — bump every version number.** Before tagging a release,
+verify all version strings are updated to the release version, not just the git
+tag / release notes. They drift silently: as of v0.0.9 work, `crates/sovereign-app/Cargo.toml`
+still read `version = "0.0.6"` (the app prints it while compiling — misleading).
+Check at least: each crate's `Cargo.toml` `version`, the Tauri config
+(`crates/sovereign-app/tauri.conf.json`), and any hard-coded version in the shell
+status bar / about panel. (This note lives here because the canonical checklist is
+the NAS-only `.claude/workflows/README.md`; mirror it there when on-LAN.)
 
 ### WSL2 / Linux
 ```bash

@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use sovereign_core::interfaces::ModelBackend;
 use sovereign_crypto::account_key::AccountKey;
 use sovereign_crypto::vault::EncryptedBlob;
-use sovereign_db::schema::{thing_to_raw, Contact, Entity, PiiRecord, ReviewState, SourceKind, SourceRef};
+use sovereign_db::schema::{thing_to_raw, Contact, Entity, PiiRecord, SourceKind, SourceRef};
 use sovereign_db::traits::GraphDB;
 
 use crate::llm::format::PromptFormatter;
@@ -282,6 +282,7 @@ fn build_pii_record(
 mod tests {
     use super::*;
     use anyhow::Result;
+    use sovereign_db::schema::ReviewState;
     use sovereign_crypto::master_key::MasterKey;
     use std::sync::Mutex;
 

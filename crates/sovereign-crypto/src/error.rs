@@ -38,6 +38,12 @@ pub enum CryptoError {
     #[error("Pair payload error: {0}")]
     PairPayload(String),
 
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    #[error("Signature verification failed: {0}")]
+    VerificationFailed(String),
+
     #[cfg(feature = "guardian")]
     #[error("Shamir reconstruction failed: need at least {threshold} shards, got {got}")]
     InsufficientShards { threshold: u8, got: usize },

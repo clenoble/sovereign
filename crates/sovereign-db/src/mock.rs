@@ -439,10 +439,14 @@ impl GraphDB for MockGraphDB {
         source: SuggestionSource,
     ) -> DbResult<SuggestedLink> {
         let key = self.next_key();
+        // Mirror SurrealDB's RELATE convention: `RELATE from->edge->to` stores
+        // in = from, out = to. The mock used to encode the opposite, which
+        // masked the real backend's inverted-promotion bug (v0.0.8 review
+        // DB-M3 / Theme 2).
         let link = SuggestedLink {
             id: Some(Self::make_thing("suggested_link", &key)),
-            in_: Some(Self::make_thing("document", to_id.split(':').last().unwrap_or(to_id))),
-            out: Some(Self::make_thing("document", from_id.split(':').last().unwrap_or(from_id))),
+            in_: Some(Self::make_thing("document", from_id.split(':').last().unwrap_or(from_id))),
+            out: Some(Self::make_thing("document", to_id.split(':').last().unwrap_or(to_id))),
             relation_type,
             strength,
             rationale: rationale.to_string(),
@@ -491,11 +495,12 @@ impl GraphDB for MockGraphDB {
             link.clone()
         }; // write lock dropped here
 
-        // If accepted, create a real relationship
+        // If accepted, promote in the suggested direction in → out (matches
+        // the fixed SurrealGraphDB; see DB-M3).
         if status == SuggestionStatus::Accepted {
             if let (Some(in_thing), Some(out_thing)) = (&result.in_, &result.out) {
-                let from_str = crate::schema::thing_to_raw(out_thing);
-                let to_str = crate::schema::thing_to_raw(in_thing);
+                let from_str = crate::schema::thing_to_raw(in_thing);
+                let to_str = crate::schema::thing_to_raw(out_thing);
                 self.create_relationship(&from_str, &to_str, result.relation_type.clone(), result.strength).await?;
             }
         }
@@ -586,6 +591,9 @@ impl GraphDB for MockGraphDB {
         let doc_title = doc.title.clone();
         let doc_content = doc.content.clone();
         let doc_thread_id = doc.thread_id.clone();
+        let doc_content_nonce = doc.encryption_nonce.clone();
+        let doc_title_nonce = doc.title_nonce.clone();
+        let doc_title_token_hashes = doc.title_token_hashes.clone();
 
         let existing = self.commits.read().unwrap();
         let parent = existing.get(doc_id)
@@ -605,6 +613,11 @@ impl GraphDB for MockGraphDB {
                 title: doc_title,
                 content: doc_content,
                 thread_id: doc_thread_id,
+                // C1: nonces travel with the snapshotted ciphertext.
+                content_nonce: doc_content_nonce,
+                title_nonce: doc_title_nonce,
+                title_token_hashes: doc_title_token_hashes,
+                deleted_at: None,
             },
             timestamp: Utc::now(),
             signature: None,
@@ -648,6 +661,10 @@ impl GraphDB for MockGraphDB {
         let doc = docs.get_mut(doc_id).ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;
         doc.title = commit.snapshot.title;
         doc.content = commit.snapshot.content;
+        // C1: restore the nonces paired with the snapshotted ciphertext.
+        doc.encryption_nonce = commit.snapshot.content_nonce;
+        doc.title_nonce = commit.snapshot.title_nonce;
+        doc.title_token_hashes = commit.snapshot.title_token_hashes;
         Ok(doc.clone())
     }
 
@@ -1451,6 +1468,43 @@ impl GraphDB for MockGraphDB {
         link.status = status;
         link.resolved_at = resolved_at;
         Ok(())
+    }
+
+    // -- Sync-scope lists (tombstones included, H-p2p1) --
+
+    async fn list_documents_including_deleted(&self) -> DbResult<Vec<Document>> {
+        let docs = self.documents.read().unwrap();
+        let mut result: Vec<Document> = docs.values().cloned().collect();
+        result.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(result)
+    }
+
+    async fn list_threads_including_deleted(&self) -> DbResult<Vec<Thread>> {
+        Ok(self.threads.read().unwrap().values().cloned().collect())
+    }
+
+    async fn list_entities_including_deleted(&self) -> DbResult<Vec<Entity>> {
+        let mut out: Vec<Entity> = self.entities.read().unwrap().values().cloned().collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    async fn list_pii_records_including_deleted(&self) -> DbResult<Vec<PiiRecord>> {
+        Ok(self.pii_records.read().unwrap().values().cloned().collect())
+    }
+
+    async fn list_contacts_including_deleted(&self) -> DbResult<Vec<Contact>> {
+        Ok(self.contacts.read().unwrap().values().cloned().collect())
+    }
+
+    async fn list_messages_including_deleted(&self) -> DbResult<Vec<Message>> {
+        let mut all: Vec<Message> = self.messages.read().unwrap().values().cloned().collect();
+        all.sort_by(|a, b| b.sent_at.cmp(&a.sent_at));
+        Ok(all)
+    }
+
+    async fn list_conversations_including_deleted(&self) -> DbResult<Vec<Conversation>> {
+        Ok(self.conversations.read().unwrap().values().cloned().collect())
     }
 }
 

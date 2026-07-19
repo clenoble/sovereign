@@ -22,6 +22,18 @@ pub enum OrchestratorEvent {
         indicators: Vec<String>,
         severity: u8,
     },
+    /// A high-severity injection was found in agent-loop tool output. The loop is
+    /// PAUSED; the UI must present the choice and send an `InjectionDecision` on
+    /// the injection-decision channel. Fails closed to `Redact` if no response.
+    /// (INJECTION-002 — decision 2026-07-18.)
+    InjectionDecisionRequested {
+        source: String,
+        pattern: String,
+        indicators: Vec<String>,
+        severity: u8,
+        /// A bounded preview of the flagged content so the user can judge.
+        preview: String,
+    },
     BubbleState(BubbleVisualState),
     ThreadCreated { thread_id: String, name: String },
     ThreadRenamed { thread_id: String, name: String },

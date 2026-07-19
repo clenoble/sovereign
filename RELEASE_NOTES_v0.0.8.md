@@ -64,23 +64,29 @@ Peer sync is now **non-destructive**: when a paired device overwrites a document
 or record, the prior value is preserved and the change is **flagged for review**
 rather than silently applied. A **review panel** (in both the native shell — press
 `r` — and the mobile/Tauri UI) lists pending changes with a risk assessment, and
-lets you **keep** the synced version or **restore** the prior one. Tampered or
-out-of-order overwrites from a misbehaving device are rejected automatically.
+lets you **keep** the synced version or **restore** the prior one. Forged
+high-counter overwrites are rejected outright.
 
 ## Security hardening
 
-v0.0.8 went through a full pre-release security review. Without listing specifics,
-this pass:
+v0.0.8 ran a full pre-release security pass. Highlights:
 
-- strengthened how the AI handles untrusted and external content (synced
-  documents, saved web pages, email);
-- hardened the embedded browser and web fetch against reaching internal network
-  resources;
-- tightened verification of local AI models before they're loaded;
-- improved the integrity guarantees of the on-device activity log;
-- broadened privacy (PII) redaction, including locale-aware handling;
-- landed platform-level hardening on Windows and Android, and updated
-  dependencies.
+- **SSRF guard** — the embedded browser and web fetch can't reach loopback,
+  cloud-metadata, or private/internal addresses (shared by both UIs so it can't
+  drift).
+- **Model trust** — unlisted / hot-swapped local models are verified
+  trust-on-first-use, not loaded blindly.
+- **Prompt-injection fencing** — untrusted content (synced docs, saved web pages,
+  email) has every model format's reserved control tokens redacted before it can
+  reach the AI.
+- **Tamper-evident session log** — a truncated or forged log now **fails closed**
+  instead of being silently re-anchored.
+- **PII** — locale-aware redaction (incl. Swiss AVS) at both ingest and read time.
+- **Runtime/installer** — DLL search-order hardening on Windows, input-size caps
+  against UI-thread denial-of-service, and Android `allowBackup=false` +
+  `FLAG_SECURE`, plus login-timing and action-gating fixes.
+- **Dependencies** — patched the advisories flagged by `cargo-audit`
+  (quinn-proto, lopdf).
 
 ## Other fixes
 
@@ -97,12 +103,10 @@ this pass:
   currently unstable (frequent drops); on Wi-Fi it's reliable.
 - Voice and the keystroke-dynamics enrollment step are not enabled by default.
 
-## Install
+## Install — Windows
 
-**Windows** — download `sovereign.exe` and run it. CPU inference; no CUDA toolkit or runtime DLLs needed.
+1. Download `sovereign.exe`.
+2. Run it.
 
-**Linux (x86-64)** — download `sovereign-linux-x86_64`, `chmod +x sovereign-linux-x86_64`, then run it. Needs a Vulkan-capable GPU driver.
-
-**Android (arm64)** — download and install `sovereign-v0.0.8.apk` (allow "install from unknown sources"). Debug-signed.
-
-Verify your downloads against `SHA256SUMS`.
+The native shell runs CPU inference and needs no CUDA toolkit or runtime DLLs —
+just the app and your local models. Verify your download against `SHA256SUMS`.

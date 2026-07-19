@@ -15,6 +15,18 @@ use crate::canvas::open_db_at;
 pub(crate) fn crypto_dir() -> PathBuf {
     sovereign_core::sovereign_dir().join("crypto")
 }
+
+/// This shell's face onto the shared F1 recovery store.
+///
+/// The implementation lives in `sovereign-crypto` precisely so this crate and
+/// `sovereign-app` run the *same* code: the shell cannot depend on the app, and
+/// duplicating key-handling logic is the drift family that cost two failed
+/// recoveries during the F1 live run. The only difference between the two faces
+/// is which directory they pass — and both resolve to `sovereign_dir()/crypto`,
+/// so both read the same roster.
+pub(crate) fn recovery_store() -> sovereign_crypto::recovery_store::RecoveryStore {
+    sovereign_crypto::recovery_store::RecoveryStore::new(crypto_dir())
+}
 pub(crate) fn auth_store_path() -> PathBuf {
     crypto_dir().join("auth.store")
 }
@@ -48,6 +60,23 @@ pub(crate) fn persona_index_filename(persona: CorePersona) -> &'static str {
     match persona {
         CorePersona::Primary => "index.key",
         CorePersona::Duress => "index.duress.key",
+    }
+}
+
+/// Per-persona model-TOFU store path (MODELTRUST-003-PERSONA).
+///
+/// The store is encrypted under the persona's AccountKey, and primary/duress
+/// have different AccountKeys — so a single shared `model_tofu.json` (what the
+/// shell used) can't be read across personas and the two clobber each other on
+/// write, thrashing the anchor on every persona switch. Give each persona its
+/// own file, like the key DBs and index key. (The `*.duress.*` name is the same
+/// existing at-rest duress-existence surface as those siblings — ATREST-011,
+/// tracked separately — not a new leak.)
+pub(crate) fn persona_model_tofu_path(persona: CorePersona) -> PathBuf {
+    let crypto = crypto_dir();
+    match persona {
+        CorePersona::Primary => crypto.join("model_tofu.json"),
+        CorePersona::Duress => crypto.join("model_tofu.duress.json"),
     }
 }
 
@@ -100,12 +129,20 @@ pub(crate) fn build_encrypted_db(
 
     let dir = crypto_dir();
     std::fs::create_dir_all(&dir)?;
+    // Sealed under the KEK (content-chain root; spec §Encryption Scheme), with
+    // transparent migration of any legacy DeviceKey-sealed file to the KEK.
     let load_or_new = |filename: &str| -> anyhow::Result<KeyDatabase> {
         let path = dir.join(filename);
-        Ok(if path.exists() {
-            KeyDatabase::load(&path, &device_key)?
-        } else {
-            KeyDatabase::new(path)
+        if !path.exists() {
+            return Ok(KeyDatabase::new(path));
+        }
+        Ok(match KeyDatabase::load(&path, &kek) {
+            Ok(db) => db,
+            Err(_) => {
+                let db = KeyDatabase::load_legacy(&path, &device_key)?;
+                db.save(&kek)?;
+                db
+            }
         })
     };
     let documents_kdb = load_or_new(&persona_key_db_filename(persona, "keys.db"))?;
@@ -115,7 +152,7 @@ pub(crate) fn build_encrypted_db(
     let contacts_kdb = load_or_new(&persona_key_db_filename(persona, "keys.contacts.db"))?;
     let share_records_kdb = load_or_new(&persona_key_db_filename(persona, "keys.share_records.db"))?;
     let index_key =
-        IndexKey::load_or_create(dir.join(persona_index_filename(persona)), &device_key, kek.as_ref())?;
+        IndexKey::load_or_create(dir.join(persona_index_filename(persona)), &kek, &device_key)?;
 
     Ok(Arc::new(sovereign_db::encrypted::EncryptedGraphDB::new(
         raw_db,
@@ -129,6 +166,72 @@ pub(crate) fn build_encrypted_db(
         Arc::new(index_key),
         device_key,
     )))
+}
+
+/// F1 Surface 2 finalize: reconstruct the recovered secrets, re-create
+/// `auth.store` under a NEW passphrase, and install the session.
+///
+/// The security-critical, salt-subtle core lives in
+/// [`sovereign_crypto::recovery_store::install_recovered_auth_store`] — shared
+/// with the Tauri owner so there is one verify-before-commit, not a copy per
+/// face. Here we only: reconstruct the KEK + AccountKey from the collected
+/// guardian shares, hand them to that shared core (which verifies the recovered
+/// KEK opens the on-disk content BEFORE overwriting anything, then writes the
+/// new store), and install the session over it — the exact `install_session`
+/// path a normal login takes, so recovery and login converge. On success the
+/// in-progress recovery is cleared.
+///
+/// Fail-CLOSED: too few shares, an unopenable bundle, or content the recovered
+/// KEK cannot decrypt each return `Err` with the prior `auth.store` intact.
+pub(crate) async fn recover_and_install(
+    new_passphrase: &[u8],
+) -> anyhow::Result<(
+    CorePersona,
+    Arc<dyn GraphDB>,
+    Arc<sovereign_crypto::account_key::AccountKey>,
+    Arc<sovereign_crypto::device_key::DeviceKey>,
+    Arc<sovereign_crypto::kek::Kek>,
+)> {
+    use sovereign_p2p::access_recovery::AccessRecovery;
+
+    let dir = crate::recovery::access_dir();
+    let mut rec = AccessRecovery::load(&dir)
+        .ok_or_else(|| anyhow::anyhow!("no access recovery in progress"))?;
+    if !rec.have_enough() {
+        anyhow::bail!(
+            "not enough guardian shares yet ({}/{})",
+            rec.shares_collected(),
+            rec.threshold
+        );
+    }
+    // The shares are sealed at rest (RECOVERY-001) — decrypt them into memory
+    // under the held passphrase before reconstructing.
+    let seal_key =
+        sovereign_crypto::recovery_seal::derive_seal_key(new_passphrase, rec.seal_salt())
+            .map_err(|e| anyhow::anyhow!("derive seal key: {e}"))?;
+    rec.unseal(&seal_key)
+        .map_err(|e| anyhow::anyhow!("unseal shares: {e}"))?;
+    // Reconstruct the Recovery Key from the shares and open the bundle.
+    let (kek, account_key) = rec
+        .open()
+        .map_err(|e| anyhow::anyhow!("could not open the recovery bundle: {e}"))?;
+
+    // Shared verify-before-commit + re-create auth.store under the new pass.
+    let store = sovereign_crypto::recovery_store::install_recovered_auth_store(
+        &crypto_dir(),
+        &kek,
+        &account_key,
+        new_passphrase,
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Install the session over the new store — same path as login. Synced
+    // content decrypts under the recovered KEK (content chain roots at the KEK).
+    let session = install_session(&store, new_passphrase).await?;
+
+    // Done — clear the in-progress recovery so a relaunch starts clean.
+    AccessRecovery::cancel(&dir);
+    Ok(session)
 }
 
 /// Authenticate + install the at-rest encryption for the matching persona.

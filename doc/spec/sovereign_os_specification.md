@@ -329,10 +329,27 @@ Per-Document Key = random 256-bit per document, wrapped by KEK
 - KEK layer allows key rotation without re-encrypting every document
 - Document Keys rotate on a configurable epoch (default: every 90 days or 100 commits)
 - Old Document Keys retained (encrypted) for historical version decryption
+- **The KEK is the root of the at-rest *content* chain.** Everything that
+  decrypts user content hangs off the KEK, not the Device Key: the Document
+  Keys are wrapped by the KEK (above), and the on-disk stores that hold them —
+  the Key Database and the search Index Key — are **sealed under the KEK too**
+  (see below). The Device Key's only at-rest job is to wrap the KEK itself. This
+  is what makes guardian recovery work: reconstructing the KEK + AccountKey
+  (§Guardian Social Recovery) restores the whole content chain **without the
+  passphrase**, because nothing in that chain depends on the passphrase-bound
+  Device Key. A design that sealed the Key Database under the Device Key would
+  silently break recovery — the guardian-restored KEK could not open it — even
+  though the Document Keys inside are KEK-wrapped. (Regression caught by the
+  first live recovery run, 2026-07-16; the outer file layer had drifted to the
+  Device Key.)
 
-**Key Database:** `~/.sovereign/keys.db` (encrypted by Device Key)
+**Key Database:** `~/.sovereign/keys.db` (sealed under the **KEK**)
 - Maps document IDs to their wrapped Document Keys
 - Synced across devices via the P2P protocol (encrypted in transit)
+- The search **Index Key** store is sealed under the KEK on the same principle
+- **Migration:** a store found sealed under the legacy Device Key is read once
+  (the passphrase is present at a normal login) and re-sealed under the KEK,
+  transparently, on next login — no user action, no data loss
 
 **Each device:**
 - Generates Device Key on first setup via HKDF(Master Key, Device ID)
@@ -376,17 +393,27 @@ Per-Document Key = random 256-bit per document, wrapped by KEK
 
 ### Guardian Social Recovery
 
-**What Gets Sharded:** Master Recovery Key (can regenerate all device keys)
+Recovery is **two independent features** with different triggers. They are specified together here because they share the guardian/mesh substrate, but they must never be conflated (a build plan once did — see the CLAUDE.md process note).
 
-**NOT the documents** - Guardians never see user data.
+- **Feature 1 — Access Recovery (guardians).** *Trigger: the user lost/forgot their passphrase.* Their data is present (on their synced devices). Guardians restore **access**. **This is the v0.1 target.**
+- **Feature 2 — Crowd Data Backup (mesh).** *Trigger: total loss of every device.* The user's encrypted data, erasure-coded across the opt-in mesh of Sovereign users, is brought back. **Deferred to Phase 2.** In v0.1, data durability is **synced devices, full stop.**
+
+**What guardians shard: the Recovery Key — NOT the documents, NOT a data key.**
+
+The Recovery Key is a **dedicated random 256-bit key** (the `Master Key ─> Recovery Key` branch of the Key Hierarchy). It **wraps the account secrets** — the random **KEK** and **AccountKey** that actually decrypt the user's content. Those account secrets are already random keys wrapped under the passphrase-bound Device Key (which is why paired devices share them across *different* per-device passphrases); the Recovery Key is a second, guardian-held wrapping of the same secrets. Reconstructing it therefore restores decryption capability **without the passphrase** — the point of the feature. Guardians never see documents, and never hold a data key.
+
+**Two independent tags (do not collapse into one `owner_tag`):**
+- **`T_g` — guardian tag.** Guardians are enrolled under it; it drives shard requests, heartbeat, the 72h flow.
+- **`T_f` — fragment tag** *(Feature 2)*. Mesh hosts index encrypted fragments under it; it drives discovery/fetch.
+- They are **completely independent, and only the owner holds both maps.** Guardians never learn `T_f`. Consequently, even a ≥3 guardian collusion that reconstructs the Recovery Key **cannot locate** the user's mesh ciphertext. Full data compromise requires *both* the account secrets (3-of-5 guardians) *and* `T_f` (owner-only). *(Phase-2 open point: for this to hold, `T_f` must not be derivable from the account secret; then total-loss recovery of `T_f` with no surviving device is its own design choice — owner-only-randomness vs. guardian-recoverable. Out of v0.1 scope, since v0.1 data lives on synced devices.)*
 
 **Shamir's Secret Sharing (3-of-5 threshold):**
 
 ```
-1. User creates Master Key (256-bit)
-2. Split into 5 shards using Shamir threshold cryptography
-3. Each shard encrypted with Guardian's public key
-4. Distribution via: QR code (in-person), encrypted email, NFC
+1. Generate the Recovery Key (random 256-bit) — distinct from the passphrase-derived Master Key.
+2. Split into 5 shards via Shamir threshold cryptography.
+3. Each shard encrypted with the Guardian's public key.
+4. Distribution via: QR code (in-person, preferred), encrypted email, NFC.
 ```
 
 **Guardian Storage Format:**
@@ -395,7 +422,7 @@ Per-Document Key = random 256-bit per document, wrapped by KEK
 {
   "shard_id": "uuid",
   "encrypted_shard": "base64",
-  "for_user": "user_display_name",
+  "for_user": "T_g",
   "created": "ISO-8601",
   "guardian_public_key_fingerprint": "sha256"
 }
@@ -404,28 +431,34 @@ Per-Document Key = random 256-bit per document, wrapped by KEK
 **Guardian Requirements:**
 - Explicit opt-in required
 - Does not need full Sovereign GE (small piece of software)
-- Stores shard as opaque encrypted blob
+- Stores shard as opaque encrypted blob; never learns `T_f`
+- At enrollment, agrees an **out-of-band recognition proof** with the owner (see Recovery Flow → Identity proof) — human, not digital
 
-### Recovery Flow
+### Recovery Flow (Feature 1 — Access Recovery)
 
-**Scenario:** User loses all devices
+**Scenario:** User has lost/forgotten their passphrase (data present on a synced device, or — Phase 2 — recoverable from the mesh).
 
-1. User initiates recovery on new device
-2. User proves identity via **pre-shared recovery passphrase** (set during Guardian enrollment, known only to user, never stored digitally)
+1. User initiates recovery on a device
+2. User proves they are the owner **out of band** — by the human proof each owner↔guardian pair agreed at enrollment (a shared memory, a physical object, a private question), judged by the guardian **person-to-person**. Not a digital secret (see "Identity proof" below).
 3. System contacts **all 5 Guardians** (email/SMS/app notification) — including those not needed for threshold
 4. **72-hour waiting period** begins — all Guardians are notified and can abort if the request is fraudulent
-5. After waiting period, 3+ Guardians approve via biometric auth on their device
-6. Each Guardian shown the recovery passphrase (or its hash) to verify initiator identity before releasing shard
-7. Shards transmitted to recovery device over authenticated channel
-8. Master Key reconstructed via Shamir threshold
-9. User sets new Master Key and revokes old shards
-10. New Guardian shards generated and distributed
+5. After the waiting period, 3+ Guardians approve via biometric/PIN auth on their device
+6. Shards transmitted to the recovery device over an authenticated channel
+7. **Recovery Key reconstructed** via Shamir threshold
+8. Recovery Key **unwraps the account secrets** (KEK + AccountKey)
+9. User sets a **NEW passphrase**; the account secrets are re-wrapped under it. Data — already present via sync (Phase 2: fetched from the mesh via `T_f`) — now decrypts **because the content chain is rooted at the recovered KEK, not the passphrase-bound Device Key** (see P2P Storage → Encryption Scheme). Any content-key store still sealed under the pre-recovery Device Key is migrated to the KEK as part of this step.
+   - **Verify before commit (non-destructive finalize):** the new `auth.store` **must not overwrite the old one until at-rest decryption has been verified** to succeed under the re-wrapped secrets. Finalize proves it can open the content-key stores first, then commits; a finalize that cannot decrypt aborts and leaves the prior `auth.store` intact, so a failed recovery can never brick an otherwise-recoverable account. (Requirement added after the first live run overwrote the store before an at-rest failure, 2026-07-16.)
+10. Recovery Key and Guardian shards are **rotated** and redistributed
 
 **Anti-fraud measures:**
 - All Guardians notified on every recovery attempt (not just the 3 being asked), so the real user always knows
 - 72-hour delay gives the real user time to abort via any Guardian
-- Recovery passphrase prevents SIM-swap / email-compromise impersonation
+- **The legitimate owner invalidates a concurrent takeover by authenticating with their real passphrase during the window** — active legitimate use cancels the recovery (a colluding attempt while the owner is still using their account is thereby defeated without any guardian action)
+- Because guardians hold a **dedicated, rotatable** Recovery Key (not the account key itself), a ≥3 collusion yields a *revocable* capability that triggers the notify-all + 72h + owner-can-invalidate flow — never a silent, permanent takeover
+- The **out-of-band human proof** (below) blocks *remote* impersonation — SIM-swap, phished credentials, a compromised device or account cannot fake a shared memory/object with each guardian
 - Failed recovery attempts logged and reported to all Guardians
+
+**Identity proof — out of band, human, per pair (decided 2026-07-10).** The proof that the person recovering is really the owner is established **between the owner and each guardian, out of band — human, not device, not digital.** At enrollment, each owner↔guardian pair agrees how the guardian will recognize the owner at recovery time: a shared memory, a physical object, a private question — **ideally something not discoverable in the digital space**, so it survives device/account compromise. The guardian judges it person-to-person before approving. **Sovereign stores nothing about it** — it lives only in the relationship. This deliberately replaces a "pre-shared recovery passphrase": no second digital secret to forget, nothing to steal from a device or server, and it rests on the same human trust that makes someone a guardian. (Each pair's proof is independent — there is no single shared secret across the roster.)
 
 ### Guardian Management
 
@@ -1329,7 +1362,10 @@ if not results['gpu_compute']:
 ### Encryption & Key Management
 
 **At-rest encryption:**
-- All local documents encrypted with Device Key
+- All local content encrypted with random per-document keys wrapped by the KEK;
+  the **KEK is the root of the content chain**, and the on-disk content-key
+  stores (Key Database + search Index Key) are sealed under the KEK — not the
+  Device Key (see P2P Storage → Encryption Scheme, and §Guardian Social Recovery)
 - Master Key in secure enclave/TPM
 - No plaintext on disk
 

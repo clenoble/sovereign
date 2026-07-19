@@ -27,6 +27,13 @@ pub struct P2pConfig {
     /// connectivity callback wired by the Android plugin (Phase 4.1).
     #[serde(default = "default_wifi_only")]
     pub wifi_only: bool,
+    /// M1.5: signed, updatable **seed relay** multiaddrs (D3). Each must
+    /// end in `/p2p/<relay-peer-id>`. The node reserves a circuit slot on
+    /// each so peers behind NATs (the M0 verdict: hole punch fails through
+    /// carrier NAT, relay is mandatory) can still be reached. Empty =
+    /// LAN/mDNS only (the pre-M1.5 behaviour).
+    #[serde(default)]
+    pub seed_relays: Vec<String>,
 }
 
 fn default_listen_port() -> u16 {
@@ -94,6 +101,7 @@ impl Default for P2pConfig {
             device_name: default_device_name(),
             enable_mdns: default_enable_mdns(),
             wifi_only: default_wifi_only(),
+            seed_relays: Vec::new(),
         }
     }
 }
@@ -119,6 +127,7 @@ mod tests {
             device_name: "My Laptop".into(),
             enable_mdns: false,
             wifi_only: true,
+            seed_relays: Vec::new(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: P2pConfig = serde_json::from_str(&json).unwrap();

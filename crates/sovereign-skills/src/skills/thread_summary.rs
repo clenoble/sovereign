@@ -131,7 +131,6 @@ fn build_prompt(
             let stub = format!("## {title}\n(omitted: prompt budget exhausted)\n\n");
             if stub.len() <= remaining {
                 body.push_str(&stub);
-                remaining -= stub.len();
             }
             // Don't try later (smaller) docs either; iteration order matters
             // for predictability, so just stop.

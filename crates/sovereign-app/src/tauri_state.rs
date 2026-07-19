@@ -17,6 +17,33 @@ pub struct ModelAssignments {
 /// All Tauri commands receive an immutable reference to this via
 /// `tauri::State<'_, AppState>`. Interior mutability is handled by
 /// Arc + Mutex on the individual subsystems.
+/// In-flight Guardian **Access** Recovery secrets, held only for the duration
+/// of a running app process (RECOVERY-001). The user sets the NEW passphrase up
+/// front (`start_access_recovery`); we derive the share-sealing key from it and
+/// keep both here so `access_recovery_poll`/`finalize` can unseal without a
+/// re-prompt. Nothing here is persisted — after an app restart during the
+/// multi-day recovery window the user calls `resume_access_recovery` with the
+/// same passphrase to re-derive the seal key and rehydrate this slot. Cleared on
+/// `finalize`/`cancel`. The passphrase is `Zeroizing` and the whole struct
+/// wipes the seal key on drop.
+#[cfg(feature = "encryption")]
+pub struct RecoverySession {
+    /// AEAD key sealing the in-progress shares at rest. Re-derived from the
+    /// passphrase + the stored per-recovery salt; never itself persisted.
+    pub seal_key: [u8; 32],
+    /// The new passphrase, re-created into `auth.store` at `finalize`.
+    pub new_passphrase: sovereign_crypto::zeroize::Zeroizing<String>,
+}
+
+#[cfg(feature = "encryption")]
+impl Drop for RecoverySession {
+    fn drop(&mut self) {
+        use sovereign_crypto::zeroize::Zeroize;
+        self.seal_key.zeroize();
+        // new_passphrase (Zeroizing) wipes itself on drop.
+    }
+}
+
 pub struct AppState {
     /// `LayeredGraphDB` indirection so the DB can be swapped from raw
     /// `SurrealGraphDB` to `EncryptedGraphDB` at login. Trait calls go through
@@ -53,6 +80,18 @@ pub struct AppState {
     /// is dropped immediately.
     #[cfg(feature = "encryption")]
     pub account_key: tokio::sync::RwLock<Option<Arc<sovereign_crypto::account_key::AccountKey>>>,
+    /// Content KEK (Feature 1): the random key that wraps document keys.
+    /// Retained post-login so recovery-setup can seal it (with the
+    /// AccountKey) into the guardian Recovery Bundle. Same on every paired
+    /// device; None until login/onboarding.
+    #[cfg(feature = "encryption")]
+    pub kek: tokio::sync::RwLock<Option<Arc<sovereign_crypto::kek::Kek>>>,
+    /// In-flight Guardian Access Recovery secrets (RECOVERY-001), held only
+    /// while an app process is running a recovery. `None` outside recovery;
+    /// populated by `start`/`resume`, cleared by `finalize`/`cancel`. Not
+    /// persisted — see [`RecoverySession`].
+    #[cfg(feature = "encryption")]
+    pub recovery_session: tokio::sync::RwLock<Option<RecoverySession>>,
     /// Per-device key used solely for libp2p identity derivation (PeerId).
     /// Different on every device. Installed alongside `account_key` in the
     /// post-authentication flow; consumed by P2P startup.
@@ -170,6 +209,51 @@ impl AppState {
     /// Install a freshly-derived account key (called post-authentication).
     pub async fn set_account_key(&self, key: Arc<sovereign_crypto::account_key::AccountKey>) {
         *self.account_key.write().await = Some(key);
+    }
+
+    /// Snapshot the content KEK (Feature 1 recovery setup).
+    #[cfg(feature = "encryption")]
+    pub async fn kek(&self) -> Option<Arc<sovereign_crypto::kek::Kek>> {
+        self.kek.read().await.clone()
+    }
+
+    /// Install the content KEK (called post-authentication, alongside the
+    /// account key).
+    #[cfg(feature = "encryption")]
+    pub async fn set_kek(&self, key: Arc<sovereign_crypto::kek::Kek>) {
+        *self.kek.write().await = Some(key);
+    }
+
+    /// Install the in-flight access-recovery secrets (RECOVERY-001).
+    #[cfg(feature = "encryption")]
+    pub async fn set_recovery_session(&self, session: RecoverySession) {
+        *self.recovery_session.write().await = Some(session);
+    }
+
+    /// Snapshot the share-sealing key of the in-flight recovery, if one is open.
+    /// Copy — the guard is dropped immediately.
+    #[cfg(feature = "encryption")]
+    pub async fn recovery_seal_key(&self) -> Option<[u8; 32]> {
+        self.recovery_session.read().await.as_ref().map(|s| s.seal_key)
+    }
+
+    /// Snapshot the new passphrase of the in-flight recovery, if one is open.
+    #[cfg(feature = "encryption")]
+    pub async fn recovery_new_passphrase(
+        &self,
+    ) -> Option<sovereign_crypto::zeroize::Zeroizing<String>> {
+        self.recovery_session
+            .read()
+            .await
+            .as_ref()
+            .map(|s| s.new_passphrase.clone())
+    }
+
+    /// Drop the in-flight recovery secrets (on finalize/cancel). The removed
+    /// `RecoverySession` zeroizes on drop.
+    #[cfg(feature = "encryption")]
+    pub async fn clear_recovery_session(&self) {
+        *self.recovery_session.write().await = None;
     }
 
     /// Snapshot the per-device libp2p identity key.

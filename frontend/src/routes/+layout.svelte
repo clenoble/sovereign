@@ -25,6 +25,8 @@
 	import type { BrowserFormExtraction } from '$lib/api/commands';
 	import LoginScreen from '$lib/components/LoginScreen.svelte';
 	import OnboardingWizard from '$lib/components/OnboardingWizard.svelte';
+	import RecoveryWizard from '$lib/components/RecoveryWizard.svelte';
+	import { recovery } from '$lib/stores/recovery.svelte';
 	import SettingsPanel from '$lib/components/SettingsPanel.svelte';
 	import MobileShell from '$lib/components/mobile/MobileShell.svelte';
 
@@ -68,17 +70,26 @@
 		// workspace, so assuming "ready" here exposed the canvas before
 		// authentication (flash of unauthenticated content). Stay on the
 		// loading screen until the backend tells us which gate to show.
+		// Budget: mobile backend setup opens surrealkv (~3-4s under
+		// emulation) and can add ~4s more if a DB segment needs repair,
+		// so the command handler may not be ready for ~9s. The old
+		// 24x250ms (~6s) budget timed out before that and dead-ended on
+		// the loading screen. 3 attempts spaced ~7s apart give ~14s.
+		const AUTH_CHECK_ATTEMPTS = 3;
+		const AUTH_CHECK_DELAY_MS = 7000;
 		let auth = null;
-		for (let i = 0; i < 24; i++) {
+		for (let i = 0; i < AUTH_CHECK_ATTEMPTS; i++) {
 			try {
 				auth = await checkAuthState();
 				break;
 			} catch {
-				await new Promise((r) => setTimeout(r, 250));
+				if (i < AUTH_CHECK_ATTEMPTS - 1) {
+					await new Promise((r) => setTimeout(r, AUTH_CHECK_DELAY_MS));
+				}
 			}
 		}
 		if (!auth) {
-			// Backend never answered (~6s) — keep the loading screen rather
+			// Backend never answered (~14s) — keep the loading screen rather
 			// than exposing the canvas unauthenticated.
 			app.authState = 'checking';
 		} else if (auth.needs_onboarding) {
@@ -212,6 +223,9 @@
 	<OnboardingWizard />
 {:else if app.authState === 'login'}
 	<LoginScreen />
+	{#if recovery.visible}
+		<RecoveryWizard />
+	{/if}
 {:else}
 	<div class="app">
 		{#if device.isMobile}

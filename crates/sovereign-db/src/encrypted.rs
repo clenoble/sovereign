@@ -117,7 +117,11 @@ impl EncryptedGraphDB {
             // vanishes on restart — silent, unrecoverable ciphertext (data
             // loss). Fail the write instead, so the caller surfaces the error
             // and the row is never stored under an unsaved key.
-            kdb.save(&self.device_key).map_err(|e| {
+            // Sealed under the KEK — the content-chain root — so guardian
+            // recovery can reopen it without the passphrase (spec §Encryption
+            // Scheme). The DeviceKey is used only for the commit MAC, not for
+            // content-key storage.
+            kdb.save(&self.kek).map_err(|e| {
                 DbError::Query(format!(
                     "key DB save failed after minting key for {entity_id}: {e}"
                 ))
@@ -204,7 +208,11 @@ impl EncryptedGraphDB {
     async fn decrypt_messages(&self, msgs: Vec<Message>) -> DbResult<Vec<Message>> {
         let mut out = Vec::with_capacity(msgs.len());
         for m in msgs {
-            out.push(self.decrypt_message(m).await?);
+            let id = m.id_string().unwrap_or_default();
+            match self.decrypt_message(m).await {
+                Ok(m) => out.push(m),
+                Err(e) => tracing::warn!("skipping undecryptable message {id} in list (DB-M1): {e}"),
+            }
         }
         Ok(out)
     }
@@ -234,11 +242,20 @@ impl EncryptedGraphDB {
         Ok(doc)
     }
 
-    /// Decrypt a list of documents.
+    /// Decrypt a list of documents. DB-M1: one undecryptable row must not
+    /// brick the whole list (a single corrupted row would make the entire
+    /// workspace fail to load) — skip it with a warning and return the rest.
+    /// Single-row reads (`get_document`) stay hard errors.
     async fn decrypt_documents(&self, docs: Vec<Document>) -> DbResult<Vec<Document>> {
         let mut result = Vec::with_capacity(docs.len());
         for doc in docs {
-            result.push(self.decrypt_document(doc).await?);
+            let id = doc.id_string().unwrap_or_default();
+            match self.decrypt_document(doc).await {
+                Ok(d) => result.push(d),
+                Err(e) => tracing::warn!(
+                    "skipping undecryptable document {id} in list (DB-M1): {e}"
+                ),
+            }
         }
         Ok(result)
     }
@@ -265,7 +282,11 @@ impl EncryptedGraphDB {
     async fn decrypt_threads(&self, threads: Vec<Thread>) -> DbResult<Vec<Thread>> {
         let mut out = Vec::with_capacity(threads.len());
         for t in threads {
-            out.push(self.decrypt_thread(t).await?);
+            let id = t.id_string().unwrap_or_default();
+            match self.decrypt_thread(t).await {
+                Ok(t) => out.push(t),
+                Err(e) => tracing::warn!("skipping undecryptable thread {id} in list (DB-M1): {e}"),
+            }
         }
         Ok(out)
     }
@@ -288,7 +309,11 @@ impl EncryptedGraphDB {
     async fn decrypt_conversations(&self, convs: Vec<Conversation>) -> DbResult<Vec<Conversation>> {
         let mut out = Vec::with_capacity(convs.len());
         for c in convs {
-            out.push(self.decrypt_conversation(c).await?);
+            let id = c.id_string().unwrap_or_default();
+            match self.decrypt_conversation(c).await {
+                Ok(c) => out.push(c),
+                Err(e) => tracing::warn!("skipping undecryptable conversation {id} in list (DB-M1): {e}"),
+            }
         }
         Ok(out)
     }
@@ -350,16 +375,35 @@ impl EncryptedGraphDB {
     /// that need not round-trip byte-exactly); binds the document id, parent,
     /// message and the snapshot — the tamper-relevant content. Length-prefixed.
     fn commit_mac_bytes(commit: &Commit) -> Vec<u8> {
-        let mut out = Vec::with_capacity(128 + commit.snapshot.content.len());
-        out.extend_from_slice(b"sovereign-commit-mac-fields:v1");
-        for field in [
+        // v2 canonical when the snapshot carries nonce fields (C1): the nonces
+        // and title blind-index are restore-critical, so they must be under
+        // the MAC — otherwise a disk-write attacker could swap them and turn
+        // a verified restore into corruption. Legacy nonce-less commits keep
+        // verifying under the original v1 canonical.
+        let v2 = commit.snapshot.content_nonce.is_some()
+            || commit.snapshot.title_nonce.is_some()
+            || !commit.snapshot.title_token_hashes.is_empty();
+        let mut out = Vec::with_capacity(160 + commit.snapshot.content.len());
+        out.extend_from_slice(if v2 {
+            b"sovereign-commit-mac-fields:v2".as_slice()
+        } else {
+            b"sovereign-commit-mac-fields:v1".as_slice()
+        });
+        let joined_hashes = commit.snapshot.title_token_hashes.join(",");
+        let mut fields = vec![
             commit.document_id.as_str(),
             commit.parent_commit.as_deref().unwrap_or(""),
             commit.message.as_str(),
             commit.snapshot.document_id.as_str(),
             commit.snapshot.title.as_str(),
             commit.snapshot.content.as_str(),
-        ] {
+        ];
+        if v2 {
+            fields.push(commit.snapshot.content_nonce.as_deref().unwrap_or(""));
+            fields.push(commit.snapshot.title_nonce.as_deref().unwrap_or(""));
+            fields.push(joined_hashes.as_str());
+        }
+        for field in fields {
             out.extend_from_slice(&(field.len() as u32).to_le_bytes());
             out.extend_from_slice(field.as_bytes());
         }
@@ -382,6 +426,38 @@ impl EncryptedGraphDB {
         }
     }
 
+    /// Decrypt a commit's snapshot for display (C1: the History panel shows
+    /// snapshot previews, so commits read through this layer must be
+    /// plaintext). Best-effort: legacy nonce-less snapshots and decrypt
+    /// failures are returned as-is with a warning — history listing must not
+    /// error out over one unreadable snapshot. MAC verification happens on
+    /// the at-rest fields BEFORE this runs.
+    async fn decrypt_commit_snapshot(&self, mut commit: Commit) -> Commit {
+        let doc_id = commit.snapshot.document_id.clone();
+        if let Some(nonce) = commit.snapshot.content_nonce.take() {
+            match self.decrypt_content(&doc_id, &commit.snapshot.content, &nonce).await {
+                Ok(plain) => commit.snapshot.content = plain,
+                Err(e) => {
+                    tracing::warn!("commit {} snapshot content undecryptable: {e}",
+                        commit.id_string().unwrap_or_default());
+                    commit.snapshot.content_nonce = Some(nonce);
+                }
+            }
+        }
+        if let Some(nonce) = commit.snapshot.title_nonce.take() {
+            match self.decrypt_content(&doc_id, &commit.snapshot.title, &nonce).await {
+                Ok(plain) => commit.snapshot.title = plain,
+                Err(e) => {
+                    tracing::warn!("commit {} snapshot title undecryptable: {e}",
+                        commit.id_string().unwrap_or_default());
+                    commit.snapshot.title_nonce = Some(nonce);
+                }
+            }
+        }
+        commit.snapshot.title_token_hashes.clear();
+        commit
+    }
+
     /// Log if a signed commit fails its integrity check (local tampering).
     fn warn_if_commit_tampered(&self, commit: &Commit) {
         if !self.commit_mac_ok(commit) {
@@ -395,7 +471,11 @@ impl EncryptedGraphDB {
     async fn decrypt_contacts(&self, contacts: Vec<Contact>) -> DbResult<Vec<Contact>> {
         let mut out = Vec::with_capacity(contacts.len());
         for c in contacts {
-            out.push(self.decrypt_contact(c).await?);
+            let id = c.id_string().unwrap_or_default();
+            match self.decrypt_contact(c).await {
+                Ok(c) => out.push(c),
+                Err(e) => tracing::warn!("skipping undecryptable contact {id} in list (DB-M1): {e}"),
+            }
         }
         Ok(out)
     }
@@ -438,7 +518,20 @@ impl GraphDB for EncryptedGraphDB {
         // Compute title hashes from plaintext before we lose them.
         let title_hashes = self.token_hashes(&doc.title);
 
-        let created = self.inner.create_document(doc).await?;
+        // H-db2: NEVER write the plaintext title/content to the raw store.
+        // The old shape (insert plaintext → overwrite with ciphertext) left a
+        // crash window in which the row was permanently plaintext at rest, and
+        // even without a crash the plaintext lingers in RocksDB's WAL/older
+        // SSTs until compaction. Insert with the sensitive fields BLANKED, then
+        // fill ciphertext under the minted id. A crash now fails closed (empty
+        // field, never plaintext).
+        let plain_title = doc.title.clone();
+        let plain_content = doc.content.clone();
+        let mut blanked = doc;
+        blanked.title = String::new();
+        blanked.content = String::new();
+
+        let mut created = self.inner.create_document(blanked).await?;
         let doc_id = created.id.as_ref()
             .map(|t| crate::schema::thing_to_raw(t))
             .unwrap_or_default();
@@ -446,18 +539,21 @@ impl GraphDB for EncryptedGraphDB {
         // Encrypt content and persist it TOGETHER with its nonce — without the
         // nonce the row would read back as raw ciphertext (decrypt_document
         // treats nonce-less rows as plaintext/legacy).
-        let (encrypted_content, content_nonce) = self.encrypt_content(&doc_id, &created.content).await?;
+        let (encrypted_content, content_nonce) = self.encrypt_content(&doc_id, &plain_content).await?;
         self.inner.set_document_content_encryption(&doc_id, &encrypted_content, &content_nonce).await?;
 
         // Encrypt title separately and write through the dedicated setter, which
         // also stores the blind-index token hashes for search.
         let (title_ct, title_nonce) = self.encrypt_with(
-            &self.key_db, &doc_id, created.title.as_bytes(),
+            &self.key_db, &doc_id, plain_title.as_bytes(),
         ).await?;
         self.inner.set_document_title_encryption(
             &doc_id, &title_ct, &title_nonce, &title_hashes,
         ).await?;
 
+        // Return the caller's plaintext view (the raw row is ciphertext).
+        created.title = plain_title;
+        created.content = plain_content;
         Ok(created)
     }
 
@@ -474,7 +570,12 @@ impl GraphDB for EncryptedGraphDB {
         let plain_title = doc.title.clone();
         let plain_content = doc.content.clone();
 
-        let inserted = self.inner.create_document_with_id(doc).await?;
+        // H-db2: blank the sensitive fields before the raw insert so plaintext
+        // never lands at rest (see create_document).
+        let mut blanked = doc;
+        blanked.title = String::new();
+        blanked.content = String::new();
+        let inserted = self.inner.create_document_with_id(blanked).await?;
         if !inserted {
             return Ok(false);
         }
@@ -669,22 +770,31 @@ impl GraphDB for EncryptedGraphDB {
     async fn create_thread(&self, thread: Thread) -> DbResult<Thread> {
         let name_hashes = self.token_hashes(&thread.name);
 
-        let created = self.inner.create_thread(thread).await?;
+        // H-db2: blank name/description before the raw insert (see create_document).
+        let plain_name = thread.name.clone();
+        let plain_desc = thread.description.clone();
+        let mut blanked = thread;
+        blanked.name = String::new();
+        blanked.description = String::new();
+
+        let mut created = self.inner.create_thread(blanked).await?;
         let id = created.id.as_ref()
             .map(|t| crate::schema::thing_to_raw(t))
             .unwrap_or_default();
 
         let (name_ct, name_nonce) = self.encrypt_with(
-            &self.threads_key_db, &id, created.name.as_bytes(),
+            &self.threads_key_db, &id, plain_name.as_bytes(),
         ).await?;
         let (desc_ct, desc_nonce) = self.encrypt_with(
-            &self.threads_key_db, &id, created.description.as_bytes(),
+            &self.threads_key_db, &id, plain_desc.as_bytes(),
         ).await?;
 
         self.inner.set_thread_encryption(
             &id, &name_ct, &name_nonce, &desc_ct, &desc_nonce, &name_hashes,
         ).await?;
 
+        created.name = plain_name;
+        created.description = plain_desc;
         Ok(created)
     }
 
@@ -913,16 +1023,21 @@ impl GraphDB for EncryptedGraphDB {
 
     async fn list_document_commits(&self, doc_id: &str) -> DbResult<Vec<Commit>> {
         let commits = self.inner.list_document_commits(doc_id).await?;
-        for c in &commits {
-            self.warn_if_commit_tampered(c);
+        let mut out = Vec::with_capacity(commits.len());
+        for c in commits {
+            // MAC verifies over the at-rest (ciphertext) fields — check first,
+            // then decrypt for display (C1: history previews must be readable
+            // through this layer).
+            self.warn_if_commit_tampered(&c);
+            out.push(self.decrypt_commit_snapshot(c).await);
         }
-        Ok(commits)
+        Ok(out)
     }
 
     async fn get_commit(&self, commit_id: &str) -> DbResult<Commit> {
         let commit = self.inner.get_commit(commit_id).await?;
         self.warn_if_commit_tampered(&commit);
-        Ok(commit)
+        Ok(self.decrypt_commit_snapshot(commit).await)
     }
 
     async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> {
@@ -934,6 +1049,17 @@ impl GraphDB for EncryptedGraphDB {
         if !self.commit_mac_ok(&commit) {
             return Err(DbError::Query(format!(
                 "refusing to restore from commit {commit_id}: integrity check failed (tampered or forged)"
+            )));
+        }
+        // C1 legacy guard: a pre-fix snapshot of an encrypted row carries no
+        // nonce — restoring it would pair old ciphertext with the live row's
+        // newer nonce and destroy the document. Refuse BEFORE any write lands.
+        let live = self.inner.get_document(doc_id).await?;
+        if live.encryption_nonce.is_some() && commit.snapshot.content_nonce.is_none() {
+            return Err(DbError::Query(format!(
+                "refusing to restore {doc_id} from commit {commit_id}: the snapshot predates \
+                 nonce-carrying commits (C1) and cannot be decrypted — restoring would corrupt \
+                 the document"
             )));
         }
         let doc = self.inner.restore_document(doc_id, commit_id).await?;
@@ -963,14 +1089,26 @@ impl GraphDB for EncryptedGraphDB {
     // -- Contacts: encrypt name (new in 2b) + notes (existed pre-2b, now under contacts key DB) ---
 
     async fn create_contact(&self, contact: Contact) -> DbResult<Contact> {
-        let created = self.inner.create_contact(contact).await?;
+        // H-db2: blank name/notes/addresses before the raw insert so none of
+        // this PII lands plaintext at rest (see create_document). `addresses`
+        // is blanked too — the raw insert would otherwise write the plaintext
+        // email/phone/Signal vec before encrypt_contact_addresses overwrites it.
+        let plain_name = contact.name.clone();
+        let plain_notes = contact.notes.clone();
+        let plain_addresses = contact.addresses.clone();
+        let mut blanked = contact;
+        blanked.name = String::new();
+        blanked.notes = String::new();
+        blanked.addresses = Vec::new();
+
+        let mut created = self.inner.create_contact(blanked).await?;
         let id = created.id.as_ref()
             .map(|t| crate::schema::thing_to_raw(t))
             .unwrap_or_default();
 
         // Always encrypt the name (no plaintext fallback in the 2b model).
         let (name_ct, name_nonce) = self.encrypt_with(
-            &self.contacts_key_db, &id, created.name.as_bytes(),
+            &self.contacts_key_db, &id, plain_name.as_bytes(),
         ).await?;
         self.inner.set_contact_name_encryption(&id, &name_ct, &name_nonce).await?;
 
@@ -979,16 +1117,19 @@ impl GraphDB for EncryptedGraphDB {
         // — pre-2b had a latent bug here: notes ciphertext landed in the row but the
         // nonce companion was never written, so subsequent reads returned the ciphertext
         // as plaintext. set_contact_notes_encryption writes both atomically.
-        if !created.notes.is_empty() {
+        if !plain_notes.is_empty() {
             let (notes_ct, notes_nonce) = self.encrypt_with(
-                &self.contacts_key_db, &id, created.notes.as_bytes(),
+                &self.contacts_key_db, &id, plain_notes.as_bytes(),
             ).await?;
             self.inner.set_contact_notes_encryption(&id, &notes_ct, &notes_nonce).await?;
         }
 
         // ATREST-002: encrypt the addresses Vec (email/phone/Signal) at rest.
-        self.encrypt_contact_addresses(&id, &created.addresses).await?;
+        self.encrypt_contact_addresses(&id, &plain_addresses).await?;
 
+        created.name = plain_name;
+        created.notes = plain_notes;
+        created.addresses = plain_addresses;
         Ok(created)
     }
 
@@ -1109,17 +1250,27 @@ impl GraphDB for EncryptedGraphDB {
         combined.push_str(&message.body);
         let token_hashes = self.token_hashes(&combined);
 
+        // H-db2: blank body/subject/body_html before the raw insert so no
+        // message content lands plaintext at rest (see create_document).
+        let plain_body = message.body.clone();
+        let plain_subject = message.subject.clone();
+        let plain_body_html = message.body_html.clone();
+        let mut blanked = message;
+        blanked.body = String::new();
+        blanked.subject = blanked.subject.as_ref().map(|_| String::new());
+        blanked.body_html = blanked.body_html.as_ref().map(|_| String::new());
+
         // Create first so the DB assigns an ID; that ID is the key-DB entry name.
-        let created = self.inner.create_message(message).await?;
+        let mut created = self.inner.create_message(blanked).await?;
         let msg_id = created.id.as_ref()
             .map(|t| crate::schema::thing_to_raw(t))
             .unwrap_or_default();
 
         // Encrypt each field with a fresh nonce under the per-message key.
         let (body_ct, body_nonce) = self.encrypt_with(
-            &self.messages_key_db, &msg_id, created.body.as_bytes(),
+            &self.messages_key_db, &msg_id, plain_body.as_bytes(),
         ).await?;
-        let subject_enc = if let Some(s) = &created.subject {
+        let subject_enc = if let Some(s) = &plain_subject {
             let (ct, n) = self.encrypt_with(
                 &self.messages_key_db, &msg_id, s.as_bytes(),
             ).await?;
@@ -1127,7 +1278,7 @@ impl GraphDB for EncryptedGraphDB {
         } else {
             None
         };
-        let body_html_enc = if let Some(h) = &created.body_html {
+        let body_html_enc = if let Some(h) = &plain_body_html {
             let (ct, n) = self.encrypt_with(
                 &self.messages_key_db, &msg_id, h.as_bytes(),
             ).await?;
@@ -1146,7 +1297,10 @@ impl GraphDB for EncryptedGraphDB {
             &token_hashes,
         ).await?;
 
-        // Return plaintext to the caller (created already has plaintext fields).
+        // Return the caller's plaintext view (the raw row is ciphertext).
+        created.body = plain_body;
+        created.subject = plain_subject;
+        created.body_html = plain_body_html;
         Ok(created)
     }
 
@@ -1249,16 +1403,22 @@ impl GraphDB for EncryptedGraphDB {
     // -- Conversations: encrypt title (no search trait method exists) --
 
     async fn create_conversation(&self, conversation: Conversation) -> DbResult<Conversation> {
-        let created = self.inner.create_conversation(conversation).await?;
+        // H-db2: blank the title before the raw insert (see create_document).
+        let plain_title = conversation.title.clone();
+        let mut blanked = conversation;
+        blanked.title = String::new();
+
+        let mut created = self.inner.create_conversation(blanked).await?;
         let id = created.id.as_ref()
             .map(|t| crate::schema::thing_to_raw(t))
             .unwrap_or_default();
 
         let (title_ct, title_nonce) = self.encrypt_with(
-            &self.conversations_key_db, &id, created.title.as_bytes(),
+            &self.conversations_key_db, &id, plain_title.as_bytes(),
         ).await?;
         self.inner.set_conversation_title_encryption(&id, &title_ct, &title_nonce).await?;
 
+        created.title = plain_title;
         Ok(created)
     }
 
@@ -1397,10 +1557,13 @@ impl GraphDB for EncryptedGraphDB {
     async fn create_share_record(&self, record: ShareRecord) -> DbResult<ShareRecord> {
         // Capture the plaintext via_url before the create, so we can re-encrypt
         // afterward (the DB-assigned ID is needed to mint the per-record key).
+        // H-db2: blank it before the raw insert so the URL never lands plaintext.
         let plain_url = record.via_url.clone();
-        let created = self.inner.create_share_record(record).await?;
+        let mut blanked = record;
+        blanked.via_url = blanked.via_url.as_ref().map(|_| String::new());
+        let mut created = self.inner.create_share_record(blanked).await?;
 
-        if let Some(url) = plain_url {
+        if let Some(url) = &plain_url {
             let id = created.id.as_ref()
                 .map(|t| crate::schema::thing_to_raw(t))
                 .unwrap_or_default();
@@ -1410,6 +1573,7 @@ impl GraphDB for EncryptedGraphDB {
             self.inner.set_share_record_via_url_encryption(&id, &url_ct, &url_nonce).await?;
         }
 
+        created.via_url = plain_url;
         Ok(created)
     }
 
@@ -1545,9 +1709,10 @@ impl GraphDB for EncryptedGraphDB {
     // -- Id-preserving inserts for P2P sync (P2) ---
     //
     // Rows arrive with PLAINTEXT user-content fields from the sync
-    // boundary. Same pattern as create_document_with_id: insert under the
-    // origin id, then immediately overwrite the sensitive fields with
-    // ciphertext through the dedicated setters.
+    // boundary. Same pattern as create_document_with_id (H-db2): the
+    // sensitive fields are BLANKED before the raw insert so plaintext never
+    // lands at rest, then filled with ciphertext through the dedicated
+    // setters under the origin id.
 
     async fn create_thread_with_id(&self, thread: Thread) -> DbResult<bool> {
         let id = thread
@@ -1557,7 +1722,10 @@ impl GraphDB for EncryptedGraphDB {
         let plain_name = thread.name.clone();
         let plain_desc = thread.description.clone();
 
-        let inserted = self.inner.create_thread_with_id(thread).await?;
+        let mut blanked = thread;
+        blanked.name = String::new();
+        blanked.description = String::new();
+        let inserted = self.inner.create_thread_with_id(blanked).await?;
         if !inserted {
             return Ok(false);
         }
@@ -1589,7 +1757,9 @@ impl GraphDB for EncryptedGraphDB {
         let id = record
             .id_string()
             .ok_or_else(|| DbError::Query("create_share_record_with_id: id unset".into()))?;
-        let inserted = self.inner.create_share_record_with_id(record).await?;
+        let mut blanked = record;
+        blanked.via_url = blanked.via_url.as_ref().map(|_| String::new());
+        let inserted = self.inner.create_share_record_with_id(blanked).await?;
         if !inserted {
             return Ok(false);
         }
@@ -1612,7 +1782,11 @@ impl GraphDB for EncryptedGraphDB {
         let plain_notes = contact.notes.clone();
         let plain_addresses = contact.addresses.clone();
 
-        let inserted = self.inner.create_contact_with_id(contact).await?;
+        let mut blanked = contact;
+        blanked.name = String::new();
+        blanked.notes = String::new();
+        blanked.addresses = Vec::new();
+        let inserted = self.inner.create_contact_with_id(blanked).await?;
         if !inserted {
             return Ok(false);
         }
@@ -1653,7 +1827,11 @@ impl GraphDB for EncryptedGraphDB {
         let plain_subject = message.subject.clone();
         let plain_html = message.body_html.clone();
 
-        let inserted = self.inner.create_message_with_id(message).await?;
+        let mut blanked = message;
+        blanked.body = String::new();
+        blanked.subject = blanked.subject.as_ref().map(|_| String::new());
+        blanked.body_html = blanked.body_html.as_ref().map(|_| String::new());
+        let inserted = self.inner.create_message_with_id(blanked).await?;
         if !inserted {
             return Ok(false);
         }
@@ -1745,6 +1923,46 @@ impl GraphDB for EncryptedGraphDB {
         resolved_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> DbResult<()> {
         self.inner.set_suggested_link_status(id, status, resolved_at).await
+    }
+
+    // -- Sync-scope lists (tombstones included, H-p2p1): delegate + decrypt.
+    // The list decrypt helpers skip undecryptable rows (DB-M1).
+
+    async fn list_documents_including_deleted(&self) -> DbResult<Vec<Document>> {
+        let docs = self.inner.list_documents_including_deleted().await?;
+        self.decrypt_documents(docs).await
+    }
+
+    async fn list_threads_including_deleted(&self) -> DbResult<Vec<Thread>> {
+        let threads = self.inner.list_threads_including_deleted().await?;
+        self.decrypt_threads(threads).await
+    }
+
+    async fn list_entities_including_deleted(&self) -> DbResult<Vec<Entity>> {
+        // Entities carry no field-encrypted content at this layer (DB-M6 is a
+        // separate, open finding) — pass through.
+        self.inner.list_entities_including_deleted().await
+    }
+
+    async fn list_pii_records_including_deleted(&self) -> DbResult<Vec<PiiRecord>> {
+        // PiiRecord.value_encrypted is sealed by the caller (device/account
+        // key), not by this layer — pass through, same as list_pii_records.
+        self.inner.list_pii_records_including_deleted().await
+    }
+
+    async fn list_contacts_including_deleted(&self) -> DbResult<Vec<Contact>> {
+        let contacts = self.inner.list_contacts_including_deleted().await?;
+        self.decrypt_contacts(contacts).await
+    }
+
+    async fn list_messages_including_deleted(&self) -> DbResult<Vec<Message>> {
+        let msgs = self.inner.list_messages_including_deleted().await?;
+        self.decrypt_messages(msgs).await
+    }
+
+    async fn list_conversations_including_deleted(&self) -> DbResult<Vec<Conversation>> {
+        let convs = self.inner.list_conversations_including_deleted().await?;
+        self.decrypt_conversations(convs).await
     }
 }
 
@@ -2610,13 +2828,15 @@ mod tests {
         // Create a thread — this mints a per-thread key and should persist.
         edb.create_thread(Thread::new("any thread".into(), "x".into())).await.unwrap();
 
-        // The threads key DB file now lives on disk under the device key.
+        // The threads key DB file now lives on disk under the KEK.
         assert!(threads_kdb_path.exists(), "keys.threads.db must be persisted after a key is minted");
         let bytes_on_disk = std::fs::metadata(&threads_kdb_path).unwrap().len();
         assert!(bytes_on_disk > 0, "persisted key DB must be non-empty");
 
-        // And the wire format is recoverable by another reader with the same DeviceKey.
-        let recovered = KeyDatabase::load(&threads_kdb_path, &dk).unwrap();
+        // And the wire format is recoverable by another reader with the same KEK
+        // (the content-chain root — what guardian recovery restores).
+        let _ = &dk; // DeviceKey no longer seals the store; kept for the MAC field above
+        let recovered = KeyDatabase::load(&threads_kdb_path, &kek).unwrap();
         assert!(!recovered.is_empty(), "loaded key DB must contain the minted thread key");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2643,13 +2863,13 @@ mod tests {
             inner: inner.clone(),
             key_db: Arc::new(RwLock::new(
                 if dir.join("keys.db").exists() {
-                    KeyDatabase::load(&dir.join("keys.db"), &test_device_key()).unwrap()
+                    KeyDatabase::load(&dir.join("keys.db"), &Kek::from_bytes(kek_bytes)).unwrap()
                 } else { KeyDatabase::new(dir.join("keys.db")) }
             )),
             messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(dir.join("keys.messages.db")))),
             threads_key_db: Arc::new(RwLock::new(
                 if dir.join("keys.threads.db").exists() {
-                    KeyDatabase::load(&dir.join("keys.threads.db"), &test_device_key()).unwrap()
+                    KeyDatabase::load(&dir.join("keys.threads.db"), &Kek::from_bytes(kek_bytes)).unwrap()
                 } else { KeyDatabase::new(dir.join("keys.threads.db")) }
             )),
             conversations_key_db: Arc::new(RwLock::new(KeyDatabase::new(dir.join("keys.conv.db")))),

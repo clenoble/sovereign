@@ -39,6 +39,11 @@ use crate::protocol::{HostedBackupInfo, SovereignRequest, SovereignResponse};
 struct BackupClientBehaviour {
     request_response:
         libp2p::request_response::cbor::Behaviour<SovereignRequest, SovereignResponse>,
+    // Relay-v2 client transport so this ephemeral swarm can dial
+    // `/…/p2p-circuit/p2p/<peer>` addresses. Guardians (and backup hosts) are
+    // reachable only through their relay reservation when behind a NAT — the
+    // pre-login access-recovery client has no other path to them.
+    relay_client: libp2p::relay::client::Behaviour,
 }
 
 /// Connect to `addr` (must carry the `/p2p/<peer>` suffix, which
@@ -62,7 +67,9 @@ pub async fn backup_requests(
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
         .with_quic()
-        .with_behaviour(|_key| {
+        .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)
+        .map_err(|e| P2pError::Transport(e.to_string()))?
+        .with_behaviour(|_key, relay_client| {
             Ok(BackupClientBehaviour {
                 request_response: libp2p::request_response::cbor::Behaviour::new(
                     [(
@@ -71,6 +78,7 @@ pub async fn backup_requests(
                     )],
                     request_response::Config::default(),
                 ),
+                relay_client,
             })
         })
         .map_err(|e| P2pError::Transport(e.to_string()))?
@@ -238,14 +246,64 @@ pub async fn request_guardian_shard(
     }
 }
 
+/// Feature 1 — poll one guardian for our **Recovery-Key share**. Same
+/// `RequestShard` verb as the data path, but the guardian holds a raw Shamir
+/// share of the Recovery Key (not a `BackupGuardianPayload`), so this returns
+/// the opaque share bytes. `None` while the request is pending (awaiting the
+/// guardian's approval + the 72h delay). `owner_tag` here is `T_g`.
+pub async fn request_recovery_share(
+    addr: &str,
+    request_id: &str,
+    owner_tag: &str,
+    epoch: u32,
+    timeout: Duration,
+) -> P2pResult<Option<Vec<u8>>> {
+    use base64::Engine;
+    let mut responses = backup_requests(
+        addr,
+        vec![SovereignRequest::RequestShard(
+            crate::protocol::guardian::ShardRecoveryRequest {
+                request_id: request_id.to_string(),
+                for_user: owner_tag.to_string(),
+                epoch,
+            },
+        )],
+        timeout,
+    )
+    .await?;
+    match responses.pop() {
+        Some(SovereignResponse::ShardData { shard_data: Some(data) }) => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&data)
+                .map_err(|e| P2pError::SyncError(format!("recovery share base64: {e}")))?;
+            Ok(Some(bytes))
+        }
+        Some(SovereignResponse::ShardData { shard_data: None }) => Ok(None),
+        other => Err(P2pError::SyncError(format!(
+            "unexpected RequestShard response: {:?}",
+            other.map(|o| std::mem::discriminant(&o))
+        ))),
+    }
+}
+
 /// Offline final assembly (P4.3 step 5): digest-checked reassembly of
 /// the ciphertext, backup-key reconstruction from the guardian
 /// payloads, and unsealing. Verifies the ciphertext digest against the
 /// manifest before decrypting.
+///
+/// A1 verification gauntlet, in order, each a hard abort:
+/// 1. every payload's embedded manifest names the same signer pubkey
+///    (and it matches `expected_signer_b64` when the recovering device
+///    re-derived it from passphrase+salt);
+/// 2. the working manifest's signature verifies;
+/// 3. anti-rollback: the manifest's epoch is >= every payload's attested
+///    epoch — a stale manifest served by a malicious host/guardian loses;
+/// 4. every payload's owner_tag matches the manifest's.
 pub fn assemble_snapshot(
     manifest: &BackupManifest,
     fragments: &[BackupFragment],
     guardian_payloads: &[BackupGuardianPayload],
+    expected_signer_b64: Option<&str>,
 ) -> P2pResult<BackupSnapshot> {
     use base64::Engine;
 
@@ -255,6 +313,36 @@ pub fn assemble_snapshot(
             guardian_payloads.len(),
             manifest.key_threshold
         )));
+    }
+
+    // (1) signer quorum across guardian-held manifests.
+    for p in guardian_payloads {
+        let held = BackupManifest::from_json(&p.manifest_json)?;
+        if held.signer_pubkey_b64 != manifest.signer_pubkey_b64 {
+            return Err(P2pError::SyncError(
+                "guardian-held manifest names a different signer — aborting recovery".into(),
+            ));
+        }
+    }
+    // (2) signature (+ origin when the caller re-derived the signer key).
+    manifest.verify_signature(expected_signer_b64)?;
+    // (3) anti-rollback: no payload may attest a newer epoch than the
+    // manifest we are about to trust.
+    if let Some(max_attested) = guardian_payloads.iter().map(|p| p.epoch).max() {
+        if manifest.epoch < max_attested {
+            return Err(P2pError::SyncError(format!(
+                "manifest epoch {} is older than a guardian-attested epoch {} — rollback refused",
+                manifest.epoch, max_attested
+            )));
+        }
+    }
+    // (4) owner binding.
+    for p in guardian_payloads {
+        if p.owner_tag != manifest.owner_tag {
+            return Err(P2pError::SyncError(
+                "guardian payload owner_tag does not match the manifest — aborting".into(),
+            ));
+        }
     }
 
     let ciphertext = reassemble_backup(

@@ -29,6 +29,9 @@ pub enum P2pError {
     #[error("Sync error: {0}")]
     SyncError(String),
 
+    #[error("Guardian enrollment error: {0}")]
+    GuardianEnroll(String),
+
     #[error("Channel closed")]
     ChannelClosed,
 

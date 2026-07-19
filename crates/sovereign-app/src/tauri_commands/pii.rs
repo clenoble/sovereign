@@ -358,7 +358,7 @@ pub async fn create_vault_entry(
     crate::tauri_state::require_main_webview(&webview)?;
     use chrono::Utc;
     use sovereign_crypto::vault::EncryptedBlob;
-    use sovereign_db::schema::{PiiKind, PiiRecord, ReviewState};
+    use sovereign_db::schema::{PiiRecord, ReviewState};
 
     let account_key = state
         .account_key()

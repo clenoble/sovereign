@@ -5,12 +5,16 @@ pub mod backup;
 pub mod browser;
 pub mod canvas;
 pub mod contacts;
+pub mod access_recovery;
 pub mod documents;
+pub mod guardian;
 pub mod mobile;
 #[cfg(feature = "encryption")]
 pub mod pairing;
 pub mod peer_review;
 pub mod pii;
+#[cfg(feature = "encryption")]
+pub mod recovery;
 pub mod suggestions;
 pub mod threads;
 pub mod voice;

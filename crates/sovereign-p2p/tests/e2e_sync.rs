@@ -90,6 +90,7 @@ async fn spawn_node(device_id: &str, seed: [u8; 32], transport_key: [u8; 32]) ->
         // Allow auto-trigger regardless of host platform — the test
         // doesn't model connectivity transitions.
         wifi_only: false,
+            seed_relays: Vec::new(),
     };
     let peer_id = kp.public().to_peer_id();
     let mut node =

@@ -41,10 +41,37 @@ pub enum P2pEvent {
     /// `offer_dead` is true when the offer self-destructed (expired or
     /// attempts exhausted) and the UI should regenerate the QR.
     PairingFailed { reason: String, offer_dead: bool },
+    /// A paired peer's sync overwrote local rows; their prior values were
+    /// stashed for review (C2). The UI should surface/badge the review
+    /// panel — without this event the overwrite is invisible until the
+    /// user happens to open it.
+    RowsFlaggedForReview { peer_id: String, count: u32 },
     /// The swarm is reachable on a new (interface-expanded) address.
     /// The app collects these so pairing offers can carry real dial
     /// hints instead of relying on mDNS discovery (P3.1).
     ListenAddr { address: String },
+    /// M1.5: the relay accepted a mailbox deposit (`dedup` = an identical
+    /// blob was already queued — the idempotent heartbeat path).
+    MailboxDeposited { dedup: bool },
+    /// M1.5: items drained from our mailbox at a relay (base64 blobs,
+    /// sealed — the app/guardian decrypts). Empty vec = mailbox was empty.
+    MailboxItems { items_b64: Vec<String> },
+    /// G2: a guardian app opened the enrollment handshake against the
+    /// active offer (informational — the code gate does the deciding).
+    GuardianEnrollRequested { peer_id: String, guardian_label: String },
+    /// G2: enrollment finished — the guardian proved the code AND
+    /// confirmed custody of the shard. The app persists the roster entry
+    /// on this event.
+    GuardianEnrolled {
+        guardian_peer_id: String,
+        guardian_label: String,
+        shard_id: String,
+        epoch: u32,
+    },
+    /// G2: an enrollment step failed. `offer_dead` mirrors
+    /// `PairingFailed` — true when the offer self-destructed and the UI
+    /// should regenerate the QR.
+    GuardianEnrollFailed { reason: String, offer_dead: bool },
 }
 
 /// Per-pair sealing keys (P1.4 / P2P-005) wrapped so the Debug impl on
@@ -83,10 +110,29 @@ pub struct ActivePairingOffer {
     session: Option<PairingSession>,
 }
 
+/// C3 (v0.0.8 review): an unpaired LAN peer could send `PairHello` and never
+/// follow up, occupying the single session slot for the offer's full TTL and
+/// locking the legitimate device out ("pairing busy" DoS). Sessions idle
+/// longer than this are evicted when another dialer says Hello.
+const PAIRING_SESSION_IDLE_MS: i64 = 30_000;
+
+/// A3: hard cap on element counts in a single Push/Get request, so one
+/// peer can't force an unbounded allocation / apply loop. A real sync
+/// batch is well under this; legitimate callers page.
+const MAX_ELEMENTS_PER_REQUEST: usize = 10_000;
+
 struct PairingSession {
     dialer: PeerId,
     nonce: [u8; 32],
     proven: bool,
+    /// Last handshake step from this dialer (unix ms) — drives idle eviction.
+    last_activity_ms: i64,
+}
+
+impl PairingSession {
+    fn idle_expired(&self) -> bool {
+        chrono::Utc::now().timestamp_millis() - self.last_activity_ms > PAIRING_SESSION_IDLE_MS
+    }
 }
 
 impl ActivePairingOffer {
@@ -146,6 +192,100 @@ impl std::fmt::Debug for ActivePairingOffer {
     }
 }
 
+/// Responder-side state for one active guardian-enrollment offer (G2).
+/// Created by the app when it renders the enrollment QR and handed to the
+/// node via [`P2pCommand::SetGuardianOffer`]. Same lifecycle discipline
+/// as [`ActivePairingOffer`]: single-use, TTL-bound, attempt-capped,
+/// idle-evicting session slot — but what it releases is one Shamir shard,
+/// and the guardian is NOT registered as a paired device.
+pub struct ActiveGuardianOffer {
+    pub offer_id: String,
+    /// Argon2id-stretched handshake key (the spoken code never reaches
+    /// the node).
+    pub handshake_key: [u8; 32],
+    /// Unix milliseconds.
+    pub expires_at_ms: i64,
+    /// The Shamir share released on a valid proof, base64.
+    pub shard_b64: String,
+    pub shard_id: String,
+    /// Owner tag recovery requests will quote.
+    pub owner_tag: String,
+    /// Human-readable owner name for the guardian app's duty list.
+    pub owner_label: String,
+    /// Key-rotation epoch of the shard.
+    pub epoch: u32,
+    /// Shamir parameters (display only on the guardian side).
+    pub threshold: u8,
+    pub total: u8,
+    /// Wrong proofs left before the offer self-destructs.
+    attempts_left: u8,
+    /// In-flight session — reuses the pairing session slot semantics,
+    /// including C3 idle eviction. `guardian_label` arrives at Hello.
+    session: Option<PairingSession>,
+    /// Label quoted in the Hello of the live session.
+    session_label: String,
+}
+
+impl ActiveGuardianOffer {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        offer_id: String,
+        handshake_key: [u8; 32],
+        expires_at_ms: i64,
+        shard_b64: String,
+        shard_id: String,
+        owner_tag: String,
+        owner_label: String,
+        epoch: u32,
+        threshold: u8,
+        total: u8,
+    ) -> Self {
+        Self {
+            offer_id,
+            handshake_key,
+            expires_at_ms,
+            shard_b64,
+            shard_id,
+            owner_tag,
+            owner_label,
+            epoch,
+            threshold,
+            total,
+            attempts_left: crate::guardian_enroll::MAX_ENROLL_PROOF_ATTEMPTS,
+            session: None,
+            session_label: String::new(),
+        }
+    }
+
+    fn expired(&self) -> bool {
+        chrono::Utc::now().timestamp_millis() > self.expires_at_ms
+    }
+}
+
+impl Drop for ActiveGuardianOffer {
+    fn drop(&mut self) {
+        // SIDECHANNEL-002 discipline: scrub the handshake key and the
+        // shard when the offer is consumed or expires.
+        use zeroize::Zeroize;
+        self.handshake_key.zeroize();
+        self.shard_b64.zeroize();
+    }
+}
+
+impl std::fmt::Debug for ActiveGuardianOffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActiveGuardianOffer")
+            .field("offer_id", &self.offer_id)
+            .field("shard_id", &self.shard_id)
+            .field("owner_tag", &self.owner_tag)
+            .field("epoch", &self.epoch)
+            .field("expires_at_ms", &self.expires_at_ms)
+            .field("attempts_left", &self.attempts_left)
+            .field("secrets", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Commands sent to the P2P node from the application.
 #[derive(Debug)]
 pub enum P2pCommand {
@@ -175,6 +315,13 @@ pub enum P2pCommand {
     SetPairingOffer { offer: Box<ActivePairingOffer> },
     /// Disarm the current pairing offer (user closed the pairing screen).
     ClearPairingOffer,
+    /// Arm the node with a guardian-enrollment offer (G2). The node
+    /// answers the GuardianHello/Proof/Complete handshake against it and
+    /// emits `GuardianEnrolled` when a guardian confirms custody.
+    /// Replaces any previously armed enrollment offer.
+    SetGuardianOffer { offer: Box<ActiveGuardianOffer> },
+    /// Disarm the current guardian-enrollment offer.
+    ClearGuardianOffer,
     DistributeShard {
         peer_id: String,
         shard_data: String,
@@ -190,6 +337,21 @@ pub enum P2pCommand {
     /// node.
     RestoreRowRecovery { recovery_id: String },
     SendRequest { peer_id: PeerId, request: SovereignRequest },
+    /// M1.5: deposit a sealed blob for `to_peer_id` in `relay_peer_id`'s
+    /// mailbox (offline delivery). `blob` is already E2E-sealed by the
+    /// caller — the relay sees only ciphertext + routing. `token` is the
+    /// `to_peer_id`-issued deposit capability (RELAY-002 inc-2); required by a
+    /// relay in `--require-deposit-token` mode. `None` until mailbox activation
+    /// wires enrollment issuance — no caller sends this command yet.
+    MailboxPut {
+        relay_peer_id: PeerId,
+        to_peer_id: PeerId,
+        blob: Vec<u8>,
+        token: Option<sovereign_core::mailbox::DepositToken>,
+    },
+    /// M1.5: drain our mailbox at `relay_peer_id`; results arrive as
+    /// `P2pEvent::MailboxItems`.
+    MailboxPull { relay_peer_id: PeerId },
     /// Dial a peer's multiaddr directly (bypassing mDNS discovery).
     /// Used for tests and for explicit "connect to address" UI flows.
     /// `address` should be a full Multiaddr including the `/p2p/<peer_id>`
@@ -269,6 +431,9 @@ pub struct SovereignNode {
     /// The active pairing offer, if the user has the pairing screen open
     /// (P3.1). Mutated only from the event loop.
     pairing_offer: Option<ActivePairingOffer>,
+    /// The active guardian-enrollment offer, if the user has the
+    /// enrollment screen open (G2). Mutated only from the event loop.
+    guardian_offer: Option<ActiveGuardianOffer>,
     /// Opt-in backup host store (P4.2). None = this device doesn't host
     /// other users' fragments or guardian shards.
     backup_host: Option<Arc<crate::backup_host::BackupHost>>,
@@ -279,6 +444,9 @@ pub struct SovereignNode {
     /// caps the sustained rate (with a small burst) so one device can't pin the
     /// node or balloon the DB. `(last_refill, tokens)`.
     sync_buckets: HashMap<String, (std::time::Instant, f64)>,
+    /// Seed-relay circuits queued at startup; the `/p2p-circuit` listen is
+    /// issued when the relay identifies (see reserve_seed_relays for why).
+    pending_relay_circuits: HashMap<libp2p::PeerId, Multiaddr>,
 }
 
 impl SovereignNode {
@@ -300,8 +468,20 @@ impl SovereignNode {
 
         let swarm = libp2p::SwarmBuilder::with_existing_identity(keypair.clone())
             .with_tokio()
+            .with_tcp(
+                libp2p::tcp::Config::default().nodelay(true),
+                libp2p::noise::Config::new,
+                libp2p::yamux::Config::default,
+            )
+            .map_err(|e| P2pError::Transport(e.to_string()))?
             .with_quic()
-            .with_behaviour(|key| {
+            .with_dns()
+            .map_err(|e| P2pError::Transport(e.to_string()))?
+            // M1.5: relay-v2 client transport. The closure below receives
+            // the constructed relay behaviour to place in SovereignBehaviour.
+            .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)
+            .map_err(|e| P2pError::Transport(e.to_string()))?
+            .with_behaviour(|key, relay_behaviour| {
                 // mDNS is toggleable (P2P-006). When disabled, the node does
                 // no LAN multicast / auto-discovery at all.
                 let mdns = if enable_mdns {
@@ -341,11 +521,27 @@ impl SovereignNode {
                     .with_agent_version("sovereign".to_string()),
                 );
 
+                let dcutr = libp2p::dcutr::Behaviour::new(peer_id);
+
+                let mailbox = libp2p::request_response::cbor::Behaviour::<
+                    sovereign_core::mailbox::MailboxRequest,
+                    sovereign_core::mailbox::MailboxResponse,
+                >::new(
+                    [(
+                        StreamProtocol::new(sovereign_core::mailbox::MAILBOX_PROTOCOL),
+                        ProtocolSupport::Full,
+                    )],
+                    request_response::Config::default(),
+                );
+
                 Ok(SovereignBehaviour {
                     mdns,
                     rendezvous,
                     request_response,
                     identify,
+                    relay_client: relay_behaviour,
+                    dcutr,
+                    mailbox,
                 })
             })
             .map_err(|e| P2pError::Transport(e.to_string()))?
@@ -364,9 +560,11 @@ impl SovereignNode {
             paired_peers: HashSet::new(),
             manifest_seen: HashMap::new(),
             pairing_offer: None,
+            guardian_offer: None,
             backup_host,
             backup_jobs: HashMap::new(),
             sync_buckets: HashMap::new(),
+            pending_relay_circuits: HashMap::new(),
         })
     }
 
@@ -407,7 +605,47 @@ impl SovereignNode {
 
         info!("Listening with id {:?}", listen_id);
 
+        // M1.5: also accept relayed reservations so NATed peers can reach us.
+        self.reserve_seed_relays(config);
+
         Ok(addr)
+    }
+
+    /// M1.5: dial each configured seed relay and listen on its
+    /// `/p2p-circuit`, reserving a slot so peers behind NATs can reach us
+    /// through it. Malformed entries are logged and skipped — one bad seed
+    /// must not sink startup. No-op when `seed_relays` is empty (LAN-only).
+    fn reserve_seed_relays(&mut self, config: &P2pConfig) {
+        // The `/p2p-circuit` listen (= the reservation request) is DEFERRED
+        // until the relay has identified (see the Identify handler).
+        // Requesting the circuit while the direct dial was still in flight
+        // never produced a reservation — connect + identify succeeded, then
+        // nothing until the 60s idle timeout (0040; reproduced in
+        // e2e_relay_reservation.rs). The M0 spike's dial → identify →
+        // listen sequence gets one in ~50 ms.
+        for relay in &config.seed_relays {
+            let base: Multiaddr = match relay.parse() {
+                Ok(a) => a,
+                Err(e) => {
+                    warn!(%relay, %e, "skipping malformed seed relay multiaddr");
+                    continue;
+                }
+            };
+            let Some(libp2p::multiaddr::Protocol::P2p(relay_peer)) = base.iter().last() else {
+                warn!(%relay, "seed relay multiaddr must end in /p2p/<peer-id> — skipped");
+                continue;
+            };
+            // Dial the relay directly (identify + learn our observed
+            // address, which also feeds dcutr)…
+            if let Err(e) = self.swarm.dial(base.clone()) {
+                warn!(%relay, %e, "failed to dial seed relay");
+                continue;
+            }
+            // …and queue the circuit listen for when identify completes.
+            self.pending_relay_circuits
+                .insert(relay_peer, base.with(libp2p::multiaddr::Protocol::P2pCircuit));
+            info!(%relay, "seed relay dialed — circuit reservation queued until identified");
+        }
     }
 
     /// Run the event loop. Blocks until shutdown.
@@ -483,11 +721,67 @@ impl SovereignNode {
                     for addr in info.listen_addrs {
                         self.swarm.add_peer_address(peer_id, addr);
                     }
+                    // Deferred seed-relay reservation (see reserve_seed_relays):
+                    // the relay identified us over a live connection, so the
+                    // circuit listen now yields the reservation request.
+                    if let Some(circuit) = self.pending_relay_circuits.remove(&peer_id) {
+                        match self.swarm.listen_on(circuit.clone()) {
+                            Ok(_) => info!(%circuit, "reserving relay circuit slot"),
+                            Err(e) => warn!(%circuit, %e, "failed to listen on relay circuit"),
+                        }
+                    }
                 }
             }
             SovereignBehaviourEvent::Rendezvous(event) => {
                 tracing::debug!("Rendezvous event: {:?}", event);
             }
+            SovereignBehaviourEvent::RelayClient(event) => {
+                // Every arm at info/warn: a silent reservation refusal is
+                // indistinguishable from "relay never answered" (0040 —
+                // pre-verify saw the accepted line simply absent, with no
+                // way to tell refusal from timeout at default log levels).
+                match &event {
+                    libp2p::relay::client::Event::ReservationReqAccepted {
+                        relay_peer_id, ..
+                    } => {
+                        info!("relay reservation accepted at {relay_peer_id} — reachable via circuit");
+                    }
+                    other => {
+                        tracing::warn!("relay client event (non-accepted): {other:?}");
+                    }
+                }
+            }
+            SovereignBehaviourEvent::Dcutr(event) => {
+                // M0 lesson: judge success by the established DIRECT
+                // connection, not this event (the race-loser logs an error
+                // beside a live direct link). Log only.
+                tracing::debug!("dcutr result: {:?}", event.result);
+            }
+            SovereignBehaviourEvent::Mailbox(libp2p::request_response::Event::Message {
+                message: libp2p::request_response::Message::Response { response, .. },
+                ..
+            }) => {
+                use base64::Engine;
+                match response {
+                    sovereign_core::mailbox::MailboxResponse::PutAck { dedup } => {
+                        let _ = self.event_tx.send(P2pEvent::MailboxDeposited { dedup }).await;
+                    }
+                    sovereign_core::mailbox::MailboxResponse::Items(items) => {
+                        let items_b64 = items
+                            .iter()
+                            .map(|b| base64::engine::general_purpose::STANDARD.encode(b))
+                            .collect();
+                        let _ = self
+                            .event_tx
+                            .send(P2pEvent::MailboxItems { items_b64 })
+                            .await;
+                    }
+                    sovereign_core::mailbox::MailboxResponse::Denied(why) => {
+                        warn!("mailbox request denied by relay: {why}");
+                    }
+                }
+            }
+            SovereignBehaviourEvent::Mailbox(_) => {}
         }
     }
 
@@ -507,6 +801,13 @@ impl SovereignNode {
                         // unpaired peers by design — that's the whole point.
                         let response = if let Some(resp) =
                             self.handle_pairing_request(peer, &request).await
+                        {
+                            resp
+                        } else if let Some(resp) =
+                            // G2: enrollment, like pairing, is handled by the
+                            // node (it owns the offer state) and is allowed
+                            // from unpaired peers by design.
+                            self.handle_guardian_enroll_request(peer, &request).await
                         {
                             resp
                         } else if self.is_sync_request(&request)
@@ -618,9 +919,21 @@ impl SovereignNode {
                     // P1.3: rows must be signed by the peer we requested
                     // them from — pass the sender for verification.
                     match self.sync_service.apply_rows(table, rows, &peer_id).await {
-                        Ok((written, _skipped)) => {
+                        Ok(report) => {
                             if let Some(s) = self.sessions.get_mut(&peer_id) {
-                                s.rows_synced += written;
+                                s.rows_synced += report.written;
+                            }
+                            // C2: a peer overwrite is stashed for review —
+                            // tell the UI instead of leaving it invisible
+                            // until the user opens the review panel.
+                            if report.review_flagged > 0 {
+                                let _ = self
+                                    .event_tx
+                                    .send(P2pEvent::RowsFlaggedForReview {
+                                        peer_id: peer_id.to_string(),
+                                        count: report.review_flagged,
+                                    })
+                                    .await;
                             }
                         }
                         Err(e) => {
@@ -897,6 +1210,25 @@ impl SovereignNode {
                     .request_response
                     .send_request(&peer_id, request);
             }
+            P2pCommand::MailboxPut { relay_peer_id, to_peer_id, blob, token } => {
+                self.swarm.behaviour_mut().mailbox.send_request(
+                    &relay_peer_id,
+                    sovereign_core::mailbox::MailboxRequest::Put {
+                        to: to_peer_id.to_bytes(),
+                        blob,
+                        // The recipient-issued deposit capability (RELAY-002).
+                        // Carried from the command; `None` until mailbox activation
+                        // wires enrollment issuance (`deposit_token::issue`).
+                        token,
+                    },
+                );
+            }
+            P2pCommand::MailboxPull { relay_peer_id } => {
+                self.swarm
+                    .behaviour_mut()
+                    .mailbox
+                    .send_request(&relay_peer_id, sovereign_core::mailbox::MailboxRequest::Pull);
+            }
             P2pCommand::DistributeShard { peer_id, shard_data, shard_id, for_user, epoch } => {
                 if let Ok(pid) = peer_id.parse::<PeerId>() {
                     let req = SovereignRequest::DeliverShard(
@@ -961,6 +1293,15 @@ impl SovereignNode {
             P2pCommand::ClearPairingOffer => {
                 if self.pairing_offer.take().is_some() {
                     info!("Pairing offer disarmed");
+                }
+            }
+            P2pCommand::SetGuardianOffer { offer } => {
+                info!("Guardian-enrollment offer armed: {}", offer.offer_id);
+                self.guardian_offer = Some(*offer);
+            }
+            P2pCommand::ClearGuardianOffer => {
+                if self.guardian_offer.take().is_some() {
+                    info!("Guardian-enrollment offer disarmed");
                 }
             }
             P2pCommand::StartSync { peer_id } => {
@@ -1083,10 +1424,13 @@ impl SovereignNode {
             SovereignRequest::PairHello { device_name, .. } => {
                 // One session at a time. A second Hello from the SAME
                 // dialer restarts its session (fresh nonce); a different
-                // dialer is refused while a session is in flight so it
-                // can't burn the legitimate device's attempts.
+                // dialer is refused while a LIVE session is in flight so it
+                // can't burn the legitimate device's attempts. C3: a session
+                // whose dialer went silent is evicted after
+                // PAIRING_SESSION_IDLE_MS — a Hello-and-vanish stranger must
+                // not lock the slot for the offer's whole TTL.
                 if let Some(ref s) = offer.session {
-                    if s.dialer != peer {
+                    if s.dialer != peer && !s.idle_expired() {
                         self.pairing_offer = Some(offer);
                         return Some(SovereignResponse::PairRejected {
                             reason: "pairing busy".into(),
@@ -1099,6 +1443,7 @@ impl SovereignNode {
                     dialer: peer,
                     nonce,
                     proven: false,
+                    last_activity_ms: chrono::Utc::now().timestamp_millis(),
                 });
                 self.pairing_offer = Some(offer);
                 let _ = self
@@ -1177,6 +1522,7 @@ impl SovereignNode {
                 };
                 if let Some(ref mut s) = offer.session {
                     s.proven = true;
+                    s.last_activity_ms = chrono::Utc::now().timestamp_millis();
                 }
                 info!("pairing proof accepted from {peer}; secrets released");
                 self.pairing_offer = Some(offer);
@@ -1248,6 +1594,217 @@ impl SovereignNode {
         }
     }
 
+    /// Handle a G2 guardian-enrollment request, or return `None` when the
+    /// request isn't enrollment-related. Mirrors
+    /// [`Self::handle_pairing_request`] — single-use offer, attempt cap,
+    /// TTL sweep, idle-evicting session slot — but releases one Shamir
+    /// shard and never touches the paired-peer allow-list: a guardian is
+    /// not a synced device.
+    async fn handle_guardian_enroll_request(
+        &mut self,
+        peer: PeerId,
+        request: &SovereignRequest,
+    ) -> Option<SovereignResponse> {
+        use crate::guardian_enroll;
+
+        if !matches!(
+            request,
+            SovereignRequest::GuardianHello { .. }
+                | SovereignRequest::GuardianProof { .. }
+                | SovereignRequest::GuardianComplete { .. }
+        ) {
+            return None;
+        }
+
+        // Expiry sweep before anything else.
+        if self.guardian_offer.as_ref().is_some_and(|o| o.expired()) {
+            self.guardian_offer = None;
+            let _ = self
+                .event_tx
+                .send(P2pEvent::GuardianEnrollFailed {
+                    reason: "enrollment offer expired".into(),
+                    offer_dead: true,
+                })
+                .await;
+        }
+
+        let Some(mut offer) = self.guardian_offer.take() else {
+            return Some(SovereignResponse::GuardianRejected {
+                reason: "no active enrollment offer".into(),
+            });
+        };
+
+        let quoted_offer_id = match request {
+            SovereignRequest::GuardianHello { offer_id, .. }
+            | SovereignRequest::GuardianProof { offer_id, .. }
+            | SovereignRequest::GuardianComplete { offer_id, .. } => offer_id,
+            _ => unreachable!("matched above"),
+        };
+        if quoted_offer_id != &offer.offer_id {
+            self.guardian_offer = Some(offer);
+            return Some(SovereignResponse::GuardianRejected {
+                reason: "unknown enrollment offer".into(),
+            });
+        }
+
+        match request {
+            SovereignRequest::GuardianHello { guardian_label, .. } => {
+                // One session at a time; same-dialer Hello restarts with a
+                // fresh nonce; C3 idle eviction protects the slot.
+                if let Some(ref s) = offer.session {
+                    if s.dialer != peer && !s.idle_expired() {
+                        self.guardian_offer = Some(offer);
+                        return Some(SovereignResponse::GuardianRejected {
+                            reason: "enrollment busy".into(),
+                        });
+                    }
+                }
+                let mut nonce = [0u8; 32];
+                rand::rng().fill_bytes(&mut nonce);
+                offer.session = Some(PairingSession {
+                    dialer: peer,
+                    nonce,
+                    proven: false,
+                    last_activity_ms: chrono::Utc::now().timestamp_millis(),
+                });
+                offer.session_label = guardian_label.clone();
+                self.guardian_offer = Some(offer);
+                let _ = self
+                    .event_tx
+                    .send(P2pEvent::GuardianEnrollRequested {
+                        peer_id: peer.to_string(),
+                        guardian_label: guardian_label.clone(),
+                    })
+                    .await;
+                Some(SovereignResponse::GuardianChallenge {
+                    nonce: nonce.to_vec(),
+                })
+            }
+
+            SovereignRequest::GuardianProof { proof, .. } => {
+                let Some(ref session) = offer.session else {
+                    self.guardian_offer = Some(offer);
+                    return Some(SovereignResponse::GuardianRejected {
+                        reason: "no challenge issued".into(),
+                    });
+                };
+                if session.dialer != peer {
+                    self.guardian_offer = Some(offer);
+                    return Some(SovereignResponse::GuardianRejected {
+                        reason: "challenge was issued to another peer".into(),
+                    });
+                }
+                let ok = guardian_enroll::verify_proof_mac(
+                    &offer.handshake_key,
+                    &offer.offer_id,
+                    &session.nonce,
+                    &peer.to_string(),
+                    proof,
+                );
+                if !ok {
+                    offer.attempts_left = offer.attempts_left.saturating_sub(1);
+                    offer.session = None;
+                    let dead = offer.attempts_left == 0;
+                    warn!(
+                        "guardian-enroll proof FAILED from {peer} ({} attempt(s) left)",
+                        offer.attempts_left
+                    );
+                    if !dead {
+                        self.guardian_offer = Some(offer);
+                    }
+                    let _ = self
+                        .event_tx
+                        .send(P2pEvent::GuardianEnrollFailed {
+                            reason: "wrong enrollment code".into(),
+                            offer_dead: dead,
+                        })
+                        .await;
+                    return Some(SovereignResponse::GuardianRejected {
+                        reason: "invalid proof".into(),
+                    });
+                }
+                // Proof valid: release the shard sealed under the
+                // handshake key. The offer stays live until the custody
+                // receipt (GuardianComplete) lands.
+                let grant = guardian_enroll::GuardianGrant {
+                    shard_b64: offer.shard_b64.clone(),
+                    shard_id: offer.shard_id.clone(),
+                    owner_tag: offer.owner_tag.clone(),
+                    owner_label: offer.owner_label.clone(),
+                    epoch: offer.epoch,
+                    threshold: offer.threshold,
+                    total: offer.total,
+                };
+                let sealed = match grant.seal(&offer.handshake_key) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("failed to seal guardian grant: {e}");
+                        self.guardian_offer = Some(offer);
+                        return Some(SovereignResponse::GuardianRejected {
+                            reason: "internal sealing error".into(),
+                        });
+                    }
+                };
+                if let Some(ref mut s) = offer.session {
+                    s.proven = true;
+                    s.last_activity_ms = chrono::Utc::now().timestamp_millis();
+                }
+                info!("guardian-enroll proof accepted from {peer}; shard released");
+                self.guardian_offer = Some(offer);
+                Some(SovereignResponse::GuardianGranted {
+                    ciphertext: sealed.0,
+                    nonce: sealed.1,
+                })
+            }
+
+            SovereignRequest::GuardianComplete { receipt, .. } => {
+                let Some(ref session) = offer.session else {
+                    self.guardian_offer = Some(offer);
+                    return Some(SovereignResponse::GuardianRejected {
+                        reason: "no session".into(),
+                    });
+                };
+                if session.dialer != peer || !session.proven {
+                    self.guardian_offer = Some(offer);
+                    return Some(SovereignResponse::GuardianRejected {
+                        reason: "proof required before completion".into(),
+                    });
+                }
+                let ok = guardian_enroll::verify_receipt_mac(
+                    &offer.handshake_key,
+                    &offer.offer_id,
+                    &session.nonce,
+                    &offer.shard_id,
+                    &peer.to_string(),
+                    receipt,
+                );
+                if !ok {
+                    self.guardian_offer = Some(offer);
+                    return Some(SovereignResponse::GuardianRejected {
+                        reason: "invalid custody receipt".into(),
+                    });
+                }
+                info!(
+                    "guardian enrolled: {peer} ({}) holds shard {} (epoch {})",
+                    offer.session_label, offer.shard_id, offer.epoch
+                );
+                let _ = self
+                    .event_tx
+                    .send(P2pEvent::GuardianEnrolled {
+                        guardian_peer_id: peer.to_string(),
+                        guardian_label: offer.session_label.clone(),
+                        shard_id: offer.shard_id.clone(),
+                        epoch: offer.epoch,
+                    })
+                    .await;
+                // Single-use: the offer is consumed (not put back).
+                Some(SovereignResponse::GuardianDone)
+            }
+
+            _ => unreachable!("matched above"),
+        }
+    }
+
     /// Whether a request reads or writes synced DB state, and so must be
     /// gated behind pairing (P2P-001). Pairing-handshake and guardian
     /// shard requests are intentionally allowed pre-pairing so a new
@@ -1305,6 +1862,12 @@ async fn process_request(
             }
         },
         SovereignRequest::GetCommits { commit_ids } => {
+            if commit_ids.len() > MAX_ELEMENTS_PER_REQUEST {
+                warn!(%peer, n = commit_ids.len(), "GetCommits over element cap — refused (A3)");
+                return SovereignResponse::Error {
+                    message: "too many commit ids in one request".into(),
+                };
+            }
             match sync_service.get_commits(&commit_ids, &peer).await {
                 Ok(commits) => SovereignResponse::Commits { commits },
                 Err(e) => {
@@ -1316,6 +1879,12 @@ async fn process_request(
             }
         }
         SovereignRequest::PushCommits { commits } => {
+            if commits.len() > MAX_ELEMENTS_PER_REQUEST {
+                warn!(%peer, n = commits.len(), "PushCommits over element cap — refused (A3)");
+                return SovereignResponse::Error {
+                    message: "too many commits in one request".into(),
+                };
+            }
             match sync_service.apply_commits(commits, &peer).await {
                 Ok(_n) => SovereignResponse::Ok,
                 Err(e) => {
@@ -1327,6 +1896,12 @@ async fn process_request(
             }
         }
         SovereignRequest::GetRows { table, ids } => {
+            if ids.len() > MAX_ELEMENTS_PER_REQUEST {
+                warn!(%peer, n = ids.len(), "GetRows over element cap — refused (A3)");
+                return SovereignResponse::Error {
+                    message: "too many row ids in one request".into(),
+                };
+            }
             match sync_service.get_rows(table, &ids, &peer).await {
                 Ok(rows) => SovereignResponse::Rows { table, rows },
                 Err(e) => {
@@ -1338,8 +1913,28 @@ async fn process_request(
             }
         }
         SovereignRequest::PushRows { table, rows } => {
+            if rows.len() > MAX_ELEMENTS_PER_REQUEST {
+                warn!(%peer, n = rows.len(), "PushRows over element cap — refused (A3)");
+                return SovereignResponse::Error {
+                    message: "too many rows in one request".into(),
+                };
+            }
             match sync_service.apply_rows(table, rows, &peer).await {
-                Ok((written, skipped)) => SovereignResponse::PushAck { written, skipped },
+                Ok(report) => {
+                    // C2: surface stashed peer overwrites to the UI.
+                    if report.review_flagged > 0 {
+                        let _ = event_tx
+                            .send(P2pEvent::RowsFlaggedForReview {
+                                peer_id: peer.to_string(),
+                                count: report.review_flagged,
+                            })
+                            .await;
+                    }
+                    SovereignResponse::PushAck {
+                        written: report.written,
+                        skipped: report.skipped,
+                    }
+                }
                 Err(e) => {
                     warn!("Failed to apply rows: {e}");
                     SovereignResponse::Error {
@@ -1378,7 +1973,12 @@ async fn process_request(
             // P4.3: release ONLY after this user's approval + the 72h
             // delay (both enforced inside the host store). Until then the
             // request is recorded and surfaced for approval.
+            // A2: rate-limited like the other recovery verbs.
             let shard_data = match backup_host {
+                Some(host) if !host.allow_recovery_request(&peer.to_string()) => {
+                    warn!(%peer, "RequestShard rate-limited (A2)");
+                    return SovereignResponse::ShardData { shard_data: None };
+                }
                 Some(host) => host
                     .request_shard_release(
                         &recovery_req.request_id,
@@ -1439,20 +2039,28 @@ async fn process_request(
             SovereignResponse::BackupStored { accepted }
         }
         SovereignRequest::ListBackups { owner_tag } => {
-            let backups = match backup_host {
-                Some(host) => host
-                    .list_hosted(owner_tag.as_deref())
-                    .into_iter()
-                    .map(|(tag, s)| crate::protocol::HostedBackupInfo {
-                        owner_tag: tag,
-                        snapshot_id: s.snapshot_id,
-                        epoch: s.epoch,
-                        manifest_json: s.manifest_json,
-                        salt_b64: s.salt_b64,
-                        fragment_indices: s.fragments.iter().map(|f| f.index).collect(),
-                    })
-                    .collect(),
-                None => Vec::new(),
+            // A2: exact owner_tag REQUIRED over the network (wildcard
+            // enumeration killed — `list_hosted(None)` stays local-only),
+            // and the request spends a recovery token.
+            let backups = match (backup_host, owner_tag.as_deref()) {
+                (Some(host), Some(tag)) if host.allow_recovery_request(&peer.to_string()) => {
+                    host.list_hosted(Some(tag))
+                        .into_iter()
+                        .map(|(tag, s)| crate::protocol::HostedBackupInfo {
+                            owner_tag: tag,
+                            snapshot_id: s.snapshot_id,
+                            epoch: s.epoch,
+                            manifest_json: s.manifest_json,
+                            salt_b64: s.salt_b64,
+                            fragment_indices: s.fragments.iter().map(|f| f.index).collect(),
+                        })
+                        .collect()
+                }
+                (Some(_), None) => {
+                    warn!(%peer, "ListBackups without owner_tag refused (A2)");
+                    Vec::new()
+                }
+                _ => Vec::new(),
             };
             SovereignResponse::BackupList { backups }
         }
@@ -1462,15 +2070,23 @@ async fn process_request(
             index,
         } => {
             use base64::Engine;
+            // A2: token per request + per-tag daily egress cap on the bytes.
             let fragment_b64 = match backup_host {
-                Some(host) => host
+                Some(host) if host.allow_recovery_request(&peer.to_string()) => host
                     .fetch_fragment(&owner_tag, &snapshot_id, index)
                     .unwrap_or_else(|e| {
                         warn!("backup fragment fetch failed: {e}");
                         None
                     })
+                    .filter(|bytes| {
+                        let ok = host.allow_egress(&owner_tag, bytes.len() as u64);
+                        if !ok {
+                            warn!(%owner_tag, "daily egress cap reached — fragment refused (A2)");
+                        }
+                        ok
+                    })
                     .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
-                None => None,
+                _ => None,
             };
             SovereignResponse::BackupFragmentData { fragment_b64 }
         }
@@ -1483,6 +2099,15 @@ async fn process_request(
             // total for safety.
             SovereignResponse::PairRejected {
                 reason: "pairing not available".into(),
+            }
+        }
+        SovereignRequest::GuardianHello { .. }
+        | SovereignRequest::GuardianProof { .. }
+        | SovereignRequest::GuardianComplete { .. } => {
+            // Handled by SovereignNode::handle_guardian_enroll_request
+            // before this function is ever reached; kept total for safety.
+            SovereignResponse::GuardianRejected {
+                reason: "enrollment not available".into(),
             }
         }
     }
@@ -1519,6 +2144,34 @@ fn validate_manifest_timestamp(
         }
     }
     Ok(ts)
+}
+
+#[cfg(test)]
+mod pairing_session_tests {
+    use super::{PairingSession, PAIRING_SESSION_IDLE_MS};
+
+    fn dummy_session(last_activity_ms: i64) -> PairingSession {
+        PairingSession {
+            dialer: libp2p::identity::Keypair::generate_ed25519()
+                .public()
+                .to_peer_id(),
+            nonce: [0u8; 32],
+            proven: false,
+            last_activity_ms,
+        }
+    }
+
+    /// C3: a Hello-and-vanish stranger must not hold the single pairing
+    /// slot for the offer's full TTL.
+    #[test]
+    fn idle_session_is_evictable_after_timeout() {
+        let now = chrono::Utc::now().timestamp_millis();
+        assert!(!dummy_session(now).idle_expired(), "a live session is not idle");
+        assert!(
+            dummy_session(now - PAIRING_SESSION_IDLE_MS - 1_000).idle_expired(),
+            "a silent session past the idle window must be evictable"
+        );
+    }
 }
 
 #[cfg(test)]

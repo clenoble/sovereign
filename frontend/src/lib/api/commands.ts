@@ -871,3 +871,99 @@ export const completeOnboardingPaired = (input: CompletePairedOnboardingInput) =
  *  Empty string when the p2p feature is off or the identity key isn't
  *  loaded. */
 export const getLocalPeerId = () => invoke<string>('get_local_peer_id');
+
+// ---------------------------------------------------------------------------
+// Guardian Access Recovery — Feature 1 (v0.1).
+//
+// Real backend commands on feat/backup-m1-security @ e74d445 (verified
+// field-for-field 2026-07-11). Guardians Shamir-split a dedicated Recovery
+// Key that wraps the account secrets — they restore ACCOUNT ACCESS, not
+// data. Two owner surfaces below:
+//   Surface 1 — guardian roster + in-person enrollment (Settings).
+//   Surface 2 — the pre-login access-recovery wizard.
+// Feature 2 (crowd DATA backup: backup_now / hosting / fragments) is
+// deferred to Phase 2 and intentionally not surfaced in v0.1.
+// ---------------------------------------------------------------------------
+
+// ---- Surface 1: guardian roster + enrollment (logged-in) ------------------
+
+export interface GuardianSlotDto {
+	/** null for an un-enrolled slot. */
+	label: string | null;
+	enrolled: boolean;
+	enrolled_at: string | null;
+}
+
+export interface GuardianRosterDto {
+	enrolled_count: number;
+	total: number; // 5
+	/** True only when all 5 are enrolled — recovery becomes usable. */
+	armed: boolean;
+	guardians: GuardianSlotDto[];
+}
+
+export interface BeginEnrollmentResult {
+	/** base64url of the offer — render as a QR for the guardian to scan. */
+	qr_payload_b64: string;
+	/** Short code the owner reads aloud in person. */
+	code: string;
+	shard_id: string;
+	enrolled_count: number;
+	total: number;
+}
+
+/** The owner's guardian roster (X/5, armed only at 5). Empty before setup. */
+export const listGuardians = () => invoke<GuardianRosterDto>('list_guardians');
+
+/** Arm an in-person enrollment offer for the NEXT guardian (hands out one
+ *  Recovery-Key share; the first call also provisions the pre-login recovery
+ *  card). Rejects once all 5 are enrolled. */
+export const beginGuardianEnrollment = () =>
+	invoke<BeginEnrollmentResult>('begin_guardian_enrollment');
+
+// ---- Surface 2: access recovery (pre-login) -------------------------------
+
+export type AccessRecoveryPhase = 'awaiting_shares' | 'ready' | 'installed' | 'failed';
+
+export interface AccessGuardianDto {
+	guardian_id: string;
+	released: boolean;
+}
+
+export interface AccessRecoveryStatusDto {
+	recovery_id: string;
+	phase: AccessRecoveryPhase;
+	shares_collected: number;
+	threshold: number; // 3
+	guardians: AccessGuardianDto[];
+	error: string | null;
+}
+
+/** Pre-login gate for "Forgot your password? Recover with your guardians" —
+ *  true iff this device holds a recovery card + bundle. Callable before
+ *  login (no unlock required). */
+export const accessRecoveryAvailable = () =>
+	invoke<boolean>('access_recovery_available');
+
+/** Begin access recovery from this device's own card + bundle; starts
+ *  gathering guardian shares. */
+export const startAccessRecovery = () =>
+	invoke<AccessRecoveryStatusDto>('start_access_recovery');
+
+/** Drive one network round across the multi-day wait — the wizard's slow
+ *  (45s) timer calls this. */
+export const accessRecoveryPoll = () =>
+	invoke<AccessRecoveryStatusDto | null>('access_recovery_poll');
+
+/** Cheap read on mount / resume — no network. */
+export const accessRecoveryStatus = () =>
+	invoke<AccessRecoveryStatusDto | null>('access_recovery_status');
+
+/** Reconstruct the Recovery Key from the collected shares, re-wrap the
+ *  account secrets under a NEW passphrase, install, and unlock the session.
+ *  Resolves with `phase: "installed"`. */
+export const accessRecoveryFinalize = (newPassphrase: string) =>
+	invoke<AccessRecoveryStatusDto>('access_recovery_finalize', { newPassphrase });
+
+/** Abandon the recovery attempt. */
+export const cancelAccessRecovery = () => invoke<void>('cancel_access_recovery');

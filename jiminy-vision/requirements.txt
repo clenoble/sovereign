@@ -10,14 +10,19 @@
 #
 # NOTE: transformers must be 4.x — 5.x dropped SmolVLMImageProcessor and fails to
 # load SmolVLM2. torchvision is required by SmolVLM2's video/image processor.
-torch>=2.6
-torchvision>=0.21
-transformers>=4.50,<5
-accelerate>=1.0
-mediapipe>=0.10.18
-opencv-python>=4.10
-pillow>=10.0
-numpy>=2.0
-fastapi>=0.115
-uvicorn[standard]>=0.30
-requests>=2.31
+#
+# Pinned 2026-07-08 from the verified working venv (Python 3.12.10, PANDA2).
+# Full transitive set: requirements.lock.txt. torch/torchvision pins below are
+# the version numbers only — the +cu124 build variant comes from installing via
+# the CUDA index per the install-order note above.
+torch==2.6.0
+torchvision==0.21.0
+transformers==4.57.6
+accelerate==1.13.0
+mediapipe==0.10.35
+opencv-python==4.13.0.92
+pillow==12.2.0
+numpy==2.4.6
+fastapi==0.136.3
+uvicorn[standard]==0.48.0
+requests==2.34.2

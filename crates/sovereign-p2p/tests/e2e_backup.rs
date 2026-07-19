@@ -80,6 +80,7 @@ async fn spawn_node(device_id: &str, seed: [u8; 32], with_host: bool) -> Harness
         device_name: device_id.into(),
         enable_mdns: false,
         wifi_only: false,
+            seed_relays: Vec::new(),
     };
     let peer_id = kp.public().to_peer_id();
     let mut node = SovereignNode::new(&cfg, kp, event_tx, cmd_rx, svc, host.clone())
@@ -210,6 +211,7 @@ async fn backup_place_and_total_loss_recovery() {
     let owner_tag = account.derive_backup_tag();
     let salt = b"master-salt".to_vec();
     let guardians = vec!["guardian-h1".to_string(), "guardian-h2".to_string()];
+    let signing_key = account.derive_backup_signing_key();
     let prepared = backup::prepare_backup(
         owner.db.as_ref(),
         "owner",
@@ -220,6 +222,7 @@ async fn backup_place_and_total_loss_recovery() {
         2, // 2-of-2 key threshold
         3,
         2,
+        &signing_key,
     )
     .await
     .unwrap();
@@ -402,7 +405,7 @@ async fn backup_place_and_total_loss_recovery() {
 
     // Step 4 (offline): assemble + unseal + restore into a fresh DB.
     let snapshot =
-        sovereign_p2p::backup_client::assemble_snapshot(&manifest, &fragments, &payloads)
+        sovereign_p2p::backup_client::assemble_snapshot(&manifest, &fragments, &payloads, None)
             .unwrap();
     let fresh = MockGraphDB::new();
     let written = backup::restore_snapshot(&fresh, &snapshot).await.unwrap();
@@ -452,6 +455,8 @@ async fn unpaired_peer_cannot_store_fragments() {
         .create_thread(Thread::new("T".into(), String::new()))
         .await
         .unwrap();
+    let sk = sovereign_crypto::account_key::AccountKey::from_bytes([0x55; 32])
+        .derive_backup_signing_key();
     let prepared = backup::prepare_backup(
         stranger.db.as_ref(),
         "stranger",
@@ -462,6 +467,7 @@ async fn unpaired_peer_cannot_store_fragments() {
         2,
         3,
         2,
+        &sk,
     )
     .await
     .unwrap();
@@ -496,5 +502,182 @@ async fn unpaired_peer_cannot_store_fragments() {
 
     if let Some(ref dir) = host.host_dir {
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// The B-workstream loop as the product runs it: drive `RecoveryState`
+/// (locate → guardian windows → approval → shards+fragments → finalize)
+/// rather than raw client calls. Uses the REAL derivation chain
+/// (passphrase+salt → MasterKey → AccountKey), so this also proves a
+/// wrong passphrase is retryable (shards stay valid, phase not Failed) —
+/// the `wrong-passphrase:` sentinel contract upstream depends on that.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovery_engine_drives_total_loss_to_installed() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info,libp2p_swarm=warn")
+        .with_test_writer()
+        .try_init();
+    use base64::Engine;
+    use sovereign_p2p::recovery::{RecoveryPhase, RecoveryState};
+
+    // ---- Owner with content ----
+    let mut owner = spawn_node("owner-fin", [0xD4; 32], false).await;
+    let thread = owner
+        .db
+        .create_thread(Thread::new("Letters".into(), String::new()))
+        .await
+        .unwrap();
+    let tid = thread.id_string().unwrap();
+    let mut doc = Document::new("Testament".into(), tid, true);
+    doc.content = r#"{"body":"recover me end to end","images":[]}"#.into();
+    owner.db.create_document(doc).await.unwrap();
+    owner.db.create_contact(Contact::new("Béa".into(), true)).await.unwrap();
+
+    let mut h1 = spawn_node("host-fin-1", [0xE5; 32], true).await;
+    let h2 = spawn_node("host-fin-2", [0xF6; 32], true).await;
+    for h in [&h1, &h2] {
+        owner
+            .cmd_tx
+            .send(P2pCommand::UpdatePairedPeers {
+                peer_ids: vec![h1.peer_id.to_string(), h2.peer_id.to_string()],
+            })
+            .await
+            .unwrap();
+        h.cmd_tx
+            .send(P2pCommand::UpdatePairedPeers {
+                peer_ids: vec![owner.peer_id.to_string()],
+            })
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // ---- The real derivation chain (what finalize re-derives) ----
+    let passphrase = b"correct horse battery staple";
+    let salt = [0x5C; 32].to_vec();
+    let mk = sovereign_crypto::master_key::MasterKey::from_passphrase(passphrase, &salt).unwrap();
+    let account = sovereign_crypto::account_key::AccountKey::derive(&mk).unwrap();
+    let owner_tag = account.derive_backup_tag();
+    let signing_key = account.derive_backup_signing_key();
+    let guardians = vec!["guardian-h1".to_string(), "guardian-h2".to_string()];
+    let prepared = backup::prepare_backup(
+        owner.db.as_ref(),
+        "owner-fin",
+        &owner_tag,
+        &salt,
+        1,
+        &guardians,
+        2,
+        3,
+        2,
+        &signing_key,
+    )
+    .await
+    .unwrap();
+    let salt_b64 = base64::engine::general_purpose::STANDARD.encode(&salt);
+
+    // ---- Place fragments + distribute shards ----
+    owner.cmd_tx.send(P2pCommand::Dial { address: addr_of(&h1) }).await.unwrap();
+    owner.cmd_tx.send(P2pCommand::Dial { address: addr_of(&h2) }).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    for (h, range) in [(&h1, 0..3usize), (&h2, 2..5)] {
+        owner
+            .cmd_tx
+            .send(P2pCommand::PlaceBackup {
+                peer_id: h.peer_id.to_string(),
+                requests: store_requests_for(&prepared, &salt_b64, &prepared.fragments[range]),
+            })
+            .await
+            .unwrap();
+        wait_for_event(
+            &mut owner.event_rx,
+            Duration::from_secs(15),
+            "BackupPlaced",
+            |e| matches!(e, P2pEvent::BackupPlaced { .. }),
+        )
+        .await;
+    }
+    for (i, h) in [&h1, &h2].into_iter().enumerate() {
+        let (gid, payload_b64) = &prepared.guardian_payloads[i];
+        owner
+            .cmd_tx
+            .send(P2pCommand::DistributeShard {
+                peer_id: h.peer_id.to_string(),
+                shard_data: payload_b64.clone(),
+                shard_id: format!("{gid}-shard"),
+                for_user: owner_tag.clone(),
+                epoch: 1,
+            })
+            .await
+            .unwrap();
+    }
+    wait_for_event(
+        &mut h1.event_rx,
+        Duration::from_secs(10),
+        "ShardReceived on h1",
+        |e| matches!(e, P2pEvent::ShardReceived { .. }),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // ---- TOTAL LOSS: the engine loop from a blank slate ----
+    // The user has: passphrase (memory) + recovery card (owner_tag, addrs).
+    let mut rec = RecoveryState::new(
+        "rec-fin".into(),
+        owner_tag.clone(),
+        vec![
+            ("guardian-h1".into(), addr_of(&h1)),
+            ("guardian-h2".into(), addr_of(&h2)),
+        ],
+        vec![addr_of(&h1), addr_of(&h2)],
+    );
+
+    // Round 1: locate finds the manifest via ListBackups; guardian
+    // requests register their release windows but nothing is released yet.
+    rec.poll_round(Duration::from_secs(10)).await;
+    assert!(rec.manifest.is_some(), "locate step must find the manifest by owner tag");
+    assert_eq!(rec.phase, RecoveryPhase::AwaitingShards);
+    assert_eq!(rec.shards_collected(), 0, "no shard before guardian approval");
+
+    // Guardians' humans approve (hosts run with release delay 0).
+    h1.host.as_ref().unwrap().approve_shard_release(&owner_tag, 1).unwrap();
+    h2.host.as_ref().unwrap().approve_shard_release(&owner_tag, 1).unwrap();
+
+    // Round 2: shards released, then fragments fetched in the same round.
+    rec.poll_round(Duration::from_secs(10)).await;
+    assert!(
+        rec.ready_to_assemble(),
+        "expected shards + fragments after approval round (shards {}, fragments {})",
+        rec.shards_collected(),
+        rec.fragments_collected()
+    );
+    assert_eq!(rec.phase, RecoveryPhase::Assembling);
+
+    // Wrong passphrase: retryable — recovery must survive the typo.
+    let fresh = MockGraphDB::new();
+    let err = rec
+        .finalize(&fresh, b"tea horse battery staple")
+        .await
+        .expect_err("wrong passphrase must not finalize");
+    assert!(err.to_string().contains("wrong passphrase"), "got: {err}");
+    assert_ne!(rec.phase, RecoveryPhase::Failed, "typo must not fail the recovery");
+    assert!(rec.ready_to_assemble(), "shards/fragments stay valid after a typo");
+    assert!(!rec.passphrase_matches(b"tea horse battery staple").unwrap());
+    assert!(rec.passphrase_matches(passphrase).unwrap());
+
+    // Right passphrase: A1-verified assembly + restore.
+    let written = rec.finalize(&fresh, passphrase).await.unwrap();
+    assert!(written >= 3, "restored {written} rows");
+    assert_eq!(rec.phase, RecoveryPhase::Installed);
+    assert_eq!(rec.manifest_verified, Some(true));
+    let docs = fresh.list_documents(None).await.unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].title, "Testament");
+    assert_eq!(fresh.list_contacts().await.unwrap().len(), 1);
+
+    for h in [&h1, &h2] {
+        if let Some(ref dir) = h.host_dir {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
