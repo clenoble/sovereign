@@ -806,19 +806,19 @@ p { margin-bottom: 1rem; color: var(--c-text); }
     <h2 class="section-title" id="comms-title">What if all your messages lived in one place?</h2>
     <p class="section-desc">
       A contact-centric inbox: conversations organized by person, not by app,
-      archived in your encrypted local graph. In v0.0.9 the first live channel
-      switches on — email (IMAP/SMTP) runs in the native shell, with the account
-      password kept in the encrypted vault. Signal and WhatsApp code exists but
-      stays dormant for now.
+      archived in your encrypted local graph. The engine and UI are built but
+      deliberately dormant in v0.0.9 — email (IMAP/SMTP) is planned to switch on
+      in v0.0.10, together with its security hardening, as one coherent comms
+      release. Signal and WhatsApp follow.
     </p>
     <div class="features-grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
       <div class="feature-card">
         <h3>Email</h3>
-        <p>IMAP fetch + SMTP send, wired into the native shell. <strong>Live in v0.0.9</strong> — the first channel to switch on.</p>
+        <p>IMAP fetch + SMTP send. Built; dormant in v0.0.9 — planned as the first live channel in v0.0.10, shipped together with its hardening.</p>
       </div>
       <div class="feature-card">
         <h3>Signal</h3>
-        <p>Via the presage library — end-to-end encrypted messaging. Built; dormant, activation planned after email settles.</p>
+        <p>Via the presage library — end-to-end encrypted messaging. Built; dormant, activation planned after email.</p>
       </div>
       <div class="feature-card">
         <h3>WhatsApp</h3>
@@ -1036,7 +1036,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
             <li><code>list_threads</code> — Get all thread names and metadata.</li>
             <li><code>get_document</code> — Retrieve full text of a document by title.</li>
             <li><code>list_documents</code> — Filtered list (optionally by thread).</li>
-            <li><code>search_messages</code> — Search archived conversations (email live in v0.0.9; other channels dormant).</li>
+            <li><code>search_messages</code> — Search archived conversations (channels dormant in v0.0.9; email goes live in v0.0.10).</li>
             <li><code>list_contacts</code> — Get contact list (no private data).</li>
           </ul>
           <h3 style="margin-top: 24px;">Modify Level (Level 3) — Requires User Confirmation</h3>
@@ -2844,7 +2844,7 @@ pub struct DocumentSnapshot {
     One inbox for everything. Email, Signal, WhatsApp — organized by person, not by app. Search "what did Sarah say about the project?" and get results from every channel.
   </p>
   <p style="margin-top:16px; display:inline-flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--c-gold); background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); border-radius: var(--radius); padding: 8px 14px;">
-    <span aria-hidden="true">◐</span> Email went live in v0.0.9 (native shell) · Signal and WhatsApp channel code built, dormant
+    <span aria-hidden="true">◐</span> Engine + UI built, deliberately dormant in v0.0.9 · email planned to go live in v0.0.10 with its hardening · Signal and WhatsApp follow
   </p>
 </div>
 
@@ -2861,9 +2861,9 @@ pub struct DocumentSnapshot {
     <p>
       All your messages in one place, organized by person, not by app.
       Search "what did Sarah say about the project?" and get results from every channel Sarah has ever contacted you on.
-      In v0.0.9 the first channel is live: email (IMAP fetch + SMTP send) runs in the native shell, with the
-      account password held in the encrypted vault. Signal and WhatsApp implement the same channel interface
-      but are not yet wired into the running app.
+      The storage layer, contact model, and inbox UI are built; no channel is live in v0.0.9. Email
+      (IMAP fetch + SMTP send) is planned to switch on in v0.0.10 together with its security hardening,
+      as one coherent comms release. Signal and WhatsApp implement the same channel interface and follow.
     </p>
   </div>
 </section>
@@ -3075,7 +3075,7 @@ pub struct DocumentSnapshot {
         Each communication protocol is implemented as a separate module conforming to the CommunicationChannel trait.
       </p>
       <ul class="concept-list">
-        <li><strong>Email (IMAP/SMTP) — live in v0.0.9:</strong> Connects to mail servers, fetches messages, maps to Contact/Message structs. Wired into the native shell; config in <code>comms.toml</code>, password in the encrypted PII vault.</li>
+        <li><strong>Email (IMAP/SMTP) — built, dormant:</strong> Connects to mail servers, fetches messages, maps to Contact/Message structs. Deliberately not wired into the running app in v0.0.9; goes live in v0.0.10 together with its hardening (PII scanning of synced mail among it).</li>
         <li><strong>Signal (presage crate) — built, dormant:</strong> Uses the Signal protocol via the presage library. The channel compiles but is not constructed at runtime yet.</li>
         <li><strong>WhatsApp (Meta Cloud API) — built, dormant:</strong> Channel and config types exist behind a feature flag; the webhook path is not wired into the app.</li>
       </ul>
@@ -5907,7 +5907,7 @@ const ROUTES = {
   '/encryption': { template: 'page-encryption', title: 'Encryption & Key Management — Sovereign GE', description: 'Modern encryption with XChaCha20-Poly1305 and hierarchical key derivation.' },
   '/social-recovery': { template: 'page-social-recovery', title: 'Guardian Social Recovery — Sovereign GE', description: 'Recover your account with trusted people using Shamir secret sharing.' },
   '/spatial-canvas': { template: 'page-spatial-canvas', title: 'Spatial Canvas & Versioning — Sovereign GE', description: 'Your documents on an infinite canvas with automatic versioning.' },
-  '/communications': { template: 'page-communications', title: 'Unified Communications — Sovereign GE', description: 'A contact-centric inbox. Email live since v0.0.9; Signal and WhatsApp built, dormant.' },
+  '/communications': { template: 'page-communications', title: 'Unified Communications — Sovereign GE', description: 'A contact-centric inbox, built and dormant. Email goes live in v0.0.10; Signal and WhatsApp follow.' },
   '/content-skills': { template: 'page-content-skills', title: 'Content + Skills Architecture — Sovereign GE', description: 'Data ownership through composable tools and graph database.' },
   '/skills': { template: 'page-skills', title: 'Skill System — Sovereign GE', description: 'Composable, sandboxed tools with a WASM plugin runtime and capability-based permissions enforced in code.' },
   '/mobile': { template: 'page-mobile', title: 'Mobile — Sovereign GE', description: 'A touch-first redesign: vertical time axis, swipe-between-lanes, voice input, haptics, and OS share-sheet. iOS 14+ and Android SDK 26+.' },
