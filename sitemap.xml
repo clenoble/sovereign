@@ -1,98 +1,98 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/ai-orchestrator</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/ai-orchestrator</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/prompt-injection</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/prompt-injection</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/action-gravity</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/action-gravity</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/encryption</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/encryption</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/social-recovery</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/social-recovery</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/spatial-canvas</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/spatial-canvas</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/communications</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/communications</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/content-skills</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/content-skills</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/ethics</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/ethics</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/browser-reliability</loc>
+    <loc>https://clenoble.github.io/sovereign/#/browser-reliability</loc>
     <lastmod>2026-03-09</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/memory-consolidation</loc>
+    <loc>https://clenoble.github.io/sovereign/#/memory-consolidation</loc>
     <lastmod>2026-03-09</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/legal-notice</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/legal-notice</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>yearly</changefreq>
     <priority>0.3</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/privacy-policy</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/privacy-policy</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>yearly</changefreq>
     <priority>0.3</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/security-policy</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/security-policy</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>yearly</changefreq>
     <priority>0.3</priority>
   </url>
   <url>
-    <loc>https://clenoble.github.io/sovereign-os/#/third-party-licenses</loc>
-    <lastmod>2026-02-22</lastmod>
+    <loc>https://clenoble.github.io/sovereign/#/third-party-licenses</loc>
+    <lastmod>2026-07-19</lastmod>
     <changefreq>yearly</changefreq>
     <priority>0.2</priority>
   </url>

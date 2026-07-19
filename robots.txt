@@ -1,6 +1,6 @@
-# Sovereign GE — https://clenoble.github.io/sovereign-os/
+# Sovereign GE — https://clenoble.github.io/sovereign/
 User-agent: *
 Allow: /
 
 # Sitemap
-Sitemap: https://clenoble.github.io/sovereign-os/sitemap.xml
+Sitemap: https://clenoble.github.io/sovereign/sitemap.xml

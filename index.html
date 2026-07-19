@@ -5,17 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sovereign GE — Your Data, Your Rules</title>
 <meta name="description" content="An experimental local-first graphical environment with on-device AI, end-to-end encryption, and peer-to-peer sync. Open source (AGPL-3.0).">
-<link rel="canonical" href="https://clenoble.github.io/sovereign-os/">
+<link rel="canonical" href="https://clenoble.github.io/sovereign/">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://clenoble.github.io/sovereign-os/">
+<meta property="og:url" content="https://clenoble.github.io/sovereign/">
 <meta property="og:title" content="Sovereign GE — Your Data, Your Rules">
 <meta property="og:description" content="An experimental local-first graphical environment with on-device AI, end-to-end encryption, and peer-to-peer sync. Open source (AGPL-3.0).">
-<meta property="og:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+<meta property="og:image" content="https://clenoble.github.io/sovereign/logo-static.svg">
 <meta property="og:site_name" content="Sovereign GE">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="Sovereign GE — Your Data, Your Rules">
 <meta name="twitter:description" content="An experimental local-first graphical environment with on-device AI, end-to-end encryption, and peer-to-peer sync. Open source (AGPL-3.0).">
-<meta name="twitter:image" content="https://clenoble.github.io/sovereign-os/logo-static.svg">
+<meta name="twitter:image" content="https://clenoble.github.io/sovereign/logo-static.svg">
 <style>
 /* ========== CONSOLIDATED STYLES (from consolidated-styles.css) ========== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -461,7 +461,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 <!-- ========== FOOTER ========== -->
 <footer role="contentinfo">
   <div class="footer-inner">
-    <span>&copy; 2026 Sovereign GE. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude Opus 4.6</a>.</span>
+    <span>&copy; 2026 Sovereign GE. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude</a> (Opus 4.6 → 4.8, Fable 5).</span>
     <div class="footer-links">
       <a href="https://github.com/clenoble/sovereign" target="_blank" rel="noopener">GitHub</a>
       <a href="https://github.com/clenoble/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
@@ -591,6 +591,16 @@ p { margin-bottom: 1rem; color: var(--c-text); }
         <a href="#/content-skills" class="learn-more">Content &amp; skills architecture</a>
       </div>
       <div class="feature-card">
+        <div class="feature-icon local" aria-hidden="true">⇥</div>
+        <h3>Bulk Import <span style="font-size:0.7rem; color: var(--c-gold); vertical-align: middle;">NEW in v0.0.9</span></h3>
+        <p>Bring your whole document tree in on day one. Stub-first funnel: text formats
+          (md, txt, csv…) import as editable content, html / pdf / docx / pptx are extracted
+          to markdown, and everything else lands as a findable, re-processable stub carrying
+          its original path. Folders become lanes, original timestamps are preserved, and a
+          dry-run shows the full plan — with an explicit trust warning — before anything is
+          written. Code and config files are deliberately never imported.</p>
+      </div>
+      <div class="feature-card">
         <div class="feature-icon ai" aria-hidden="true">◈</div>
         <h3>Model-Agnostic AI Orchestrator</h3>
         <p>Hot-swap between Qwen 2.5, Qwen 3.5, Mistral, and Llama3 models at runtime.
@@ -600,17 +610,19 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       </div>
       <div class="feature-card">
         <div class="feature-icon encrypt" aria-hidden="true">◇</div>
-        <h3>End-to-End Encryption</h3>
+        <h3>Field-Level Encryption</h3>
         <p>XChaCha20-Poly1305 with per-document keys. Hierarchical key derivation from your
-          master key. Automatic rotation every 90 days. Zero plaintext on disk.</p>
+          master key, with epoch-tagged key rotation. Content fields — bodies, titles, messages,
+          PII — are encrypted at rest; pair with OS full-disk encryption to cover metadata.</p>
         <a href="#/encryption" class="learn-more">Encryption deep dive</a>
       </div>
       <div class="feature-card">
         <div class="feature-icon canvas" aria-hidden="true">▣</div>
         <h3>Infinite Spatial Canvas</h3>
         <p>Navigate your entire digital life on a 2D timeline. Threads as lanes,
-          documents as cards. 4 LOD tiers from full cards to density heatmaps.
-          Built with Svelte 5 + Tauri 2.0.</p>
+          documents as cards, stacked decks that fan out on hover. 4 LOD tiers from
+          full cards to density heatmaps. Rendered by the native Rust shell
+          (Vello + wgpu) on desktop.</p>
         <a href="#/spatial-canvas" class="learn-more">Canvas &amp; versioning</a>
       </div>
       <div class="feature-card">
@@ -639,6 +651,13 @@ p { margin-bottom: 1rem; color: var(--c-text); }
         <p>Background AI discovers semantic links between documents while you're idle.
           Suggests relationships with strength scores and rationale — accept or dismiss.</p>
         <a href="#/memory-consolidation" class="learn-more">How consolidation works</a>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon encrypt" aria-hidden="true">⛨</div>
+        <h3>PII Dashboard &amp; Vault</h3>
+        <p>See every piece of personal data in your workspace, keep credentials in an
+          encrypted vault, and track outbound disclosures in a ledger — all on-device.</p>
+        <a href="#/pii-dashboard" class="learn-more">Inventory, vault &amp; ledger</a>
       </div>
     </div>
   </div>
@@ -708,31 +727,31 @@ p { margin-bottom: 1rem; color: var(--c-text); }
     </p>
     <div class="gravity-levels" role="list" aria-label="Action gravity levels">
       <div class="gravity-level" data-level="0" role="listitem">
-        <span class="gravity-num">Level 0</span>
+        <span class="gravity-num">Level 1</span>
         <span class="gravity-name">Observe</span>
         <span class="gravity-desc">Read, search, navigate — silent, instant</span>
         <div class="gravity-bar"><div class="gravity-bar-fill"></div></div>
       </div>
       <div class="gravity-level" data-level="1" role="listitem">
-        <span class="gravity-num">Level 1</span>
+        <span class="gravity-num">Level 2</span>
         <span class="gravity-name">Annotate</span>
         <span class="gravity-desc">Tags, bookmarks — toast notification</span>
         <div class="gravity-bar"><div class="gravity-bar-fill"></div></div>
       </div>
       <div class="gravity-level" data-level="2" role="listitem">
-        <span class="gravity-num">Level 2</span>
+        <span class="gravity-num">Level 3</span>
         <span class="gravity-name">Modify</span>
         <span class="gravity-desc">Edit content, create docs — conversational confirmation</span>
         <div class="gravity-bar"><div class="gravity-bar-fill"></div></div>
       </div>
       <div class="gravity-level" data-level="3" role="listitem">
-        <span class="gravity-num">Level 3</span>
+        <span class="gravity-num">Level 4</span>
         <span class="gravity-name">Transmit</span>
         <span class="gravity-desc">Export, share, network — explicit approval dialog</span>
         <div class="gravity-bar"><div class="gravity-bar-fill"></div></div>
       </div>
       <div class="gravity-level" data-level="4" role="listitem">
-        <span class="gravity-num">Level 4</span>
+        <span class="gravity-num">Level 5</span>
         <span class="gravity-name">Destruct</span>
         <span class="gravity-desc">Delete, revoke — modal + 30-day undo window</span>
         <div class="gravity-bar"><div class="gravity-bar-fill"></div></div>
@@ -744,36 +763,37 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 
 <section id="recovery" aria-labelledby="recovery-title">
   <div class="section-inner">
-    <p class="section-label">Data Recovery</p>
+    <p class="section-label">Access Recovery <span style="color: var(--c-gold);">· NEW in v0.0.9</span></p>
     <h2 class="section-title" id="recovery-title">What if your friends were your backup?</h2>
     <p class="section-desc">
-      Lost all your devices? Five trusted guardians hold encrypted key shards.
-      Three of five can reconstruct your master key — after a 72-hour fraud window.
-      Guardians are not given access to your data.
+      Forgot your passphrase? Five trusted guardians each hold a sealed shard of your
+      recovery key. Three of five approving — after a 72-hour waiting window — restore
+      your access under a new passphrase. No company in the loop, and guardians are
+      never given access to your data.
     </p>
     <div class="guardian-flow" role="list" aria-label="Guardian recovery flow">
       <div class="guardian-step" role="listitem">
         <div class="guardian-step-num">1</div>
         <h4>Shamir Split</h4>
-        <p>Master key split into 5 encrypted shards</p>
+        <p>Recovery key split into 5 sealed shards</p>
       </div>
       <span class="guardian-arrow" aria-hidden="true">→</span>
       <div class="guardian-step" role="listitem">
         <div class="guardian-step-num">2</div>
-        <h4>Distribute</h4>
-        <p>Each guardian holds one opaque shard</p>
+        <h4>Enroll in Person</h4>
+        <p>QR + spoken code; each guardian's app holds one opaque shard</p>
       </div>
       <span class="guardian-arrow" aria-hidden="true">→</span>
       <div class="guardian-step" role="listitem">
         <div class="guardian-step-num">3</div>
-        <h4>72h Wait</h4>
-        <p>All 5 guardians notified, can abort if suspicious</p>
+        <h4>72h Window</h4>
+        <p>Guardians verify it's really you; shards release only after approval + 72 hours</p>
       </div>
       <span class="guardian-arrow" aria-hidden="true">→</span>
       <div class="guardian-step" role="listitem">
         <div class="guardian-step-num">4</div>
-        <h4>Reconstruct</h4>
-        <p>3-of-5 approve → master key restored</p>
+        <h4>Back In</h4>
+        <p>3-of-5 shards → access restored under a new passphrase</p>
       </div>
     </div>
     <a href="#/social-recovery" class="learn-more" style="margin-top: 32px; display: inline-flex;">Shamir's scheme explained</a>
@@ -785,21 +805,24 @@ p { margin-bottom: 1rem; color: var(--c-text); }
     <p class="section-label">Communications</p>
     <h2 class="section-title" id="comms-title">What if all your messages lived in one place?</h2>
     <p class="section-desc">
-      Email (IMAP/SMTP), Signal, and WhatsApp unified in a single interface.
-      Contacts merged across channels. Conversations archived in your encrypted local graph.
+      A contact-centric inbox: conversations organized by person, not by app,
+      archived in your encrypted local graph. In v0.0.9 the first live channel
+      switches on — email (IMAP/SMTP) runs in the native shell, with the account
+      password kept in the encrypted vault. Signal and WhatsApp code exists but
+      stays dormant for now.
     </p>
     <div class="features-grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
       <div class="feature-card">
         <h3>Email</h3>
-        <p>IMAP/SMTP with periodic background sync. Full control over your inbox data.</p>
+        <p>IMAP fetch + SMTP send, wired into the native shell. <strong>Live in v0.0.9</strong> — the first channel to switch on.</p>
       </div>
       <div class="feature-card">
         <h3>Signal</h3>
-        <p>Via the presage library — end-to-end encrypted messaging, decentralized.</p>
+        <p>Via the presage library — end-to-end encrypted messaging. Built; dormant, activation planned after email settles.</p>
       </div>
       <div class="feature-card">
         <h3>WhatsApp</h3>
-        <p>Business API integration for those who need it. Conversations stay local.</p>
+        <p>Channel code exists (Meta Cloud API) behind the same trait interface. Dormant — not wired into the app.</p>
       </div>
     </div>
     <a href="#/communications" class="learn-more" style="margin-top: 32px; display: inline-flex;">Contact-centric messaging</a>
@@ -869,16 +892,16 @@ p { margin-bottom: 1rem; color: var(--c-text); }
           Discover, install, and review third-party skills from a curated catalog.</p>
       </div>
       <div class="roadmap-card">
-        <h3>Mobile Companion</h3>
-        <p>A lightweight read-only or limited mobile client that syncs with your desktop
-          via the existing P2P infrastructure. View documents, chat with AI on the go.</p>
+        <h3>Crowd Backup Mesh</h3>
+        <p>Phase 2 of social recovery: guardians reciprocally store encrypted fragments
+          of each other's data, so your documents survive even if every one of your
+          devices is lost. Guardian access recovery (shipped in v0.0.9) is Phase 1.</p>
       </div>
       <div class="roadmap-card">
-        <h3>PII Dashboard</h3>
-        <p>Detection layer is built. Dashboard UI, browser integration, and LLM-NER are in
-          active development. A single view of all personal data across your workspace,
-          with an encrypted vault and an outbound disclosure ledger.</p>
-        <a href="#/pii-dashboard" class="learn-more" style="margin-top:16px;">Architecture &amp; status</a>
+        <h3>Identity Firewall</h3>
+        <p>Tracking prevention for the embedded browser: cookie isolation, URL parameter
+          stripping, fingerprint resistance. Narrowly scoped by design — no synthetic
+          identities. See the Ethics page for the intended constraints.</p>
       </div>
     </div>
   </div>
@@ -890,8 +913,9 @@ p { margin-bottom: 1rem; color: var(--c-text); }
     <h2 class="section-title" id="cta-title">An experimental prototype — come explore with us</h2>
     <p class="section-desc">
       Sovereign GE is an experimental prototype. Try it, break it, contribute.
-      Built in Rust. 10 crates. 18K+ lines. Svelte 5 + Tauri 2.0 frontend.
-      Co-developed with <a href="https://claude.ai" target="_blank" rel="noopener" style="color: var(--c-accent);">Claude Opus 4.6</a> by Anthropic.
+      Built in Rust. 13 crates, ~90K lines, 1,200+ unit tests. Native Rust desktop shell
+      (Vello + wgpu); Svelte 5 + Tauri 2 on mobile.
+      Co-developed with <a href="https://claude.ai" target="_blank" rel="noopener" style="color: var(--c-accent);">Claude</a> (Opus 4.6 → 4.8, Fable 5) by Anthropic.
     </p>
     <div class="cta-actions">
       <a href="https://github.com/clenoble/sovereign" class="btn btn-primary" target="_blank" rel="noopener">
@@ -1006,13 +1030,13 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       <summary>Ten Tools: 6 Read-Only + 4 Write</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>Observe Level (Level 0) — No Confirmation Needed</h3>
+          <h3>Observe Level (Level 1) — No Confirmation Needed</h3>
           <ul class="concept-list">
             <li><code>search_documents</code> — Full-text search across your documents.</li>
             <li><code>list_threads</code> — Get all thread names and metadata.</li>
             <li><code>get_document</code> — Retrieve full text of a document by title.</li>
             <li><code>list_documents</code> — Filtered list (optionally by thread).</li>
-            <li><code>search_messages</code> — Search in email/Signal/WhatsApp conversations.</li>
+            <li><code>search_messages</code> — Search archived conversations (email live in v0.0.9; other channels dormant).</li>
             <li><code>list_contacts</code> — Get contact list (no private data).</li>
           </ul>
           <h3 style="margin-top: 24px;">Modify Level (Level 3) — Requires User Confirmation</h3>
@@ -1143,8 +1167,8 @@ p { margin-bottom: 1rem; color: var(--c-text); }
             Sovereign enforces two separate processing paths, each with different capabilities:
           </p>
           <ul class="concept-list">
-            <li><strong>Control Plane:</strong> User-initiated input only (chat commands, voice, UI). Has full access to all action levels (0–4). Can create, modify, delete, transmit. Enforced by code in <code>action_gate.rs</code>, not by prompt instructions.</li>
-            <li><strong>Data Plane:</strong> External content only (documents, emails, PDFs, web content). Restricted to Level 0 (Observe). Can read and summarize, not modify. The model has no access to tools that change state.</li>
+            <li><strong>Control Plane:</strong> User-initiated input only (chat commands, voice, UI). Has full access to all action levels (1–5). Can create, modify, delete, transmit. Enforced by code in <code>action_gate.rs</code>, not by prompt instructions.</li>
+            <li><strong>Data Plane:</strong> External content only (documents, emails, PDFs, web content). Restricted to Level 1 (Observe). Can read and summarize, not modify. The model has no access to tools that change state.</li>
           </ul>
           <p style="margin-top: 12px;">
             This separation is enforced at the architectural level. Even if a jailbroken model tries to call a Modify/Transmit/Destruct action from the data plane,
@@ -1196,12 +1220,40 @@ p { margin-bottom: 1rem; color: var(--c-text); }
     </details>
 
     <details open>
+      <summary>Hardened in v0.0.9: You Decide, and the Fence Got Tighter</summary>
+      <div class="details-content">
+        <div class="concept-block">
+          <h3>User-Decided Injection Gate in the Agent Loop</h3>
+          <p>
+            v0.0.9 extends "surface, don't suppress" into the AI agent loop itself. When a
+            high-severity injection pattern is detected in tool output mid-conversation, the
+            orchestrator pauses and asks <em>you</em> — with a truncated, inert preview of the
+            flagged content — instead of silently filtering:
+          </p>
+          <ul class="concept-list">
+            <li><strong>Redact:</strong> the flagged content is replaced before it reaches the model. This is also the fail-closed default — on timeout or if no UI is connected, Sovereign redacts.</li>
+            <li><strong>Pass through:</strong> you accept the content; it still stays wrapped as untrusted data downstream.</li>
+            <li><strong>Abort:</strong> the current turn stops; the flagged content never reaches the model.</li>
+          </ul>
+          <p style="margin-top: 12px;">
+            Further hardening in the same release: injections detected in <em>your own</em> (owned)
+            content are surfaced but never auto-redacted — it's your content; two redaction-bypass
+            routes in the untrusted-content fence were closed (fence delimiters are neutralized and
+            model-family control tokens are stripped for every supported format, not just the active
+            one); and the PII named-entity-recognition stage now fences the untrusted document body
+            it analyzes.
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details open>
       <summary>Tool Sandboxing</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>All Six AI Tools Are Read-Only</h3>
+          <h3>All Six Data-Plane Tools Are Read-Only</h3>
           <p>
-            The AI agent has access to exactly 6 tools, all restricted to Observe level (Level 0):
+            On the data plane the AI has access to exactly 6 tools, all restricted to Observe level (Level 1):
           </p>
           <ul class="concept-list">
             <li><code>search_documents</code> — Search, no write.</li>
@@ -1244,11 +1296,11 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 }
 
 pub enum ActionLevel {
-    Observe = 0,     // Read-only; always allowed
-    Annotate = 1,    // Tag/bookmark; toast notification
-    Modify = 2,      // Create/edit/rename; conversational confirmation
-    Transmit = 3,    // Export/share; explicit dialog
-    Destruct = 4,    // Delete/purge; modal + 30-day undo
+    Observe = 1,     // Read-only; always allowed
+    Annotate = 2,    // Tag/bookmark; toast notification
+    Modify = 3,      // Create/edit/rename; conversational confirmation
+    Transmit = 4,    // Export/share; explicit dialog
+    Destruct = 5,    // Delete/purge; modal + 30-day undo
 }</code></div>
       <p>
         The gate check in <code>action_gate.rs:11–22</code> enforces:
@@ -1267,7 +1319,7 @@ pub enum ActionLevel {
             });
         }
         // Control plane: check user_approved if level >= Modify
-        (Plane::Control, l) if l as u8 >= 2 =&gt; {
+        (Plane::Control, l) if l as u8 >= 3 =&gt; {
             return if user_approved { Ok(()) } else {
                 Err(ActionRequiresConfirmation)
             };
@@ -1531,11 +1583,11 @@ pub async fn run_skill(
             Every action in Sovereign maps to one of five levels, each with different confirmation requirements:
           </p>
           <ul class="concept-list">
-            <li><strong>Level 0 — Observe:</strong> Read documents, search, list threads. No confirmation needed. Instant.</li>
-            <li><strong>Level 1 — Annotate:</strong> Tag documents, bookmark pages. Toast notification only.</li>
-            <li><strong>Level 2 — Modify:</strong> Create, edit, rename documents. Conversational confirmation. Auto-approve after 5 consecutive approvals (per-action trust).</li>
-            <li><strong>Level 3 — Transmit:</strong> Export, share, send email. Explicit dialog. Never auto-approves.</li>
-            <li><strong>Level 4 — Destruct:</strong> Delete, purge. Modal dialog with 30-day undo window. Never auto-approves.</li>
+            <li><strong>Level 1 — Observe:</strong> Read documents, search, list threads. No confirmation needed. Instant.</li>
+            <li><strong>Level 2 — Annotate:</strong> Tag documents, bookmark pages. Toast notification only.</li>
+            <li><strong>Level 3 — Modify:</strong> Create, edit, rename documents. Conversational confirmation. Auto-approve after 5 consecutive approvals (per-action trust).</li>
+            <li><strong>Level 4 — Transmit:</strong> Export, share, send email. Explicit dialog. Never auto-approves.</li>
+            <li><strong>Level 5 — Destruct:</strong> Delete, purge. Modal dialog with 30-day undo window. Never auto-approves.</li>
           </ul>
           <p style="margin-top: 12px;">
             Friction increases with consequence. Reading is frictionless. Deletion requires active confirmation.
@@ -1556,8 +1608,8 @@ pub async fn run_skill(
             <li><strong>Consecutive approvals tracked:</strong> Each action type (e.g., "edit document") has its own counter.</li>
             <li><strong>Threshold of 5:</strong> After 5 consecutive approvals for the same action, Sovereign stops asking and auto-executes.</li>
             <li><strong>Rejection resets counter:</strong> Say "no" once and the counter resets to zero. You must re-approve 5 times.</li>
-            <li><strong>Persistent in trust_state.json:</strong> Trust decisions persist across sessions. Your preferences are remembered.</li>
-            <li><strong>Levels 3–4 never auto-approve:</strong> Transmit and Destruct always require explicit confirmation, no matter how many times you've approved.</li>
+            <li><strong>Persistent in trust_state.json:</strong> Trust decisions persist across sessions, protected by a keyed MAC so a disk-write attacker can't forge approval counts.</li>
+            <li><strong>Levels 4–5 never auto-approve:</strong> Transmit and Destruct always require explicit confirmation, no matter how many times you've approved.</li>
           </ul>
           <p style="margin-top: 12px;">
             This respects both safety (destructive actions require deliberation) and usability (you don't re-confirm routine edits).
@@ -1575,8 +1627,8 @@ pub async fn run_skill(
             These rules aren't encoded in the AI system prompt. They're enforced by the code that executes actions:
           </p>
           <ul class="concept-list">
-            <li><strong>Transmit never auto-approves:</strong> <code>requires_user_confirmation</code> hardcoded for Level 3+, regardless of trust state.</li>
-            <li><strong>Destruct never auto-approves:</strong> Modal dialog shown every time a Level 4 action is attempted.</li>
+            <li><strong>Transmit never auto-approves:</strong> confirmation is hardcoded for Level 4+, regardless of trust state.</li>
+            <li><strong>Destruct never auto-approves:</strong> Modal dialog shown every time a Level 5 action is attempted.</li>
             <li><strong>30-second timeout:</strong> If user doesn't confirm within 30 seconds, action is cancelled. Prevents accidental approval via timeout.</li>
             <li><strong>Undo window:</strong> All deletions stored for 30 days before permanent purge. User can restore anytime in that window.</li>
           </ul>
@@ -1596,9 +1648,9 @@ pub async fn run_skill(
             The AI's system prompt educates it about Action Gravity:
           </p>
           <ul class="concept-list">
-            <li><strong>Intent → Action Type → Gravity Level:</strong> The AI learns to map user intents ("delete this file") to action types (<code>delete_document</code>) to gravity levels (Level 4).</li>
-            <li><strong>Proposal pattern for Level 2+:</strong> "For Level 2+ actions, propose with specifics and ask for confirmation." E.g., "Should I edit the document called 'Q4 Plan' to add the new budget?'"</li>
-            <li><strong>No execution without approval:</strong> The AI generates proposals but doesn't execute Level 2+ actions until the user confirms.</li>
+            <li><strong>Intent → Action Type → Gravity Level:</strong> The AI learns to map user intents ("delete this file") to action types (<code>delete_document</code>) to gravity levels (Level 5).</li>
+            <li><strong>Proposal pattern for Level 3+:</strong> "For Level 3+ actions, propose with specifics and ask for confirmation." E.g., "Should I edit the document called 'Q4 Plan' to add the new budget?'"</li>
+            <li><strong>No execution without approval:</strong> The AI generates proposals but doesn't execute Level 3+ actions until the user confirms.</li>
             <li><strong>Explain consequences:</strong> For Transmit and Destruct, the AI explains what will happen ("This will delete the document permanently" or "This will share the file with all users in the organization").</li>
           </ul>
           <p style="margin-top: 12px;">
@@ -1623,48 +1675,36 @@ pub async fn run_skill(
   <div class="tier-3-content">
 
     <div class="deep-section">
-      <h3>ActionLevel Enum (sovereign-core/src/security.rs:8–21)</h3>
+      <h3>ActionLevel Enum (sovereign-core/src/security.rs)</h3>
       <p>
         The five levels are defined as an enum in the core library, ensuring type-safety and consistency across the codebase:
       </p>
       <div class="code-block"><code>pub enum ActionLevel {
-    Observe = 0,      // Read-only; no confirmation
-    Annotate = 1,     // Tag/bookmark; toast notification
-    Modify = 2,       // Create/edit/rename; conversational confirmation
-    Transmit = 3,     // Export/share; explicit dialog, never auto-approve
-    Destruct = 4,     // Delete/purge; modal + 30-day undo, never auto-approve
-}
-
-impl ActionLevel {
-    pub fn requires_user_confirmation(&self) -> bool {
-        *self as u8 >= 2
-    }
-
-    pub fn can_auto_approve(&self) -> bool {
-        *self as u8 <= 2  // Levels 0–2 only
-    }
+    /// Level 1 — read-only observation (search, list, view).
+    Observe = 1,
+    /// Level 2 — add metadata without changing content (tag, annotate, bookmark).
+    Annotate = 2,
+    /// Level 3 — change content or structure (edit, rename, move).
+    Modify = 3,
+    /// Level 4 — send data outside the system (export, share, email).
+    Transmit = 4,
+    /// Level 5 — irreversible destruction (delete, purge).
+    Destruct = 5,
 }</code></div>
     </div>
 
     <div class="deep-section">
-      <h3>Confirmation Gate (action_gate.rs:42–44)</h3>
+      <h3>Confirmation Gate (sovereign-core/src/security.rs)</h3>
       <p>
-        Before executing any action, the gate checks the level and trust state:
+        Before executing any action, the gate checks the level; Modify actions may additionally
+        auto-approve through per-action trust (threshold 5), Transmit and Destruct never do:
       </p>
-      <div class="code-block"><code>pub async fn requires_confirmation(
-    level: ActionLevel,
-    action_name: &amp;str,
-    trust_state: &amp;TrustTracker,
-) -> bool {
+      <div class="code-block"><code>/// Decide whether an action can proceed automatically.
+/// Levels 1-2 are auto-approved. Levels 3-5 require confirmation.
+pub fn authorize(level: ActionLevel) -> ActionDecision {
     match level {
-        // Levels 0–1: always execute
-        ActionLevel::Observe | ActionLevel::Annotate => false,
-
-        // Level 2: execute if auto-approved by trust
-        ActionLevel::Modify => !trust_state.can_auto_approve(action_name),
-
-        // Levels 3–4: always require confirmation
-        ActionLevel::Transmit | ActionLevel::Destruct => true,
+        ActionLevel::Observe | ActionLevel::Annotate => ActionDecision::Approve,
+        _ => ActionDecision::Reject("Requires user confirmation".into()),
     }
 }</code></div>
     </div>
@@ -1714,30 +1754,22 @@ impl TrustTracker {
     </div>
 
     <div class="deep-section">
-      <h3>Action Type to Level Mapping (security.rs:52–67)</h3>
+      <h3>Action Type to Level Mapping (security.rs, <code>action_level()</code>)</h3>
       <p>
-        Every action the user or AI can initiate maps to a specific level:
+        Every action the user or AI can initiate maps to a specific level. A selection:
       </p>
       <table class="const-table">
         <tr><th>Action</th><th>Level</th><th>Description</th></tr>
-        <tr><td><code>search_documents</code></td><td>0</td><td>Search workspace documents</td></tr>
-        <tr><td><code>open_document</code></td><td>0</td><td>Open a document for reading</td></tr>
-        <tr><td><code>list_threads</code></td><td>0</td><td>List all conversation threads</td></tr>
-        <tr><td><code>tag_document</code></td><td>1</td><td>Add tag or label to document</td></tr>
-        <tr><td><code>bookmark_page</code></td><td>1</td><td>Bookmark a page or section</td></tr>
-        <tr><td><code>create_document</code></td><td>2</td><td>Create new document</td></tr>
-        <tr><td><code>edit_document</code></td><td>2</td><td>Edit document content</td></tr>
-        <tr><td><code>rename_document</code></td><td>2</td><td>Rename document or thread</td></tr>
-        <tr><td><code>restore_document</code></td><td>2</td><td>Restore from trash/backup</td></tr>
-        <tr><td><code>export_document</code></td><td>3</td><td>Export to file (PDF, email, etc.)</td></tr>
-        <tr><td><code>share_document</code></td><td>3</td><td>Share with other users</td></tr>
-        <tr><td><code>transmit_message</code></td><td>3</td><td>Send email or message</td></tr>
-        <tr><td><code>pair_device</code></td><td>3</td><td>Pair new trusted device</td></tr>
-        <tr><td><code>enroll_guardian</code></td><td>3</td><td>Enroll social recovery guardian</td></tr>
-        <tr><td><code>delete_document</code></td><td>4</td><td>Delete document (moves to trash)</td></tr>
-        <tr><td><code>purge_document</code></td><td>4</td><td>Permanently delete (skip trash)</td></tr>
-        <tr><td><code>delete_thread</code></td><td>4</td><td>Delete conversation thread</td></tr>
-        <tr><td><code>revoke_guardian</code></td><td>4</td><td>Revoke social recovery guardian</td></tr>
+        <tr><td><code>search</code> / <code>open</code> / <code>navigate</code></td><td>1</td><td>Search, read, browse workspace content</td></tr>
+        <tr><td><code>list_guardians</code> / <code>sync_status</code></td><td>1</td><td>Read-only recovery &amp; sync state</td></tr>
+        <tr><td><code>tag</code> / <code>annotate</code> / <code>bookmark</code></td><td>2</td><td>Add metadata without changing content</td></tr>
+        <tr><td><code>create_document</code> / <code>edit</code></td><td>3</td><td>Create or change content</td></tr>
+        <tr><td><code>rename_thread</code> / <code>move_document</code></td><td>3</td><td>Change structure</td></tr>
+        <tr><td><code>import_file</code> / <code>restore</code></td><td>3</td><td>Bring content in, restore from trash</td></tr>
+        <tr><td><code>export</code> / <code>share</code> / <code>transmit</code></td><td>4</td><td>Send data outside the system</td></tr>
+        <tr><td><code>pair_device</code> / <code>enroll_guardian</code></td><td>4</td><td>Extend the trust perimeter</td></tr>
+        <tr><td><code>delete_document</code> / <code>delete_thread</code> / <code>purge</code></td><td>5</td><td>Destruction (trash, then permanent)</td></tr>
+        <tr><td><code>initiate_recovery</code> / <code>revoke_guardian</code></td><td>5</td><td>Irreversible recovery-roster operations</td></tr>
       </table>
     </div>
 
@@ -1847,15 +1879,17 @@ If user rejected:
   <div class="tier-header">
     <span class="tier-badge">1</span>
     <div>
-      <div class="tier-label">Zero plaintext, ever</div>
+      <div class="tier-label">Every content field encrypted, with its own key</div>
     </div>
   </div>
 
   <div class="tier-1-content">
     <p>
       Every document is encrypted with its own unique key. Keys are derived from a single master key only you control.
-      Stolen hard drive = encrypted noise. Stolen document key = one document. Stolen master key = catastrophic
-      (but guardian recovery protects you). Modern cipher (XChaCha20-Poly1305). No backdoors.
+      Stolen document key = one document. Content fields — bodies, titles, messages, contact details, vault secrets —
+      are ciphertext at rest; structural metadata (ids, timestamps, graph edges) stays queryable on disk, which is why
+      OS full-disk encryption is a stated deployment requirement, not an afterthought. Forgot your passphrase?
+      Guardian access recovery re-wraps your keys under a new one. Modern cipher (XChaCha20-Poly1305). No backdoors.
     </p>
   </div>
 </section>
@@ -1894,7 +1928,7 @@ If user rejected:
         <div class="concept-block">
           <h3>Master → Device → KEK → Document Keys</h3>
           <ul class="concept-list">
-            <li><strong>Master Key (32 bytes):</strong> You control this alone. Never synced. Stored in OS keyring or hardware wallet. Derivation: passphrase + salt via HKDF-SHA256.</li>
+            <li><strong>Master Key (32 bytes):</strong> You control this alone. Never synced. Sealed in the on-disk auth store under your passphrase (Argon2id key stretching).</li>
             <li><strong>Device Key (32 bytes):</strong> Derived from Master + device_id via HKDF. Per-device, so revoke one device without affecting others.</li>
             <li><strong>KEK (Key Encryption Key, 32 bytes):</strong> Random per encryption epoch. Wraps all document keys for that epoch. Enables rotation without re-encrypting documents.</li>
             <li><strong>Document Keys (32 bytes each):</strong> One per document. Encrypts the document content. Wrapped with KEK for storage.</li>
@@ -1914,7 +1948,7 @@ If user rejected:
           <ul class="concept-list">
             <li><strong>Epoch number:</strong> An incrementing integer stored with each wrapped key. Old data readable with old KEKs, new data uses new KEK.</li>
             <li><strong>Zero re-encryption:</strong> You can rotate the KEK without decrypting and re-encrypting all document content. New keys wrap with the new KEK, old keys unwrap with the old KEK.</li>
-            <li><strong>Automatic rotation:</strong> Rotate weekly or monthly (configurable). The system tracks which documents need re-wrapping and does it in the background.</li>
+            <li><strong>Rotation-ready storage:</strong> Every wrapped key is epoch-tagged, and the key store appends new epochs rather than overwriting — rotation never requires re-encrypting content.</li>
             <li><strong>Multi-epoch reading:</strong> The decryption routine tries all available KEKs for the epoch chain. If epoch 5 KEK fails, try epoch 4, etc.</li>
           </ul>
         </div>
@@ -2150,18 +2184,19 @@ On read:
         Encryption provides confidentiality and integrity. Here's what we protect against and what we don't.
       </p>
       <div class="code-block"><code>// Protects against:
-// - Disk theft: Hard drive stolen = all documents are encrypted noise (no plaintext)
+// - Disk theft: All content fields (bodies, titles, messages, PII) are ciphertext
 // - Network interception: Ciphertext + nonce are safe in transit (authenticated)
 // - Single-document compromise: One doc key stolen = one doc readable, others safe
 // - Passive timing attacks: XChaCha20-Poly1305 is constant-time
+// - Passphrase loss: Guardian access recovery re-wraps your keys under a new passphrase
 
 // Does NOT protect against:
-// - Master key theft: If attacker has Master Key, all devices are compromised
-//   → Guardian social recovery mitigates this
+// - Master key theft: If attacker has the Master Key, your data is readable
 // - Cold-boot attacks: Plaintext in RAM during decryption (mitigated by zeroize + short windows)
 // - Side-channel attacks on hardware: CPU cache, power analysis (cryptographer's problem, not ours)
-// - Metadata: Document titles, timestamps, relationships are still readable from DB structure
-//   → Encrypted filenames + encrypted schema coming in v2</code></div>
+// - Metadata: Record ids, timestamps, graph edges, and blind-index search tokens
+//   stay plaintext — the store must remain queryable. Deployment requirement:
+//   OS full-disk encryption (BitLocker / FileVault / LUKS) covers this layer.</code></div>
     </div>
 
   </div>
@@ -2182,6 +2217,9 @@ On read:
   <p class="subtitle">
     Recover your account with help from trusted people. No corporation involved. Your data stays encrypted throughout.
   </p>
+  <p style="margin-top:16px; display:inline-flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--c-owned); background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.25); border-radius: var(--radius); padding: 8px 14px;">
+    <span aria-hidden="true">✓</span> Shipped in v0.0.9 — guardian enrollment, guardian app, and pre-login access recovery. The crowd backup mesh (data restore when all devices are lost) is Phase 2.
+  </p>
 </div>
 
 <!-- ========== TIER 1: ELEVATOR PITCH ========== -->
@@ -2195,8 +2233,9 @@ On read:
 
   <div class="tier-1-content">
     <p>
-      Lose all your devices? Five trusted people each hold an encrypted piece of your recovery key. No piece works alone.
-      Any three together can help you recover. A 72-hour waiting period with notifications to all guardians stops fraud.
+      Forgot your passphrase? Five trusted people each hold a sealed piece of your recovery key. No piece works alone.
+      Any three together restore your <em>access</em> — your data is already on your synced devices, and you set a new
+      passphrase as the very first step of recovery. A 72-hour release delay on every guardian's shard stops fraud.
       No corporation is involved.
     </p>
   </div>
@@ -2220,13 +2259,15 @@ On read:
           <h3>50-Year-Old Math Behind the Magic</h3>
           <p>
             Shamir's Secret Sharing (SSS) is a cryptographic scheme invented by Adi Shamir in 1979.
-            It splits a secret (your master recovery key) into pieces called shares with a critical property:
+            It splits a secret — here a dedicated <strong>Recovery Key</strong>, not your master key —
+            into pieces called shares with a critical property:
           </p>
           <ul class="concept-list">
-            <li><strong>Master key → 5 shards:</strong> Your recovery key is split using SSS with parameters (k=3, n=5). This means exactly 5 shards are created.</li>
-            <li><strong>Any 3 shards reconstruct:</strong> Any subset of 3 or more shards can mathematically reconstruct the original key. Fewer than 3 shards reveal nothing.</li>
-            <li><strong>Each shard is encrypted:</strong> Before giving shard #i to guardian i, we encrypt it with their public key. Guardians are not given access to your data. They see only an opaque encrypted blob.</li>
-            <li><strong>Guardians are isolated:</strong> Each guardian holds one shard and knows only their own encrypted piece. They cannot derive your key from just their shard, nor can they see what other guardians hold.</li>
+            <li><strong>Recovery Key → 5 shards:</strong> A random 256-bit Recovery Key seals a bundle of your account secrets. It is split using SSS with fixed parameters (k=3, n=5) — exactly 5 shards.</li>
+            <li><strong>Any 3 shards reconstruct:</strong> Any subset of 3 or more shards can mathematically reconstruct the Recovery Key. Fewer than 3 shards reveal nothing.</li>
+            <li><strong>Each shard is sealed:</strong> A guardian's device holds only an opaque sealed blob. Guardians are not given access to your data — there is nothing in a shard to read.</li>
+            <li><strong>Armed only at five:</strong> Recovery isn't offered until all 5 guardian slots are enrolled. A partially-set-up roster protects no one, so it stays disarmed.</li>
+            <li><strong>Guardians are isolated:</strong> Each guardian holds one shard and cannot see what other guardians hold, nor derive anything from their own piece.</li>
           </ul>
           <p style="margin-top: 12px;">
             This mathematically guarantees that even if 2 guardians leak their shards to an attacker, the attacker cannot recover your key.
@@ -2239,20 +2280,21 @@ On read:
       <summary>The 72-Hour Fraud Window</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>Recovery Broadcast with Human Verification</h3>
+          <h3>Human Verification, Then a Mandatory Delay</h3>
           <p>
-            When someone claims they lost their devices and initiates recovery, the system broadcasts a notification to all 5 guardians.
-            But it doesn't proceed immediately. Instead, it enforces a 72-hour waiting period:
+            When someone initiates recovery, nothing releases immediately. Each guardian's shard sits
+            behind two independent gates, enforced on the <em>guardian's</em> device:
           </p>
           <ul class="concept-list">
-            <li><strong>Initiate recovery:</strong> Attacker (impersonating you) or real you initiates a recovery request via the login screen.</li>
-            <li><strong>Notify all guardians:</strong> All 5 guardians receive a message: "Recovery initiated for account ID X. Approve or reject within 72 hours."</li>
-            <li><strong>72-hour window:</strong> If you're the real user and didn't lose your devices, you see the notification and can abort immediately. Aborting stops the entire recovery process.</li>
-            <li><strong>Collect approvals:</strong> After 72 hours, if not aborted, the system collects approval responses from guardians. As soon as 3 approve, recovery proceeds.</li>
-            <li><strong>No response = passive approval:</strong> Guardians who ignore the notification are treated as implicit approval after 72 hours (you can tune this).</li>
+            <li><strong>Initiate recovery:</strong> The recovery wizard runs pre-login. Its very first step is choosing the <em>new</em> passphrase — everything collected during recovery is sealed under it from the start.</li>
+            <li><strong>Guardians verify it's you:</strong> Each guardian checks the identity proof you agreed on at enrollment — a shared memory, an object, a question — out-of-band, human to human. No proof, no approval.</li>
+            <li><strong>Explicit approval required:</strong> A shard is released only if the guardian actively approves in their app. Ignoring a request releases nothing — there is no passive approval.</li>
+            <li><strong>72-hour release delay:</strong> Even an approved shard is held for 72 hours after the first request. Approval alone, inside the window, releases nothing.</li>
+            <li><strong>Deny cancels:</strong> A guardian who denies clears the request and any prior approval. And if you log in normally on any device, the in-progress recovery is invalidated.</li>
           </ul>
           <p style="margin-top: 12px;">
-            This design catches most attackers: a real attacker would need your device to abort the notification, defeating the point of recovery.
+            An attacker would need to fool three of your friends face-to-face <em>and</em> survive a
+            72-hour window in which you can notice and every guardian can still say no.
           </p>
         </div>
       </div>
@@ -2264,16 +2306,17 @@ On read:
         <div class="concept-block">
           <h3>State Machine: From Initiation to Completion</h3>
           <p>
-            Recovery progresses through well-defined states. At any point, the real user can abort.
+            Recovery progresses through well-defined states — <code>WaitingPeriod → AwaitingShards →
+            Reconstructing → Complete</code>, with <code>Aborted</code> reachable throughout. It is
+            resumable: close the app mid-recovery and pick up where you left off.
           </p>
           <ul class="concept-list">
-            <li><strong>Initiate:</strong> User enters recovery ID and initiates a RecoveryRequest. State → WaitingPeriod. Timestamp: now.</li>
-            <li><strong>Waiting Period (72h):</strong> All guardians notified. If real user sees notification and clicks "Abort", state → Aborted immediately. Otherwise, wait.</li>
-            <li><strong>After 72h Expires:</strong> State → AwaitingShards. System begins collecting encrypted shards from guardians who approved.</li>
-            <li><strong>Collect Shards (n ≥ 3):</strong> As each guardian submits their encrypted shard, we store it. Once 3+ shards collected, state → Reconstructing.</li>
-            <li><strong>Reconstruct:</strong> Decrypt all collected shards using user's private key, apply Shamir reconstruction, recover master key. State → Complete.</li>
-            <li><strong>Complete:</strong> User can now unlock their account with the recovered key. Recovery request record closed.</li>
-            <li><strong>Abort (any state):</strong> User can abort from WaitingPeriod or AwaitingShards. State → Aborted. No recovery happens. Audit log recorded.</li>
+            <li><strong>Initiate (pre-login):</strong> The wizard starts by asking for your <em>new</em> passphrase. All recovery material collected from here on is sealed at rest under it — never stored raw.</li>
+            <li><strong>Waiting period (72h):</strong> Guardians see the request in their app and verify your identity out-of-band. Shards stay held on their devices.</li>
+            <li><strong>Collect shards (n ≥ 3):</strong> After approval + delay, your device pulls each released shard from the guardian over an encrypted peer connection (relayed if the guardian is behind a NAT).</li>
+            <li><strong>Reconstruct — verify before commit:</strong> Shamir reconstruction recovers the Recovery Key, which opens the sealed bundle of account secrets. Sovereign first <em>proves</em> the recovered keys actually decrypt your on-disk data — only then does it commit the new credentials. A failed recovery can't brick your account.</li>
+            <li><strong>Complete:</strong> Your keys are re-wrapped under the new passphrase. You log in; your data was on the device all along.</li>
+            <li><strong>Invalidate:</strong> A normal login with the real passphrase, on any device, cancels an in-progress recovery.</li>
           </ul>
         </div>
       </div>
@@ -2283,19 +2326,20 @@ On read:
       <summary>What Guardians See</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>Minimal Information, Maximum Privacy</h3>
+          <h3>People You Chose, Holding Bytes They Can't Read</h3>
           <p>
-            Guardians receive notifications and prompts, but they see nothing about your data or identity beyond what's necessary.
+            Guardians are people you enrolled face to face — they know who you are; that's the point.
+            What they <em>hold</em> tells them nothing:
           </p>
           <ul class="concept-list">
-            <li><strong>Recovery ID:</strong> A unique identifier like "recovery_abc123def456". No name attached.</li>
-            <li><strong>Action prompt:</strong> "Do you want to help recover this account? Approve/Reject."</li>
-            <li><strong>Encrypted shard:</strong> If they approve, they submit a blob that looks like random bytes. They cannot decrypt it, inspect it, or derive meaning from it.</li>
-            <li><strong>No data visibility:</strong> Guardians do not have access to your documents, emails, contacts, or any personal information.</li>
-            <li><strong>No identifying info:</strong> They don't see your real name, email, or account handle in the recovery process.</li>
+            <li><strong>The guardian app:</strong> A deliberately minimal companion app (desktop today) whose only jobs are holding the shard, showing recovery requests, and approving or denying them. No database, no AI, no messaging.</li>
+            <li><strong>An opaque shard:</strong> The sealed blob on their device looks like random bytes. They cannot decrypt it, inspect it, or derive anything from it — alone or with one other guardian.</li>
+            <li><strong>A recovery request:</strong> "Someone is trying to recover this account — is it really them?" The verification is the human proof you agreed on at enrollment, not anything technical.</li>
+            <li><strong>No data visibility:</strong> Guardians never have access to your documents, messages, contacts, or keys. The shard restores <em>access</em>; it contains no content.</li>
           </ul>
           <p style="margin-top: 12px;">
-            This keeps guardians in a "black box" position: they help recover an account without knowing anything about it.
+            The trust model is deliberately social: cryptography keeps the shards meaningless,
+            and the people you chose decide whether the person asking is really you.
           </p>
         </div>
       </div>
@@ -2322,52 +2366,45 @@ On read:
       </p>
       <div class="code-block"><code>use blahaj::shamir;
 
-// Split master key into 5 shards, threshold = 3
-let master_key: [u8; 32] = generate_random_key();
-let shards = shamir::split(&amp;master_key, 3, 5)?;
-// shards: Vec&lt;Share&gt; with len == 5
+// Fixed roster parameters — not user-tunable
+const GUARDIAN_THRESHOLD: u8 = 3;
+const GUARDIAN_TOTAL: u8 = 5;
 
-// Reconstruct from any 3+ shards
-let recovered = shamir::reconstruct(&amp;shards[0..3])?;
-// recovered: [u8; 32] == master_key
+// The Recovery Key (random 256-bit) seals a bundle of the
+// account secrets (KEK + AccountKey). Only the Recovery Key
+// is Shamir-split — never the master key, never content.
+let shares = shamir::split(&amp;recovery_key, GUARDIAN_THRESHOLD, GUARDIAN_TOTAL)?;
 
-// Each shard is encrypted with guardian's public key
-for (i, shard) in shards.iter().enumerate() {
-    let guardian_pubkey = get_guardian_pubkey(i);
-    let encrypted_shard = encrypt_with_public_key(shard, guardian_pubkey);
-    store_shard_for_guardian(i, encrypted_shard);
-}</code></div>
+// Reconstruct from any 3+ shares
+let recovered = shamir::reconstruct(&amp;shares[0..3])?;</code></div>
       <p style="margin-top: 12px;">
-        The blahaj crate handles all Lagrange interpolation and finite field arithmetic. We only provide threshold, total, and the secret.
+        The blahaj crate handles all Lagrange interpolation and finite field arithmetic. Each share is
+        handed over sealed during in-person enrollment and lives only in the guardian's app. The roster
+        arms only when all 5 slots are enrolled (<code>is_armed()</code>).
       </p>
     </div>
 
     <div class="deep-section">
-      <h3>Data Structures</h3>
+      <h3>The Key Chain: Recovery Key → Bundle → New Credentials</h3>
       <p>
-        Core types used in the recovery module (sovereign-db/src/schema.rs and sovereign-crypto/src/guardian.rs).
+        Access recovery is a chain of sealed containers, each opened by the previous link:
       </p>
-      <div class="code-block"><code>// Encrypted shard stored for each guardian
-pub struct Shard {
-    pub shard_id: u32,  // Index 1–5
-    pub encrypted_data: Vec&lt;u8&gt;,  // AES-256-GCM(shard_blob, guardian_pubkey)
-    pub for_user_id: String,  // User's account ID
-    pub guardian_pubkey_fingerprint: String,  // SHA-256(guardian_pubkey)
-    pub created_at: DateTime&lt;Utc&gt;,
-    pub epoch: u64,  // Prevents replay attacks
-}
-
-// Recovery request lifecycle
-pub struct RecoveryRequest {
-    pub recovery_id: String,  // Unique ID like recovery_abc123
-    pub state: RecoveryState,  // WaitingPeriod, AwaitingShards, Reconstructing, Complete, Aborted
-    pub initiated_at: DateTime&lt;Utc&gt;,
-    pub waiting_period_ends: DateTime&lt;Utc&gt;,  // initiated_at + 72h
-    pub threshold: u32,  // 3
-    pub total_shards: u32,  // 5
-    pub guardian_responses: HashMap&lt;u32, GuardianResponse&gt;,  // shard_id → Approved, Rejected, Pending
-    pub collected_shards: Vec&lt;Shard&gt;,  // Encrypted shards submitted by guardians
-}</code></div>
+      <div class="flow-diagram">
+3-of-5 guardian shares
+         ↓  Shamir reconstruct
+Recovery Key (random 256-bit, exists only for recovery)
+         ↓  opens the sealed
+Recovery Bundle = KEK ‖ AccountKey  (the account secrets)
+         ↓  verify-before-commit: prove the recovered KEK
+         ↓  actually opens the on-disk content-key stores
+Fresh auth store, re-wrapped under the NEW passphrase
+      </div>
+      <p style="margin-top: 12px;">
+        Two properties fall out of this design. The master passphrase is never recovered — it is
+        <em>replaced</em>. And in-progress recovery state (collected shares included) is never stored
+        raw: it is sealed at rest under the new passphrase you chose at step one, with Argon2id key
+        stretching, so an interrupted recovery leaves nothing readable on disk.
+      </p>
     </div>
 
     <div class="deep-section">
@@ -2376,74 +2413,42 @@ pub struct RecoveryRequest {
         Recovery progresses through well-defined states managed by the orchestrator.
       </p>
       <div class="flow-diagram">
-User initiates recovery
+User initiates recovery (pre-login wizard)
+  └─ first step: choose the NEW passphrase
+     (all recovery state sealed under it from here on)
          ↓
-Create RecoveryRequest
-  state = WaitingPeriod
-  waiting_period_ends = now + 72h
+state = WaitingPeriod (72h)
+  guardians see the request in their app
          ↓
-Broadcast notification to all 5 guardians
+Each guardian, independently, on THEIR device:
+  ├─ verifies the human identity proof (out-of-band)
+  ├─ Approve → shard held until 72h after first request
+  ├─ Deny   → request + any prior approval cleared
+  └─ (no response) → nothing is ever released
          ↓
-Guardian can:
-  ├─ Approve → response set to Approved
-  ├─ Reject → response set to Rejected
-  └─ (no response) → Pending
-         ↓
-If user aborts within 72h:
-  └─ state = Aborted, return
-         ↓
-After 72h expires:
-  state = AwaitingShards
-  collect_shards_from_approved_guardians()
+state = AwaitingShards
+  released shards pulled over encrypted P2P
+  (direct dial, or relay circuit through the seed node)
          ↓
 Once ≥ 3 shards collected:
   state = Reconstructing
-  master_key = shamir::reconstruct(shards_decrypted)
+  recovery_key = shamir::reconstruct(shares)
+  bundle = open(recovery_key) → KEK + AccountKey
+  verify recovered KEK opens on-disk stores  ← commit only if true
          ↓
 state = Complete
-  user can now unlock account
+  auth store re-written under the new passphrase
+(any normal login with the real passphrase → in-progress recovery invalidated)
       </div>
     </div>
 
     <div class="deep-section">
-      <h3>Abort Mechanism</h3>
-      <p>
-        At any time during WaitingPeriod or AwaitingShards, the real user can abort recovery if they regain access to their account.
-      </p>
-      <div class="code-block"><code>pub async fn abort_recovery(
-    recovery_id: &amp;str,
-    user_id: &amp;str,
-    db: &amp;Surreal,
-) -&gt; Result&lt;()&gt; {
-    let mut req = db.get_recovery_request(recovery_id).await?;
-
-    // Only allow abort from safe states
-    if !matches!(req.state, RecoveryState::WaitingPeriod | RecoveryState::AwaitingShards) {
-        return Err("Recovery cannot be aborted from this state");
-    }
-
-    // Verify ownership
-    if req.initiated_by != user_id {
-        log_security_event("recovery_abort_unauthorized", user_id, recovery_id);
-        return Err("Unauthorized");
-    }
-
-    // Mark as aborted
-    req.state = RecoveryState::Aborted;
-    req.aborted_at = Some(Utc::now());
-    db.update_recovery_request(&amp;req).await?;
-
-    // Notify all guardians
-    notify_guardians_of_abort(recovery_id).await?;
-
-    // Audit log
-    log_recovery_event("abort", recovery_id, user_id);
-
-    Ok(())
-}</code></div>
-      <p style="margin-top: 12px;">
-        This is designed so that a malicious initiator cannot force recovery if the real user notices and can abort.
-      </p>
+      <h3>Three Ways a Fraudulent Recovery Dies</h3>
+      <ul class="concept-list">
+        <li><strong>Guardian denial:</strong> Any guardian who isn't convinced by the identity proof denies the request on their own device — which also clears any approval they had already given. The 72-hour hold gives them time to reconsider.</li>
+        <li><strong>Owner login:</strong> If you still have your passphrase and log in normally on any device, the in-progress recovery is invalidated locally.</li>
+        <li><strong>Starvation:</strong> Shards release only on explicit approval. A request that guardians simply ignore collects nothing, forever — there is no passive approval and no timeout that releases a shard.</li>
+      </ul>
     </div>
 
     <div class="deep-section">
@@ -2452,49 +2457,50 @@ state = Complete
         The recovery system is designed with threat modeling in mind. Here are the key security properties:
       </p>
       <ul class="concept-list">
-        <li><strong>Master key stays in memory:</strong> The recovered key exists only in RAM during reconstruction. It is not logged, cached, or transmitted over the network by design.</li>
-        <li><strong>Guardians are isolated:</strong> Each guardian only holds one encrypted shard. They cannot collude offline to reconstruct the key. Communication happens only through the system.</li>
-        <li><strong>Epoch tracking:</strong> Each shard includes an epoch counter. Shards from old epochs are rejected. This prevents replay attacks where an attacker uses a captured shard multiple times.</li>
-        <li><strong>Threat: fewer than 3 shards compromised:</strong> Useless. Mathematical guarantee: SSS with k=3 means &lt;3 shards leak zero information about the master key.</li>
-        <li><strong>Threat: exactly 3 shards compromised:</strong> Attacker can reconstruct, but must wait 72h for real user to either abort or for the system to verify 3 guardian approvals. High friction.</li>
-        <li><strong>Threat: 3+ guardians compromised:</strong> Attacker can reconstruct immediately after 72h. But this requires compromising 60% of guardians, which is a high bar for social engineering.</li>
-        <li><strong>Threat: impersonation:</strong> Attacker initiates recovery under your account. But you see the 72h notification on any of your devices and abort. Attacker foiled unless they also compromised all your devices.</li>
+        <li><strong>Secrets stay in memory:</strong> The reconstructed Recovery Key and opened bundle exist in RAM during recovery; on disk, in-progress state is sealed under the new passphrase (with a probe that detects a wrong resume passphrase without leaking anything).</li>
+        <li><strong>Rotation epochs:</strong> The roster records the key-rotation epoch its shares belong to; the epoch is bumped on rotation, so stale share sets don't silently mix with fresh ones.</li>
+        <li><strong>Verify-before-commit:</strong> The recovered KEK must demonstrably open the on-disk content-key stores before the old auth store is replaced — a failed or corrupted recovery cannot brick the account.</li>
+        <li><strong>Threat: fewer than 3 shards compromised:</strong> Useless. Mathematical guarantee: SSS with k=3 means &lt;3 shards leak zero information about the Recovery Key.</li>
+        <li><strong>Threat: social engineering:</strong> An attacker must convince ≥3 guardians of a false identity — against a human proof each guardian personally agreed with you — and then survive the 72-hour hold during which any guardian can still deny and you can log in and invalidate everything.</li>
+        <li><strong>Threat: guardian device theft:</strong> One stolen guardian device yields one sealed shard — no information alone. Revoking a guardian (Level 5 action) removes the slot; the roster disarms below five.</li>
       </ul>
     </div>
 
     <div class="deep-section">
       <h3>Module Organization</h3>
       <p>
-        Guardian recovery is implemented in the <code>sovereign-crypto</code> crate under the <code>guardian/</code> subdirectory.
+        Guardian access recovery spans four crates, each with a narrow responsibility:
       </p>
-      <div class="code-block"><code>sovereign-crypto/src/guardian/
-├── mod.rs             // Public API + re-exports
-├── shamir.rs          // Shamir split/reconstruct wrappers
-├── shard.rs           // Shard struct + encryption/decryption
-├── recovery.rs        // RecoveryRequest + state machine
-├── notification.rs    // Guardian notification dispatch
-└── audit.rs           // Audit logging for recovery events</code></div>
-      <ul class="concept-list">
-        <li><code>shamir.rs</code> — Thin wrapper around <code>blahaj</code> crate. Handles key serialization.</li>
-        <li><code>shard.rs</code> — Shard struct, encryption with guardian public keys, decryption with user's private key.</li>
-        <li><code>recovery.rs</code> — RecoveryRequest struct, state transitions, abort logic, shard collection.</li>
-        <li><code>notification.rs</code> — Sending notifications to guardians (email, push, or local UI depending on deployment).</li>
-        <li><code>audit.rs</code> — Logging every state change, abort, approval, rejection for compliance and debugging.</li>
-      </ul>
+      <div class="code-block"><code>sovereign-crypto/          // the key material
+├── src/guardian/shamir.rs    // blahaj split/reconstruct, fixed 3-of-5
+├── src/guardian/recovery.rs  // recovery state machine (WaitingPeriod → … → Complete)
+├── src/recovery_key.rs       // Recovery Key + sealed Recovery Bundle (KEK ‖ AccountKey)
+├── src/recovery_roster.rs    // owner-side roster, arm-at-5, rotation epoch
+├── src/recovery_seal.rs      // at-rest sealing of in-progress recovery state
+└── src/recovery_store.rs     // verify-before-commit + re-install under new passphrase
+
+sovereign-p2p/             // the wire
+├── src/guardian_enroll.rs    // QR offer + spoken-code (Argon2id) enrollment handshake
+├── src/backup_host.rs        // guardian side: approval + 72h release gate
+└── src/access_recovery.rs    // owner side: resumable recovery driver
+
+sovereign-guardian/        // the audited guardian engine
+sovereign-guardian-app/    // the friend-side app (desktop Tauri)</code></div>
     </div>
 
     <div class="deep-section">
       <h3>Performance Notes</h3>
       <p>
-        Social recovery should be infrequent, but when it happens, latency matters. Here are the performance characteristics:
+        Social recovery should be infrequent, but when it happens, latency matters. The cryptography is
+        never the bottleneck — the humans (deliberately) are:
       </p>
       <div class="const-table">
         <tr><th>Operation</th><th>Complexity</th><th>Typical Time</th><th>Notes</th></tr>
         <tr><td>Split (SSS)</td><td>O(k × n)</td><td>1–5 ms</td><td>k=3, n=5 is trivial. Dominated by random number generation.</td></tr>
         <tr><td>Reconstruct (SSS)</td><td>O(k²)</td><td>1–5 ms</td><td>Lagrange interpolation over finite field. k=3 is very fast.</td></tr>
-        <tr><td>Encrypt shard (AES-256-GCM)</td><td>O(shard_size)</td><td>&lt;1 ms per shard</td><td>Shards are small (~32 bytes each). Negligible overhead.</td></tr>
-        <tr><td>Decrypt shard (AES-256-GCM)</td><td>O(shard_size)</td><td>&lt;1 ms per shard</td><td>Per-shard decryption during reconstruction.</td></tr>
-        <tr><td>Total recovery latency</td><td>—</td><td>10–50 ms</td><td>Excludes network I/O and 72h waiting period.</td></tr>
+        <tr><td>Seal / unseal state (XChaCha20-Poly1305 + Argon2id)</td><td>—</td><td>&lt;1 s</td><td>Argon2id stretching dominates, by design.</td></tr>
+        <tr><td>Shard pull (P2P)</td><td>—</td><td>ms to s</td><td>Direct dial, or a relay circuit when the guardian is behind a NAT.</td></tr>
+        <tr><td>Total recovery latency</td><td>—</td><td>≥ 72 h</td><td>The waiting window is the point, not an inefficiency.</td></tr>
       </div>
     </div>
 
@@ -2531,7 +2537,8 @@ state = Complete
     <p>
       Imagine your workspace as a living map. Documents on an infinite canvas. Time runs left→right. Projects run top→bottom.
       Owned content is rectangles; external is parallelograms. Every document remembers its complete edit history—automatically,
-      invisibly. No save button. No lost work. Built with Svelte 5 + Tauri 2.0.
+      invisibly. No save button. No lost work. Rendered by the native Rust shell (Vello + winit + wgpu) on desktop;
+      the Svelte 5 + Tauri 2 app carries the same canvas to mobile.
     </p>
   </div>
 </section>
@@ -2581,8 +2588,9 @@ state = Complete
             <li><strong>Full Cards (≥ 0.6):</strong> Complete card: title, preview snippet, last-edited timestamp, relationships as curves, ownership badge (owned = rectangle, external = parallelogram).</li>
           </ul>
           <p style="margin-top: 12px;">
-            Built with HTML5 Canvas for the background (grid, lanes, date ticks, heatmap) and DOM-overlaid cards for interactivity.
-            Cascade stacking handles same-date cards. Sticky lane labels stay visible during horizontal scroll.
+            On desktop the shell draws everything on the GPU via Vello; the Tauri app uses HTML5 Canvas
+            plus DOM-overlaid cards. Same-date cards stack into decks that stay contained in their lane
+            and fan out on hover for picking (v0.0.9). Sticky lane labels stay visible during horizontal scroll.
           </p>
         </div>
       </div>
@@ -2677,7 +2685,7 @@ state = Complete
   <div class="tier-3-content">
 
     <div class="deep-section">
-      <h3>ZoomLevel Enum (sovereign-canvas/src/zoom.rs)</h3>
+      <h3>ZoomLevel Tiers</h3>
       <p>
         The renderer uses a zoom level to determine what to draw. Three visibility tiers gate the complexity.
       </p>
@@ -2699,7 +2707,7 @@ impl ZoomLevel {
     </div>
 
     <div class="deep-section">
-      <h3>Layout Constants (sovereign-canvas/src/layout.rs:1–15)</h3>
+      <h3>Layout Constants</h3>
       <p>
         Spacing and sizing are constants to ensure consistent layout across all platforms and zoom levels.
       </p>
@@ -2740,7 +2748,7 @@ pub struct LaneLayout {
     </div>
 
     <div class="deep-section">
-      <h3>Auto-Commit Engine (sovereign-canvas/src/versioning.rs)</h3>
+      <h3>Auto-Commit Engine (sovereign-ai/src/autocommit.rs)</h3>
       <p>
         Every document has an associated commit scheduler. When thresholds are hit, a new commit is written to the DB.
       </p>
@@ -2795,30 +2803,12 @@ pub struct DocumentSnapshot {
     <div class="deep-section">
       <h3>Rendering Architecture</h3>
       <p>
-        The canvas uses Iced 0.14 and WGPU for GPU-accelerated rendering. The state is shared via Arc&lt;Mutex&gt;
-        to allow concurrent edit + render loops.
+        The default desktop canvas lives in the <code>sovereign-shell</code> crate: a native Rust UI on
+        Vello (GPU vector renderer) + winit (windowing) + wgpu, with parley for text layout. It calls the
+        backend crates in-process — a single self-contained <code>sovereign.exe</code>, no webview, no IPC.
+        The earlier Iced-based <code>sovereign-ui</code> / <code>sovereign-canvas</code> crates were retired;
+        the Svelte 5 + Tauri 2 frontend remains as the mobile UI and an optional desktop build.
       </p>
-      <div class="code-block"><code>pub struct CanvasState {
-    pub zoom_factor: f32,
-    pub pan_x: f32, pan_y: f32,      // Scroll offset
-    pub cards: Vec<CardLayout>,
-    pub lanes: Vec<LaneLayout>,
-    pub selected_card: Option<String>,
-}
-
-pub struct CanvasRenderer {
-    state: Arc<Mutex<CanvasState>>,
-    wgpu_device: Device,
-    wgpu_queue: Queue,
-}
-
-// Render loop (decoupled from edit loop)
-impl CanvasRenderer {
-    pub fn render(&self, frame: &Frame) {
-        let state = self.state.lock();
-        // Draw lanes, cards, relationships
-    }
-}</code></div>
     </div>
 
     <div class="deep-section">
@@ -2853,6 +2843,9 @@ impl CanvasRenderer {
   <p class="subtitle">
     One inbox for everything. Email, Signal, WhatsApp — organized by person, not by app. Search "what did Sarah say about the project?" and get results from every channel.
   </p>
+  <p style="margin-top:16px; display:inline-flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--c-gold); background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); border-radius: var(--radius); padding: 8px 14px;">
+    <span aria-hidden="true">◐</span> Email went live in v0.0.9 (native shell) · Signal and WhatsApp channel code built, dormant
+  </p>
 </div>
 
 <!-- ========== TIER 1: ELEVATOR PITCH ========== -->
@@ -2866,9 +2859,11 @@ impl CanvasRenderer {
 
   <div class="tier-1-content">
     <p>
-      All your messages in one place. Email, Signal, WhatsApp — organized by person, not by app.
+      All your messages in one place, organized by person, not by app.
       Search "what did Sarah say about the project?" and get results from every channel Sarah has ever contacted you on.
-      No switching between apps. No fragmentation. One unified inbox with full-text search across all channels.
+      In v0.0.9 the first channel is live: email (IMAP fetch + SMTP send) runs in the native shell, with the
+      account password held in the encrypted vault. Signal and WhatsApp implement the same channel interface
+      but are not yet wired into the running app.
     </p>
   </div>
 </section>
@@ -3080,9 +3075,9 @@ impl CanvasRenderer {
         Each communication protocol is implemented as a separate module conforming to the CommunicationChannel trait.
       </p>
       <ul class="concept-list">
-        <li><strong>Email (IMAP/SMTP):</strong> Connects to mail servers, fetches messages, maps to Contact/Message structs. Subject becomes message subject, headers parsed for sender/recipient.</li>
-        <li><strong>Signal (presage crate):</strong> Uses Signal protocol via presage library. Messages are ephemeral by default; persisted to DB. Encryption happens at protocol level (end-to-end).</li>
-        <li><strong>WhatsApp & SMS:</strong> Placeholder for future integrations. Same trait interface means implementation details are isolated and don't affect the core system.</li>
+        <li><strong>Email (IMAP/SMTP) — live in v0.0.9:</strong> Connects to mail servers, fetches messages, maps to Contact/Message structs. Wired into the native shell; config in <code>comms.toml</code>, password in the encrypted PII vault.</li>
+        <li><strong>Signal (presage crate) — built, dormant:</strong> Uses the Signal protocol via the presage library. The channel compiles but is not constructed at runtime yet.</li>
+        <li><strong>WhatsApp (Meta Cloud API) — built, dormant:</strong> Channel and config types exist behind a feature flag; the webhook path is not wired into the app.</li>
       </ul>
     </div>
 
@@ -3106,13 +3101,13 @@ impl CanvasRenderer {
     <div class="deep-section">
       <h3>Encryption & Storage</h3>
       <p>
-        Message security is enforced at the storage layer with AES-256-GCM encryption.
+        Message security is enforced at the storage layer with the same field-level encryption as documents.
       </p>
       <ul class="concept-list">
-        <li><strong>Message bodies encrypted:</strong> AES-256-GCM via sovereign-crypto module.</li>
-        <li><strong>Per-contact encryption nonce:</strong> Additional isolation—different contacts' messages encrypted with different nonces.</li>
-        <li><strong>Graph database storage:</strong> SurrealDB stores encrypted message blobs with plaintext indices for search (searchable encryption).</li>
-        <li><strong>Metadata encrypted:</strong> Sender, recipient, timestamps also encrypted at rest.</li>
+        <li><strong>Message bodies encrypted:</strong> XChaCha20-Poly1305 via sovereign-crypto, per-entity keys.</li>
+        <li><strong>Contact PII encrypted:</strong> Names, notes, and channel addresses are ciphertext at rest.</li>
+        <li><strong>Raw-header windows closed (v0.0.9):</strong> The at-rest windows where raw email headers could linger in plaintext were closed as part of the release's security pass.</li>
+        <li><strong>Graph database storage:</strong> SurrealDB stores encrypted blobs with blind-index tokens for search; structural metadata (ids, timestamps, edges) stays queryable and is covered by OS full-disk encryption.</li>
       </ul>
     </div>
 
@@ -3255,7 +3250,7 @@ impl CanvasRenderer {
             Skills are lightweight tools that read from or write to the graph database without storing state themselves. You own the data; skills are interchangeable views/editors.
           </p>
           <ul class="concept-list">
-            <li><strong>Built-In Skills (10):</strong> Markdown editor, PDF export, word counter, find/replace, duplicate, import, search, image viewer, and more — compiled Rust, no WASM overhead.</li>
+            <li><strong>Built-In Skills (24):</strong> Markdown editor, PDF export, word counter, find/replace, duplicate, import, search, image viewer, thread summarizer, PII detector, redactor, and more — compiled Rust, no WASM overhead.</li>
             <li><strong>Third-Party WASM Plugins:</strong> Community skills run in a WebAssembly sandbox using the WASM Component Model (wasmtime). Write skills in Rust, compile to WASM, distribute as portable <code>.wasm</code> bundles.</li>
             <li><strong>Capability-Based Permissions:</strong> Each skill declares required capabilities (<code>read_document</code>, <code>write_document</code>, <code>read_all_documents</code>, etc.). Users see what a skill requests before granting access.</li>
             <li><strong>WIT Interface Contracts:</strong> Skills implement a typed WIT interface — <code>name()</code>, <code>actions()</code>, <code>execute()</code>. Host provides database functions (<code>search-documents</code>, <code>get-document</code>, <code>create-document</code>).</li>
@@ -3416,13 +3411,13 @@ impl CanvasRenderer {
     <div class="deep-section">
       <h3>Skill Sandboxing</h3>
       <p>
-        Skills run in a restricted environment to prevent data exfiltration or unintended side effects:
+        Third-party skills run in a restricted WASM environment to prevent data exfiltration or unintended side effects:
       </p>
       <ul class="concept-list">
-        <li><strong>Landlock Filesystem:</strong> Skills see only the documents they're asked to operate on. No access to user's home directory, /etc, or system files.</li>
-        <li><strong>seccomp-bpf Syscall Filter:</strong> Skills can only call safe syscalls (read, write, mmap, etc.). Blocked: network I/O, exec, fork, ptrace.</li>
-        <li><strong>Capability Grants:</strong> The manifest lists what the skill can do. The sandbox enforces these limits. A read-only skill cannot write to the database.</li>
-        <li><strong>No Network:</strong> Skills cannot reach the internet. Prevents data exfiltration or phoning home.</li>
+        <li><strong>WASM sandbox (wasmtime Component Model):</strong> Community skills compile to WebAssembly and run with hard limits — 16 MB memory, ~1 billion instruction fuel budget, at most 10 concurrent instances.</li>
+        <li><strong>Narrow host interface:</strong> A skill sees only the granted database and LLM functions — no filesystem walk, no raw syscalls, no sockets.</li>
+        <li><strong>Capability Grants:</strong> The manifest lists what the skill can do. The registry enforces these limits before execution. A read-only skill cannot write to the database.</li>
+        <li><strong>No Network:</strong> Skills cannot reach the internet unless the <code>Network</code> capability is explicitly granted — no built-in skill has it.</li>
       </ul>
     </div>
 
@@ -3468,7 +3463,7 @@ impl CanvasRenderer {
     Targets iOS 14+ and Android SDK 26+.
   </p>
   <p style="margin-top:16px; display:inline-flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--c-gold); background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); border-radius: var(--radius); padding: 8px 14px;">
-    <span aria-hidden="true">◐</span> Phases 1–4 complete · Phase 5 (persistent storage + biometrics) in development
+    <span aria-hidden="true">◐</span> Phases 1–4 complete · persistent storage + device pairing with LAN sync shipped (v0.0.8) · camera capture, biometrics, iOS share-sheet pending
   </p>
 </div>
 
@@ -3667,13 +3662,16 @@ impl CanvasRenderer {
     <div class="deep-section">
       <h3>Mobile Feature Flags</h3>
       <p>The <code>mobile</code> Cargo feature enables a specific subset of Sovereign's capabilities, excluding anything that requires desktop-only system libraries:</p>
-      <div class="code-block"><code>mobile = ["encrypted-log", "encryption", "comms-signal", "haptics"]
+      <div class="code-block"><code>mobile = ["encrypted-log", "encryption", "haptics", "surrealkv", "p2p"]
 
-# Excluded from mobile:
-# - rocksdb (in-memory kv only; Phase 5 will add SQLite-backed SurrealDB)
+# In since v0.0.8:
+# - surrealkv  (persistent SurrealDB backend — replaces the old in-memory-only mode)
+# - p2p        (device pairing + LAN sync; physical device required —
+#               emulator NAT blocks mDNS discovery)
+
+# Still excluded from mobile:
 # - voice  (cpal-based desktop audio; replaced by Web Audio API)
-# - comms-email (native-tls not supported on mobile)
-# - p2p (mDNS port restrictions on iOS/Android; Phase 5)
+# - comms channels (email runs on desktop; native-tls not supported on mobile)
 # - web-browse (pixel-bounded child webview unsupported on mobile)</code></div>
     </div>
 
@@ -3726,8 +3724,8 @@ impl CanvasRenderer {
         <tr><td>Voice input — hold-to-record, Whisper STT on-device</td><td style="color: var(--c-owned);">✓ Phase 4</td></tr>
         <tr><td>OS share-sheet — Android (wired), iOS (scaffolded)</td><td style="color: var(--c-owned);">✓ Phase 4</td></tr>
         <tr><td>PII dashboard, Settings, Search, People, Inbox panels</td><td style="color: var(--c-owned);">✓ (desktop panels, mobile-safe layout)</td></tr>
-        <tr><td>Persistent storage (SQLite-backed SurrealDB)</td><td style="color: var(--c-gold);">Phase 5</td></tr>
-        <tr><td>P2P sync (mDNS restrictions lifted)</td><td style="color: var(--c-gold);">Phase 5</td></tr>
+        <tr><td>Persistent storage (SurrealKV-backed SurrealDB)</td><td style="color: var(--c-owned);">✓ v0.0.8</td></tr>
+        <tr><td>P2P device pairing + LAN sync (QR pairing, non-destructive peer-write review)</td><td style="color: var(--c-owned);">✓ v0.0.8 — physical device required (emulator NAT blocks mDNS)</td></tr>
         <tr><td>Camera capture + OCR</td><td style="color: var(--c-gold);">Phase 5</td></tr>
         <tr><td>Biometric vault (Face ID / fingerprint)</td><td style="color: var(--c-gold);">Phase 5</td></tr>
         <tr><td>iOS share-sheet full integration</td><td style="color: var(--c-gold);">Phase 5</td></tr>
@@ -3753,7 +3751,7 @@ impl CanvasRenderer {
     credentials are — entirely on-device, without sending anything to a server.
   </p>
   <p style="margin-top:16px; display:inline-flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--c-gold); background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); border-radius: var(--radius); padding: 8px 14px;">
-    <span aria-hidden="true">◐</span> Detection layer built · Dashboard UI in active development
+    <span aria-hidden="true">✓</span> Shipped since v0.0.8 — detection pipeline, dashboard + vault in both UIs, browser flows. v0.0.9 fenced the NER stage against prompt injection.
   </p>
 </div>
 
@@ -3819,21 +3817,22 @@ impl CanvasRenderer {
       <summary>Detection — What Gets Found</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>Regex Layer (Built) + LLM-NER Layer (Planned)</h3>
+          <h3>Regex Layer + LLM-NER Layer (Both Built)</h3>
           <p>
             Detection runs in two passes. The first is instant; the second is async and confidence-scored.
           </p>
           <ul class="concept-list">
-            <li><strong>Regex (6 types, implemented):</strong> Email, phone, SSN, credit card, IPv4 address.
+            <li><strong>Regex:</strong> Email, phone, SSN, credit card, IPv4 address.
               Patterns compiled once via <code>OnceLock</code>. Returns byte offsets, kind label, and
               matched sample.</li>
-            <li><strong>Extended regex (planned, Swiss/EU locale):</strong> AVS number
+            <li><strong>Extended regex (Swiss/EU locale):</strong> AVS number
               (<code>756.XXXX.XXXX.XX</code>), IBAN (ISO 13616 + CH prefix), passport numbers,
-              date of birth in proximity to keywords, Swiss postal addresses.</li>
-            <li><strong>LLM-NER (planned):</strong> Zero-shot prompt to the local model for person names,
-              organisation names, and free-form addresses. Returns findings with confidence scores.
-              Below 0.7 → marked Unreviewed, surfaced in the review queue.</li>
-            <li><strong>Entity disambiguation (planned):</strong> Email domain → match against Entity
+              date of birth in proximity to keywords, postal addresses.</li>
+            <li><strong>LLM-NER:</strong> The local model identifies person names, organisation names,
+              and free-form addresses, with confidence scores; low-confidence findings land in the
+              review queue as Unreviewed. Since v0.0.9 the analyzed document body is fenced as
+              untrusted content before it reaches the model (INJECTION-003).</li>
+            <li><strong>Entity disambiguation:</strong> Email domain → match against Entity
               <code>domains[]</code>. Phone → match Contact. Name → fuzzy match. No match → propose
               new Entity for one-click confirmation.</li>
           </ul>
@@ -3892,7 +3891,7 @@ impl CanvasRenderer {
       <summary>Browser Integration — Vault, Signup Capture &amp; Cookies</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>Three Browser-Side Flows (Planned)</h3>
+          <h3>Three Browser-Side Flows</h3>
           <ul class="concept-list">
             <li><strong>Signup capture + password generation:</strong> When you fill a registration form,
               Sovereign can generate a strong password (24 chars, alphanumeric + symbols, OsRng-backed),
@@ -3929,25 +3928,29 @@ impl CanvasRenderer {
   <div class="tier-3-content">
 
     <div class="deep-section">
-      <h3>PII Kind Enum — 13 Types</h3>
-      <p>Every <code>PiiRecord</code> is tagged with one of these. Regex detection covers the first six; LLM-NER adds the rest.</p>
+      <h3>PII Kind Enum — 17 Types</h3>
+      <p>Every <code>PiiRecord</code> is tagged with one of these. Regex covers the pattern-shaped kinds; LLM-NER adds names and free-form addresses; the vault-only kinds are set when you save a secret.</p>
       <div class="code-block"><code>pub enum PiiKind {
-    // Regex-detected (implemented)
+    // Regex-detected
     Email, Phone, Ssn, CreditCard, Ipv4,
-    // Extended regex (planned — Swiss/EU locale)
-    Avs,       // Swiss social security 756.XXXX.XXXX.XX
-    Iban,      // ISO 13616 incl. CH-prefix
-    Passport,  // 9 alphanumeric + country prefix
-    Dob,       // date near keywords: "DOB", "né(e)", "birth"
-    Address,   // Swiss postal: street + 4-digit postcode + city
-    // LLM-NER (planned)
+    // Extended regex (Swiss/EU locale)
+    Avs,        // Swiss social security 756.XXXX.XXXX.XX
+    Iban,       // ISO 13616 incl. CH-prefix
+    Passport,
+    Dob,        // date near keywords: "DOB", "né(e)", "birth"
+    Address,
+    // LLM-NER
     PersonName, OrgName,
+    // Vault entries
+    Password, ApiToken, BankAccount,
+    DocumentId, // government-issued ID (ID card, driver's licence, …)
+    Note,       // free-form vault note
     Other,
 }</code></div>
     </div>
 
     <div class="deep-section">
-      <h3>PiiRecord Schema (Planned)</h3>
+      <h3>PiiRecord Schema</h3>
       <table class="const-table">
         <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
         <tr><td><code>id</code></td><td>Thing</td><td>SurrealDB record ID</td></tr>
@@ -3964,7 +3967,7 @@ impl CanvasRenderer {
     </div>
 
     <div class="deep-section">
-      <h3>Tauri Command Interface (Planned — 11 commands)</h3>
+      <h3>Command Interface (Tauri frontend; the native shell calls the same engine in-process)</h3>
       <div class="code-block"><code>// Inventory
 list_entities() -> Vec&lt;EntityDto&gt;
 list_pii_records(entity_id: Option&lt;String&gt;) -> Vec&lt;PiiRecordDto&gt;
@@ -3992,7 +3995,7 @@ clear_entity_cookies(entity_id)           // L5</code></div>
     </div>
 
     <div class="deep-section">
-      <h3>Detection Pipeline (Planned)</h3>
+      <h3>Detection Pipeline</h3>
       <div class="flow-diagram">
 Document / Message created or updated
         │
@@ -4023,19 +4026,17 @@ Review queue (low-confidence) ────────────────  
       <h3>Implementation Status</h3>
       <table class="const-table">
         <tr><th>Component</th><th>Status</th></tr>
-        <tr><td>Regex detection — 6 types (email, phone, SSN, credit card, IPv4)</td><td style="color: var(--c-owned);">✓ Built</td></tr>
+        <tr><td>Regex detection (email, phone, SSN, credit card, IPv4)</td><td style="color: var(--c-owned);">✓ Built</td></tr>
+        <tr><td>Extended regex — Swiss/EU locale (AVS, IBAN, passport, DOB, address)</td><td style="color: var(--c-owned);">✓ Built</td></tr>
+        <tr><td>LLM-NER detection layer (fenced against injection since v0.0.9)</td><td style="color: var(--c-owned);">✓ Built</td></tr>
+        <tr><td>Entity disambiguation</td><td style="color: var(--c-owned);">✓ Built</td></tr>
+        <tr><td>Encrypted vault (XChaCha20-Poly1305 under the account key)</td><td style="color: var(--c-owned);">✓ Built</td></tr>
+        <tr><td>PiiRecord / ShareRecord / Entity DB schemas</td><td style="color: var(--c-owned);">✓ Built</td></tr>
+        <tr><td>Dashboard UI — native shell panel + Tauri panel (desktop &amp; mobile)</td><td style="color: var(--c-owned);">✓ Built</td></tr>
         <tr><td>Redactor skill — replaces spans with [REDACTED]</td><td style="color: var(--c-owned);">✓ Built</td></tr>
-        <tr><td>Architectural plan &amp; data model design</td><td style="color: var(--c-owned);">✓ Complete</td></tr>
-        <tr><td>Extended regex — Swiss/EU locale (AVS, IBAN, passport, DOB, address)</td><td style="color: var(--c-gold);">In development</td></tr>
-        <tr><td>LLM-NER detection layer</td><td style="color: var(--c-gold);">In development</td></tr>
-        <tr><td>Entity disambiguation</td><td style="color: var(--c-gold);">In development</td></tr>
-        <tr><td>Crypto vault primitive (dual-encrypt blob storage)</td><td style="color: var(--c-gold);">In development</td></tr>
-        <tr><td>PiiRecord / ShareRecord / Entity DB schemas</td><td style="color: var(--c-gold);">In development</td></tr>
-        <tr><td>Tauri command layer (11 commands)</td><td style="color: var(--c-gold);">In development</td></tr>
-        <tr><td>Dashboard UI (panel, entity list, PII rows, vault form, review queue)</td><td style="color: var(--c-gold);">In development</td></tr>
-        <tr><td>Browser integration (signup capture, autofill, cookie management)</td><td style="color: var(--c-gold);">In development</td></tr>
-        <tr><td>Ingest hooks (documents, messages, contacts, session log)</td><td style="color: var(--c-gold);">In development</td></tr>
-        <tr><td>Outbound ledger (ShareRecord on every PII disclosure)</td><td style="color: var(--c-gold);">In development</td></tr>
+        <tr><td>Browser integration (signup capture, autofill, cookie management)</td><td style="color: var(--c-owned);">✓ Built (Tauri frontend)</td></tr>
+        <tr><td>Ingest hooks (documents, messages, contacts)</td><td style="color: var(--c-owned);">✓ Built</td></tr>
+        <tr><td>Outbound ledger (ShareRecord on PII disclosure — email, web)</td><td style="color: var(--c-owned);">✓ Built</td></tr>
       </table>
     </div>
 
@@ -4054,7 +4055,7 @@ Review queue (low-confidence) ────────────────  
   <h1>Skill System</h1>
   <p class="subtitle">
     Composable, sandboxed tools that operate on your graph database without owning your data.
-    25 built-in skills, a WASM plugin runtime, and capability-based permissions enforced in code.
+    24 built-in skills, a WASM plugin runtime, and capability-based permissions enforced in code.
   </p>
 </div>
 
@@ -4111,7 +4112,7 @@ Review queue (low-confidence) ────────────────  
     </details>
 
     <details open>
-      <summary>Built-in Skills (25 core)</summary>
+      <summary>Built-in Skills (24 core)</summary>
       <div class="details-content">
         <div class="concept-block">
           <h3>Compiled Into the Binary — No IPC Overhead</h3>
@@ -4120,7 +4121,7 @@ Review queue (low-confidence) ────────────────  
             They're grouped by what they do:
           </p>
           <ul class="concept-list">
-            <li><strong>Editing:</strong> Markdown editor (toolbar, preview toggle), text editor, find &amp; replace, case converter, sort lists, JSON/YAML formatter.</li>
+            <li><strong>Editing:</strong> Markdown editor (toolbar, preview toggle), text editor, find &amp; replace, JSON/YAML formatter.</li>
             <li><strong>Analysis:</strong> Word count, readability score, outline extractor, table of contents, link checker, backlink map, orphan finder.</li>
             <li><strong>AI-powered:</strong> Thread summarizer, PII detector, redactor — each calls the local LLM via <code>SkillLlmAccess</code>.</li>
             <li><strong>Export:</strong> PDF export, HTML export, plaintext export.</li>
@@ -4387,7 +4388,7 @@ Review queue (low-confidence) ────────────────  
           <table class="const-table">
             <tr><th>Sovereign Feature</th><th>Status</th><th>Existing Equivalents</th></tr>
             <tr><td>Identity Firewall</td><td><em>Roadmap</em></td><td>Firefox containers, SimpleLogin, ProtonVPN, DuckDuckGo tracker blocking</td></tr>
-            <tr><td>Encrypted P2P Sync</td><td><em>Infrastructure only</em></td><td>Syncthing, IPFS, Restic + Backblaze</td></tr>
+            <tr><td>Encrypted P2P Sync</td><td>Implemented (device pairing + LAN sync; relay-assisted recovery)</td><td>Syncthing, IPFS, Restic + Backblaze</td></tr>
             <tr><td>Social Recovery</td><td>Implemented</td><td>Casa (Bitcoin multisig model), ssss-split (Shamir secret sharing)</td></tr>
             <tr><td>Local AI</td><td>Implemented</td><td>Ollama, llama.cpp, gpt4all</td></tr>
             <tr><td>Per-Document Encryption</td><td>Implemented</td><td>LUKS (Linux), BitLocker (Windows), FileVault (macOS)</td></tr>
@@ -4409,7 +4410,7 @@ Review queue (low-confidence) ────────────────  
             <li><strong>No Cryptocurrency:</strong> No wallet, no censorship-resistant payment channel. Social recovery is identity-based, not financial.</li>
             <li><strong>No Offensive Tooling:</strong> No password cracking, no keystroke injection, no privilege escalation exploits.</li>
             <li><strong>Small AI Models:</strong> 3B/7B quantized models too small for sophisticated social engineering attacks. Audit logs record all inferences.</li>
-            <li><strong>Audit Logs Create Forensic Record:</strong> Worse for criminals than useful for them. Differential privacy prevents inference attacks on guardian shards.</li>
+            <li><strong>Audit Logs Create Forensic Record:</strong> Session activity is logged (encrypted, tamper-evident) — worse for criminals than useful for them.</li>
           </ul>
         </div>
       </div>
@@ -4494,11 +4495,11 @@ Review queue (low-confidence) ────────────────  
         The guardian protocol is deliberately scoped to a single, auditable function: shard storage/return.
       </p>
       <ul class="concept-list">
-        <li><strong>What Guardians Do:</strong> Store encrypted shards of your recovery key. On your request, return the shard. That's it.</li>
-        <li><strong>No Messaging:</strong> Guardians cannot send you messages. No "you have a guardian request" notification system.</li>
+        <li><strong>What Guardians Do:</strong> Hold a sealed shard of your recovery key, see recovery requests, and approve or deny them. An approved shard releases only after a 72-hour delay. That's it.</li>
+        <li><strong>No Messaging:</strong> The guardian app is not a communication channel. It shows recovery requests and nothing else — no chat, no general notifications.</li>
         <li><strong>No General Storage:</strong> Guardians cannot store arbitrary data. Only recovery shards, format-fixed, size-limited.</li>
-        <li><strong>No Coordination:</strong> Guardians cannot communicate with each other. No "2-of-3 consensus" logic on the guardian side. You orchestrate recovery locally.</li>
-        <li><strong>No Dead Man's Switch:</strong> Guardians do not auto-transmit anything on timer or trigger. No "if I don't check in, release my data." User must actively request shards.</li>
+        <li><strong>No Coordination:</strong> Guardians cannot communicate with each other through the system. Each approves or denies independently, on their own device. You orchestrate recovery locally.</li>
+        <li><strong>No Dead Man's Switch:</strong> Guardians do not auto-transmit anything on timer or trigger. No "if I don't check in, release my data." Release requires an active recovery request plus explicit guardian approval.</li>
         <li><strong>Repurposing Risk Minimized:</strong> Narrow scope makes it hard to misuse. Adding a general storage layer would create incentive to use Sovereign as a dead drop for contraband.</li>
       </ul>
     </div>
@@ -4984,26 +4985,21 @@ Review queue (low-confidence) ────────────────  
                 </thead>
                 <tbody>
                     <tr>
-                        <td>1.x (current)</td>
-                        <td>2026-Q1</td>
-                        <td>TBD</td>
-                        <td>Active</td>
+                        <td>0.0.9 (current)</td>
+                        <td>2026-07</td>
+                        <td>Until the next release</td>
+                        <td>Active — fixes land in the next release</td>
                     </tr>
                     <tr>
-                        <td>0.9.x (pre-release)</td>
-                        <td>2025-Q4</td>
-                        <td>2026-03-31</td>
-                        <td>Limited</td>
-                    </tr>
-                    <tr>
-                        <td>&lt; 0.9.x</td>
-                        <td>Before 2025-Q4</td>
-                        <td>Expired</td>
-                        <td>Unsupported</td>
+                        <td>&lt; 0.0.9</td>
+                        <td>2025–2026</td>
+                        <td>Superseded</td>
+                        <td>Unsupported — please upgrade</td>
                     </tr>
                 </tbody>
             </table>
-            <p>We recommend running the latest stable version for the best security posture.</p>
+            <p>Sovereign GE is an experimental pre-1.0 prototype: there are no long-term support branches.
+               Security fixes ship in the most recent release only — always run the latest.</p>
         </section>
 
         <section>
@@ -5103,7 +5099,7 @@ Review queue (low-confidence) ────────────────  
 
             <h3>In Scope</h3>
             <ul>
-                <li>All Sovereign crates: <code>sovereign-core</code>, <code>sovereign-db</code>, <code>sovereign-crypto</code>, <code>sovereign-ai</code>, <code>sovereign-ui</code>, <code>sovereign-canvas</code>, <code>sovereign-skills</code>, <code>sovereign-p2p</code>, <code>sovereign-comms</code>, <code>sovereign-app</code>;</li>
+                <li>All Sovereign crates: <code>sovereign-core</code>, <code>sovereign-db</code>, <code>sovereign-crypto</code>, <code>sovereign-ai</code>, <code>sovereign-skills</code>, <code>sovereign-p2p</code>, <code>sovereign-comms</code>, <code>sovereign-import</code>, <code>sovereign-app</code>, <code>sovereign-shell</code>, <code>sovereign-relay</code>, <code>sovereign-guardian</code>, <code>sovereign-guardian-app</code>;</li>
                 <li>Published releases (stable and pre-release);</li>
                 <li>Website (sovereignos.org) and documentation;</li>
                 <li>Official GitHub repositories.</li>
@@ -5126,21 +5122,20 @@ Review queue (low-confidence) ────────────────  
             <h3>Key Hierarchy</h3>
             <pre>
 ┌─────────────────────────────────────────────┐
-│ User Master Secret (password or passphrase) │
+│ User passphrase (Argon2id key stretching)   │
 └────────────────────┬────────────────────────┘
-                     │
-      ┌──────────────┴──────────────┐
-      │                             │
-      v                             v
-┌──────────────────┐      ┌─────────────────────┐
-│ Master Key       │      │ Key Agreement Key   │
-│ (HKDF-SHA256)    │      │ (HKDF-SHA256)       │
-└────────┬─────────┘      └─────────────────────┘
+                     │ seals the auth store
+                     v
+┌──────────────────┐
+│ Master Key       │──── HKDF ────> Device Keys (per-device, revocable)
+└────────┬─────────┘
          │
-      ┌──┴──┬─────────┬──────────┐
-      v     v         v          v
-  Signing Encryption Document Audit
-  Key     Key        Keys     Key
+         v
+┌──────────────────┐
+│ KEK (per epoch)  │──── wraps ───> Document Keys (one per document)
+└──────────────────┘
+Separately: a random Recovery Key (Shamir 3-of-5 across guardians)
+seals a bundle of the account secrets, for passphrase-loss recovery.
             </pre>
 
             <h3>Hard Security Barriers</h3>
@@ -5912,7 +5907,7 @@ const ROUTES = {
   '/encryption': { template: 'page-encryption', title: 'Encryption & Key Management — Sovereign GE', description: 'Modern encryption with XChaCha20-Poly1305 and hierarchical key derivation.' },
   '/social-recovery': { template: 'page-social-recovery', title: 'Guardian Social Recovery — Sovereign GE', description: 'Recover your account with trusted people using Shamir secret sharing.' },
   '/spatial-canvas': { template: 'page-spatial-canvas', title: 'Spatial Canvas & Versioning — Sovereign GE', description: 'Your documents on an infinite canvas with automatic versioning.' },
-  '/communications': { template: 'page-communications', title: 'Unified Communications — Sovereign GE', description: 'One inbox for Email, Signal, and WhatsApp.' },
+  '/communications': { template: 'page-communications', title: 'Unified Communications — Sovereign GE', description: 'A contact-centric inbox. Email live since v0.0.9; Signal and WhatsApp built, dormant.' },
   '/content-skills': { template: 'page-content-skills', title: 'Content + Skills Architecture — Sovereign GE', description: 'Data ownership through composable tools and graph database.' },
   '/skills': { template: 'page-skills', title: 'Skill System — Sovereign GE', description: 'Composable, sandboxed tools with a WASM plugin runtime and capability-based permissions enforced in code.' },
   '/mobile': { template: 'page-mobile', title: 'Mobile — Sovereign GE', description: 'A touch-first redesign: vertical time axis, swipe-between-lanes, voice input, haptics, and OS share-sheet. iOS 14+ and Android SDK 26+.' },
@@ -6279,7 +6274,7 @@ document.addEventListener('keydown', (e) => {
   "@type": "SoftwareApplication",
   "name": "Sovereign GE",
   "description": "An experimental local-first graphical environment with on-device AI, end-to-end encryption, and peer-to-peer sync.",
-  "url": "https://clenoble.github.io/sovereign-os",
+  "url": "https://clenoble.github.io/sovereign/",
   "applicationCategory": "DesktopApplication",
   "applicationSubCategory": "Desktop Environment",
   "operatingSystem": "Linux, Windows, macOS",
@@ -6301,7 +6296,7 @@ document.addEventListener('keydown', (e) => {
   "@context": "https://schema.org",
   "@type": "WebSite",
   "name": "Sovereign GE",
-  "url": "https://clenoble.github.io/sovereign-os"
+  "url": "https://clenoble.github.io/sovereign/"
 }
 </script>
 
