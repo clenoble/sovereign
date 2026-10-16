@@ -807,14 +807,14 @@ p { margin-bottom: 1rem; color: var(--c-text); }
     <p class="section-desc">
       A contact-centric inbox: conversations organized by person, not by app,
       archived in your encrypted local graph. The engine and UI are built but
-      deliberately dormant in v0.0.9 — email (IMAP/SMTP) is planned to switch on
-      in v0.0.10, together with its security hardening, as one coherent comms
+      deliberately dormant — email (IMAP/SMTP) is planned to switch on in a
+      later release, together with its security hardening, as one coherent comms
       release. Signal and WhatsApp follow.
     </p>
     <div class="features-grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
       <div class="feature-card">
         <h3>Email</h3>
-        <p>IMAP fetch + SMTP send. Built; dormant in v0.0.9 — planned as the first live channel in v0.0.10, shipped together with its hardening.</p>
+        <p>IMAP fetch + SMTP send. Built; dormant — planned as the first live channel in a later release, shipped together with its hardening.</p>
       </div>
       <div class="feature-card">
         <h3>Signal</h3>
@@ -921,8 +921,8 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       <a href="https://github.com/clenoble/sovereign" class="btn btn-primary" target="_blank" rel="noopener">
         View on GitHub
       </a>
-      <a href="https://github.com/clenoble/sovereign/releases/tag/v0.0.9" class="btn btn-secondary" target="_blank" rel="noopener">
-        Download v0.0.9
+      <a href="https://github.com/clenoble/sovereign/releases/tag/v0.0.10" class="btn btn-secondary" target="_blank" rel="noopener">
+        Download v0.0.10
       </a>
     </div>
     <p style="margin-top: 16px; font-size: 0.85rem; color: var(--c-text-dim);">
@@ -1039,7 +1039,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
             <li><code>list_threads</code> — Get all thread names and metadata.</li>
             <li><code>get_document</code> — Retrieve full text of a document by title.</li>
             <li><code>list_documents</code> — Filtered list (optionally by thread).</li>
-            <li><code>search_messages</code> — Search archived conversations (channels dormant in v0.0.9; email goes live in v0.0.10).</li>
+            <li><code>search_messages</code> — Search archived conversations (channels dormant; email goes live in a later release).</li>
             <li><code>list_contacts</code> — Get contact list (no private data).</li>
           </ul>
           <h3 style="margin-top: 24px;">Modify Level (Level 3) — Requires User Confirmation</h3>
@@ -2221,7 +2221,7 @@ On read:
     Recover your account with help from trusted people. No corporation involved. Your data stays encrypted throughout.
   </p>
   <p style="margin-top:16px; display:inline-flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--c-owned); background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.25); border-radius: var(--radius); padding: 8px 14px;">
-    <span aria-hidden="true">✓</span> Shipped in v0.0.9 — guardian enrollment, guardian app, and pre-login access recovery. The crowd backup mesh (data restore when all devices are lost) is Phase 2.
+    <span aria-hidden="true">✓</span> Built in v0.0.9 — guardian enrollment and pre-login access recovery; the guardian app is built from source (not in the download assets). The crowd backup mesh (data restore when all devices are lost) is Phase 2.
   </p>
 </div>
 
@@ -2810,7 +2810,7 @@ pub struct DocumentSnapshot {
         Vello (GPU vector renderer) + winit (windowing) + wgpu, with parley for text layout. It calls the
         backend crates in-process — a single self-contained <code>sovereign.exe</code>, no webview, no IPC.
         The earlier Iced-based <code>sovereign-ui</code> / <code>sovereign-canvas</code> crates were retired;
-        the Svelte 5 + Tauri 2 frontend remains as the mobile UI and an optional desktop build.
+        the Svelte 5 + Tauri 2 frontend remains as the mobile UI (its desktop build is frozen and no longer shipped).
       </p>
     </div>
 
@@ -2847,7 +2847,7 @@ pub struct DocumentSnapshot {
     One inbox for everything. Email, Signal, WhatsApp — organized by person, not by app. Search "what did Sarah say about the project?" and get results from every channel.
   </p>
   <p style="margin-top:16px; display:inline-flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--c-gold); background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); border-radius: var(--radius); padding: 8px 14px;">
-    <span aria-hidden="true">◐</span> Engine + UI built, deliberately dormant in v0.0.9 · email planned to go live in v0.0.10 with its hardening · Signal and WhatsApp follow
+    <span aria-hidden="true">◐</span> Engine + UI built, deliberately dormant · email planned to go live in a later release with its hardening · Signal and WhatsApp follow
   </p>
 </div>
 
@@ -2864,8 +2864,8 @@ pub struct DocumentSnapshot {
     <p>
       All your messages in one place, organized by person, not by app.
       Search "what did Sarah say about the project?" and get results from every channel Sarah has ever contacted you on.
-      The storage layer, contact model, and inbox UI are built; no channel is live in v0.0.9. Email
-      (IMAP fetch + SMTP send) is planned to switch on in v0.0.10 together with its security hardening,
+      The storage layer, contact model, and inbox UI are built; no channel is live yet. Email
+      (IMAP fetch + SMTP send) is planned to switch on in a later release together with its security hardening,
       as one coherent comms release. Signal and WhatsApp implement the same channel interface and follow.
     </p>
   </div>
@@ -3078,7 +3078,7 @@ pub struct DocumentSnapshot {
         Each communication protocol is implemented as a separate module conforming to the CommunicationChannel trait.
       </p>
       <ul class="concept-list">
-        <li><strong>Email (IMAP/SMTP) — built, dormant:</strong> Connects to mail servers, fetches messages, maps to Contact/Message structs. Deliberately not wired into the running app in v0.0.9; goes live in v0.0.10 together with its hardening (PII scanning of synced mail among it).</li>
+        <li><strong>Email (IMAP/SMTP) — built, dormant:</strong> Connects to mail servers, fetches messages, maps to Contact/Message structs. Deliberately not wired into the running app; goes live in a later release together with its hardening (PII scanning of synced mail among it).</li>
         <li><strong>Signal (presage crate) — built, dormant:</strong> Uses the Signal protocol via the presage library. The channel compiles but is not constructed at runtime yet.</li>
         <li><strong>WhatsApp (Meta Cloud API) — built, dormant:</strong> Channel and config types exist behind a feature flag; the webhook path is not wired into the app.</li>
       </ul>
@@ -5910,7 +5910,7 @@ const ROUTES = {
   '/encryption': { template: 'page-encryption', title: 'Encryption & Key Management — Sovereign GE', description: 'Modern encryption with XChaCha20-Poly1305 and hierarchical key derivation.' },
   '/social-recovery': { template: 'page-social-recovery', title: 'Guardian Social Recovery — Sovereign GE', description: 'Recover your account with trusted people using Shamir secret sharing.' },
   '/spatial-canvas': { template: 'page-spatial-canvas', title: 'Spatial Canvas & Versioning — Sovereign GE', description: 'Your documents on an infinite canvas with automatic versioning.' },
-  '/communications': { template: 'page-communications', title: 'Unified Communications — Sovereign GE', description: 'A contact-centric inbox, built and dormant. Email goes live in v0.0.10; Signal and WhatsApp follow.' },
+  '/communications': { template: 'page-communications', title: 'Unified Communications — Sovereign GE', description: 'A contact-centric inbox, built and dormant. Email goes live in a later release; Signal and WhatsApp follow.' },
   '/content-skills': { template: 'page-content-skills', title: 'Content + Skills Architecture — Sovereign GE', description: 'Data ownership through composable tools and graph database.' },
   '/skills': { template: 'page-skills', title: 'Skill System — Sovereign GE', description: 'Composable, sandboxed tools with a WASM plugin runtime and capability-based permissions enforced in code.' },
   '/mobile': { template: 'page-mobile', title: 'Mobile — Sovereign GE', description: 'A touch-first redesign: vertical time axis, swipe-between-lanes, voice input, haptics, and OS share-sheet. iOS 14+ and Android SDK 26+.' },
