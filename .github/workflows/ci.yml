@@ -71,6 +71,14 @@ jobs:
       - name: cargo check -p sovereign-app --features mobile (APK feature set, host target)
         run: cargo check -p sovereign-app --no-default-features --features mobile --locked -j 4
       - name: cargo test --workspace --exclude sovereign-ai
+        # Same flags as the local gate on WSL. The repo .cargo/config.toml passes
+        # `-L /usr/lib/x86_64-linux-gnu`, which makes the sovereign-app cdylib's test
+        # link pick the system's non-PIC libbz2.a / libzstd.a ("recompile with -fPIC").
+        # RUSTFLAGS replaces the config's rustflags; the shipped Linux shell is built
+        # by scripts/release-shell-linux.sh with the config as is and links fine.
+        # Remove once the `-L` is dropped from the config.
+        env:
+          RUSTFLAGS: "-Clink-arg=-Wl,--allow-multiple-definition"
         run: xvfb-run -a cargo test --workspace --exclude sovereign-ai --locked -j 4
       - name: cargo test -p sovereign-ai --no-default-features --features encrypted-log
         run: cargo test -p sovereign-ai --no-default-features --features encrypted-log --locked -j 4
