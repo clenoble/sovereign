@@ -11,12 +11,21 @@ This is critical — APIs change between versions and stale knowledge causes cas
 
 ## Source of truth: the SPEC, not the plans
 
-`doc/spec/sovereign_os_specification.md` is the **single source of truth** for
-what the system is and how it should behave. **Refer to the spec before starting
-any feature.** Plans are execution scaffolding only — they say *how/when*, never
+`doc/spec/` is the **single source of truth** for what the system is and how it
+should behave — a chapter collection since v2.0 (2026-10-09): start at
+`doc/spec/README.md`, every change gets an entry in `doc/spec/CHANGELOG.md` in
+the same commit, and every section carries a status line (built / partial /
+specified / conflict / retired). **Refer to the spec before starting any
+feature.** Plans are execution scaffolding only — they say *how/when*, never
 *what* — and they are ephemeral (session/memory or clearly-dated notes), not
 canonical. **If a plan and the spec disagree, the spec wins and the plan is
 wrong.**
+
+**Open work lives in one place: `doc/plans/BACKLOG.md`** (private — `doc/plans/`
+is stripped from the public mirror, so security findings go there, never into
+`doc/spec/`, which is published). Finished or superseded plans go to
+`doc/plans/archive/`. The 2026-10-09 triage that set this up is recorded in
+`doc/plans/archive/TRIAGE-2026-10-09.md`.
 
 Why this rule exists (2026-07-10): the Social Backup & Recovery work drifted for
 weeks because two overlapping *plan* docs (`p2p-completion-plan.md`,
@@ -32,7 +41,7 @@ building. When you find a plan-vs-spec conflict, treat it as a bug in the plan.
 
 ## Workspace Architecture
 
-8-crate Rust workspace (~12k lines):
+13-crate Rust workspace (~90k lines of Rust, measured 2026-10-09):
 
 | Crate | Role |
 |-------|------|
@@ -41,8 +50,12 @@ building. When you find a plan-vs-spec conflict, treat it as a bug in the plan.
 | `sovereign-crypto` | Encryption (XChaCha20-Poly1305), key management, content signing |
 | `sovereign-ai` | LLM orchestrator, intent classification, chat agent loop, tools, trust, voice pipeline |
 | `sovereign-skills` | Skill registry and built-in skills (markdown editor, PDF export, video) |
-| `sovereign-p2p` | libp2p peer-to-peer sync (experimental) |
-| `sovereign-comms` | Communications — email (IMAP/SMTP), Signal (via presage) |
+| `sovereign-p2p` | libp2p — pairing, encrypted sync, peer review, guardian enrollment, access-recovery driver, guardian-side release gate |
+| `sovereign-comms` | Communications — email (IMAP/SMTP), Signal (via presage), WhatsApp types — all dormant since v0.0.9 |
+| `sovereign-import` | Stub-first bulk import engine + CLI |
+| `sovereign-relay` | Deployable relay/seed node — relay-v2 + store-and-forward mailbox; sees only ciphertext + routing metadata |
+| `sovereign-guardian` | Guardian-side serving engine — holds friends' Recovery Key shards, answers heartbeats, approves recovery |
+| `sovereign-guardian-app` | Friend-side desktop Tauri app wrapping `sovereign-guardian` |
 | `sovereign-app` | Tauri/CLI binary crate — Tauri bootstrap, CLI, setup, seeding. Builds as `sovereign-tauri` (desktop) + the `sovereign_app` cdylib (mobile) |
 | `sovereign-shell` | Native Rust/Vello/winit/wgpu UI — the **default desktop UI**. Builds as `sovereign` (`sovereign.exe`). Calls the backend crates in-process (no Tauri IPC) |
 
@@ -65,7 +78,7 @@ The orchestrator uses local Qwen models (2.5 and 3.5) via llama-cpp-2 (no cloud,
 - **Router (3B–4B)**: Fast intent classification — classifies user input into ~20 action types. Supports Qwen 2.5-3B and Qwen 3.5-4B (with `/no_think` thinking-mode suppression).
 - **Reasoning (7B)**: Escalation model for complex/ambiguous queries (loaded on demand, unloaded after 5min idle)
 - **Chat agent loop**: Multi-turn with tool calling — loads session history, gathers workspace context, iterates up to 5 rounds of generate → tool call → execute → feed back
-- **6 read-only tools**: `search_documents`, `list_threads`, `get_document`, `list_documents`, `search_messages`, `list_contacts` — all Observe level (Level 0), no confirmation needed
+- **6 read-only tools**: `search_documents`, `list_threads`, `get_document`, `list_documents`, `search_messages`, `list_contacts` — all Observe level (Level 1 — `ActionLevel` is numbered 1–5 in `sovereign-core/src/security.rs`), no confirmation needed
 - **4 write tools**: `create_document`, `create_thread`, `rename_thread`, `move_document` — Modify level (Level 3), require confirmation
 - **Prompt format**: ChatML (`<|im_start|>role\n...\n<|im_end|>`), ChatMLQwen3 (adds `/no_think` suppression), Mistral, and Llama3 formats via `PromptFormatter` trait
 - **Per-model sampling**: `SamplingConfig` allows each model family to use optimized temperature, top_k, top_p, and presence_penalty. Qwen 3.5 uses aggressive sampling (temp=1.0, top_p=0.95, presence_penalty=1.5).
@@ -182,8 +195,29 @@ Three batch wrappers in the project root set `LIBCLANG_PATH`, `CMAKE`, and `PATH
 
 The wrappers:
 - `_build.bat` — runs `cargo <args>` (pass any cargo subcommand + flags)
-- `_check.bat` — runs `cargo check --workspace --exclude sovereign-ai` with `-j 4`
+- `_check.bat` — runs `cargo check --workspace --exclude sovereign-ai --all-targets` with `-j 4` (`--all-targets` so test code is gated too — see the note in the script)
 - `_run.bat` — runs the app
+
+#### Release builds and the pre-publish gate
+
+Full recipe, artifacts and open items: `doc/RELEASE.md`. The scripts share `_env.bat` (same
+variables as above, plus `SOVEREIGN_CLANG_INCLUDE` — clang's resource include dir for rocksdb's
+bindgen, auto-detected under the LLVM install, `none` to disable — and `SOVEREIGN_JOBS`;
+`SOVEREIGN_TARGET_DIR` defaults to `C:\cargo-target` there, as in `_test.bat`).
+
+- `_prepublish.bat` (Linux/WSL: `scripts/prepublish.sh`) — the local gate, stops at the first
+  failure: workspace check `--all-targets`, standalone shell check, `mobile` feature check,
+  `cargo test --workspace --exclude sovereign-ai`, `sovereign-ai --no-default-features` tests,
+  `cargo audit`, frontend `vitest` + `npm audit`. An open advisory fails it until fixed or
+  justified in `.cargo/audit.toml`. CI runs only after a push to the mirror; this runs before.
+- `_release_build.bat` — the **shipped** Windows artifact: `cargo build -p sovereign-shell
+  --release --locked`, CPU-only (the shell has no `cuda` feature), staged with its `.sha256` in
+  `%SOVEREIGN_TARGET_DIR%\dist`. Linux: `scripts/release-shell-linux.sh`. (Until 2026-10-10
+  this script built the frozen Tauri desktop with CUDA.)
+- `scripts/build-android.sh --debug | --release` — the APK (Linux/WSL only). `--release` is
+  unsigned: no release signing config or key is in the repo.
+- `_release_tauri_frozen.bat [--cuda]` — **frozen, not shipped** Tauri desktop binary, via the
+  Tauri CLI so it serves the embedded frontend.
 
 **Why the check is `--workspace` and not a crate list.** It was
 `-p sovereign-app` until 2026-07-16, which left `sovereign-shell` — the
@@ -234,7 +268,7 @@ cargo.exe build -p sovereign-app -j 2
 
 #### Key notes
 - `sovereign-ai` default feature is `cuda` — disable on machines without CUDA toolkit: `--no-default-features`
-- **Tauri crates and the frontend build — `devUrl` is what decides.** `generate_context!` needs *something* to serve. If `tauri.conf.json` declares a `devUrl`, dev builds (`cargo check`/`cargo build`) use it and **do not need the frontend output to exist**; only release builds embed `frontendDist`. If it declares **no** `devUrl`, `frontendDist` must exist even to `cargo check`, and the failure reads `The "frontendDist" configuration is set to "..." but this path doesn't exist` (older/less lucky cases surface only as "proc macro panicked"). Both apps declare one now (main app → `localhost:1420`, guardian app → `localhost:5175`, matching its vite `strictPort`), so a clean checkout checks without any `npm` step. `frontendDist` is relative to **the config file's directory**. *(Measured 2026-07-16 — an earlier note claimed the frontend output was needed before the macro in all cases; that is true only without a `devUrl`.)*
+- **Tauri crates and the frontend build — `devUrl` decides at *compile* time; the *Tauri CLI* decides at *runtime*.** `generate_context!` needs *something* to serve. If `tauri.conf.json` declares a `devUrl`, dev builds (`cargo check`/`cargo build`, debug **or** `--release`) compile fine and **do not need the frontend output to exist**. But a **plain-`cargo` binary — including `cargo build --release` — loads the `devUrl` at runtime** (`localhost:1420`) and shows `ERR_CONNECTION_REFUSED` / "Hmmm… can't reach this page" when no dev server is up; `--release` does **not** by itself flip it to serve the embedded `frontendDist`. Only a **Tauri-CLI** build serves the embedded frontend with no dev server: `frontend/node_modules/.bin/tauri.cmd build --no-bundle [--features …]` (there is no global `cargo tauri`), which runs `beforeBuildCommand` (`npm run build`) and produces a prod binary that loads `frontendDist` — the form to use when **smoke-testing or shipping the desktop Tauri UI**. For dev with HMR use `_dev.bat` (Tauri CLI `dev` + Vite). If the config declares **no** `devUrl`, `frontendDist` must exist even to `cargo check`, and the failure reads `The "frontendDist" configuration is set to "..." but this path doesn't exist` (older/less lucky cases surface only as "proc macro panicked"). Both apps declare one now (main app → `localhost:1420`, guardian app → `localhost:5175`, matching its vite `strictPort`), so a clean checkout checks without any `npm` step. `frontendDist` is relative to **the config file's directory**. *(Compile-time behavior measured 2026-07-16. Runtime correction measured 2026-07-19 on PANDA2 during the v0.0.9 both-UI smoke: a `cargo build --release` Tauri binary loaded the devUrl and refused to connect; the Tauri-CLI `build --no-bundle` binary served the embedded frontend and reached onboarding. The prior "only release builds embed `frontendDist`" wording conflated compile-time embedding with runtime loading and was wrong.)*
 - Set `CARGO_TARGET_DIR` (or `SOVEREIGN_TARGET_DIR` for the batch wrappers) if you want to redirect build artifacts to a faster drive or shared cache. Default is cargo's `./target`. Forward slashes in bash, backslashes in cmd/PowerShell.
 - Windows needs `/FORCE:MULTIPLE` linker flag (MSVC) because `llama-cpp-sys-2` and `whisper-rs-sys` both embed ggml — this is set in `.cargo/config.toml`
 - Before rebuilding after errors, kill stale processes and clean sovereign artifacts:

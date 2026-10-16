@@ -1076,6 +1076,16 @@ impl GraphDB for SurrealGraphDB {
     }
 
     async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> {
+        let restored = self.restore_document_state(doc_id, commit_id).await?;
+
+        // Create a new commit recording the restore
+        let restore_msg = format!("Restored from {}", commit_id);
+        self.commit_document(doc_id, &restore_msg).await?;
+
+        Ok(restored)
+    }
+
+    async fn restore_document_state(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> {
         let commit = self.get_commit(commit_id).await?;
 
         // Update document to the snapshot's state
@@ -1092,13 +1102,7 @@ impl GraphDB for SurrealGraphDB {
         doc.modified_at = Utc::now();
 
         let updated: Option<Document> = self.db.update((table, key)).content(doc).await?;
-        let restored = updated.ok_or_else(|| DbError::Query("Failed to restore document".into()))?;
-
-        // Create a new commit recording the restore
-        let restore_msg = format!("Restored from {}", commit_id);
-        self.commit_document(doc_id, &restore_msg).await?;
-
-        Ok(restored)
+        updated.ok_or_else(|| DbError::Query("Failed to restore document".into()))
     }
 
     async fn set_commit_signature(&self, commit_id: &str, signature: &str) -> DbResult<()> {

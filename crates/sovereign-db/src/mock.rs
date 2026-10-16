@@ -656,6 +656,10 @@ impl GraphDB for MockGraphDB {
     }
 
     async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> {
+        self.restore_document_state(doc_id, commit_id).await
+    }
+
+    async fn restore_document_state(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> {
         let commit = self.get_commit(commit_id).await?;
         let mut docs = self.documents.write().unwrap();
         let doc = docs.get_mut(doc_id).ok_or_else(|| DbError::NotFound(doc_id.to_string()))?;

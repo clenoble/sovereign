@@ -1041,6 +1041,16 @@ impl GraphDB for EncryptedGraphDB {
     }
 
     async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> {
+        let doc = self.restore_document_state(doc_id, commit_id).await?;
+        // Lot 0.11 (N2): the restore commit is created HERE, through this
+        // layer's commit_document, so it carries a MAC like every other
+        // commit. It used to be created by the raw layer's restore, below the
+        // MAC, and every restore left an unsigned commit in the history.
+        self.commit_document(doc_id, &format!("Restored from {commit_id}")).await?;
+        Ok(doc)
+    }
+
+    async fn restore_document_state(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> {
         // AUTOCOMMIT-001: refuse to restore from a commit whose MAC doesn't
         // verify — a tampered/forged commit must not silently overwrite the
         // live document. (Legacy unsigned commits are tolerated; see
@@ -1062,7 +1072,7 @@ impl GraphDB for EncryptedGraphDB {
                  the document"
             )));
         }
-        let doc = self.inner.restore_document(doc_id, commit_id).await?;
+        let doc = self.inner.restore_document_state(doc_id, commit_id).await?;
         self.decrypt_document(doc).await
     }
 
@@ -2195,6 +2205,7 @@ mod tests {
         async fn list_document_commits(&self, _doc_id: &str) -> DbResult<Vec<Commit>> { Ok(vec![]) }
         async fn get_commit(&self, _commit_id: &str) -> DbResult<Commit> { Err(DbError::NotFound("mock".into())) }
         async fn restore_document(&self, _doc_id: &str, _commit_id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
+        async fn restore_document_state(&self, _doc_id: &str, _commit_id: &str) -> DbResult<Document> { Err(DbError::NotFound("mock".into())) }
         async fn set_commit_signature(&self, _commit_id: &str, _signature: &str) -> DbResult<()> { Ok(()) }
         async fn create_milestone(&self, milestone: Milestone) -> DbResult<Milestone> { Ok(milestone) }
         async fn list_milestones(&self, _thread_id: &str) -> DbResult<Vec<Milestone>> { Ok(vec![]) }
@@ -2684,6 +2695,56 @@ mod tests {
         let mut legacy = commit.clone();
         legacy.signature = None;
         assert!(edb.commit_mac_ok(&legacy), "legacy unsigned commit is tolerated");
+    }
+
+    /// Lot 0.11 (N2) invariant: after a restore through the encrypted layer,
+    /// every commit of the document — the restore commit included — is
+    /// MAC-stamped and verifies. Checked over the at-rest rows of the inner DB.
+    async fn assert_restore_commit_is_macd(inner: Arc<dyn GraphDB>, edb: EncryptedGraphDB) {
+        let doc = edb
+            .create_document(Document::new("D".into(), "thread:t".into(), true))
+            .await
+            .unwrap();
+        let doc_id = doc.id_string().unwrap();
+        edb.update_document(&doc_id, Some("D"), Some("body v1")).await.unwrap();
+        let c1 = edb.commit_document(&doc_id, "v1").await.unwrap();
+        edb.update_document(&doc_id, Some("D"), Some("body v2")).await.unwrap();
+        edb.commit_document(&doc_id, "v2").await.unwrap();
+
+        let restored = edb.restore_document(&doc_id, &c1.id_string().unwrap()).await.unwrap();
+        assert_eq!(restored.content, "body v1");
+
+        let commits = inner.list_document_commits(&doc_id).await.unwrap();
+        assert!(
+            commits.iter().any(|c| c.message.starts_with("Restored from")),
+            "a restore must record a commit"
+        );
+        assert_eq!(commits.len(), 3, "exactly one restore commit");
+        for c in &commits {
+            assert!(c.signature.is_some(), "commit '{}' carries no MAC", c.message);
+            assert!(edb.commit_mac_ok(c), "commit '{}' MAC must verify", c.message);
+        }
+        // And the restore commit can itself be restored from (it verifies).
+        let restore_commit = commits.iter().find(|c| c.message.starts_with("Restored from")).unwrap();
+        edb.restore_document(&doc_id, &restore_commit.id_string().unwrap()).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restore_commit_is_macd_over_mock() {
+        let (inner, edb) = build_encrypted_db("restore-mac-mock");
+        assert_restore_commit_is_macd(inner, edb).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restore_commit_is_macd_over_surreal() {
+        use crate::surreal::{StorageMode, SurrealGraphDB};
+        let raw = SurrealGraphDB::new(StorageMode::Memory).await.unwrap();
+        raw.connect().await.unwrap();
+        raw.init_schema().await.unwrap();
+        let inner: Arc<dyn GraphDB> = Arc::new(raw);
+        let (_, template) = build_encrypted_db("restore-mac-surreal");
+        let edb = EncryptedGraphDB { inner: inner.clone(), ..template };
+        assert_restore_commit_is_macd(inner, edb).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

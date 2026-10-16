@@ -91,9 +91,28 @@ CODE_DOMAINS = {
 DESIGN_DOCS = [
     ("CLAUDE.md", "Project Architecture"),
     ("doc/spec/sovereign_os_ux_principles.md", "UX Principles"),
-    ("doc/design/design_decisions.md", "Design Decisions"),
-    ("doc/spec/sovereign_os_specification.md", "GE Specification"),
     ("doc/legal/sovereign_os_ethics.md", "Ethics Charter"),
+] + [
+    # The specification is a chapter collection since v2.0 (2026-10-09).
+    (f"doc/spec/{name}.md", f"GE Specification — {label}")
+    for name, label in [
+        ("README", "Index"),
+        ("01-vision", "Vision"),
+        ("02-architecture", "Architecture"),
+        ("03-data-model", "Data model"),
+        ("04-judgment-and-trust", "Judgment, attention & ownership of trust"),
+        ("05-sync-p2p", "Sync & P2P"),
+        ("06-recovery", "Recovery"),
+        ("07-keys-and-at-rest", "Keys & data at rest"),
+        ("08-orchestrator", "AI orchestrator"),
+        ("09-pii", "Personal data"),
+        ("10-browser-and-web", "Browser & web"),
+        ("11-skills", "Skills"),
+        ("12-ui", "Desktop UI & canvas"),
+        ("13-comms", "Communications"),
+        ("14-hardware", "Hardware"),
+        ("15-open-questions", "Open questions"),
+    ]
 ]
 
 

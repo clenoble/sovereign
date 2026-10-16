@@ -774,19 +774,65 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
                 println!("Pairing requested from {peer_id} ({device_name})");
                 None
             }
-            // F1 guardian enrollment events drive the Tauri owner UI (roster,
-            // enrollment QR). The native shell has no F1 owner surface yet —
-            // that arrives with the shell port of Surfaces 1/2 — so ignore them
-            // here rather than surfacing a half-wired status.
-            P2pEvent::GuardianEnrollRequested { .. }
-            | P2pEvent::GuardianEnrolled { .. }
-            | P2pEvent::GuardianEnrollFailed { .. } => None,
+            // Lot 0.9: a completed in-person enrollment must reach the roster,
+            // or `arm_guardian_offer` hands the same slot out again and the
+            // roster never arms. The translator has no KEK, so it queues the
+            // non-secret confirmation (as the mobile host does, sync_startup.rs)
+            // and tells the UI thread, which folds it in under the KEK.
+            P2pEvent::GuardianEnrolled { guardian_peer_id, guardian_label, shard_id, .. } => {
+                match queue_guardian_enrollment(
+                    &crate::crypto::recovery_store(),
+                    &shard_id,
+                    &guardian_peer_id,
+                    &guardian_label,
+                ) {
+                    Ok(()) => Some(OrchestratorEvent::GuardianEnrolled {
+                        guardian_id: guardian_peer_id,
+                        name: guardian_label,
+                    }),
+                    Err(e) => {
+                        eprintln!("failed to queue guardian enrollment: {e}");
+                        Some(OrchestratorEvent::GuardianDropped {
+                            guardian_id: guardian_peer_id,
+                            reason: format!("the enrollment could not be recorded on this device ({e})"),
+                        })
+                    }
+                }
+            }
+            P2pEvent::GuardianEnrollRequested { .. } | P2pEvent::GuardianEnrollFailed { .. } => None,
         };
         if let Some(e) = orch_event {
             let _ = ctx.orch_tx.send(e);
         }
     }
     println!("P2P event translator exited (channel closed)");
+}
+
+/// Queue a guardian's enrollment confirmation for the roster (lot 0.9). Needs
+/// no KEK, so the p2p event translator can call it; the UI thread folds the
+/// queue in with [`fold_guardian_enrollments`].
+pub(crate) fn queue_guardian_enrollment(
+    store: &sovereign_crypto::recovery_store::RecoveryStore,
+    shard_id: &str,
+    guardian_peer_id: &str,
+    guardian_label: &str,
+) -> Result<(), String> {
+    store.append_pending(&sovereign_crypto::recovery_store::PendingEnrollment {
+        shard_id: shard_id.to_string(),
+        guardian_peer_id: guardian_peer_id.to_string(),
+        guardian_label: guardian_label.to_string(),
+        enrolled_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// Fold queued enrollment confirmations into the encrypted roster (owner side,
+/// KEK held). `Ok(None)` when no roster exists yet.
+pub(crate) fn fold_guardian_enrollments(
+    store: &sovereign_crypto::recovery_store::RecoveryStore,
+    kek: &sovereign_crypto::kek::Kek,
+) -> Result<Option<sovereign_crypto::recovery_store::Reconciled>, String> {
+    let Some(mut setup) = store.load(kek)? else { return Ok(None) };
+    store.reconcile_pending(&mut setup, kek).map(Some)
 }
 
 /// Persist a pairing completion (P3.1): add the device with its derived per-pair
@@ -823,4 +869,43 @@ async fn persist_paired_device(ctx: &TranslatorCtx, peer_id: &str, device_name: 
         })
         .await;
     println!("Paired device persisted: {device_name} ({peer_id})");
+}
+
+#[cfg(test)]
+mod guardian_enrollment_tests {
+    use super::*;
+    use sovereign_crypto::{
+        account_key::AccountKey, kek::Kek, recovery_roster::RecoverySetup,
+        recovery_store::RecoveryStore,
+    };
+
+    /// Lot 0.9: the event's confirmation, queued by the translator and folded
+    /// by the UI thread, advances the roster — and the next offer moves on to
+    /// the next slot instead of reusing the enrolled one.
+    #[test]
+    fn a_guardian_enrolled_event_advances_the_roster() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = RecoveryStore::new(tmp.path());
+        let kek = Kek::from_bytes([3; 32]);
+        let setup = RecoverySetup::new(&kek, &AccountKey::from_bytes([4; 32]), 1).unwrap();
+        store.save(&setup, &kek).unwrap();
+        let first = setup.next_pending_slot().unwrap().shard_id.clone();
+
+        queue_guardian_enrollment(&store, &first, "12D3KooWGuardianA", "Alice").unwrap();
+        let folded = fold_guardian_enrollments(&store, &kek).unwrap().unwrap();
+        assert_eq!(folded.applied, 1);
+
+        let roster = store.load(&kek).unwrap().unwrap();
+        assert_eq!(roster.enrolled_count(), 1);
+        assert_ne!(roster.next_pending_slot().unwrap().shard_id, first, "the slot is not handed out again");
+        // Folding again is a no-op (the queue was consumed).
+        assert_eq!(fold_guardian_enrollments(&store, &kek).unwrap().unwrap().applied, 0);
+    }
+
+    #[test]
+    fn folding_without_a_roster_is_not_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = RecoveryStore::new(tmp.path());
+        assert!(fold_guardian_enrollments(&store, &Kek::from_bytes([3; 32])).unwrap().is_none());
+    }
 }

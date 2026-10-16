@@ -86,16 +86,18 @@ cargo build -p sovereign-app --features encrypted-log -j 4
 ./target/debug/sovereign-tauri run  # (or _run-tauri.bat / _dev.bat for hot-reload)
 ```
 
-On Windows, set `LIBCLANG_PATH` (defaults to `$env:ProgramFiles\LLVM\bin`) before building if you installed LLVM elsewhere. The `_build.bat` and `_release_build.bat` wrappers in the repo root configure the MSVC + LLVM + CUDA environment for you:
+On Windows, set `LIBCLANG_PATH` (defaults to `$env:ProgramFiles\LLVM\bin`) before building if you installed LLVM elsewhere. The `_build.bat` and `_release_build.bat` wrappers in the repo root configure the MSVC + LLVM environment for you:
 
 ```cmd
-:: Debug build with default features
-_build.bat build -p sovereign-app -j 4
+:: Debug build of the desktop app (the native shell)
+_build.bat build -p sovereign-shell -j 4
 
-:: Full-feature CUDA release build
-:: (cuda + encryption + p2p + comms-email + web-browse)
+:: Release build of what ships on Windows: the native shell, CPU-only,
+:: with its SHA-256 written next to it
 _release_build.bat
 ```
+
+The Tauri desktop app is frozen and no longer shipped; Tauri remains the Android app. How each release asset is built (Windows, Linux, Android), and the checks run before publishing, are in [doc/RELEASE.md](doc/RELEASE.md).
 
 On first launch, the onboarding wizard offers to seed a sample workspace (enabled by default); a device that onboards by **pairing** skips seeding and instead receives its workspace from the paired peer over sync.
 
@@ -136,7 +138,7 @@ cd frontend && npm test
 
 This is an experimental prototype. Try it, break it, contribute. The most approachable contribution path is writing a new skill — see [doc/writing-skills.md](doc/writing-skills.md) for the WASM Component Model guide, sandbox model, and a worked example.
 
-**Latest release:** [v0.0.9](RELEASE_NOTES_v0.0.9.md) — bulk document import (stub-first migration: text/extract/stub tiers, folder→lane, timestamps preserved), guardian-based social recovery (enroll guardians, threshold recovery, in-progress shares sealed at rest), and a broad security-hardening pass. Release notes for every version are in `RELEASE_NOTES_v0.0.*.md`.
+**Latest release:** [v0.0.10](RELEASE_NOTES_v0.0.10.md) — stabilisation after a full audit: fixes for defects that could lose work (skills, unsaved edits, failed saves), reversible delete, recovery and guardian fixes, a conversation log that is never written in clear, release-build hardening, and an honest list of known limitations. The native shell is now the only desktop app. Release notes for every version are in `RELEASE_NOTES_v0.0.*.md`.
 
 Ideas we haven't built yet: federation, plugin marketplace, collaborative editing, rich document format (WYSIWYG), semantic search via embeddings.
 

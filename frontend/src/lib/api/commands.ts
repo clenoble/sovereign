@@ -945,13 +945,26 @@ export interface AccessRecoveryStatusDto {
 export const accessRecoveryAvailable = () =>
 	invoke<boolean>('access_recovery_available');
 
-/** Begin access recovery from this device's own card + bundle; starts
- *  gathering guardian shares. */
-export const startAccessRecovery = () =>
-	invoke<AccessRecoveryStatusDto>('start_access_recovery');
+/** The frozen SEAM-A sentinel: `resume_access_recovery` rejects with exactly
+ *  this string when the passphrase does not open the sealed recovery state. */
+export const WRONG_PASSPHRASE = 'wrong-passphrase';
+
+/** Begin access recovery from this device's own card + bundle. The NEW
+ *  passphrase is chosen first (RECOVERY-001, SEAM-A): the backend seals the
+ *  in-progress shares under it before any guardian is contacted, and holds it
+ *  in memory for `finalize`. Rejects on an empty passphrase. */
+export const startAccessRecovery = (newPassphrase: string) =>
+	invoke<AccessRecoveryStatusDto>('start_access_recovery', { newPassphrase });
+
+/** Re-open an in-progress recovery after an app restart: re-derives the seal
+ *  key from the new passphrase chosen at start. Rejects with
+ *  {@link WRONG_PASSPHRASE} when it does not match. */
+export const resumeAccessRecovery = (passphrase: string) =>
+	invoke<AccessRecoveryStatusDto>('resume_access_recovery', { passphrase });
 
 /** Drive one network round across the multi-day wait — the wizard's slow
- *  (45s) timer calls this. */
+ *  (45s) timer calls this. Needs the recovery session opened by start/resume
+ *  in this app run; otherwise rejects ("recovery session not open"). */
 export const accessRecoveryPoll = () =>
 	invoke<AccessRecoveryStatusDto | null>('access_recovery_poll');
 
@@ -960,10 +973,11 @@ export const accessRecoveryStatus = () =>
 	invoke<AccessRecoveryStatusDto | null>('access_recovery_status');
 
 /** Reconstruct the Recovery Key from the collected shares, re-wrap the
- *  account secrets under a NEW passphrase, install, and unlock the session.
- *  Resolves with `phase: "installed"`. */
-export const accessRecoveryFinalize = (newPassphrase: string) =>
-	invoke<AccessRecoveryStatusDto>('access_recovery_finalize', { newPassphrase });
+ *  account secrets under the new passphrase held by the recovery session
+ *  (set at start/resume — no passphrase travels on this call), install, and
+ *  unlock the session. Resolves with `phase: "installed"`. */
+export const accessRecoveryFinalize = () =>
+	invoke<AccessRecoveryStatusDto>('access_recovery_finalize');
 
 /** Abandon the recovery attempt. */
 export const cancelAccessRecovery = () => invoke<void>('cancel_access_recovery');

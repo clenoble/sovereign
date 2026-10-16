@@ -60,8 +60,8 @@ This release ships the PII management dashboard — a native PII vault, sharing 
 ## Documentation
 
 - `RELEASE_NOTES_v0.0.3.md` brought into the repo root (was created during the v0.0.3 release pass).
-- `doc/plans/canvas-zoom-density.md` captures the open issue with the canvas (lane height still scales with zoom even though cards and message bubbles cap) and the design for **Option B+** (non-uniform parent scale: time axis uncapped, vertical capped) plus **Option C** (user-configurable density via settings panel).
-- `doc/plans/pii-management-dashboard.md` updated to mark all 9 roadmap steps shipped.
+- `doc/plans/archive/plans/canvas-zoom-density.md` captures the open issue with the canvas (lane height still scales with zoom even though cards and message bubbles cap) and the design for **Option B+** (non-uniform parent scale: time axis uncapped, vertical capped) plus **Option C** (user-configurable density via settings panel).
+- `doc/plans/archive/plans/pii-management-dashboard.md` updated to mark all 9 roadmap steps shipped.
 - `README.md` and `CONTRIBUTING.md` refreshed during v0.0.3 — no further updates needed for v0.0.4.
 
 ## Build / packaging
@@ -70,7 +70,7 @@ No changes to the release-build path. `_release_build.bat` and the same feature 
 
 ## Not in this release
 
-- **Canvas lane-height cap.** Lanes still scale with zoom — at extreme zoom only 1–2 lanes fit on screen. Design in `doc/plans/canvas-zoom-density.md`. Targeted for a follow-up.
+- **Canvas lane-height cap.** Lanes still scale with zoom — at extreme zoom only 1–2 lanes fit on screen. Design in `doc/plans/archive/plans/canvas-zoom-density.md`. Targeted for a follow-up.
 - **`comms-signal`** still excluded from the release build (known build issue carried over from v0.0.3).
 - **User-configurable canvas density / wheel bindings.** Hardcoded for now — settings panel surface is a follow-up.
 - **`PiiDashboardPanel.svelte` component test.** The dashboard panel itself isn't unit-tested (its drag/select/tab interactions are complex enough to push to E2E). Store + sub-dialogs cover the bulk of the logic.

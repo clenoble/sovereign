@@ -31,8 +31,8 @@ const HOST_QUOTA_BYTES: u64 = 64 * 1024 * 1024;
 /// `auto_approve` releases requested shards immediately (still subject to the
 /// release-delay window) — a **dev/e2e** convenience. In the shipping mobile
 /// guardian app the human approves after verifying the requester out of band
-/// (spec: Identity proof). Set `SOVEREIGN_RELEASE_DELAY_SECS` to shorten the
-/// 72h window for testing.
+/// (spec: Identity proof). In debug builds only, `SOVEREIGN_RELEASE_DELAY_SECS`
+/// shortens the 72h window for testing; release builds always use 72h.
 pub async fn run(
     data_dir: &Path,
     identity: &GuardianIdentity,

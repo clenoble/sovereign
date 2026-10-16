@@ -1,6 +1,6 @@
 //! Sovereign native shell — spatial-canvas foundation (native-UI migration).
 //!
-//! See doc/plans/native-ui-migration.md. The REAL shell foundation (promoted
+//! See doc/plans/archive/plans/native-ui-migration.md. The REAL shell foundation (promoted
 //! from the proven spike): a winit + wgpu + Vello window rendering the spatial
 //! timeline canvas — time (X) × thread-lane (Y), 4 LOD tiers, real shaped
 //! titles (parley), per-thread colors, cross-thread link edges, an adaptive
@@ -16,11 +16,14 @@
 //! visible-links / zoom in the window title.
 
 mod app;
+mod approval;
 mod camera;
 mod canvas;
 mod clip;
 mod comms;
 mod crypto;
+mod dev;
+mod doc_writes;
 mod onboarding;
 mod p2p;
 mod panels;
@@ -30,7 +33,7 @@ mod theme;
 
 use winit::event_loop::{ControlFlow, EventLoop};
 
-use crate::app::{run_auth_probe, run_chat_probe, run_shot, App};
+use crate::app::App;
 
 /// INSTALLER-002: restrict the runtime DLL search path to System32 + the
 /// application directory before any DLL is loaded. Without it, a user-writable
@@ -66,17 +69,23 @@ fn main() {
         )
         .try_init();
 
-    if std::env::var("SHELL_AUTH_PROBE").is_ok() {
-        run_auth_probe();
-        return;
-    }
-    if let Ok(msg) = std::env::var("SHELL_CHAT_PROBE") {
-        run_chat_probe(msg);
-        return;
-    }
-    if let Ok(path) = std::env::var("SHELL_SHOT") {
-        run_shot(path);
-        return;
+    // Lot 0.5: the probes and the headless shot are development switches —
+    // compiled only into debug builds or with `--features dev-switches` (see
+    // dev.rs). A release binary has no code that reads these variables.
+    #[cfg(any(debug_assertions, feature = "dev-switches"))]
+    {
+        if dev::flag("SHELL_AUTH_PROBE") {
+            app::run_auth_probe();
+            return;
+        }
+        if let Some(msg) = dev::var("SHELL_CHAT_PROBE") {
+            app::run_chat_probe(msg);
+            return;
+        }
+        if let Some(path) = dev::var("SHELL_SHOT") {
+            app::run_shot(path);
+            return;
+        }
     }
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);

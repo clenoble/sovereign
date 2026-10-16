@@ -71,7 +71,7 @@ pub struct Document {
     /// When the reliability assessment was last run.
     #[serde(default)]
     pub assessed_at: Option<DateTime<Utc>>,
-    // --- PII pipeline fields (see doc/plans/pii-management-dashboard.md) ---
+    // --- PII pipeline fields (see doc/plans/archive/plans/pii-management-dashboard.md) ---
     /// Base64-encoded ciphertext of the original (pre-tokenization) body.
     /// `content.body` holds the canonical (tokenized) form; this preserves
     /// the original for L3-gated reveal, surviving LLM-NER false positives.
@@ -716,7 +716,7 @@ impl Conversation {
 
 // === PII Management & Dashboard schemas ===
 //
-// See doc/plans/pii-management-dashboard.md for the design.
+// See doc/plans/archive/plans/pii-management-dashboard.md for the design.
 // Invariant: at-rest, document/message bodies hold reference tokens of the
 // form `[pii:<record_id>]`; raw values live encrypted in `PiiRecord` and in
 // the per-source `body_raw_encrypted` / `body_raw_nonce` blobs.

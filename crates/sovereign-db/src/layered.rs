@@ -154,6 +154,7 @@ impl GraphDB for ArcWrapper {
     async fn list_document_commits(&self, doc_id: &str) -> DbResult<Vec<Commit>> { self.0.list_document_commits(doc_id).await }
     async fn get_commit(&self, commit_id: &str) -> DbResult<Commit> { self.0.get_commit(commit_id).await }
     async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> { self.0.restore_document(doc_id, commit_id).await }
+    async fn restore_document_state(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> { self.0.restore_document_state(doc_id, commit_id).await }
     async fn set_commit_signature(&self, commit_id: &str, signature: &str) -> DbResult<()> { self.0.set_commit_signature(commit_id, signature).await }
 
     async fn create_milestone(&self, milestone: Milestone) -> DbResult<Milestone> { self.0.create_milestone(milestone).await }
@@ -321,6 +322,7 @@ impl GraphDB for LayeredGraphDB {
     async fn list_document_commits(&self, doc_id: &str) -> DbResult<Vec<Commit>> { self.current().list_document_commits(doc_id).await }
     async fn get_commit(&self, commit_id: &str) -> DbResult<Commit> { self.current().get_commit(commit_id).await }
     async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> { self.current().restore_document(doc_id, commit_id).await }
+    async fn restore_document_state(&self, doc_id: &str, commit_id: &str) -> DbResult<Document> { self.current().restore_document_state(doc_id, commit_id).await }
     async fn set_commit_signature(&self, commit_id: &str, signature: &str) -> DbResult<()> { self.current().set_commit_signature(commit_id, signature).await }
 
     async fn create_milestone(&self, milestone: Milestone) -> DbResult<Milestone> { self.current().create_milestone(milestone).await }

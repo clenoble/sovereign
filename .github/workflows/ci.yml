@@ -1,10 +1,17 @@
 name: CI
 
+# CI runs on the public mirror, and only after a push: it complements the local
+# pre-publish gate (_prepublish.bat / scripts/prepublish.sh), it does not
+# replace it. See doc/RELEASE.md.
+
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   rust-tests:
@@ -14,13 +21,62 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Pure crates that build without CUDA / webkit system deps. sovereign-ai
-      # (llama-cpp), sovereign-app (tauri) and sovereign-comms (presage) need
-      # heavier toolchains — add them once a system-deps step exists.
+      # Pure crates that build without system deps, with --all-features: a fast
+      # signal ahead of the full workspace job below.
       - name: Test sovereign-core / sovereign-crypto / sovereign-db
         run: |
           cargo test -p sovereign-core -p sovereign-crypto --all-features -j 4
           cargo test -p sovereign-db --features encryption -j 4
+
+  rust-workspace:
+    name: Rust workspace (what ships)
+    runs-on: ubuntu-latest
+    env:
+      # No debug info: a full workspace test build (llama.cpp, RocksDB, wgpu,
+      # WebKitGTK bindings) otherwise risks the runner's disk.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Free disk space (preinstalled toolchains this job does not use)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          df -h /
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # System packages, derived from the Linux dependency graph:
+      #   webkit2gtk-4.1 / gtk3 / soup3 / javascriptcore  <- wry (shell browser) + tauri
+      #   libxdo, libayatana-appindicator3, librsvg2      <- Tauri 2 Linux prerequisites
+      #   libdbus-1                                       <- tao (tauri)
+      #   fontconfig / freetype                           <- parley (shell text)
+      #   libssl                                          <- native-tls (email, shell)
+      #   clang / libclang / cmake                        <- bindgen + RocksDB + llama.cpp
+      #   xvfb                                            <- insurance: tests run under a virtual display
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake clang libclang-dev \
+            libssl-dev libdbus-1-dev zlib1g-dev \
+            libfontconfig1-dev libfreetype-dev libx11-dev libxdo-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev \
+            xvfb
+      - uses: Swatinem/rust-cache@v2
+      # Same order as the local gate (steps 1-5).
+      - name: cargo check --workspace --exclude sovereign-ai --all-targets
+        run: cargo check --workspace --exclude sovereign-ai --all-targets --locked -j 4
+      - name: cargo check -p sovereign-shell (standalone features, as it ships)
+        run: cargo check -p sovereign-shell --locked -j 4
+      - name: cargo check -p sovereign-app --features mobile (APK feature set, host target)
+        run: cargo check -p sovereign-app --no-default-features --features mobile --locked -j 4
+      - name: cargo test --workspace --exclude sovereign-ai
+        run: xvfb-run -a cargo test --workspace --exclude sovereign-ai --locked -j 4
+      - name: cargo test -p sovereign-ai --no-default-features --features encrypted-log
+        run: cargo test -p sovereign-ai --no-default-features --features encrypted-log --locked -j 4
+      - name: Disk usage after build
+        if: always()
+        run: df -h /
 
   rust-audit:
     name: Dependency CVE audit (RustSec)
@@ -66,3 +122,7 @@ jobs:
       - name: Run vision service tests
         working-directory: jiminy-vision
         run: python -m pytest -q
+      # jiminy-bridge's tests are NOT run here: test_sidecar.py imports main.py,
+      # which imports the robot SDK (reachy_mini) at module level, so the tests
+      # are not self-contained. Running them needs either the full
+      # requirements.txt (robot SDK and its transitive deps) or a lazy import.

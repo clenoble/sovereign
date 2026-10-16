@@ -183,3 +183,53 @@ pub(crate) async fn poll(passphrase: &str) -> Result<Option<RecoveryStatus>, Str
 pub(crate) fn cancel() {
     AccessRecovery::cancel(&access_dir());
 }
+
+/// Lot 0.8 — a successful normal login on the **primary** persona proves the
+/// owner has their passphrase, so any access recovery in progress on this
+/// device is moot: clear it (spec, Guardian access recovery: the owner
+/// invalidates a takeover by authenticating; the local half). Mirrors the mobile
+/// host (`sovereign-app` `tauri_commands/auth.rs`). A duress login leaves it
+/// alone. Returns true if a recovery was cancelled.
+pub(crate) fn cancel_on_login(dir: &std::path::Path, persona: sovereign_core::auth::PersonaKind) -> bool {
+    if persona != sovereign_core::auth::PersonaKind::Primary {
+        return false;
+    }
+    if AccessRecovery::load(dir).is_none() {
+        return false;
+    }
+    AccessRecovery::cancel(dir);
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sovereign_core::auth::PersonaKind;
+    use sovereign_crypto::{account_key::AccountKey, kek::Kek, recovery_roster::RecoverySetup};
+
+    fn start_recovery_in(dir: &std::path::Path) {
+        let setup = RecoverySetup::new(&Kek::from_bytes([1; 32]), &AccountKey::from_bytes([2; 32]), 1).unwrap();
+        let guardians = (0..5).map(|i| (format!("g{i}"), format!("/ip4/127.0.0.1/tcp/{i}"))).collect();
+        let rec = AccessRecovery::new("acc-1".into(), "tag".into(), 1, 3, guardians, setup.bundle.clone());
+        rec.save(dir, &[7; 32]).unwrap();
+        assert!(AccessRecovery::load(dir).is_some());
+    }
+
+    #[test]
+    fn a_successful_login_leaves_no_access_recovery_in_progress() {
+        let tmp = tempfile::tempdir().unwrap();
+        start_recovery_in(tmp.path());
+        assert!(cancel_on_login(tmp.path(), PersonaKind::Primary));
+        assert!(AccessRecovery::load(tmp.path()).is_none());
+        // Idempotent: nothing left to cancel.
+        assert!(!cancel_on_login(tmp.path(), PersonaKind::Primary));
+    }
+
+    #[test]
+    fn a_duress_login_does_not_touch_the_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        start_recovery_in(tmp.path());
+        assert!(!cancel_on_login(tmp.path(), PersonaKind::Duress));
+        assert!(AccessRecovery::load(tmp.path()).is_some());
+    }
+}

@@ -32,7 +32,13 @@ REM only the cuda-gated code is out of scope. Check that explicitly when
 REM touching it: `cargo check -p sovereign-ai --features cuda`.
 REM
 REM Warm cost: ~2s (vs ~1s for the old -p sovereign-app). Cold: ~30s.
-cargo check --workspace --exclude sovereign-ai -j 4
+REM
+REM --all-targets: tests, integration tests, examples and benches are checked
+REM too. Without it, cli_integration referenced a binary that no longer existed
+REM (`sovereign` moved to sovereign-shell on 2026-06-18) and
+REM `cargo test --workspace` failed to compile for four months unnoticed,
+REM because every test run since went crate by crate. Found 2026-10-09.
+cargo check --workspace --exclude sovereign-ai --all-targets -j 4
 set "WS_RC=%ERRORLEVEL%"
 
 REM --workspace unifies features across all members, so sovereign-app pulling

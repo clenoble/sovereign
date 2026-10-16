@@ -1,6 +1,6 @@
 //! Vault primitive — encrypted blobs keyed to the user's `AccountKey`.
 //!
-//! The PII pipeline (see `doc/plans/pii-management-dashboard.md`) writes two
+//! The PII pipeline (see `doc/plans/archive/plans/pii-management-dashboard.md`) writes two
 //! kinds of encrypted values, both keyed to the same user-scoped key:
 //!
 //! 1. `PiiRecord.value_encrypted` / `value_nonce` — vault entries

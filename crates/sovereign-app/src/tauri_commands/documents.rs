@@ -248,8 +248,9 @@ pub async fn list_commits(
     Ok(commits
         .into_iter()
         .map(|c| {
-            let preview = if c.snapshot.content.len() > 200 {
-                format!("{}...", &c.snapshot.content[..200])
+            // Char-safe: a byte slice at 200 panics inside a multibyte character.
+            let preview = if c.snapshot.content.chars().count() > 200 {
+                format!("{}...", c.snapshot.content.chars().take(200).collect::<String>())
             } else {
                 c.snapshot.content.clone()
             };

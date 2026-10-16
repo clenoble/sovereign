@@ -117,7 +117,9 @@ modules under `crates/sovereign-shell/src/`:
 
 Vello has no SVG-animation runtime, so the orchestrator-bubble styles are static
 re-creations. Debug/headless: `SHELL_SHOT=<png> SHELL_NO_AUTH=1 SHELL_OPEN_<X>=1`
-renders one frame to a PNG (it can't capture the wry browser child window).
+renders one frame to a PNG (it can't capture the wry browser child window). These `SHELL_*`
+switches exist only in debug builds or with `--features dev-switches`; a release build ignores
+them.
 
 ### Tauri Frontend (desktop option + mobile UI)
 
@@ -274,8 +276,8 @@ The project follows 8 UX principles (see `doc/spec/sovereign_os_ux_principles.md
 The most concrete onboarding path right now is **writing a new skill**. The skill surface is well-defined, sandboxed (WASM Component Model), and lets you contribute end-to-end without touching the orchestrator or DB internals.
 
 - **[doc/writing-skills.md](doc/writing-skills.md)** — third-party skill developer guide: contract, sandbox model, build instructions, and a worked example.
-- **[doc/plans/skills-roadmap.md](doc/plans/skills-roadmap.md)** — current skill roadmap with phase status and concrete ideas for new skills.
-- **[doc/plans/todolist.md](doc/plans/todolist.md)** — open issues and feature roadmap beyond skills.
+- **[skills/](skills/)** — community skill seeds: each folder carries a `SPEC.md` describing a skill waiting to be written.
+- **[GitHub Issues](https://github.com/clenoble/sovereign/issues)** — open issues and feature requests.
 
 Other approachable starting points:
 - Adding tests to under-covered modules (especially `sovereign-app/src/tauri_commands/`).
@@ -329,14 +331,10 @@ cargo test -p sovereign-app --test cli_integration -j 4
 | Document | Purpose |
 |----------|---------|
 | [CLAUDE.md](CLAUDE.md) | Build instructions, architecture reference, dev environment setup |
-| [doc/spec/sovereign_os_specification.md](doc/spec/sovereign_os_specification.md) | Technical specification (v1.2) |
+| [doc/spec/](doc/spec/README.md) | Technical specification (chapters + changelog) — the single source of truth |
 | [doc/spec/sovereign_os_ux_principles.md](doc/spec/sovereign_os_ux_principles.md) | 8 UX principles guiding the design |
-| [doc/design/design_decisions.md](doc/design/design_decisions.md) | Canvas, navigation, visual design decisions |
-| [doc/plans/sovereign_os_implementation_plan.md](doc/plans/sovereign_os_implementation_plan.md) | Phase roadmap (all phases complete) |
-| [doc/plans/todolist.md](doc/plans/todolist.md) | Open issues and feature roadmap |
 | [doc/legal/sovereign_os_ethics.md](doc/legal/sovereign_os_ethics.md) | Ethical analysis and binding design constraints |
 | [doc/writing-skills.md](doc/writing-skills.md) | Guide for writing third-party WASM skill plugins |
-| [doc/plans/consolidated-memory.md](doc/plans/consolidated-memory.md) | Memory consolidation design (AI-suggested document links) |
 
 ---
 

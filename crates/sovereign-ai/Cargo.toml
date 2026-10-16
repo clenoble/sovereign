@@ -16,7 +16,9 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-llama-cpp-2 = { workspace = true }
+# Local inference. Optional so the Android build links no llama.cpp (K12: no AI
+# on mobile, Céline 2026-10-10); without it, loading a model fails cleanly.
+llama-cpp-2 = { workspace = true, optional = true }
 encoding_rs = { workspace = true }
 
 # Voice pipeline (optional — whisper-rs embeds ggml which conflicts with llama-cpp on Windows)
@@ -43,8 +45,9 @@ base64 = { workspace = true, optional = true }
 sovereign-db = { workspace = true, features = ["test-utils"] }
 
 [features]
-default = ["cuda", "encrypted-log"]
-cuda = ["llama-cpp-2/cuda"]
+default = ["llama", "cuda", "encrypted-log"]
+llama = ["dep:llama-cpp-2"]
+cuda = ["llama", "llama-cpp-2/cuda"]
 voice-stt = ["whisper-rs", "cpal", "ringbuf"]
 wake-word = ["voice-stt", "rustpotter"]
 p2p = ["sovereign-p2p"]

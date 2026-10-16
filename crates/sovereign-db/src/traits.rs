@@ -279,6 +279,13 @@ pub trait GraphDB: Send + Sync {
     /// Restore a document to a previous commit's snapshot.
     async fn restore_document(&self, doc_id: &str, commit_id: &str) -> DbResult<Document>;
 
+    /// Write a commit's snapshot back into the document WITHOUT recording a
+    /// commit. The building block of `restore_document` for a decorating
+    /// layer that must create the restore commit itself — the encrypted layer
+    /// does, so the restore commit carries its MAC like every other commit
+    /// (lot 0.11). Callers that want a restore call `restore_document`.
+    async fn restore_document_state(&self, doc_id: &str, commit_id: &str) -> DbResult<Document>;
+
     /// AUTOCOMMIT-001: store the tamper-evidence MAC on a commit row.
     async fn set_commit_signature(&self, commit_id: &str, signature: &str) -> DbResult<()>;
 

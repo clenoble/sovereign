@@ -1,6 +1,6 @@
 [package]
 name = "sovereign-app"
-version = "0.0.9"
+version = "0.0.10"
 edition = "2021"
 description = "Sovereign GE binary — CLI and GUI entry point"
 
@@ -75,10 +75,12 @@ sovereign-db = { workspace = true, features = ["test-utils"] }
 # doesn't have a clean Android cross-compile path.
 # surrealkv: mobile persistent backend, pure-Rust, cross-compiles cleanly.
 # At runtime sovereign-db picks rocksdb first if both are on (see surreal.rs).
-default = ["encrypted-log", "encryption", "rocksdb"]
+# llama: local inference (llama.cpp). Desktop only — `mobile` leaves it out (K12).
+default = ["encrypted-log", "encryption", "rocksdb", "llama"]
 rocksdb = ["sovereign-db/rocksdb"]
 surrealkv = ["sovereign-db/surrealkv"]
-cuda = ["sovereign-ai/cuda"]
+llama = ["sovereign-ai/llama"]
+cuda = ["llama", "sovereign-ai/cuda"]
 encrypted-log = ["sovereign-ai/encrypted-log", "hkdf", "sha2"]
 voice-stt = ["sovereign-ai/voice-stt"]
 encryption = ["sovereign-crypto", "sovereign-db/encryption", "rpassword", "uuid", "rand"]

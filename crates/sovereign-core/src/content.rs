@@ -28,17 +28,64 @@ pub struct ContentVideo {
     pub thumbnail_path: Option<String>,
 }
 
+/// How a stored content string was read by [`ContentFields::parse_with_kind`].
+///
+/// Writers disagree on the stored form (the envelope vs a bare body — open
+/// decision K1), so readers must be tolerant. Callers that are about to
+/// *overwrite* a document use the kind to refuse an overwrite when the read
+/// fell back to raw text (the stored content was not an envelope).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentKind {
+    /// The input was the JSON envelope `{"body": …, "images": …, "videos": …}`.
+    Envelope,
+    /// The input was not an envelope; the whole string became the body.
+    Raw,
+    /// The input was the empty string.
+    Empty,
+}
+
 impl ContentFields {
-    pub fn parse(json: &str) -> Self {
-        match serde_json::from_str(json) {
-            Ok(cf) => cf,
-            Err(e) => {
-                if !json.is_empty() {
-                    tracing::warn!("ContentFields parse failed (falling back to default): {e}");
+    /// Tolerant read of a stored content string.
+    ///
+    /// A valid envelope parses as before. Anything else — markdown, plain
+    /// text, JSON that is not an envelope — becomes a bare body holding the
+    /// whole input, with no media. A non-empty input never yields an empty
+    /// body unless it is an envelope whose `body` is empty.
+    pub fn parse(content: &str) -> Self {
+        Self::parse_with_kind(content).0
+    }
+
+    /// Like [`parse`](Self::parse), but also says whether the input was an
+    /// envelope or fell back to raw text.
+    ///
+    /// An envelope is a JSON object carrying a string `body` field that
+    /// deserializes into `ContentFields` (unknown extra fields are tolerated;
+    /// `images`/`videos` default to empty). Every writer of the envelope emits
+    /// `body`, so requiring it only reclassifies JSON objects that were never
+    /// envelopes (`{}`, `{"name": …}`) — which used to read as empty.
+    pub fn parse_with_kind(content: &str) -> (Self, ContentKind) {
+        if content.is_empty() {
+            return (Self::default(), ContentKind::Empty);
+        }
+        if let Ok(serde_json::Value::Object(map)) =
+            serde_json::from_str::<serde_json::Value>(content)
+        {
+            if map.get("body").is_some_and(|b| b.is_string()) {
+                match serde_json::from_value::<ContentFields>(serde_json::Value::Object(map)) {
+                    Ok(cf) => return (cf, ContentKind::Envelope),
+                    Err(e) => tracing::warn!(
+                        "content looks like an envelope but does not parse ({e}); reading it as raw text"
+                    ),
                 }
-                Self::default()
             }
         }
+        (
+            Self {
+                body: content.to_string(),
+                ..Self::default()
+            },
+            ContentKind::Raw,
+        )
     }
 
     pub fn serialize(&self) -> String {
@@ -62,15 +109,88 @@ mod tests {
     }
 
     #[test]
-    fn parse_empty_or_invalid_returns_default() {
-        let cf = ContentFields::parse("");
+    fn parse_empty_is_empty() {
+        let (cf, kind) = ContentFields::parse_with_kind("");
         assert_eq!(cf.body, "");
         assert!(cf.images.is_empty());
         assert!(cf.videos.is_empty());
+        assert_eq!(kind, ContentKind::Empty);
+    }
 
-        let cf = ContentFields::parse("not json");
-        assert_eq!(cf.body, "");
-        assert!(cf.images.is_empty());
+    /// Invariant: a non-empty input that is not an envelope is kept whole as
+    /// the body — never emptied, never truncated, no media invented.
+    #[test]
+    fn non_envelope_input_is_kept_whole() {
+        let samples = [
+            "not json",
+            "# Title\n\nSome *markdown* body.",
+            "   ",
+            "{",
+            "{}",
+            r#"{"name": "x"}"#,
+            r#"{"body": 42}"#,
+            r#"{"body": null, "images": []}"#,
+            r#"{"body": "x", "images": "not a list"}"#,
+            "[1, 2, 3]",
+            r#""a json string""#,
+            "123",
+            "null",
+            r#"{"body":"truncated"#,
+        ];
+        for s in samples {
+            let (cf, kind) = ContentFields::parse_with_kind(s);
+            assert_eq!(cf.body, s, "input {s:?} must survive as the body");
+            assert!(cf.images.is_empty() && cf.videos.is_empty(), "{s:?}");
+            assert_eq!(kind, ContentKind::Raw, "{s:?}");
+            assert_eq!(ContentFields::parse(s).body, s);
+        }
+    }
+
+    /// Invariant: parse never turns a non-empty input into an empty body,
+    /// except an envelope whose body really is empty.
+    #[test]
+    fn non_empty_input_never_reads_as_empty_body_unless_envelope_says_so() {
+        let samples = [
+            "x",
+            "{}",
+            r#"{"images": [{"path": "/a.png"}]}"#,
+            r#"{"body":"","images":[]}"#,
+            r#"{"body":"hello"}"#,
+        ];
+        for s in samples {
+            let (cf, kind) = ContentFields::parse_with_kind(s);
+            if cf.body.is_empty() {
+                assert_eq!(kind, ContentKind::Envelope, "{s:?} read as empty without being an envelope");
+            }
+        }
+    }
+
+    #[test]
+    fn valid_envelopes_parse_as_envelope() {
+        for s in [
+            r#"{"body":"","images":[]}"#, // Document::new
+            r#"{"body":"old doc","images":[]}"#,
+            r#"{"body":"x","images":[],"videos":[],"extra":1}"#,
+            r#"{"body":"x"}"#,
+        ] {
+            assert_eq!(ContentFields::parse_with_kind(s).1, ContentKind::Envelope, "{s:?}");
+        }
+    }
+
+    /// Invariant: a serialized envelope round-trips unchanged.
+    #[test]
+    fn envelope_round_trips_unchanged() {
+        let cf = ContentFields {
+            body: "{\"body\": \"nested json-looking text\"}\n".into(),
+            images: vec![ContentImage { path: "/i.png".into(), caption: "c".into() }],
+            videos: vec![],
+        };
+        let s = cf.serialize();
+        let (back, kind) = ContentFields::parse_with_kind(&s);
+        assert_eq!(kind, ContentKind::Envelope);
+        assert_eq!(back.serialize(), s);
+        assert_eq!(back.body, cf.body);
+        assert_eq!(back.images, cf.images);
     }
 
     #[test]

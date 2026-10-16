@@ -96,8 +96,9 @@ pub async fn search_documents(
                 .as_ref()
                 .map(sovereign_db::schema::thing_to_raw)
                 .unwrap_or_default();
-            let snippet = if d.content.len() > 120 {
-                format!("{}...", &d.content[..120])
+            // Char-safe: a byte slice at 120 panics inside a multibyte character.
+            let snippet = if d.content.chars().count() > 120 {
+                format!("{}...", d.content.chars().take(120).collect::<String>())
             } else {
                 d.content.clone()
             };

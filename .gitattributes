@@ -1,3 +1,35 @@
+# Fins de ligne : LF dans git et sur le disque, quel que soit core.autocrlf de la machine
+# (recette du 29/09, appliquee par l instance infrastructure le 2026-10-06).
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.odt binary
+*.ods binary
+*.zip binary
+*.7z binary
+*.stl binary
+*.step binary
+*.stp binary
+*.dwg binary
+*.ttf binary
+*.woff binary
+*.woff2 binary
+*.mp4 binary
+*.mov binary
+*.exe binary
+*.dll binary
+
+# --- regles existantes, conservees ---
 # Tauri-generated capability schemas — checked in for IDE/review visibility.
 # Pin to LF so Windows checkouts don't perpetually show them as "modified"
 # under core.autocrlf=true.

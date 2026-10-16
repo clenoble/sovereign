@@ -176,8 +176,17 @@ pub(crate) async fn install_session(
     //     the session; pinned models in the embedded manifest are verified
     //     regardless of login state. Keyed off the AccountKey so the TOFU store
     //     can't be forged by an attacker who can only write the model directory.
+    //     MODELTRUST-003-PERSONA: one store per persona, as the shell has done
+    //     since v0.0.9 (sovereign-shell/src/crypto.rs `persona_model_tofu_path`).
+    //     The store is sealed under the persona's AccountKey, so a shared file
+    //     can't be read across personas and the two clobber each other on write.
+    //     This path had been missed in the Tauri app (found 2026-10-09).
     {
-        let tofu_path = state.profile_dir.join("crypto").join("model_tofu.json");
+        let tofu_file = match persona {
+            sovereign_crypto::auth::PersonaKind::Primary => "model_tofu.json",
+            sovereign_crypto::auth::PersonaKind::Duress => "model_tofu.duress.json",
+        };
+        let tofu_path = state.profile_dir.join("crypto").join(tofu_file);
         sovereign_ai::model_integrity::set_unlock_key(*account_key_arc.as_bytes(), tofu_path);
     }
 

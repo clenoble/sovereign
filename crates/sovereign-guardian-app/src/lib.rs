@@ -16,6 +16,7 @@
 //!   GUARDIAN_RELAYS     — comma-separated seed-relay multiaddrs to reserve a
 //!                         circuit on, so a recovering friend can reach you
 //!   SOVEREIGN_RELEASE_DELAY_SECS — dev/e2e override of the 72h release window
+//!     (debug builds only; a release build always waits 72 h)
 
 mod serve;
 

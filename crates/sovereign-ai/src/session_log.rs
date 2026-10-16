@@ -32,12 +32,20 @@ pub struct SessionLog {
 
 impl SessionLog {
     /// Open or create the session log file (plaintext mode).
-    /// Creates parent directories if needed. Rotates if the log exceeds 10 MB.
+    /// Creates parent directories if needed.
+    ///
+    /// With the `encrypted-log` feature this open NEVER rotates (lot 0.6):
+    /// the file may hold an encrypted, anchored chain, and only
+    /// [`open_encrypted`](Self::open_encrypted) can verify it and reset the
+    /// anchor with the rotation. Rotating here emptied the file under a
+    /// still-valid anchor, so the next encrypted open read "0 lines < N
+    /// anchored" as tampering and the log fell back to plaintext for good.
+    /// Without the feature there is no anchor, and an oversize log rotates.
     pub fn open(dir: &Path) -> Result<Self> {
         fs::create_dir_all(dir)?;
         let path = dir.join("session_log.jsonl");
 
-        // Rotate if the current log exceeds the size limit
+        #[cfg(not(feature = "encrypted-log"))]
         if path.exists() {
             if let Ok(meta) = fs::metadata(&path) {
                 if meta.len() > MAX_LOG_SIZE {
@@ -474,6 +482,115 @@ impl SessionLog {
             entries.drain(..entries.len() - max_entries);
         }
         entries
+    }
+}
+
+/// The orchestrator's session log and its fail-closed state (lot 0.6).
+///
+/// Starts with a plaintext log (pre-login). Once a key has been offered with
+/// [`install_key`](Self::install_key), the log is either encrypted (the open
+/// verified the chain and its anchor) or OFF: on a failed encrypted open —
+/// tamper, I/O error, a key that is not this log's — no line is ever written
+/// again, in clear or otherwise, and no history is read back, until a later
+/// `install_key` succeeds. The caller tells the user (decision K4: stop
+/// logging and say so).
+pub struct SessionLogSlot {
+    dir: PathBuf,
+    log: std::sync::Mutex<Option<SessionLog>>,
+    #[cfg(feature = "encrypted-log")]
+    key: std::sync::Mutex<Option<[u8; 32]>>,
+    /// Set by a failed encrypted open; cleared by a successful one.
+    disabled: std::sync::atomic::AtomicBool,
+}
+
+impl SessionLogSlot {
+    /// Open the plaintext log in `dir`. An I/O error leaves the slot without
+    /// a log (nothing is written), as before.
+    pub fn open(dir: &Path) -> Self {
+        let log = match SessionLog::open(dir) {
+            Ok(log) => Some(log),
+            Err(e) => {
+                tracing::warn!("Session log unavailable: {e}");
+                None
+            }
+        };
+        Self {
+            dir: dir.to_path_buf(),
+            log: std::sync::Mutex::new(log),
+            #[cfg(feature = "encrypted-log")]
+            key: std::sync::Mutex::new(None),
+            disabled: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// The directory holding the log.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// True after a failed encrypted open: logging is off for this session.
+    pub fn is_disabled(&self) -> bool {
+        self.disabled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Run `f` on the current log, if logging is on.
+    pub fn with_log(&self, f: impl FnOnce(&mut SessionLog)) {
+        if self.is_disabled() {
+            return;
+        }
+        if let Ok(mut guard) = self.log.lock() {
+            if let Some(log) = guard.as_mut() {
+                f(log);
+            }
+        }
+    }
+
+    /// Switch to the encrypted log under `key`. On failure the slot turns
+    /// logging OFF (the plaintext log is closed and never reopened) and the
+    /// reason is returned for the caller to surface.
+    #[cfg(feature = "encrypted-log")]
+    pub fn install_key(&self, key: [u8; 32], beacon: Option<&Path>) -> Result<()> {
+        // Hold the log lock across the open so no plaintext line can slip in
+        // between the verification and the switch.
+        let mut guard = self
+            .log
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session log lock poisoned"))?;
+        match SessionLog::open_encrypted(&self.dir, key, beacon) {
+            Ok(log) => {
+                *guard = Some(log);
+                if let Ok(mut k) = self.key.lock() {
+                    *k = Some(key);
+                }
+                self.disabled.store(false, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+            Err(e) => {
+                self.disabled.store(true, std::sync::atomic::Ordering::SeqCst);
+                *guard = None;
+                if let Ok(mut k) = self.key.lock() {
+                    *k = None;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// The most recent entries to feed back as conversation history: none
+    /// while logging is off (the file failed verification, so its content
+    /// is not trusted); decrypted and verified once a key is installed.
+    pub fn load_recent(&self, max_entries: usize) -> Vec<SessionEntry> {
+        if self.is_disabled() {
+            return Vec::new();
+        }
+        #[cfg(feature = "encrypted-log")]
+        {
+            let key = self.key.lock().ok().and_then(|g| *g);
+            if let Some(key) = key {
+                return SessionLog::load_recent_encrypted(&self.dir, max_entries, &key);
+            }
+        }
+        SessionLog::load_recent(&self.dir, max_entries)
     }
 }
 
@@ -1014,6 +1131,136 @@ mod tests {
             assert_eq!(entries.len(), 3);
             assert_eq!(entries[2].content.as_deref(), Some("three"));
 
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        // ── lot 0.6: fail closed ──────────────────────────────────────────
+
+        fn file_bytes(dir: &Path) -> Vec<u8> {
+            fs::read(dir.join("session_log.jsonl")).unwrap_or_default()
+        }
+
+        /// Write an encrypted log past MAX_LOG_SIZE under `key`.
+        fn oversize_encrypted_log(dir: &Path, key: [u8; 32]) {
+            let mut log = SessionLog::open_encrypted(dir, key, None).unwrap();
+            let big = "z".repeat(1024 * 1024);
+            for _ in 0..11 {
+                log.log_action("bulk", &big);
+            }
+        }
+
+        /// Invariant: a plaintext open never rotates — the file and its
+        /// anchor are left exactly as they were, whatever their size.
+        #[test]
+        fn plaintext_open_never_rotates() {
+            let dir = std::env::temp_dir()
+                .join(format!("session-log-plain-norotate-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            oversize_encrypted_log(&dir, TEST_KEY);
+            let before = file_bytes(&dir);
+            let anchor_before = fs::read(dir.join("session_log.anchor")).unwrap();
+            assert!(before.len() as u64 > MAX_LOG_SIZE);
+
+            drop(SessionLog::open(&dir).unwrap());
+            drop(SessionLogSlot::open(&dir));
+
+            assert_eq!(file_bytes(&dir), before, "plaintext open must not touch the log");
+            assert_eq!(fs::read(dir.join("session_log.anchor")).unwrap(), anchor_before);
+            assert!(!dir.join("session_log.1.jsonl").exists(), "plaintext open must not rotate");
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        /// The review's path (orchestrator.rs:88 then set_session_log_key):
+        /// an oversize, clean encrypted log opened plaintext first must still
+        /// switch to encrypted mode — the rotation happens in the verified
+        /// open, with its anchor reset — and history stays readable.
+        #[test]
+        fn oversize_log_survives_plaintext_open_then_key() {
+            let dir = std::env::temp_dir()
+                .join(format!("session-log-slot-oversize-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            oversize_encrypted_log(&dir, TEST_KEY);
+
+            let slot = SessionLogSlot::open(&dir);
+            slot.install_key(TEST_KEY, None)
+                .expect("a clean oversize log must open encrypted after a plaintext open");
+            assert!(!slot.is_disabled());
+            slot.with_log(|l| l.log_user_input("chat", "after rotation", "chat"));
+            let entries = slot.load_recent(10);
+            assert_eq!(entries.last().and_then(|e| e.content.as_deref()), Some("after rotation"));
+            assert!(fs::read_to_string(dir.join("session_log.jsonl"))
+                .unwrap()
+                .lines()
+                .all(crate::encrypted_log::is_encrypted_line));
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        /// Invariant: after a failed encrypted open, no line is ever written
+        /// (in clear or otherwise) and no history is read back.
+        #[test]
+        fn failed_encrypted_open_never_writes_plaintext() {
+            let dir = std::env::temp_dir()
+                .join(format!("session-log-slot-wrongkey-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            {
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
+                log.log_user_input("chat", "primary persona", "chat");
+            }
+
+            let slot = SessionLogSlot::open(&dir);
+            let other_key = [9u8; 32]; // e.g. another persona's key
+            assert!(slot.install_key(other_key, None).is_err());
+            assert!(slot.is_disabled());
+
+            let before = file_bytes(&dir);
+            slot.with_log(|l| l.log_user_input("chat", "SECRET duress chat", "chat"));
+            slot.with_log(|l| l.log_chat_response("SECRET reply"));
+            slot.with_log(|l| l.log_action("x", "SECRET detail"));
+            assert_eq!(file_bytes(&dir), before, "nothing may be written once logging is off");
+            assert!(!String::from_utf8_lossy(&file_bytes(&dir)).contains("SECRET"));
+            assert!(slot.load_recent(50).is_empty(), "no history from a log that failed verification");
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        /// Same invariant for tampering (forged anchor).
+        #[test]
+        fn tampered_log_turns_logging_off() {
+            let dir = std::env::temp_dir()
+                .join(format!("session-log-slot-tamper-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            {
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
+                log.log_user_input("chat", "one", "chat");
+            }
+            fs::write(dir.join("session_log.anchor"), b"forged").unwrap();
+
+            let slot = SessionLogSlot::open(&dir);
+            assert!(slot.install_key(TEST_KEY, None).is_err());
+            let before = file_bytes(&dir);
+            slot.with_log(|l| l.log_user_input("chat", "after tamper", "chat"));
+            assert_eq!(file_bytes(&dir), before);
+            assert!(slot.load_recent(50).is_empty());
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        /// A later successful key install turns logging back on, encrypted.
+        #[test]
+        fn successful_install_after_failure_logs_encrypted() {
+            let dir = std::env::temp_dir()
+                .join(format!("session-log-slot-recover-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            {
+                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
+                log.log_user_input("chat", "one", "chat");
+            }
+            let slot = SessionLogSlot::open(&dir);
+            assert!(slot.install_key([9u8; 32], None).is_err());
+            slot.install_key(TEST_KEY, None).unwrap();
+            assert!(!slot.is_disabled());
+            slot.with_log(|l| l.log_user_input("chat", "two", "chat"));
+            let text = fs::read_to_string(dir.join("session_log.jsonl")).unwrap();
+            assert!(text.lines().all(crate::encrypted_log::is_encrypted_line));
+            assert_eq!(slot.load_recent(10).len(), 2);
             let _ = fs::remove_dir_all(&dir);
         }
     }

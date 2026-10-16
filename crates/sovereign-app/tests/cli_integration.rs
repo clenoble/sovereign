@@ -5,7 +5,7 @@
 use std::process::Command;
 
 fn sovereign_cmd() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sovereign"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sovereign-tauri"));
     // Use a temp directory for the database to isolate tests
     let temp_dir = std::env::temp_dir().join(format!("sovereign-test-{}", std::process::id()));
     // Use forward slashes so backslashes don't get misinterpreted as TOML escape sequences

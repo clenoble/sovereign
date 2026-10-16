@@ -1,13 +1,22 @@
+#[cfg(feature = "llama")]
 use std::num::NonZeroU32;
+#[cfg(feature = "llama")]
 use std::sync::OnceLock;
 
 use anyhow::Result;
+#[cfg(feature = "llama")]
 use llama_cpp_2::context::LlamaContext;
+#[cfg(feature = "llama")]
 use llama_cpp_2::context::params::LlamaContextParams;
+#[cfg(feature = "llama")]
 use llama_cpp_2::llama_backend::LlamaBackend;
+#[cfg(feature = "llama")]
 use llama_cpp_2::llama_batch::LlamaBatch;
+#[cfg(feature = "llama")]
 use llama_cpp_2::model::params::LlamaModelParams;
+#[cfg(feature = "llama")]
 use llama_cpp_2::model::LlamaModel;
+#[cfg(feature = "llama")]
 use llama_cpp_2::sampling::LlamaSampler;
 
 /// Per-model sampling parameters. Different model families perform best with
@@ -37,8 +46,10 @@ impl Default for SamplingConfig {
 /// Global llama.cpp backend — initialized once, never freed until process exit.
 /// llama_backend_init() is a global operation; calling it twice or freeing it
 /// while models are live causes crashes.
+#[cfg(feature = "llama")]
 static LLAMA_BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
 
+#[cfg(feature = "llama")]
 fn get_or_init_backend() -> Result<&'static LlamaBackend> {
     Ok(LLAMA_BACKEND.get_or_init(|| {
         LlamaBackend::init().expect("Failed to init llama backend")
@@ -49,6 +60,7 @@ fn get_or_init_backend() -> Result<&'static LlamaBackend> {
 ///
 /// Field order matters: Rust drops fields in declaration order.
 /// `ctx` must drop before `model`.
+#[cfg(feature = "llama")]
 pub struct LlamaCppBackend {
     // SAFETY: `ctx` borrows `model` via a transmuted `'static` lifetime.
     // This is sound because `ctx` is declared first, so it drops before `model`.
@@ -59,8 +71,10 @@ pub struct LlamaCppBackend {
 // SAFETY: LlamaCppBackend is only accessed through Mutex in AsyncLlmBackend,
 // ensuring exclusive access. The underlying llama_context raw pointer is safe
 // to move between threads when not accessed concurrently.
+#[cfg(feature = "llama")]
 unsafe impl Send for LlamaCppBackend {}
 
+#[cfg(feature = "llama")]
 impl LlamaCppBackend {
     /// Load a GGUF model file. `n_gpu_layers` controls GPU offload (99 = all layers).
     /// Creates and caches a `LlamaContext` so the KV cache is allocated once.
@@ -180,5 +194,24 @@ impl LlamaCppBackend {
         }
 
         Ok(output)
+    }
+}
+
+/// Built without the `llama` feature (the Android build, K12: no AI on mobile).
+/// No llama.cpp is linked; loading a model fails with a clear error, so the
+/// backend can never hold a model.
+#[cfg(not(feature = "llama"))]
+pub struct LlamaCppBackend {
+    never: std::convert::Infallible,
+}
+
+#[cfg(not(feature = "llama"))]
+impl LlamaCppBackend {
+    pub fn load(_path: &str, _n_gpu_layers: i32, _n_ctx: u32) -> Result<Self> {
+        anyhow::bail!("local AI is not available in this build (built without the `llama` feature)")
+    }
+
+    pub fn generate(&mut self, _prompt: &str, _max_tokens: u32, _sampling: &SamplingConfig) -> Result<String> {
+        match self.never {}
     }
 }

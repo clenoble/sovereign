@@ -54,6 +54,9 @@ enum Command {
         relays: Vec<String>,
         /// DEV/E2E ONLY: auto-approve incoming recovery requests. In the
         /// shipping app the human approves after verifying out of band.
+        /// Compiled into debug builds only (lot 0.5): a release binary does not
+        /// know the flag and rejects it as an unknown argument.
+        #[cfg(debug_assertions)]
         #[arg(long, default_value_t = false)]
         auto_approve: bool,
     },
@@ -92,8 +95,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 duty.owner_label, duty.owner_tag, duty.shard_id, duty.epoch, duty.threshold, duty.total
             );
         }
+        #[cfg(debug_assertions)]
         Command::Run { relays, auto_approve } => {
             sovereign_guardian::serve::run(&cli.data_dir, &identity, relays, auto_approve).await?;
+        }
+        // Release builds: a human approves every recovery request; nothing can
+        // turn that off from the command line.
+        #[cfg(not(debug_assertions))]
+        Command::Run { relays } => {
+            sovereign_guardian::serve::run(&cli.data_dir, &identity, relays, false).await?;
         }
         Command::Status => {
             let custody = CustodyStore::open(&cli.data_dir)?;
@@ -118,4 +128,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lot 0.5: `--auto-approve` exists in debug builds and is rejected as an
+    /// unknown argument in release builds. `cargo test --release -p
+    /// sovereign-guardian` exercises the release side.
+    #[test]
+    fn auto_approve_flag_exists_only_in_debug_builds() {
+        let parsed = Cli::try_parse_from(["sovereign-guardian", "run", "--auto-approve"]);
+        assert_eq!(parsed.is_ok(), cfg!(debug_assertions));
+        // The flag-less form is always accepted.
+        assert!(Cli::try_parse_from(["sovereign-guardian", "run"]).is_ok());
+    }
 }

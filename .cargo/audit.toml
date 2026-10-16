@@ -22,4 +22,51 @@ ignore = [
     # never parses untrusted input, so the overflow is unreachable on that path.
     # Drop this ignore by replacing genpdf in skills/pdf_export.rs.
     "RUSTSEC-2026-0187",
+
+    # ── Accepted 2026-10-10 (Céline), traced with `cargo tree -i` against every
+    # shipped artifact (Windows shell, Linux shell, Android APK). An ignore is per
+    # advisory ID, not per path: re-trace each one at every release, because a new
+    # dependency could bring the same advisory onto a shipped path.
+
+    # wasmtime 44.0.2 — store type-index mix-up, filesystem sandbox escape,
+    # hostcall fuel overrun, async-lift stack overflow. Reached only through the
+    # `sovereign-skills/wasm-plugins` feature, which no shipped build enables and
+    # whose loader has no caller. HARD PRECONDITION: bump to wasmtime >= 48.0.4 /
+    # >= 49.0.2 before wasm-plugins is wired into any build; remove these then.
+    "RUSTSEC-2026-0222",
+    "RUSTSEC-2026-0269",
+    "RUSTSEC-2026-0316",
+    "RUSTSEC-2026-0327",
+    # wasmtime 44.0.2, accepted 2026-10-15 (Céline) on the same grounds — stack
+    # overflow dropping recursive types, async-entrypoint not enforced, component
+    # handle tables uncapped. Same path, same HARD PRECONDITION, raised: bump to
+    # wasmtime >= 48.0.6 / >= 49.0.3 before wasm-plugins is wired in. Traced on
+    # PANDA2 and WSL: wasmtime is in neither the shell nor the APK.
+    "RUSTSEC-2026-0359",
+    "RUSTSEC-2026-0362",
+    "RUSTSEC-2026-0363",
+    # quick-xml 0.38.4 / 0.39.4 — quadratic duplicate-attribute check and
+    # unbounded namespace allocation (DoS on attacker-controlled XML).
+    # 0.38.4: presage -> libsignal-service -> phonenumber, the dormant Signal
+    # channel, compiled into no shipped build. 0.39.4: wayland-scanner only, a
+    # proc-macro that parses Wayland protocol XML bundled with the crate at
+    # compile time — no runtime XML. (plist and zbus_xml, the two runtime paths,
+    # were moved to quick-xml >= 0.42 on 2026-10-10.) Drop when presage and
+    # wayland-scanner move to quick-xml >= 0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    # h2 0.3.27 — unbounded empty DATA frames. readability 0.3 -> reqwest 0.11 ->
+    # hyper 0.14, only under `sovereign-app/web-browse`, i.e. the frozen Tauri
+    # desktop; not in the shell nor the APK. Our fetch path never uses
+    # readability's HTTP client. Drop when readability is replaced or used
+    # without its client.
+    "RUSTSEC-2026-0258",
+    # ringbuf 0.4.8 — double free in Consumer::skip/clear when an element's Drop
+    # panics. Only under sovereign-ai's voice-stt / jiminy features, in no shipped
+    # build; the elements are f32 audio samples, which have no Drop. Bump to
+    # ringbuf >= 0.5.2 (API break) before voice ships.
+    "RUSTSEC-2026-0293",
+    # rkyv 0.7.46 — in the lockfile only as an optional dependency of
+    # rust_decimal whose `rkyv` feature is never enabled: never compiled.
+    "RUSTSEC-2026-0235",
 ]

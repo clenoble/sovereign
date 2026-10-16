@@ -122,23 +122,43 @@ pub struct BackupHost {
     egress_today: Mutex<HashMap<String, (String, u64)>>,
 }
 
+/// Dev/e2e override of the release delay — compiled into debug builds only.
+#[cfg(debug_assertions)]
+fn dev_release_delay_override() -> Option<chrono::Duration> {
+    parse_release_delay_override(std::env::var("SOVEREIGN_RELEASE_DELAY_SECS").ok().as_deref()).map(
+        |d| {
+            tracing::warn!(
+                secs = d.num_seconds(),
+                "SOVEREIGN_RELEASE_DELAY_SECS set — shard release delay overridden (debug build)"
+            );
+            d
+        },
+    )
+}
+
+/// Release builds: no override exists. The variable is not read, and nothing is
+/// logged about it.
+#[cfg(not(debug_assertions))]
+fn dev_release_delay_override() -> Option<chrono::Duration> {
+    None
+}
+
+#[cfg_attr(not(any(debug_assertions, test)), allow(dead_code))]
+fn parse_release_delay_override(raw: Option<&str>) -> Option<chrono::Duration> {
+    raw.and_then(|v| v.trim().parse::<i64>().ok()).map(chrono::Duration::seconds)
+}
+
 impl BackupHost {
     /// Open (or initialize) the host store under `dir`.
     ///
-    /// Dev/e2e knob: `SOVEREIGN_RELEASE_DELAY_SECS` overrides the 72h
-    /// release delay (seconds granularity, so a live run can use minutes).
-    /// Unset — the production case — means [`DEFAULT_RELEASE_DELAY_HOURS`].
+    /// The release delay is [`DEFAULT_RELEASE_DELAY_HOURS`]. In **debug builds
+    /// only**, the dev/e2e knob `SOVEREIGN_RELEASE_DELAY_SECS` overrides it
+    /// (seconds granularity, so a live run can use minutes). Release builds do
+    /// not read the variable at all (lot 0.5): the anti-coercion delay cannot be
+    /// shortened by anyone who can set an environment variable on a guardian's
+    /// machine. A live e2e run therefore uses debug binaries.
     pub fn open(dir: PathBuf, quota_bytes: u64) -> Self {
-        let delay = std::env::var("SOVEREIGN_RELEASE_DELAY_SECS")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .map(|secs| {
-                tracing::warn!(
-                    secs,
-                    "SOVEREIGN_RELEASE_DELAY_SECS set — shard release delay overridden (dev/e2e only)"
-                );
-                chrono::Duration::seconds(secs)
-            })
+        let delay = dev_release_delay_override()
             .unwrap_or_else(|| chrono::Duration::hours(DEFAULT_RELEASE_DELAY_HOURS));
         Self::open_with_release_delay(dir, quota_bytes, delay)
     }
@@ -501,6 +521,22 @@ impl BackupHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lot 0.5: the anti-coercion delay has no override in a release build —
+    /// whatever the environment holds. (Run under `cargo test --release` to
+    /// exercise the release side; a debug run checks the dev knob still works.)
+    #[test]
+    fn release_delay_override_exists_only_in_debug_builds() {
+        assert_eq!(
+            parse_release_delay_override(Some("90")),
+            Some(chrono::Duration::seconds(90))
+        );
+        assert_eq!(parse_release_delay_override(Some("soon")), None);
+        assert_eq!(parse_release_delay_override(None), None);
+        if !cfg!(debug_assertions) {
+            assert!(dev_release_delay_override().is_none());
+        }
+    }
 
     fn temp_host(quota: u64, delay_hours: i64) -> (BackupHost, PathBuf) {
         let dir = std::env::temp_dir().join(format!(

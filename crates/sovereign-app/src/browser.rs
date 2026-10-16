@@ -89,8 +89,12 @@ pub fn create_browser_webview(
                 // without this, any loaded page could redirect the native
                 // webview to loopback sidecars, cloud metadata, RFC1918
                 // hosts, or file:// — bypassing the guard that vetted the
-                // initial URL.
-                if let Err(reason) = crate::web::validate_public_url(&url_str) {
+                // initial URL. This callback runs on the main thread, so the
+                // DNS lookup is bounded (A6/O1) instead of freezing the app.
+                if let Err(reason) = sovereign_core::net_guard::validate_public_url_bounded(
+                    &url_str,
+                    sovereign_core::net_guard::UI_DNS_TIMEOUT,
+                ) {
                     tracing::warn!("Blocked in-page browser navigation to {url_str}: {reason}");
                     let _ = app_handle.emit("browser-navigation-blocked", serde_json::json!({
                         "url": url_str,

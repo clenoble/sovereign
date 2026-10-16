@@ -17,7 +17,7 @@ use sovereign_db::GraphDB;
 use crate::action_gate;
 use crate::injection;
 use crate::intent::IntentClassifier;
-use crate::session_log::SessionLog;
+use crate::session_log::SessionLogSlot;
 use crate::trust::TrustTracker;
 
 /// Outcome of gating a piece of tool output for injection (INJECTION-002):
@@ -35,10 +35,9 @@ pub struct Orchestrator {
     classifier: tokio::sync::Mutex<IntentClassifier>,
     db: Arc<dyn GraphDB>,
     event_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
-    /// Mutex<Option<…>> instead of Option<Mutex<…>> so the inner SessionLog
-    /// can be replaced post-login (e.g. when set_session_log_key opens an
-    /// encrypted log over the existing plaintext one).
-    session_log: Mutex<Option<SessionLog>>,
+    /// The session log, replaced post-login by the encrypted one
+    /// (set_session_log_key), or turned off if that open fails (lot 0.6).
+    session_log: SessionLogSlot,
     decision_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ActionDecision>>>,
     /// INJECTION-002: the user's redact/pass/abort choice on a flagged tool
     /// output. Separate channel from `decision_rx` so an injection choice is
@@ -56,8 +55,6 @@ pub struct Orchestrator {
     /// Mutex so the setter can be `&self` (orchestrator lives behind Arc).
     /// User-scoped (same on every paired device) as of v0.0.5.
     pii_account_key: Mutex<Option<Arc<sovereign_crypto::account_key::AccountKey>>>,
-    #[cfg(feature = "encrypted-log")]
-    session_log_key: Mutex<Option<[u8; 32]>>,
     /// Channel for queueing P2P commands (e.g. `StartSync`, `PairDevice`)
     /// from intent handlers. `None` until `set_p2p_command_tx` is called
     /// post-login. Wrapped in a Mutex so the setter can be `&self`
@@ -85,13 +82,7 @@ impl Orchestrator {
 
         // Initialize session log + profile directory
         let profile_dir = sovereign_core::sovereign_dir().join("orchestrator");
-        let session_log = match SessionLog::open(&profile_dir) {
-            Ok(log) => Mutex::new(Some(log)),
-            Err(e) => {
-                tracing::warn!("Session log unavailable: {e}");
-                Mutex::new(None)
-            }
-        };
+        let session_log = SessionLogSlot::open(&profile_dir);
 
         // Load persistent user profile
         let profile = match UserProfile::load(&profile_dir) {
@@ -131,13 +122,40 @@ impl Orchestrator {
             model_dir,
             n_gpu_layers,
             pii_account_key: Mutex::new(None),
-            #[cfg(feature = "encrypted-log")]
-            session_log_key: Mutex::new(None),
             #[cfg(feature = "p2p")]
             p2p_command_tx: Mutex::new(None),
             #[cfg(feature = "vision")]
             vision: Mutex::new(None),
         })
+    }
+
+    /// An orchestrator with no model loaded, for tests of everything that does
+    /// not classify or generate.
+    #[cfg(test)]
+    fn for_test(
+        db: Arc<dyn GraphDB>,
+        event_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
+        profile_dir: PathBuf,
+    ) -> Self {
+        Self {
+            classifier: tokio::sync::Mutex::new(IntentClassifier::new(AiConfig::default())),
+            db,
+            event_tx,
+            session_log: SessionLogSlot::open(&profile_dir),
+            decision_rx: None,
+            injection_decision_rx: None,
+            feedback_rx: None,
+            trust: Mutex::new(TrustTracker::new()),
+            profile: Mutex::new(UserProfile::default_new()),
+            profile_dir,
+            model_dir: String::new(),
+            n_gpu_layers: 0,
+            pii_account_key: Mutex::new(None),
+            #[cfg(feature = "p2p")]
+            p2p_command_tx: Mutex::new(None),
+            #[cfg(feature = "vision")]
+            vision: Mutex::new(None),
+        }
     }
 
     /// Run a one-shot generation against the loaded router model.
@@ -251,21 +269,21 @@ impl Orchestrator {
         }
     }
 
+    /// Switch the session log to encrypted mode under `key`.
+    ///
+    /// Fails CLOSED (lot 0.6, decision K4 default): if the encrypted log
+    /// cannot be opened and verified — tamper, I/O error, another persona's
+    /// key — the session log is turned off for this session (no line is ever
+    /// written in clear after a key was expected, and no history is read back)
+    /// and the user is told through an `ActionRejected` event.
     #[cfg(feature = "encrypted-log")]
     pub fn set_session_log_key(&self, key: [u8; 32]) {
         let beacon = Self::session_log_beacon();
-        match SessionLog::open_encrypted(&self.profile_dir, key, Some(&beacon)) {
-            Ok(log) => {
-                if let Ok(mut guard) = self.session_log.lock() {
-                    *guard = Some(log);
-                }
-                if let Ok(mut guard) = self.session_log_key.lock() {
-                    *guard = Some(key);
-                }
-                tracing::info!("Session log encryption enabled");
-            }
+        match self.session_log.install_key(key, Some(&beacon)) {
+            Ok(()) => tracing::info!("Session log encryption enabled"),
             Err(e) => {
-                tracing::warn!("Failed to enable session log encryption: {e}");
+                tracing::error!("Session log could not be opened encrypted; logging stopped: {e}");
+                let _ = self.event_tx.send(session_log_off_notice(&e.to_string()));
             }
         }
     }
@@ -296,6 +314,18 @@ impl Orchestrator {
         self.p2p_command_tx.lock().ok()?.clone()
     }
 
+    /// True when P2P intents can reach the P2P service.
+    fn p2p_wired(&self) -> bool {
+        #[cfg(feature = "p2p")]
+        {
+            self.p2p_command_tx_clone().is_some()
+        }
+        #[cfg(not(feature = "p2p"))]
+        {
+            false
+        }
+    }
+
     /// Handle a user query: classify intent, gate check, execute or await confirmation.
     pub async fn handle_query(&self, query: &str) -> Result<()> {
         let intent = self.classifier.lock().await.classify(query).await?;
@@ -319,6 +349,18 @@ impl Orchestrator {
             let _ = self.event_tx.send(OrchestratorEvent::ActionRejected {
                 action: intent.action.clone(),
                 reason: reason.clone(),
+            });
+            return Ok(());
+        }
+
+        // Lot 0.7: an intent with no handler is refused here, before the gate —
+        // never proposed for approval, never reported as done.
+        if let Some(reason) = unavailable_reason(&intent.action, self.p2p_wired()) {
+            tracing::info!("No handler for intent '{}': {reason}", intent.action);
+            self.log_action("unavailable", &intent.action);
+            let _ = self.event_tx.send(OrchestratorEvent::ActionRejected {
+                action: intent.action.clone(),
+                reason,
             });
             return Ok(());
         }
@@ -354,13 +396,8 @@ impl Orchestrator {
                     BubbleVisualState::Proposing,
                 ));
 
-                // Emit proposal to UI
-                let _ = self.event_tx.send(OrchestratorEvent::ActionProposed {
-                    proposal: proposal.clone(),
-                });
-
-                // Wait for user decision (with timeout)
-                let decision = self.wait_for_decision().await;
+                // Emit the proposal and wait for the user's decision.
+                let decision = self.propose_and_wait(proposal).await;
                 match decision {
                     ActionDecision::Approve => {
                         // Record approval in trust tracker + persist
@@ -682,11 +719,7 @@ impl Orchestrator {
                             let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
                                 BubbleVisualState::Proposing,
                             ));
-                            let _ = self.event_tx.send(OrchestratorEvent::ActionProposed {
-                                proposal: proposal.clone(),
-                            });
-
-                            match self.wait_for_decision().await {
+                            match self.propose_and_wait(proposal).await {
                                 ActionDecision::Approve => {
                                     if let Ok(mut trust) = self.trust.lock() {
                                         trust.record_approval(
@@ -828,34 +861,37 @@ impl Orchestrator {
     /// crypto init failed), passes through unchanged.
     ///
     /// Synthesizes a `source_id` of `"session:<rfc3339>"` since the
-    /// session log is JSONL on disk, not a SurrealDB row. Best-effort —
-    /// errors are logged via `tracing::warn!` and the original text is
-    /// returned so the chat pipeline never blocks on ingest.
+    /// session log is JSONL on disk, not a SurrealDB row. The chat pipeline
+    /// never blocks on ingest, but a failed ingest never logs the raw text
+    /// either (lot 0.6): the entry is replaced by a placeholder.
     async fn tokenize_session_text(&self, content: &str) -> String {
-        let account_key = match self.pii_account_key.lock().ok().and_then(|g| g.clone()) {
-            Some(k) => k,
-            None => return content.to_string(),
+        let attempt = match self.pii_account_key.lock().ok().and_then(|g| g.clone()) {
+            None => None,
+            Some(account_key) => Some(self.try_tokenize(content, &account_key).await),
         };
-        let source_id = format!("session:{}", chrono::Utc::now().to_rfc3339());
+        session_log_text(content, attempt)
+    }
 
-        let entities = match self.db.list_entities().await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("session-log PII: list_entities failed: {e}");
-                return content.to_string();
-            }
-        };
-        let contacts = match self.db.list_contacts().await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("session-log PII: list_contacts failed: {e}");
-                return content.to_string();
-            }
-        };
+    async fn try_tokenize(
+        &self,
+        content: &str,
+        account_key: &sovereign_crypto::account_key::AccountKey,
+    ) -> Result<String> {
+        let source_id = format!("session:{}", chrono::Utc::now().to_rfc3339());
+        let entities = self
+            .db
+            .list_entities()
+            .await
+            .map_err(|e| anyhow::anyhow!("list_entities failed: {e}"))?;
+        let contacts = self
+            .db
+            .list_contacts()
+            .await
+            .map_err(|e| anyhow::anyhow!("list_contacts failed: {e}"))?;
         let sink = crate::pii::ingest::GraphDbPiiSink::new(self.db.clone());
         let config = crate::pii::pipeline::PipelineConfig::default();
 
-        match crate::pii::ingest::ingest_text(
+        let result = crate::pii::ingest::ingest_text(
             content,
             &source_id,
             sovereign_db::schema::SourceKind::SessionLog,
@@ -865,16 +901,11 @@ impl Orchestrator {
             &entities,
             &contacts,
             &sink,
-            account_key.as_ref(),
+            account_key,
         )
         .await
-        {
-            Ok(result) => result.canonical_body,
-            Err(e) => {
-                tracing::warn!("session-log PII: ingest_text failed: {e}");
-                content.to_string()
-            }
-        }
+        .map_err(|e| anyhow::anyhow!("ingest_text failed: {e}"))?;
+        Ok(result.canonical_body)
     }
 
     /// `log_user_input` with PII tokenization. The canonical form is
@@ -882,11 +913,8 @@ impl Orchestrator {
     /// AI as conversation context.
     async fn log_user_input_pii_aware(&self, mode: &str, content: &str, intent: &str) {
         let canonical = self.tokenize_session_text(content).await;
-        if let Ok(mut guard) = self.session_log.lock() {
-            if let Some(log) = guard.as_mut() {
-                log.log_user_input(mode, &canonical, intent);
-            }
-        }
+        self.session_log
+            .with_log(|log| log.log_user_input(mode, &canonical, intent));
     }
 
     /// `log_chat_response` with PII tokenization. AI responses can
@@ -894,11 +922,7 @@ impl Orchestrator {
     /// through the pipeline too.
     async fn log_chat_response_pii_aware(&self, response: &str) {
         let canonical = self.tokenize_session_text(response).await;
-        if let Ok(mut guard) = self.session_log.lock() {
-            if let Some(log) = guard.as_mut() {
-                log.log_chat_response(&canonical);
-            }
-        }
+        self.session_log.with_log(|log| log.log_chat_response(&canonical));
     }
 
     /// Scan tool output for injection, surface any indicators (Injection
@@ -933,14 +957,14 @@ impl Orchestrator {
         // High-severity: surface the request and let the user choose — never
         // auto-redact.
         let preview: String = output.chars().take(500).collect();
-        let _ = self.event_tx.send(OrchestratorEvent::InjectionDecisionRequested {
+        let request = OrchestratorEvent::InjectionDecisionRequested {
             source: source.to_string(),
             pattern: indicators.first().cloned().unwrap_or_default(),
             indicators: indicators.clone(),
             severity: max_severity,
             preview,
-        });
-        match self.wait_for_injection_decision().await {
+        };
+        match self.request_injection_decision(request).await {
             InjectionDecision::Redact => GatedOutput::Content(format!(
                 "[CONTENT FILTERED — injection indicators detected: {}]",
                 indicators.join(", ")
@@ -950,12 +974,24 @@ impl Orchestrator {
         }
     }
 
-    /// Await the user's injection-handling decision (120s timeout). FAILS CLOSED
-    /// to `Redact` — the protective option — on timeout, closed channel, or no
-    /// channel wired, so the gate is safe before the UI wires the real choice.
-    async fn wait_for_injection_decision(&self) -> InjectionDecision {
+    /// Emit the injection `request` and await the user's decision (120s
+    /// timeout). FAILS CLOSED to `Redact` — the protective option — on timeout,
+    /// closed channel, or no channel wired, so the gate is safe before the UI
+    /// wires the real choice.
+    ///
+    /// Lot 0.7: as in [`propose_and_wait`](Self::propose_and_wait), stale
+    /// decisions queued for an earlier request are discarded before this one
+    /// is emitted (a queued PassThrough must never answer a request the user
+    /// has not seen), and with no channel wired the request is not emitted
+    /// (the detection itself was already surfaced by `InjectionDetected`).
+    async fn request_injection_decision(&self, request: OrchestratorEvent) -> InjectionDecision {
         if let Some(ref rx_mutex) = self.injection_decision_rx {
             let mut rx = rx_mutex.lock().await;
+            let stale = drain_queued(&mut rx);
+            if stale > 0 {
+                tracing::warn!("Discarded {stale} stale injection decision(s) from earlier requests");
+            }
+            let _ = self.event_tx.send(request);
             match tokio::time::timeout(Duration::from_secs(120), rx.recv()).await {
                 Ok(Some(decision)) => return decision,
                 Ok(None) => {
@@ -984,12 +1020,24 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Wait for a user decision on the decision channel (120s timeout).
+    /// Emit `proposal` and wait for the user's decision (120s timeout).
     /// FAILS CLOSED in every path — timeout, closed channel, and missing
     /// channel all reject.
-    async fn wait_for_decision(&self) -> ActionDecision {
+    ///
+    /// Lot 0.7 (interim before decision correlation, D-1): decisions carry no
+    /// request id, so a click queued for an earlier, expired proposal would
+    /// answer this one. Under the receiver lock, every decision already queued
+    /// is discarded BEFORE the proposal is emitted — anything received after
+    /// can only answer this proposal. With no channel wired the proposal is
+    /// not emitted at all: nobody could answer it.
+    async fn propose_and_wait(&self, proposal: ProposedAction) -> ActionDecision {
         if let Some(ref rx_mutex) = self.decision_rx {
             let mut rx = rx_mutex.lock().await;
+            let stale = drain_queued(&mut rx);
+            if stale > 0 {
+                tracing::warn!("Discarded {stale} stale action decision(s) from earlier proposals");
+            }
+            let _ = self.event_tx.send(OrchestratorEvent::ActionProposed { proposal });
             match tokio::time::timeout(Duration::from_secs(120), rx.recv()).await {
                 Ok(Some(decision)) => return decision,
                 Ok(None) => {
@@ -1019,6 +1067,13 @@ impl Orchestrator {
             text: format!("⚠ {what}: {e}"),
         });
         false
+    }
+
+    /// Lot 0.7: an action that did nothing (target missing or not found, no
+    /// handler, nothing sent) is reported as not done, with the reason — never
+    /// as "Done". Returns `false` for the ActionExecuted event.
+    fn not_found(&self, action: &str, why: &str) -> bool {
+        self.report_action_failure(&format!("{action} not done"), &why)
     }
 
     /// Execute a classified action by name.
@@ -1052,15 +1107,22 @@ impl Orchestrator {
                 });
             }
             "open" | "navigate" => {
-                if let Some(target) = target {
-                    let docs = self.db.search_documents_by_title(target).await?;
-                    if let Some(doc) = docs.first() {
-                        if let Some(id) = doc.id_string() {
-                            let _ = self
-                                .event_tx
-                                .send(OrchestratorEvent::DocumentOpened { doc_id: id });
-                        }
+                let found = match target {
+                    Some(target) => self
+                        .db
+                        .search_documents_by_title(target)
+                        .await?
+                        .first()
+                        .and_then(|d| d.id_string()),
+                    None => None,
+                };
+                match found {
+                    Some(id) => {
+                        let _ = self
+                            .event_tx
+                            .send(OrchestratorEvent::DocumentOpened { doc_id: id });
                     }
+                    None => success = self.not_found(action, "no matching document"),
                 }
             }
             "create_thread" => {
@@ -1099,8 +1161,14 @@ impl Orchestrator {
                                 }
                                 Err(e) => success = self.report_action_failure("Failed to rename thread", &e),
                             }
+                        } else {
+                            success = self.not_found(action, "no matching thread");
                         }
+                    } else {
+                        success = self.not_found(action, &format!("no thread named '{old_name}'"));
                     }
+                } else {
+                    success = self.not_found(action, "no target given");
                 }
             }
             "delete_thread" => {
@@ -1117,8 +1185,14 @@ impl Orchestrator {
                                 }
                                 Err(e) => success = self.report_action_failure("Failed to delete thread", &e),
                             }
+                        } else {
+                            success = self.not_found(action, "no matching thread");
                         }
+                    } else {
+                        success = self.not_found(action, &format!("no thread named '{target}'"));
                     }
+                } else {
+                    success = self.not_found(action, "no target given");
                 }
             }
             "move_document" => {
@@ -1141,7 +1215,14 @@ impl Orchestrator {
                             }
                             Err(e) => success = self.report_action_failure("Failed to move document", &e),
                         }
+                    } else {
+                        success = self.not_found(
+                            action,
+                            &format!("no document '{doc_name}' or no thread '{thread_name}'"),
+                        );
                     }
+                } else {
+                    success = self.not_found(action, "no target given");
                 }
             }
             "history" => {
@@ -1172,8 +1253,14 @@ impl Orchestrator {
                                     doc_id,
                                     commits: summaries,
                                 });
+                        } else {
+                            success = self.not_found(action, "no matching document");
                         }
+                    } else {
+                        success = self.not_found(action, &format!("no document named '{target}'"));
                     }
+                } else {
+                    success = self.not_found(action, "no target given");
                 }
             }
             "summarize" => {
@@ -1195,6 +1282,8 @@ impl Orchestrator {
                                     doc.title
                                 ),
                             });
+                            // Lot 0.7: refused, so not done.
+                            success = false;
                         } else {
                             // Resolve `[pii:<id>]` tokens to type-only labels
                             // (`[Email]`, …) before the content reaches the model
@@ -1261,7 +1350,11 @@ impl Orchestrator {
                                 Err(e) => success = self.report_action_failure("Summarize failed", &e),
                             }
                         }
+                    } else {
+                        success = self.not_found(action, &format!("no document named '{target}'"));
                     }
+                } else {
+                    success = self.not_found(action, "no target given");
                 }
             }
             "list_models" => {
@@ -1300,6 +1393,7 @@ impl Orchestrator {
                             action: "swap_model".into(),
                             reason: format!("Model not found: {model_name}"),
                         });
+                        success = false;
                     } else {
                         let path_str = full_path.to_string_lossy().to_string();
                         let mut classifier = self.classifier.lock().await;
@@ -1348,6 +1442,7 @@ impl Orchestrator {
                                     action: "swap_model".into(),
                                     reason: format!("Swap failed: {e}"),
                                 });
+                                success = false;
                             }
                         }
                     }
@@ -1356,6 +1451,7 @@ impl Orchestrator {
                         action: "swap_model".into(),
                         reason: "No model name specified".into(),
                     });
+                    success = false;
                 }
             }
             "merge_threads" => {
@@ -1385,7 +1481,14 @@ impl Orchestrator {
                             }
                             Err(e) => success = self.report_action_failure("Failed to merge threads", &e),
                         }
+                    } else {
+                        success = self.not_found(
+                            action,
+                            &format!("no thread '{target_name}' or no thread '{source_name}'"),
+                        );
                     }
+                } else {
+                    success = self.not_found(action, "no target given");
                 }
             }
             "split_thread" => {
@@ -1416,8 +1519,14 @@ impl Orchestrator {
                                 }
                                 Err(e) => success = self.report_action_failure("Failed to split thread", &e),
                             }
+                        } else {
+                            success = self.not_found(action, "no matching thread");
                         }
+                    } else {
+                        success = self.not_found(action, &format!("no thread named '{thread_name}'"));
                     }
+                } else {
+                    success = self.not_found(action, "no target given");
                 }
             }
             "adopt" => {
@@ -1441,8 +1550,14 @@ impl Orchestrator {
                                 }
                                 Err(e) => success = self.report_action_failure("Failed to adopt document", &e),
                             }
+                        } else {
+                            success = self.not_found(action, "no matching document");
                         }
+                    } else {
+                        success = self.not_found(action, &format!("no document named '{target}'"));
                     }
+                } else {
+                    success = self.not_found(action, "no target given");
                 }
             }
             "create_milestone" => {
@@ -1478,7 +1593,11 @@ impl Orchestrator {
                             }
                             Err(e) => success = self.report_action_failure("Failed to create milestone", &e),
                         }
+                    } else {
+                        success = self.not_found(action, "no matching thread");
                     }
+                } else {
+                    success = self.not_found(action, "no target given");
                 }
             }
             "list_milestones" => {
@@ -1506,6 +1625,8 @@ impl Orchestrator {
                         thread_id: tid,
                         milestones: summaries,
                     });
+                } else {
+                    success = self.not_found(action, "no matching thread");
                 }
             }
             // Communications actions
@@ -1547,27 +1668,30 @@ impl Orchestrator {
             "sync_device" | "pair_device" | "list_devices" | "list_guardians"
             | "enroll_guardian" | "revoke_guardian" | "rotate_shards"
             | "initiate_recovery" | "sync_status" | "encrypt_data" => {
+                // Lot 0.7: only a command actually handed to the P2P service
+                // counts as done; everything else (no channel, no peer, an
+                // intent with no handler) is reported as not done.
+                #[allow(unused_mut)]
+                let mut sent = false;
                 #[cfg(feature = "p2p")]
                 {
-                    if let Some(tx) = self.p2p_command_tx_clone() {
-                        match action {
-                            "sync_device" => {
-                                if let Some(peer_id) = target {
-                                    let _ = tx.try_send(sovereign_p2p::P2pCommand::StartSync {
-                                        peer_id: peer_id.to_string(),
-                                    });
-                                }
-                            }
-                            "pair_device" => {
-                                if let Some(peer_id) = target {
-                                    let _ = tx.try_send(sovereign_p2p::P2pCommand::PairDevice {
-                                        peer_id: peer_id.to_string(),
-                                    });
-                                }
-                            }
-                            _ => {}
+                    if let (Some(tx), Some(peer_id)) = (self.p2p_command_tx_clone(), target) {
+                        let cmd = match action {
+                            "sync_device" => Some(sovereign_p2p::P2pCommand::StartSync {
+                                peer_id: peer_id.to_string(),
+                            }),
+                            "pair_device" => Some(sovereign_p2p::P2pCommand::PairDevice {
+                                peer_id: peer_id.to_string(),
+                            }),
+                            _ => None,
+                        };
+                        if let Some(cmd) = cmd {
+                            sent = tx.try_send(cmd).is_ok();
                         }
                     }
+                }
+                if !sent {
+                    success = self.not_found(action, "the device service did not receive it");
                 }
                 // ActionExecuted is emitted once by the tail below.
             }
@@ -1602,14 +1726,6 @@ impl Orchestrator {
                     }
                     Err(e) => success = self.report_action_failure("Failed to create document", &e),
                 }
-            }
-            "word_count" | "find_replace" | "duplicate" | "import_file" => {
-                let _ = self.event_tx.send(OrchestratorEvent::SkillResult {
-                    skill: action.to_string(),
-                    action: action.to_string(),
-                    kind: "skill_hint".into(),
-                    data: serde_json::json!({ "hint": format!("Use the {} skill from the skills panel", action) }).to_string(),
-                });
             }
             "restore" => {
                 if let Some(target) = target {
@@ -1665,6 +1781,8 @@ impl Orchestrator {
                                     );
                                 }
                             }
+                        } else {
+                            success = self.not_found(action, "no matching document");
                         }
                     } else {
                         success = self.report_action_failure(
@@ -1672,6 +1790,8 @@ impl Orchestrator {
                             &format!("no document matching '{doc_name}'"),
                         );
                     }
+                } else {
+                    success = self.not_found(action, "no target given");
                 }
             }
             "open_pii_dashboard" | "open_models" | "open_inbox" | "browse" | "open_settings" => {
@@ -1697,17 +1817,12 @@ impl Orchestrator {
                 self.run_chat_agent_loop(query).await?;
             }
             _ => {
-                let level = security::action_level(action);
-                let _ = self.event_tx.send(OrchestratorEvent::ActionProposed {
-                    proposal: ProposedAction {
-                        action: action.to_string(),
-                        level,
-                        plane: sovereign_core::security::Plane::Control,
-                        doc_id: None,
-                        thread_id: None,
-                        description: format!("Unhandled intent: {}", action),
-                    },
-                });
+                // Lot 0.7: no handler. handle_query refuses these before the
+                // gate; this arm is the backstop. It never emits a proposal
+                // (nothing would await it) and never reports success.
+                let reason = unavailable_reason(action, false)
+                    .unwrap_or_else(|| "this action is not available yet".into());
+                success = self.not_found(action, &reason);
             }
         }
 
@@ -1925,23 +2040,94 @@ impl Orchestrator {
     }
 
     fn log_action(&self, action: &str, details: &str) {
-        if let Ok(mut guard) = self.session_log.lock() {
-            if let Some(log) = guard.as_mut() {
-                log.log_action(action, details);
-            }
-        }
+        self.session_log.with_log(|log| log.log_action(action, details));
     }
 
-    /// Load recent session entries, using encrypted decryption if a key is available.
+    /// Load recent session entries, using encrypted decryption if a key is
+    /// available; none while the session log is off.
     fn load_session_entries(&self, max_entries: usize) -> Vec<crate::session_log::SessionEntry> {
-        #[cfg(feature = "encrypted-log")]
-        {
-            let key = self.session_log_key.lock().ok().and_then(|g| *g);
-            if let Some(key) = key {
-                return SessionLog::load_recent_encrypted(&self.profile_dir, max_entries, &key);
-            }
+        self.session_log.load_recent(max_entries)
+    }
+}
+
+/// Discard every value already queued on `rx`; returns how many (lot 0.7).
+fn drain_queued<T>(rx: &mut tokio::sync::mpsc::Receiver<T>) -> usize {
+    let mut n = 0;
+    while rx.try_recv().is_ok() {
+        n += 1;
+    }
+    n
+}
+
+/// Actions `execute_action` has a handler for (lot 0.7). An intent outside
+/// this list is refused before the gate, so the user is never asked to
+/// approve something that would do nothing. P2P actions are checked
+/// separately: they need the P2P command channel wired.
+const HANDLED_ACTIONS: &[&str] = &[
+    "search", "open", "navigate", "create_thread", "rename_thread", "delete_thread",
+    "move_document", "history", "summarize", "list_models", "swap_model", "merge_threads",
+    "split_thread", "adopt", "create_milestone", "list_milestones", "list_contacts",
+    "view_messages", "create_document", "restore", "open_pii_dashboard", "open_models",
+    "open_inbox", "browse", "open_settings", "chat", "unknown",
+];
+
+/// P2P intents that have a handler when the P2P command channel is wired.
+const P2P_HANDLED_ACTIONS: &[&str] = &["sync_device", "pair_device"];
+
+/// Intents that only point the user to a skill; the orchestrator does not
+/// perform them.
+const SKILL_HINT_ACTIONS: &[&str] = &["word_count", "find_replace", "duplicate", "import_file"];
+
+/// Why `action` cannot be executed here, or `None` if it has a handler.
+/// `p2p_wired` says whether the P2P command channel is installed.
+fn unavailable_reason(action: &str, p2p_wired: bool) -> Option<String> {
+    if HANDLED_ACTIONS.contains(&action) {
+        return None;
+    }
+    if P2P_HANDLED_ACTIONS.contains(&action) {
+        return if p2p_wired {
+            None
+        } else {
+            Some("device sync is not available in this session".into())
+        };
+    }
+    if SKILL_HINT_ACTIONS.contains(&action) {
+        return Some(format!("use the {action} skill from the Skills menu instead"));
+    }
+    Some("this action is not available yet".into())
+}
+
+/// What replaces a session-log entry whose PII tokenization failed.
+const PII_WITHHELD_PLACEHOLDER: &str = "[entry withheld: PII tokenization failed]";
+
+/// The text to persist for a session-log entry. `attempt` is `None` when no
+/// PII key is installed (pre-login: the text passes through, the idle sweep
+/// tokenizes later), else the tokenization result. A failed tokenization
+/// NEVER falls back to the raw text (lot 0.6): the entry becomes a
+/// placeholder.
+fn session_log_text(raw: &str, attempt: Option<Result<String>>) -> String {
+    match attempt {
+        None => raw.to_string(),
+        Some(Ok(canonical)) => canonical,
+        Some(Err(e)) => {
+            tracing::warn!("session-log PII tokenization failed; entry withheld: {e}");
+            PII_WITHHELD_PLACEHOLDER.to_string()
         }
-        SessionLog::load_recent(&self.profile_dir, max_entries)
+    }
+}
+
+/// The user-visible notice for a session log turned off after a failed
+/// encrypted open (lot 0.6). Rendered by every host today: both show
+/// `ActionRejected` in the chat.
+#[cfg(feature = "encrypted-log")]
+fn session_log_off_notice(reason: &str) -> OrchestratorEvent {
+    OrchestratorEvent::ActionRejected {
+        action: "session log".into(),
+        reason: format!(
+            "the encrypted conversation log could not be opened ({reason}). \
+             Nothing from this session will be recorded, and earlier conversation \
+             history is not used."
+        ),
     }
 }
 
@@ -2181,6 +2367,213 @@ fn expand_model_aliases(target_lower: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── lot 0.7: approval hygiene ─────────────────────────────────────────
+
+    async fn test_orchestrator(
+        name: &str,
+    ) -> (Orchestrator, std::sync::mpsc::Receiver<OrchestratorEvent>) {
+        use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
+        let db = SurrealGraphDB::new(StorageMode::Memory).await.unwrap();
+        db.connect().await.unwrap();
+        db.init_schema().await.unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir = make_test_dir(&format!("orch_{name}_{}", std::process::id()));
+        (Orchestrator::for_test(Arc::new(db), tx, dir), rx)
+    }
+
+    fn proposal(action: &str) -> ProposedAction {
+        ProposedAction {
+            action: action.into(),
+            level: security::action_level(action),
+            plane: security::Plane::Control,
+            doc_id: None,
+            thread_id: None,
+            description: format!("test {action}"),
+        }
+    }
+
+    /// Wait (cooperatively, on the test runtime) for the next event matching `pred`.
+    async fn next_event(
+        rx: &std::sync::mpsc::Receiver<OrchestratorEvent>,
+        pred: impl Fn(&OrchestratorEvent) -> bool,
+    ) -> OrchestratorEvent {
+        for _ in 0..100_000 {
+            if let Ok(ev) = rx.try_recv() {
+                if pred(&ev) {
+                    return ev;
+                }
+                continue;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("expected event never arrived");
+    }
+
+    fn drain_events(rx: &std::sync::mpsc::Receiver<OrchestratorEvent>) -> Vec<OrchestratorEvent> {
+        rx.try_iter().collect()
+    }
+
+    /// Invariant: a decision queued before a proposal is emitted is never
+    /// applied to that proposal.
+    #[tokio::test]
+    async fn stale_decision_never_applied_to_new_proposal() {
+        let (mut orch, events) = test_orchestrator("stale_decision").await;
+        let (dtx, drx) = tokio::sync::mpsc::channel(8);
+        orch.set_decision_rx(drx);
+        let orch = Arc::new(orch);
+        // A click left over from an earlier, expired proposal.
+        dtx.send(ActionDecision::Approve).await.unwrap();
+        dtx.send(ActionDecision::Approve).await.unwrap();
+
+        let o = orch.clone();
+        let task = tokio::spawn(async move { o.propose_and_wait(proposal("create_thread")).await });
+        next_event(&events, |e| matches!(e, OrchestratorEvent::ActionProposed { .. })).await;
+        dtx.send(ActionDecision::Reject("fresh".into())).await.unwrap();
+
+        assert_eq!(task.await.unwrap(), ActionDecision::Reject("fresh".into()));
+    }
+
+    /// Same invariant on the injection channel: a stale PassThrough never
+    /// answers a request the user has not seen.
+    #[tokio::test]
+    async fn stale_injection_decision_never_applied_to_new_request() {
+        let (mut orch, events) = test_orchestrator("stale_injection").await;
+        let (itx, irx) = tokio::sync::mpsc::channel(8);
+        orch.set_injection_decision_rx(irx);
+        let orch = Arc::new(orch);
+        itx.send(InjectionDecision::PassThrough).await.unwrap();
+
+        let o = orch.clone();
+        let task = tokio::spawn(async move {
+            o.request_injection_decision(OrchestratorEvent::InjectionDecisionRequested {
+                source: "t".into(),
+                pattern: "p".into(),
+                indicators: vec![],
+                severity: 9,
+                preview: String::new(),
+            })
+            .await
+        });
+        next_event(&events, |e| matches!(e, OrchestratorEvent::InjectionDecisionRequested { .. }))
+            .await;
+        itx.send(InjectionDecision::Abort).await.unwrap();
+
+        assert!(matches!(task.await.unwrap(), InjectionDecision::Abort));
+    }
+
+    /// With no decision channel, nobody can answer: no proposal is emitted and
+    /// the action is rejected (fail closed).
+    #[tokio::test]
+    async fn no_channel_emits_no_proposal_and_rejects() {
+        let (orch, events) = test_orchestrator("no_channel").await;
+        let d = orch.propose_and_wait(proposal("create_thread")).await;
+        assert!(matches!(d, ActionDecision::Reject(_)));
+        assert!(!drain_events(&events)
+            .iter()
+            .any(|e| matches!(e, OrchestratorEvent::ActionProposed { .. })));
+    }
+
+    fn executed(events: &[OrchestratorEvent]) -> Vec<bool> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                OrchestratorEvent::ActionExecuted { success, .. } => Some(*success),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Invariant: an action with no handler never emits a proposal and never
+    /// reports success.
+    #[tokio::test]
+    async fn unhandled_action_never_reports_success_or_proposes() {
+        let (orch, events) = test_orchestrator("unhandled").await;
+        for action in ["delete_document", "export_all", "word_count", "list_devices", "sync_device"] {
+            orch.execute_action(action, Some("x"), "q").await.unwrap();
+            let evs = drain_events(&events);
+            assert!(
+                !evs.iter().any(|e| matches!(e, OrchestratorEvent::ActionProposed { .. })),
+                "{action} must not emit a proposal"
+            );
+            assert_eq!(executed(&evs), vec![false], "{action} must not report success");
+        }
+    }
+
+    /// Invariant: an action whose target is missing or not found never
+    /// reports success.
+    #[tokio::test]
+    async fn not_found_target_never_reports_success() {
+        let (orch, events) = test_orchestrator("not_found").await;
+        let cases: &[(&str, Option<&str>)] = &[
+            ("open", Some("no such doc")),
+            ("open", None),
+            ("rename_thread", Some("ghost to spirit")),
+            ("delete_thread", Some("ghost")),
+            ("delete_thread", None),
+            ("move_document", Some("ghost to nowhere")),
+            ("history", Some("ghost")),
+            ("summarize", Some("ghost")),
+            ("merge_threads", Some("a to b")),
+            ("split_thread", Some("ghost")),
+            ("adopt", Some("ghost")),
+            ("create_milestone", Some("m on ghost")),
+            ("list_milestones", Some("ghost")),
+            ("restore", Some("ghost")),
+            ("restore", None),
+            ("swap_model", None),
+        ];
+        for (action, target) in cases {
+            orch.execute_action(action, *target, "q").await.unwrap();
+            assert_eq!(
+                executed(&drain_events(&events)),
+                vec![false],
+                "{action} {target:?} must not report success"
+            );
+        }
+    }
+
+    #[test]
+    fn unavailable_reason_matches_handlers() {
+        for a in HANDLED_ACTIONS {
+            assert!(unavailable_reason(a, false).is_none(), "{a}");
+        }
+        assert!(unavailable_reason("sync_device", false).is_some());
+        assert!(unavailable_reason("sync_device", true).is_none());
+        assert!(unavailable_reason("list_devices", true).is_some());
+        assert!(unavailable_reason("word_count", true).unwrap().contains("Skills menu"));
+        assert!(unavailable_reason("delete_document", true).is_some());
+    }
+
+    /// Invariant (lot 0.6): a failed PII tokenization never logs the raw text.
+    #[test]
+    fn tokenization_error_never_logs_raw_text() {
+        let raw = "call me at +41 79 123 45 67, my IBAN is CH93 0076 2011 6238 5295 7";
+        let logged = session_log_text(raw, Some(Err(anyhow::anyhow!("db down"))));
+        assert_ne!(logged, raw);
+        assert!(!logged.contains("+41") && !logged.contains("CH93"), "{logged}");
+        assert_eq!(logged, PII_WITHHELD_PLACEHOLDER);
+    }
+
+    #[test]
+    fn tokenization_success_logs_canonical_and_no_key_passes_through() {
+        assert_eq!(session_log_text("raw", Some(Ok("[pii:1]".into()))), "[pii:1]");
+        assert_eq!(session_log_text("raw", None), "raw");
+    }
+
+    #[cfg(feature = "encrypted-log")]
+    #[test]
+    fn session_log_off_notice_is_a_rendered_event() {
+        // Both hosts render ActionRejected in the chat today.
+        match session_log_off_notice("anchor MAC invalid") {
+            OrchestratorEvent::ActionRejected { action, reason } => {
+                assert_eq!(action, "session log");
+                assert!(reason.contains("anchor MAC invalid"));
+                assert!(reason.contains("Nothing from this session will be recorded"));
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
 
     fn make_test_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("sovereign_test_{name}"));

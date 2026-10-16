@@ -10,7 +10,7 @@
 //! The [`pipeline`] module wires the three stages together and produces the
 //! per-source result that the ingest hooks (step 4) commit to the database.
 //!
-//! See `doc/plans/pii-management-dashboard.md` for the design.
+//! See `doc/plans/archive/plans/pii-management-dashboard.md` for the design.
 
 pub mod commit;
 pub mod entity_disambig;

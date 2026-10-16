@@ -1,11 +1,11 @@
 [package]
 name = "sovereign-shell"
-version = "0.1.0"
+version = "0.0.10"
 edition = "2021"
 publish = false
 
 # Native Rust/wgpu/Vello UI shell — the native-UI migration target. Calls the
-# backend crates IN-PROCESS (no Tauri IPC). See doc/plans/native-ui-migration.md.
+# backend crates IN-PROCESS (no Tauri IPC). See doc/plans/archive/plans/native-ui-migration.md.
 # Workspace member, but building sovereign-app does NOT pull vello (separate
 # member); build with --target-dir C:/cargo-target to reuse the warm tree.
 
@@ -15,6 +15,14 @@ publish = false
 [[bin]]
 name = "sovereign"
 path = "src/main.rs"
+
+[features]
+# Lot 0.5: the development switches (SHELL_* env vars — headless SHELL_SHOT,
+# SHELL_NO_AUTH, the auth/chat probes, SHELL_OPEN_*, …) are compiled into debug
+# builds only. This NON-default feature turns them on in a release build too,
+# for fast headless renders (`cargo run -p sovereign-shell --release --features
+# dev-switches` with SHELL_SHOT=out.png). Never enable it in a shipped build.
+dev-switches = []
 
 [dependencies]
 # Surface backend/P2P logs (sync engine, mDNS, pairing) for debugging — the node
@@ -42,7 +50,7 @@ tokio = { workspace = true }
 # default-features=false (drops cuda), so encrypted-log must be named explicitly
 # — it does NOT come back via the workspace default. Without it,
 # set_session_log_key does not exist and the log is plaintext.
-sovereign-ai = { workspace = true, features = ["encrypted-log"] }
+sovereign-ai = { workspace = true, features = ["encrypted-log", "llama"] }
 
 # Phase 3: auth (login/onboarding/duress) + the at-rest key stack feeding
 # EncryptedGraphDB. AuthStore, MasterKey/DeviceKey/Kek/AccountKey, KeyDatabase,
@@ -83,3 +91,9 @@ qrcode = { version = "0.14", default-features = false }
 # scan a QR back). arboard reuses the already-warm windows-sys (0.59/0.60) — its
 # only build-script dep — so no fresh build script for SAC to block.
 arboard = "3.6"
+
+[dev-dependencies]
+# Lot 0: the shell's document-write invariants (doc_writes.rs) are tested
+# against the in-memory MockGraphDB.
+sovereign-db = { workspace = true, features = ["rocksdb", "encryption", "test-utils"] }
+tempfile = "3"

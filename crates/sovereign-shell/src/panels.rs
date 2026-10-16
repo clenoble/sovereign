@@ -128,6 +128,11 @@ impl DocWindow {
             self.needs_reshape = false;
         }
     }
+    /// True when leaving edit mode now would lose typed text (lot 0.3): any
+    /// path that would discard the buffer must ask first.
+    pub(crate) fn has_unsaved_edits(&self) -> bool {
+        self.editing && self.dirty
+    }
     /// Enter edit mode: copy the saved body into the working buffer.
     pub(crate) fn begin_edit(&mut self) {
         self.editing = true;
@@ -4042,6 +4047,24 @@ mod doc_edit_tests {
         };
         let dw = DocWindow::new(&card, &mut shaper, 200.0);
         (shaper, dw)
+    }
+
+    /// Lot 0.3: the predicate every discard path consults before dropping the
+    /// edit buffer (Esc, Cancel, the × close, quitting the app, a skill or a
+    /// restore rewriting the document).
+    #[test]
+    fn only_a_dirty_edit_buffer_counts_as_unsaved() {
+        let (_s, mut dw) = make_doc("hello");
+        assert!(!dw.has_unsaved_edits(), "view mode has nothing to lose");
+        dw.begin_edit();
+        assert!(!dw.has_unsaved_edits(), "an untouched buffer has nothing to lose");
+        dw.insert_char('!');
+        assert!(dw.has_unsaved_edits());
+        dw.backspace();
+        assert!(!dw.has_unsaved_edits(), "typed back to the saved text");
+        dw.insert_char('?');
+        dw.cancel_edit();
+        assert!(!dw.has_unsaved_edits());
     }
 
     #[test]

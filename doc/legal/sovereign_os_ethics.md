@@ -3,7 +3,7 @@
 **Version:** 1.0  
 **Date:** February 22, 2026  
 **Status:** Draft  
-**Parent document:** `sovereign_os_specification.md`
+**Parent document:** the specification, `doc/spec/README.md`
 
 ---
 

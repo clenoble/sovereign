@@ -2,15 +2,25 @@
 
 This guide explains how to write, build, and distribute a skill plugin for Sovereign GE using the WASM Component Model.
 
+> **Status (October 2026): WASM skills are not loaded by any shipped Sovereign GE build yet.**
+> The sandbox exists and is tested — you can write, build and unit-test a skill against the
+> WIT contract below today. But discovery, loading and the user's approval of a skill's
+> capabilities are not wired into any app: a skill placed in `skills/` will not appear or run.
+> Where this guide describes what "the app" or "the UI" does with a WASM skill, it describes the
+> intended flow. The specification, [ch. 11 — Skills](spec/11-skills.md), holds the current
+> status.
+
 ## Overview
 
 Skills are document-level transformations that users invoke from the UI. They can read and modify documents, produce files (e.g. PDF), return structured data (e.g. statistics), or interact with the Sovereign database — all from within a memory-safe, CPU-limited WebAssembly sandbox.
 
-### How skills run
+### How skills will run
+
+The intended flow, once a host loads WASM skills (none does yet — see the status note above):
 
 ```
 User invokes a skill action on a document
-        │  (native shell: right-click a card → Skills; Tauri: the Skills panel)
+        │  (native shell: right-click a card → Skills)
         ▼
 The app loads the WASM component
         │
@@ -179,7 +189,7 @@ skills/
     └── my-skill.component.wasm
 ```
 
-Sovereign GE discovers WASM skills on startup by scanning `skills/*/` for directories containing both a `skill.json` and a `.wasm` file.
+The intended discovery scans `skills/*/` for directories containing both a `skill.json` and a `.wasm` file. **No shipped build runs it yet**, so an installed skill does not load (see the status note at the top).
 
 ## The WIT Interface
 
@@ -197,25 +207,27 @@ Your skill must implement the `skill-plugin` world defined in `skill.wit`:
 
 ### Imports (host provides)
 
-If your skill declares `read_all_documents` or `write_all_documents` capabilities, you can call these host functions:
+Every host call is checked against your skill's capabilities:
 
-| Function | Signature | Purpose |
-|----------|-----------|---------|
-| `search-documents` | `(query) -> result<list<search-result>, string>` | Full-text search across all documents |
-| `get-document` | `(id) -> result<doc-detail, string>` | Fetch a single document by ID |
-| `list-documents` | `(thread-id?) -> result<list<doc-entry>, string>` | List documents, optionally by thread |
-| `create-document` | `(title, thread-id, content) -> result<string, string>` | Create a new document, returns ID |
+| Function | Signature | Purpose | Requires |
+|----------|-----------|---------|----------|
+| `search-documents` | `(query) -> result<list<search-result>, string>` | Full-text search across all documents | `read_all_documents` |
+| `get-document` | `(id) -> result<doc-detail, string>` | Fetch a single document by ID | `read_document` for the current document; `read_all_documents` for any other |
+| `list-documents` | `(thread-id?) -> result<list<doc-entry>, string>` | List documents, optionally by thread | `read_all_documents` |
+| `create-document` | `(title, thread-id, content) -> result<string, string>` | Create a new document, returns ID | `write_document` in the current document's thread; `write_all_documents` in any thread |
+
+`get-document` returns the document's content as stored, not only its body text.
 
 ## Capabilities
 
-Capabilities are the permission model for skills. Declare only what you need — users will see what your skill requests.
+Capabilities are the permission model for skills. Declare only what you need. The intended design shows users what your skill requests and grants only what they approve; that approval step is not built yet (see the status note at the top).
 
 | Capability | Description | Grants |
 |------------|-------------|--------|
-| `read_document` | Read the current document | Access to `doc.body`, `doc.title`, `doc.id` |
-| `write_document` | Modify the current document | Return `ContentUpdate` to save changes |
-| `read_all_documents` | Query across all documents | `search-documents`, `list-documents`, `get-document` host calls |
-| `write_all_documents` | Create new documents | `create-document` host call |
+| `read_document` | Read the current document | Access to `doc.body`, `doc.title`, `doc.id`; `get-document` on the current document |
+| `write_document` | Modify the current document | Return `ContentUpdate` to save changes; `create-document` in the current document's thread |
+| `read_all_documents` | Query across all documents | `search-documents`, `list-documents`, `get-document` on any document |
+| `write_all_documents` | Create new documents | `create-document` in any thread |
 | `read_filesystem` | Read files from disk | (reserved — not yet exposed to WASM skills) |
 | `write_filesystem` | Write files to disk | (reserved — not yet exposed to WASM skills) |
 | `network` | Make HTTP requests | (reserved — not yet exposed to WASM skills) |
@@ -230,11 +242,13 @@ Your `execute` function returns one of four `SkillOutput` variants:
 
 Returns updated body text that replaces the document content. Use for skills that transform or edit documents.
 
+**The document's images and videos are dropped**: the string carries body text only, and the host saves it as the whole content. Do not return `content-update` for documents whose attachments must survive until this is fixed.
+
 ```rust
 Ok(SkillOutput::ContentUpdate("# Modified content\nNew body text.".to_string()))
 ```
 
-**Frontend behavior**: saves the updated document and refreshes the view.
+**Intended host behavior**: saves the updated document as a new version and refreshes the view.
 
 ### `file(file-output)`
 
@@ -248,7 +262,7 @@ Ok(SkillOutput::File(FileOutput {
 }))
 ```
 
-**Frontend behavior**: triggers a browser download (data is base64-encoded over IPC).
+**Intended host behavior**: offers the file for the user to save. (The native shell does not save skill output files yet; it reports that a file was produced.)
 
 ### `structured-data(structured-output)`
 
@@ -261,7 +275,7 @@ Ok(SkillOutput::StructuredData(StructuredOutput {
 }))
 ```
 
-**Frontend behavior**: renders the JSON payload in a toast or modal.
+**Host behavior**: the native shell shows the `kind` and the raw JSON in a notice.
 
 ### `none`
 
@@ -271,11 +285,11 @@ Side-effect only — no output to show.
 Ok(SkillOutput::None)
 ```
 
-**Frontend behavior**: closes the skills panel.
+**Host behavior**: the native shell shows "Done."
 
 ## Parameters
 
-The `params` string is passed from the frontend when the skill action is invoked. For simple skills it's usually empty (`""`). For skills that need user input (e.g. find-replace), it carries a JSON payload:
+The `params` string is passed from the UI when the skill action is invoked. For simple skills it's usually empty (`""`). For skills that need user input (e.g. find-replace), it carries a JSON payload. **The native shell has no parameter input yet**: it always passes `""` and runs only a skill's first action, so design your first action to work without parameters.
 
 ```rust
 fn execute(action: String, doc: SkillDocument, params: String, ...) -> ... {
@@ -342,7 +356,7 @@ fn execute(action: String, doc: SkillDocument, ...) -> Result<SkillOutput, Strin
 }
 ```
 
-Host function calls are synchronous and bridge to the Sovereign database. They require the corresponding capabilities to be declared in your manifest.
+Host function calls are synchronous and bridge to the Sovereign database. They require the corresponding capabilities (see the table under *Imports*). Today the host takes your skill's capabilities from the component's `required-capabilities` export, not from `skill.json`; keep the two identical.
 
 ## Complete Example: Word Count
 
@@ -433,12 +447,13 @@ export!(WordCountWasm);
 
 ## Skill Discovery & Loading
 
-At startup, Sovereign GE:
-1. Registers the built-in core skills (~two dozen, compiled Rust, no WASM)
-2. Scans the `skills/` directory for `skill.json` manifests
-3. For each subdirectory with both `skill.json` and a `.wasm` file, loads the WASM component
-4. Caches metadata (name, capabilities, actions, file types) to avoid re-instantiation
-5. All skills appear in the UI's skills menu (native shell: right-click a document → Skills; Tauri: the Skills panel)
+**Not wired in any shipped build yet.** Today the app registers only its built-in core skills (~two dozen, compiled Rust, no WASM). The intended flow at startup:
+1. Register the built-in core skills
+2. Scan the `skills/` directory for subdirectories holding a `skill.json`
+3. For each subdirectory with both `skill.json` and a `.wasm` file, load the WASM component (today the loader only checks that `skill.json` exists; metadata is read from the component)
+4. Cache metadata (name, capabilities, actions, file types) to avoid re-instantiation
+5. Ask the user to approve the skill's capabilities
+6. List the skill in the UI's skills menu (native shell: right-click a document → Skills)
 
 The build script `build-wasm-skills.sh` automates building all WASM skills in the `skills/` directory.
 

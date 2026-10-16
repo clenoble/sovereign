@@ -92,3 +92,6 @@ crates/sovereign-guardian-app/frontend/dist/
 crates/sovereign-guardian-app/frontend/node_modules/
 crates/sovereign-guardian-app/frontend/dist/
 crates/sovereign-guardian-app/gen/schemas/
+
+# Claude Code local state (agent worktrees, settings)
+/.claude/
