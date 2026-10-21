@@ -461,7 +461,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
 <!-- ========== FOOTER ========== -->
 <footer role="contentinfo">
   <div class="footer-inner">
-    <span>&copy; 2026 Sovereign GE. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude</a> (Opus 4.6 → 4.8, Fable 5).</span>
+    <span>&copy; 2026 Sovereign GE. Licensed under AGPL-3.0. Co-built with <a href="https://claude.ai" target="_blank" rel="noopener">Claude</a> (Opus 4.6 → 5.5, Fable 5).</span>
     <div class="footer-links">
       <a href="https://github.com/clenoble/sovereign" target="_blank" rel="noopener">GitHub</a>
       <a href="https://github.com/clenoble/sovereign/wiki" target="_blank" rel="noopener">Docs</a>
@@ -913,16 +913,16 @@ p { margin-bottom: 1rem; color: var(--c-text); }
     <h2 class="section-title" id="cta-title">An experimental prototype — come explore with us</h2>
     <p class="section-desc">
       Sovereign GE is an experimental prototype. Try it, break it, contribute.
-      Built in Rust. 13 crates, ~90K lines, 1,200+ unit tests. Native Rust desktop shell
+      Built in Rust. 16 crates, ~145K lines, 2,300+ tests. Native Rust desktop shell
       (Vello + wgpu); Svelte 5 + Tauri 2 on mobile.
-      Co-developed with <a href="https://claude.ai" target="_blank" rel="noopener" style="color: var(--c-accent);">Claude</a> (Opus 4.6 → 4.8, Fable 5) by Anthropic.
+      Co-developed with <a href="https://claude.ai" target="_blank" rel="noopener" style="color: var(--c-accent);">Claude</a> (Opus 4.6 → 5.5, Fable 5) by Anthropic.
     </p>
     <div class="cta-actions">
       <a href="https://github.com/clenoble/sovereign" class="btn btn-primary" target="_blank" rel="noopener">
         View on GitHub
       </a>
-      <a href="https://github.com/clenoble/sovereign/releases/tag/v0.0.10" class="btn btn-secondary" target="_blank" rel="noopener">
-        Download v0.0.10
+      <a href="https://github.com/clenoble/sovereign/releases/tag/v0.0.11" class="btn btn-secondary" target="_blank" rel="noopener">
+        Download v0.0.11
       </a>
     </div>
     <p style="margin-top: 16px; font-size: 0.85rem; color: var(--c-text-dim);">
@@ -3466,7 +3466,7 @@ pub struct DocumentSnapshot {
     Targets iOS 14+ and Android SDK 26+.
   </p>
   <p style="margin-top:16px; display:inline-flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--c-gold); background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); border-radius: var(--radius); padding: 8px 14px;">
-    <span aria-hidden="true">◐</span> Phases 1–4 complete · persistent storage + device pairing with LAN sync shipped (v0.0.8) · camera capture, biometrics, iOS share-sheet pending
+    <span aria-hidden="true">◐</span> Phases 1–4 complete · persistent storage shipped · device pairing and sync do not run on Android yet (since v0.0.9) · camera capture, biometrics, iOS share-sheet pending
   </p>
 </div>
 
@@ -3485,8 +3485,8 @@ pub struct DocumentSnapshot {
       time runs top-to-bottom (scroll to go back), lanes run left-to-right (swipe to switch).
       The AI chat lives in a bottom sheet with three snap positions — a peek showing your last
       message, a partial view for reading, a full screen for composing. Pinch zooms through
-      time; the canvas collapses to a density heatmap at deep zoom. Everything is local,
-      encrypted, and syncs back to your desktop over P2P.
+      time; the canvas collapses to a density heatmap at deep zoom. Everything is local and
+      encrypted. Syncing back to your desktop over P2P does not run on Android yet.
     </p>
   </div>
 </section>
