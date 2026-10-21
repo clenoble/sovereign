@@ -15,7 +15,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sovereign_db::mock::MockGraphDB;
+mod doc_harness;
+
+use sovereign_db::encrypted::EncryptedGraphDB;
 use sovereign_db::schema::{Document, Thread};
 use sovereign_db::GraphDB;
 use sovereign_p2p::pairing_offer::{self, PairingOffer, OFFER_TTL_SECONDS};
@@ -31,14 +33,16 @@ fn keypair_from_seed(seed: &[u8; 32]) -> libp2p::identity::Keypair {
 struct Harness {
     cmd_tx: mpsc::Sender<P2pCommand>,
     event_rx: mpsc::Receiver<P2pEvent>,
-    db: Arc<MockGraphDB>,
+    db: Arc<EncryptedGraphDB>,
     svc: Arc<SyncService>,
     peer_id: libp2p::PeerId,
     listen_addr: libp2p::Multiaddr,
 }
 
 async fn spawn_node(device_id: &str, seed: [u8; 32], transport_key: [u8; 32]) -> Harness {
-    let db = Arc::new(MockGraphDB::new());
+    // C-WIRE (step 4): documents sync through the document service, over
+    // an encrypted store.
+    let (db, docs) = doc_harness::encrypted_store(device_id).await;
     let kp = keypair_from_seed(&seed);
     let svc = Arc::new(SyncService::new(
         db.clone() as Arc<dyn GraphDB>,
@@ -47,7 +51,8 @@ async fn spawn_node(device_id: &str, seed: [u8; 32], transport_key: [u8; 32]) ->
         transport_key,
         kp.clone(),
         sovereign_p2p::VersionStore::ephemeral(),
-    ));
+    )
+    .with_documents(docs));
 
     let (event_tx, event_rx) = mpsc::channel::<P2pEvent>(64);
     let (cmd_tx, cmd_rx) = mpsc::channel::<P2pCommand>(64);

@@ -41,11 +41,10 @@ pub enum P2pEvent {
     /// `offer_dead` is true when the offer self-destructed (expired or
     /// attempts exhausted) and the UI should regenerate the QR.
     PairingFailed { reason: String, offer_dead: bool },
-    /// A paired peer's sync overwrote local rows; their prior values were
-    /// stashed for review (C2). The UI should surface/badge the review
-    /// panel — without this event the overwrite is invisible until the
-    /// user happens to open it.
-    RowsFlaggedForReview { peer_id: String, count: u32 },
+    /// A paired device runs an older build: documents are not exchanged with
+    /// it until it is updated; rows keep syncing (C-WIRE 12). The screens say
+    /// which device to update.
+    PeerNeedsUpdate { peer_id: String },
     /// The swarm is reachable on a new (interface-expanded) address.
     /// The app collects these so pairing offers can carry real dial
     /// hints instead of relying on mDNS discovery (P3.1).
@@ -923,18 +922,8 @@ impl SovereignNode {
                             if let Some(s) = self.sessions.get_mut(&peer_id) {
                                 s.rows_synced += report.written;
                             }
-                            // C2: a peer overwrite is stashed for review —
-                            // tell the UI instead of leaving it invisible
-                            // until the user opens the review panel.
-                            if report.review_flagged > 0 {
-                                let _ = self
-                                    .event_tx
-                                    .send(P2pEvent::RowsFlaggedForReview {
-                                        peer_id: peer_id.to_string(),
-                                        count: report.review_flagged,
-                                    })
-                                    .await;
-                            }
+                            // C-WIRE 13: a row's prior value is kept and
+                            // restorable; no review badge any more.
                         }
                         Err(e) => {
                             warn!("apply_rows({:?}) from {peer_id} failed: {e}", table);
@@ -1027,48 +1016,37 @@ impl SovereignNode {
             }
         };
 
-        // ----- Documents (commit-chain track) -----
-        let doc_diff = sync_engine::compute_diff(&local, &remote);
-
-        // Fetch commits we need from the remote. For each doc we don't
-        // have or that the remote is ahead on, ask for the head_commit;
-        // the chain will be replayed in order by `apply_commits`.
-        if !doc_diff.need_from_remote.is_empty() {
-            let commit_ids: Vec<String> = doc_diff
-                .need_from_remote
-                .iter()
-                .filter_map(|doc_id| {
-                    remote
-                        .documents
-                        .iter()
-                        .find(|e| &e.doc_id == doc_id)
-                        .and_then(|e| e.head_commit.clone())
-                })
-                .collect();
-            if !commit_ids.is_empty() {
-                self.send_session_request(
-                    peer_id,
-                    InflightKind::Commits,
-                    SovereignRequest::GetCommits { commit_ids },
-                );
-            }
+        // ----- Documents (C-WIRE: through the document service) -----
+        let plan = crate::wire::plan_documents(&local, &remote);
+        if plan.blocked_old_peer {
+            // C-WIRE 12: no document is exchanged with a device on an older
+            // build until it is updated; rows keep syncing. The screens say
+            // which device to update (UI: `P2pEvent::PeerNeedsUpdate`).
+            warn!("{peer_id} runs an older build: documents are not exchanged with it");
+            let _ = self
+                .event_tx
+                .send(P2pEvent::PeerNeedsUpdate { peer_id: peer_id.to_string() })
+                .await;
         }
 
-        // Push commits the remote needs from us.
-        if !doc_diff.push_to_remote.is_empty() {
+        // Fetch the documents we need from the remote, by id.
+        let fetch: Vec<String> = plan.fetch.iter().chain(plan.concurrent.iter()).cloned().collect();
+        if !fetch.is_empty() {
+            self.send_session_request(
+                peer_id,
+                InflightKind::Commits,
+                SovereignRequest::GetCommits { commit_ids: fetch },
+            );
+        }
+
+        // Push the documents the remote needs from us.
+        let push: Vec<String> = plan.push.iter().chain(plan.concurrent.iter()).cloned().collect();
+        if !push.is_empty() {
             let mut commits = Vec::new();
-            for doc_id in &doc_diff.push_to_remote {
-                let since = remote
-                    .documents
-                    .iter()
-                    .find(|e| &e.doc_id == doc_id)
-                    .and_then(|e| e.head_commit.clone());
-                if let Ok(cs) = self
-                    .sync_service
-                    .get_commits_since(doc_id, since.as_deref(), &peer_id)
-                    .await
-                {
-                    commits.extend(cs);
+            for doc_id in &push {
+                match self.sync_service.get_commits_since(doc_id, None, &peer_id).await {
+                    Ok(cs) => commits.extend(cs),
+                    Err(e) => warn!("not pushing {doc_id} to {peer_id}: {e}"),
                 }
             }
             if !commits.is_empty() {
@@ -1080,21 +1058,26 @@ impl SovereignNode {
             }
         }
 
-        // Surface document conflicts to the UI; LWW tables resolve silently.
-        for conflict in doc_diff.conflicts {
+        // Concurrent edits keep both versions without asking (C-WIRE 7); the
+        // notice says so.
+        for doc_id in &plan.concurrent {
             let _ = self
                 .event_tx
                 .send(P2pEvent::SyncConflict {
-                    doc_id: conflict.doc_id.clone(),
-                    description: format!(
-                        "diverged: local commits={}, remote commits={}",
-                        conflict.local_commit_count, conflict.remote_commit_count
-                    ),
+                    doc_id: doc_id.clone(),
+                    description: "edited on both devices: the later edit is current, the other is in History"
+                        .into(),
                 })
                 .await;
             if let Some(s) = self.sessions.get_mut(&peer_id) {
                 s.conflicts += 1;
             }
+        }
+
+        // Purges the remote made (C-WIRE 10): an identical copy is purged
+        // here, a differing one kept (it travels back).
+        if let Err(e) = self.sync_service.apply_purge_markers(&remote).await {
+            warn!("applying purge markers from {peer_id} failed: {e}");
         }
 
         // ----- Row-level tables (LWW) -----
@@ -1921,15 +1904,7 @@ async fn process_request(
             }
             match sync_service.apply_rows(table, rows, &peer).await {
                 Ok(report) => {
-                    // C2: surface stashed peer overwrites to the UI.
-                    if report.review_flagged > 0 {
-                        let _ = event_tx
-                            .send(P2pEvent::RowsFlaggedForReview {
-                                peer_id: peer.to_string(),
-                                count: report.review_flagged,
-                            })
-                            .await;
-                    }
+                    // C-WIRE 13: prior values are kept, no review badge.
                     SovereignResponse::PushAck {
                         written: report.written,
                         skipped: report.skipped,

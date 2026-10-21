@@ -8,6 +8,14 @@ description = "AI orchestrator with llama.cpp inference (Phase 3)"
 sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
 sovereign-skills = { workspace = true }
+# The stored document format v2: the assistant's tools, the summarizer, the
+# consolidation fingerprint and the peer audit read content through it (C-DOC
+# adoption step 1). No I/O, no dependencies.
+sovereign-docformat = { path = "../sovereign-docformat" }
+# The document service (C-DOC): `docs_host` gives it the personal-data hook
+# (the regex ingest of `pii::ingest`), the clock, media hashing and events
+# (C-DOC adoption step 2, shared by the shell and the Tauri app).
+sovereign-docs = { path = "../sovereign-docs" }
 sovereign-crypto = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

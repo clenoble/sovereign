@@ -7,6 +7,26 @@ does not work yet. There are no new features in this release; there is a sounder
 The **native desktop app is now the only desktop app**. The earlier Tauri desktop app is frozen
 and no longer shipped; Tauri remains the basis of the Android app.
 
+## Corrections after an independent review (added 2026-10-16)
+
+An independent review of this release, made after it was published, found that some of the
+statements below are stronger than what the app does. Until they are fixed:
+
+- **A deleted document cannot be brought back from the app yet.** "Delete is reversible" below is
+  true of the stored data, not of what you can do: there is no restore or trash in the app. Before
+  you confirm a delete, check that it is still the document you meant — if the canvas refreshes in
+  between (after a sync, or a document created from chat), the confirmation can apply to another one.
+- **Check the target of actions on similarly named threads or documents.** When two names are
+  close (for example "Work" and "Work Projects"), an action you approve in chat may apply to the
+  other one; a merge can even remove the thread you merge into.
+- **"✓ Done" after a chat request is not proof that something was done.** "No more 'done' for
+  actions that did nothing" below holds for direct requests, not yet for conversations with the
+  assistant. Check the result.
+- **"Logging in cancels a recovery"** holds on the desktop; on the phone, a recovery check already
+  in progress may bring it back.
+- **Phone and desktop**: a desktop document whose entire text is itself a JSON object with a
+  `body` field is read by the phone as that field alone, and a phone save keeps only that field.
+
 ## Your documents are safer
 
 - **A skill can no longer empty a document.** Running a skill from the Skills menu could, on some

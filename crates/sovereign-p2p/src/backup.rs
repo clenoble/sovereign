@@ -49,6 +49,11 @@ pub struct BackupSnapshot {
     pub milestones: Vec<sovereign_db::schema::Milestone>,
     pub relationships: Vec<sovereign_db::schema::RelatedTo>,
     pub suggested_links: Vec<sovereign_db::schema::SuggestedLink>,
+    /// The purge markers this device knew (C-WIRE 17): restored with the
+    /// backup, they keep a document purged before it from coming back by
+    /// sync. Absent from older backups.
+    #[serde(default)]
+    pub purge_markers: Vec<sovereign_db::schema::PurgeMarker>,
 }
 
 /// Read the full logical state through the (decrypting) db handle.
@@ -60,7 +65,12 @@ pub async fn build_snapshot(db: &dyn GraphDB, device_id: &str) -> P2pResult<Back
         schema_version: SNAPSHOT_VERSION,
         created_at: chrono::Utc::now().to_rfc3339(),
         device_id: device_id.to_string(),
-        documents: db.list_documents(None).await.map_err(|e| err("documents", e))?,
+        // The trash too: a document comes back in the state it was backed
+        // up in (C-WIRE 17).
+        documents: db
+            .list_documents_including_deleted()
+            .await
+            .map_err(|e| err("documents", e))?,
         threads: db.list_threads().await.map_err(|e| err("threads", e))?,
         entities: db.list_entities().await.map_err(|e| err("entities", e))?,
         pii_records: db
@@ -86,32 +96,27 @@ pub async fn build_snapshot(db: &dyn GraphDB, device_id: &str) -> P2pResult<Back
             .list_all_suggested_links()
             .await
             .map_err(|e| err("suggested_links", e))?,
+        // A store without purge markers (a test double) backs up none.
+        purge_markers: db.list_purge_markers().await.unwrap_or_default(),
     })
 }
 
-/// Restore a snapshot into a (fresh) database through the encrypting
-/// handle, preserving every row's origin id (the id-preserving creates
-/// from P2) so future sync with surviving devices doesn't duplicate.
+/// Restore a snapshot's **rows** into a (fresh) database through the
+/// encrypting handle, preserving every row's origin id (the id-preserving
+/// creates from P2) so future sync with surviving devices doesn't duplicate.
 /// Existing rows with the same id are left untouched (`Ok(false)` from
-/// the with_id creates), so restoring over a non-empty DB is additive.
-/// Returns the number of rows written.
+/// the with_id creates). Returns the number of rows written.
+///
+/// Documents and threads are **not** restored here: they come back through
+/// the document service — documents only onto an empty workspace (C-WIRE 17),
+/// threads through its one thread-write path with their stamps (THREAD-sync
+/// S1) — and [`crate::wire::restore_backup`] does all three.
 pub async fn restore_snapshot(db: &dyn GraphDB, snapshot: &BackupSnapshot) -> P2pResult<u64> {
     let mut written = 0u64;
     let e = |what: &str, e: sovereign_db::DbError| {
         P2pError::SyncError(format!("backup restore {what}: {e}"))
     };
 
-    // Threads first (documents reference them), then everything else.
-    for t in &snapshot.threads {
-        if db.create_thread_with_id(t.clone()).await.map_err(|x| e("thread", x))? {
-            written += 1;
-        }
-    }
-    for d in &snapshot.documents {
-        if db.create_document_with_id(d.clone()).await.map_err(|x| e("document", x))? {
-            written += 1;
-        }
-    }
     for x in &snapshot.entities {
         if db.create_entity_with_id(x.clone()).await.map_err(|x| e("entity", x))? {
             written += 1;
@@ -727,18 +732,13 @@ mod tests {
         let snapshot = unseal_backup(&ct, &nonce, &key).unwrap();
         assert_eq!(snapshot.documents.len(), 1);
 
-        // Restore into a FRESH db preserves ids and content.
+        // Restore the ROWS into a FRESH db (documents come back through the
+        // document service, C-WIRE 17: `wire::restore_backup`).
         let fresh = MockGraphDB::new();
         let written = restore_snapshot(&fresh, &snapshot).await.unwrap();
-        assert!(written >= 4, "thread+doc+entity+contact+milestone expected");
-        let docs = fresh.list_documents(None).await.unwrap();
-        assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].content, r#"{"body":"backup me","images":[]}"#);
-        assert_eq!(
-            docs[0].id_string(),
-            snapshot.documents[0].id_string(),
-            "restore must preserve origin ids for future sync"
-        );
+        assert!(written >= 3, "thread+entity+contact+milestone expected");
+        assert!(fresh.list_documents(None).await.unwrap().is_empty(), "no document written around the service");
+        assert_eq!(snapshot.documents[0].content, r#"{"body":"backup me","images":[]}"#, "the backup holds it");
 
         // Restoring again over the same db is a no-op (idempotent).
         let again = restore_snapshot(&fresh, &snapshot).await.unwrap();

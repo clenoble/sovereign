@@ -520,8 +520,43 @@ export const mobileCanvas: MobileCanvasState = $state({
 	pxPerMs: MOBILE_PX_PER_DAY / MS_PER_DAY
 });
 
+// ---- S5-12 W3: the phone's fallback lane ---------------------------------
+// A live document whose thread is not an active thread here (deleted here, or
+// never known here) is never hidden: it is drawn in one fallback lane after
+// the threads' lanes, shown only when such a document exists. Tested by
+// `canvas.mobile.orphans.svelte.test.ts`; MobileCanvas draws its lanes from
+// `mobileLanes()`.
+
+/** The fallback lane's id (never a thread id). */
+export const FALLBACK_LANE_ID = 'lane:fallback';
+/** The fallback lane's name, as in the desktop shell. */
+export const FALLBACK_LANE_NAME = 'Unfiled';
+
+export interface MobileLane {
+	/** The thread's id, or FALLBACK_LANE_ID. */
+	id: string;
+	name: string;
+	fallback: boolean;
+}
+
+/** The phone's lanes: one per active thread, in order, then the fallback lane
+ *  when a document's thread is not among them. */
+export function mobileLanes(): MobileLane[] {
+	const lanes: MobileLane[] = canvas.threads.map((t) => ({ id: t.id, name: t.name, fallback: false }));
+	const known = new Set(canvas.threads.map((t) => t.id));
+	if (canvas.documents.some((d) => !known.has(d.thread_id))) {
+		lanes.push({ id: FALLBACK_LANE_ID, name: FALLBACK_LANE_NAME, fallback: true });
+	}
+	return lanes;
+}
+
+/** The id of the lane a document is drawn in. */
+export function laneIdOf(doc: { thread_id: string }): string {
+	return canvas.threads.some((t) => t.id === doc.thread_id) ? doc.thread_id : FALLBACK_LANE_ID;
+}
+
 export function setLaneIndex(i: number) {
-	const max = Math.max(0, canvas.threads.length - 1);
+	const max = Math.max(0, mobileLanes().length - 1);
 	mobileCanvas.currentLaneIndex = Math.min(max, Math.max(0, i));
 }
 

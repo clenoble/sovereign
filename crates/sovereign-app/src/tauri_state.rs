@@ -63,8 +63,6 @@ pub struct AppState {
     pub orch_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
     /// Current UI theme ("dark" or "light").
     pub theme: Mutex<String>,
-    /// Auto-commit engine for document edits.
-    pub autocommit: Arc<tokio::sync::Mutex<sovereign_ai::AutoCommitEngine>>,
     /// Current model assignments (router + reasoning filenames).
     pub model_assignments: Mutex<ModelAssignments>,
     /// User profile directory path (~/.sovereign).
@@ -104,6 +102,21 @@ pub struct AppState {
     #[cfg(feature = "encryption")]
     pub pending_pairing:
         tokio::sync::RwLock<Option<(sovereign_crypto::pair_payload::PairPayload, String)>>,
+    /// The document service (C-DOC) over the persona's encrypted store: every
+    /// document save, skill write-back and restore goes through it (adoption
+    /// step 2). Built by `install_session`; `None` while locked.
+    #[cfg(feature = "encryption")]
+    pub docs: tokio::sync::RwLock<Option<Arc<sovereign_docs::DocumentService>>>,
+    /// The one-time migration to document format v2 started at the last
+    /// unlock (C-DOC adoption step 6): a later unlock replaces it, stopping a
+    /// run still under way over the previous persona's store (it resumes at
+    /// that store's next unlock, M3).
+    #[cfg(feature = "encryption")]
+    pub migration_task: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// One editing session per open document (the document panel / reader),
+    /// keyed by document id: created at its first save, ended by
+    /// `close_document`. See [`crate::doc_saves`].
+    pub edit_sessions: std::sync::Mutex<std::collections::HashMap<String, crate::doc_saves::SessionState>>,
     /// P2P command sender for queueing `StartSync` / `PairDevice` /
     /// `Shutdown` from Tauri commands and the periodic poll task.
     /// `None` until `install_session` runs the post-login P2P startup.
@@ -319,5 +332,23 @@ fn connectivity_from_u8(byte: u8) -> sovereign_p2p::ConnectivityState {
         2 => ConnectivityState::Cellular,
         3 => ConnectivityState::Offline,
         _ => ConnectivityState::Unknown,
+    }
+}
+
+impl AppState {
+    /// The document service, once a session is unlocked.
+    pub async fn docs(&self) -> Result<Arc<sovereign_docs::DocumentService>, String> {
+        #[cfg(feature = "encryption")]
+        {
+            self.docs
+                .read()
+                .await
+                .clone()
+                .ok_or_else(|| "The workspace is locked: log in to change documents.".to_string())
+        }
+        #[cfg(not(feature = "encryption"))]
+        {
+            Err("Changing documents needs the encryption build.".to_string())
+        }
     }
 }

@@ -345,6 +345,8 @@ impl GraphDB for MockGraphDB {
         if let Some(n) = name { thread.name = n.to_string(); }
         if let Some(d) = description { thread.description = d.to_string(); }
         thread.modified_at = Utc::now();
+        // A write outside the stamped path (THREAD-sync S1) leaves no stamp.
+        thread.stamp = None;
         Ok(thread.clone())
     }
 
@@ -570,6 +572,7 @@ impl GraphDB for MockGraphDB {
         let mut threads = self.threads.write().unwrap();
         if let Some(thread) = threads.get_mut(id) {
             thread.deleted_at = Some(Utc::now().to_rfc3339());
+            thread.stamp = None;
         }
         Ok(())
     }
@@ -578,6 +581,7 @@ impl GraphDB for MockGraphDB {
         let mut threads = self.threads.write().unwrap();
         let thread = threads.get_mut(id).ok_or_else(|| DbError::NotFound(id.to_string()))?;
         thread.deleted_at = None;
+        thread.stamp = None;
         Ok(thread.clone())
     }
 
@@ -817,6 +821,25 @@ impl GraphDB for MockGraphDB {
         let contact = contacts.get_mut(contact_id).ok_or_else(|| DbError::NotFound(contact_id.to_string()))?;
         contact.addresses.push(address);
         Ok(contact.clone())
+    }
+
+    async fn remove_contact_address(
+        &self,
+        contact_id: &str,
+        channel: ChannelType,
+        address: &str,
+    ) -> DbResult<Contact> {
+        let mut contacts = self.contacts.write().unwrap();
+        let contact = contacts.get_mut(contact_id).ok_or_else(|| DbError::NotFound(contact_id.to_string()))?;
+        contact.addresses.retain(|a| !(a.channel == channel && a.address == address));
+        Ok(contact.clone())
+    }
+
+    async fn update_conversation_title(&self, id: &str, title: &str) -> DbResult<()> {
+        let mut convs = self.conversations.write().unwrap();
+        let conv = convs.get_mut(id).ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        conv.title = title.to_string();
+        Ok(())
     }
 
     async fn create_message(&self, mut message: Message) -> DbResult<Message> {
@@ -1313,6 +1336,14 @@ impl GraphDB for MockGraphDB {
         }
         map.insert(id, thread);
         Ok(true)
+    }
+
+    async fn put_thread(&self, thread: Thread) -> DbResult<()> {
+        let id = thread
+            .id_string()
+            .ok_or_else(|| DbError::Query("put_thread: id unset".into()))?;
+        self.threads.write().unwrap().insert(id, thread);
+        Ok(())
     }
 
     async fn create_entity_with_id(&self, entity: Entity) -> DbResult<bool> {

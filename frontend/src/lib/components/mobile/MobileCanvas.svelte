@@ -22,6 +22,9 @@
 	import {
 		canvas,
 		mobileCanvas,
+		mobileLanes,
+		laneIdOf,
+		type MobileLane,
 		setLaneIndex,
 		setMobilePxPerMs,
 		LOD_THRESHOLD_PX_PER_MS,
@@ -89,12 +92,17 @@
 
 	let isLowDetail = $derived(mobileCanvas.pxPerMs < LOD_THRESHOLD_PX_PER_MS);
 
-	/** Group docs by thread id, sorted newest-first within each lane. */
+	/** The lanes: one per thread, then the fallback lane ("Unfiled") when a
+	 *  document's thread is not an active thread here (S5-12 W3: a document of
+	 *  a deleted thread is never hidden). */
+	let lanes = $derived(mobileLanes());
+
+	/** Group docs by lane id, sorted newest-first within each lane. */
 	let docsByThread = $derived.by(() => {
 		const map = new Map<string, typeof canvas.documents>();
-		for (const t of canvas.threads) map.set(t.id, []);
+		for (const l of lanes) map.set(l.id, []);
 		for (const d of canvas.documents) {
-			const list = map.get(d.thread_id);
+			const list = map.get(laneIdOf(d));
 			if (list) list.push(d);
 		}
 		for (const list of map.values()) {
@@ -130,7 +138,7 @@
 	}
 
 	interface PlacedLane {
-		thread: (typeof canvas.threads)[number];
+		thread: MobileLane;
 		cards: PlacedCard[];
 		trackHeight: number;
 	}
@@ -142,7 +150,7 @@
 		void nowTick; // dependency: drift cards as time passes
 		const now = Date.now();
 		const px = mobileCanvas.pxPerMs;
-		return canvas.threads.map((thread) => {
+		return lanes.map((thread) => {
 			const docs = docsByThread.get(thread.id) ?? [];
 			let lastBottom = TRACK_TOP_PADDING;
 			const cards: PlacedCard[] = docs.map((doc) => {
@@ -161,7 +169,7 @@
 	});
 
 	interface DensityLane {
-		thread: (typeof canvas.threads)[number];
+		thread: MobileLane;
 		counts: number[]; // doc count per day-bucket, newest first
 		total: number;
 		maxCount: number;
@@ -185,7 +193,7 @@
 			DENSITY_MAX_BUCKETS,
 			Math.max(1, Math.ceil(span / DENSITY_BUCKET_MS) + 1)
 		);
-		return canvas.threads.map((thread) => {
+		return lanes.map((thread) => {
 			const docs = docsByThread.get(thread.id) ?? [];
 			const counts = new Array(buckets).fill(0) as number[];
 			let max = 0;
@@ -202,7 +210,7 @@
 	});
 
 	let activeLaneIndex = $derived(mobileCanvas.currentLaneIndex);
-	let totalLanes = $derived(canvas.threads.length);
+	let totalLanes = $derived(lanes.length);
 
 	let lanesTransform = $derived(
 		`translateX(${-activeLaneIndex * viewportWidth + dragOffsetX}px)`
@@ -562,7 +570,7 @@
 											aria-label={doc.is_owned ? 'Owned' : 'External'}
 										></span>
 										<div class="card-body">
-											<div class="card-title">{doc.title || '(untitled)'}</div>
+											<div class="card-title">{doc.title || 'Untitled'}</div>
 											<div class="card-time">{formatRelative(doc.modified_at)}</div>
 										</div>
 										{#if xLane > 0}

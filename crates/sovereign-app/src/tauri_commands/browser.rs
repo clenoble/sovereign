@@ -399,50 +399,45 @@ pub async fn save_web_page(
     assessment_json: Option<String>,
 ) -> Result<CanvasDocDto, String> {
     state.require_unlocked(&webview).await?;
+    let docs = state.docs().await?;
     let tid = match thread_id {
         Some(t) if !t.is_empty() => t,
         _ => {
-            // Create or find a "Web" thread for browsed content
+            // Create or find a "Web" thread for browsed content (created
+            // through the one thread-write path, stamped: THREAD-sync S1).
             match state.db.find_thread_by_name("Web").await {
                 Ok(Some(t)) => t.id_string().unwrap_or_default(),
-                _ => {
-                    let thread =
-                        sovereign_db::schema::Thread::new("Web".into(), "Browsed web content".into());
-                    let created = state
-                        .db
-                        .create_thread(thread)
-                        .await
-                        .str_err()?;
-                    created.id_string().unwrap_or_default()
-                }
+                _ => docs
+                    .thread_create("Web", "Browsed web content")
+                    .await
+                    .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?,
             }
         }
     };
 
-    let content_json = serde_json::json!({
-        "body": content,
-        "images": [],
-        "videos": []
-    })
-    .to_string();
-
-    let mut doc = Document::new(title, tid.clone(), false);
-    doc.content = content_json;
-    doc.source_url = Some(url);
-    doc.reliability_classification = classification.clone();
-    doc.reliability_score = score;
-    doc.reliability_assessment = assessment_json;
-    if classification.is_some() || score.is_some() {
-        doc.assessed_at = Some(Utc::now());
-    }
-
-    let created = state
-        .db
-        .create_document(doc)
+    // C-DOC adoption step 3: through the document service — external,
+    // provenance web with its URL (it records `source_url`), a version from
+    // creation, personal data tokenized. The reliability assessment the
+    // panel made is recorded after, as before (it is not document content).
+    let new = sovereign_ai::docs_host::new_web_document(title, tid.clone(), url, content);
+    let id = sovereign_ai::docs_host::create(&docs, new)
         .await
-        .str_err()?;
-
-    let id = created.id_string().unwrap_or_default();
+        .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?
+        .id;
+    if classification.is_some() || score.is_some() || assessment_json.is_some() {
+        state
+            .db
+            .update_document_reliability(
+                &id,
+                None,
+                classification.as_deref(),
+                score,
+                assessment_json.as_deref(),
+            )
+            .await
+            .str_err()?;
+    }
+    let created = state.db.get_document(&id).await.str_err()?;
 
     Ok(CanvasDocDto {
         id,
@@ -469,12 +464,10 @@ pub async fn reassess_reliability(
     state.require_unlocked(&webview).await?;
     let doc = state.db.get_document(&doc_id).await.str_err()?;
 
-    // Parse content JSON to extract body text
-    let body = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&doc.content) {
-        v["body"].as_str().unwrap_or("").to_string()
-    } else {
-        doc.content.clone()
-    };
+    // C-DOC adoption step 1: the document's text through the v2 model. The
+    // hand-rolled parse this replaces read any JSON without a string `body`
+    // (a v2 document among them) as empty: "no text content to assess".
+    let body = sovereign_docformat::plain_text_of(&doc.content);
 
     if body.is_empty() {
         return Err("Document has no text content to assess".into());

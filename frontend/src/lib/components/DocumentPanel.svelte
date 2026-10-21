@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { renderMarkdown } from '$lib/utils/markdown';
-	import { type OpenPanel, save, updateBody, updateTitle, close, bringToFront, updatePosition, setMode, loadCommits, selectCommit, restoreVersion, toggleSkillsOverflow } from '$lib/stores/documents.svelte';
+	import { type OpenPanel, save, refresh, updateBody, updateTitle, close, bringToFront, updatePosition, setMode, loadCommits, selectCommit, restoreVersion, toggleSkillsOverflow } from '$lib/stores/documents.svelte';
+	import SaveNotice from './SaveNotice.svelte';
 	import { listSkillsForDoc, executeSkill } from '$lib/api/commands';
 	import { pushSystem } from '$lib/stores/chat.svelte';
 	import type { SkillInfo, SkillResultDto } from '$lib/api/commands';
@@ -65,7 +66,7 @@
 
 	function handleSave() {
 		if (saveTimer) clearTimeout(saveTimer);
-		save(panel.doc.id);
+		save(panel.doc.id, true);
 	}
 
 	function handleClose() {
@@ -142,6 +143,15 @@
 
 	// Skill execution
 	async function runSkill(skillName: string, actionId: string) {
+		// The skill runs on the stored document and writes its result back
+		// itself (C-DOC adoption step 2): save what is typed first, and reload
+		// after a content update instead of putting the output in the editor.
+		if (saveTimer) clearTimeout(saveTimer);
+		await save(panel.doc.id);
+		if (panel.dirty) {
+			pushSystem('Skill not run: this document has edits that could not be saved.');
+			return;
+		}
 		try {
 			const result: SkillResultDto = await executeSkill(
 				skillName,
@@ -149,8 +159,8 @@
 				panel.doc.id,
 				'{}'
 			);
-			if (result.kind === 'content_update' && result.body !== undefined) {
-				updateBody(panel.doc.id, result.body);
+			if (result.kind === 'content_update') {
+				await refresh(panel.doc.id);
 			} else if (result.kind === 'file' && result.file_data_base64) {
 				// Trigger download
 				const bytes = Uint8Array.from(atob(result.file_data_base64), (c) => c.charCodeAt(0));
@@ -224,6 +234,8 @@
 		</div>
 	</div>
 
+	<SaveNotice {panel} />
+
 	<div class="panel-body">
 		<div class="content-area">
 			<!-- Title -->
@@ -286,7 +298,7 @@
 								class="restore-btn"
 								onclick={() => restoreVersion(panel.doc.id, panel.commits[panel.selectedCommit!].id)}
 							>
-								Restore this version
+								Use this version
 							</button>
 						</div>
 					{/if}

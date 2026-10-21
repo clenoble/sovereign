@@ -39,6 +39,8 @@ export interface FullDocument {
 	is_owned: boolean;
 	created_at: string;
 	modified_at: string;
+	/** The revision a save of this state is based on (C-DOC adoption step 2). */
+	revision: string;
 }
 
 export interface ContentImageDto {
@@ -110,13 +112,22 @@ export const getTheme = () => invoke<string>('get_theme');
 
 // Document CRUD
 export const getDocument = (id: string) => invoke<FullDocument>('get_document', { id });
+/** Save through the document service. Refused (nothing written) when the
+ *  document changed since `baseRevision` was read — the error then starts with
+ *  `SAVE_CONFLICT_PREFIX`. Returns the document as stored (personal data
+ *  replaced by tokens, the new revision). */
 export const saveDocument = (
 	id: string,
 	title: string,
 	body: string,
 	images: ContentImageDto[],
-	videos: ContentVideoDto[]
-) => invoke<void>('save_document', { id, title, body, images, videos });
+	videos: ContentVideoDto[],
+	baseRevision: string,
+	explicit = false
+) =>
+	invoke<FullDocument>('save_document', { id, title, body, images, videos, baseRevision, explicit });
+/** Start of the `save_document` error when the document changed elsewhere. */
+export const SAVE_CONFLICT_PREFIX = 'conflict: ';
 export const createDocument = (title: string, threadId: string) =>
 	invoke<string>('create_document', { title, threadId });
 export const closeDocument = (id: string) => invoke<void>('close_document', { id });
@@ -350,8 +361,27 @@ export const saveProfile = (data: SaveProfileDto) =>
 // Config
 export const getConfig = () => invoke<AppConfigDto>('get_config');
 
-// Document deletion
+// Document deletion: one click moves the document to the trash (C-DOC
+// adoption step 5).
 export const deleteDocument = (id: string) => invoke<void>('delete_document', { id });
+
+// The trash (C-DOC adoption step 5, S5-9/S5-11)
+export interface TrashEntryDto {
+	id: string;
+	title: string;
+	thread_id: string;
+	/** `null` when the thread was deleted. */
+	thread_name: string | null;
+	/** The deleted thread's old name when the thread is gone. */
+	deleted_thread_name?: string | null;
+	trashed_at: string;
+	days_left: number;
+}
+export const listTrash = () => invoke<TrashEntryDto[]>('list_trash');
+/** Into its thread, or into `threadId` (needed when its thread was deleted). */
+export const restoreFromTrash = (id: string, threadId: string | null) =>
+	invoke<void>('restore_from_trash', { id, threadId });
+export const emptyTrash = () => invoke<number>('empty_trash');
 
 // ---------------------------------------------------------------------------
 // Phase 5: Trust, Import, Comms
@@ -479,28 +509,74 @@ export const dismissLinkSuggestion = (id: string) =>
 export const triggerConsolidation = () =>
 	invoke<number>('trigger_consolidation');
 
-// Peer-write review (p2p-no-per-doc-authz): changes a paired device synced that
-// overwrote local content. Non-destructive — the prior is preserved for restore.
-export interface PeerReviewDto {
-	kind: string; // "document" | "row"
-	id: string;
+// Alerts on changes from paired devices (C-WIRE 13: alerts, not reviews).
+// A change from one of your devices applies on its own; one that looks
+// suspicious is listed until dismissed. Dismissing changes nothing.
+export interface SyncAlertDto {
+	doc_id: string;
 	title: string;
-	peer: string;
-	at: string | null;
-	/** JSON-encoded PeerChangeVerdict, or null if not yet audited. */
-	assessment: string | null;
+	/** The sending device's peer id. */
+	device: string;
+	/** Its name when it is a paired device; empty otherwise. */
+	device_name: string;
+	/** What was found, in words (no document text). */
+	finding: string;
+	/** The version before the change; null for a first arrival. */
+	previous_version: string | null;
+}
+
+export const listSyncAlerts = () => invoke<SyncAlertDto[]>('list_sync_alerts');
+
+export const dismissSyncAlert = (docId: string) => invoke<void>('dismiss_sync_alert', { docId });
+
+// Previous values of synced items (rows a sync replaced; restorable).
+export interface PreviousValueDto {
+	id: string;
+	label: string;
+	device: string;
+	device_name: string;
+	/** RFC3339 */
+	at: string;
 	can_restore: boolean;
 }
 
-export const listPeerReviews = () => invoke<PeerReviewDto[]>('list_peer_reviews');
+export const listPreviousValues = () => invoke<PreviousValueDto[]>('list_previous_values');
 
-export const acceptPeerReview = (kind: string, id: string) =>
-	invoke<void>('accept_peer_review', { kind, id });
+export const restorePreviousValue = (id: string) => invoke<void>('restore_previous_value', { id });
 
-export const restorePeerReview = (kind: string, id: string) =>
-	invoke<void>('restore_peer_review', { kind, id });
+export const forgetPreviousValue = (id: string) => invoke<void>('forget_previous_value', { id });
 
-export const auditPeerReviews = () => invoke<number>('audit_peer_reviews');
+// Documents whose thread was deleted here (S5-12, spec ch. 03, *Thread deletion
+// and the fallback lane*): a live document still in a deleted thread asks what
+// to do — move it to an existing thread, create a new thread for it, or put it
+// in the trash. Computed by the document service, never a stored alert.
+export interface OrphanDto {
+	doc_id: string;
+	title: string;
+	/** The deleted thread it is still in. */
+	thread_id: string;
+	/** That thread's old name (from its tombstone); null when unknown. */
+	deleted_thread_name: string | null;
+	/** The peer id of the device its current state came from (this device's own for a write made here). */
+	device: string;
+	/** Its name when it is a paired device; empty otherwise. */
+	device_name: string;
+}
+
+/** One of the three ways out (serde: `#[serde(tag = "kind", rename_all = "snake_case")]`). */
+export type OrphanResolutionDto =
+	| { kind: 'move_to'; thread_id: string }
+	| { kind: 'new_thread'; name: string }
+	| { kind: 'trash' };
+
+export const listOrphanedDocuments = () => invoke<OrphanDto[]>('list_orphaned_documents');
+
+export const resolveOrphan = (docId: string, resolution: OrphanResolutionDto) =>
+	invoke<void>('resolve_orphan', { docId, resolution });
+
+/** The same way out for every document of the deleted thread `threadId`. */
+export const resolveOrphansOfThread = (threadId: string, resolution: OrphanResolutionDto) =>
+	invoke<number>('resolve_orphans_of_thread', { threadId, resolution });
 
 // Save web page as document
 export const saveWebPage = (
@@ -809,12 +885,6 @@ export interface P2pSettings {
 /** Read-only view of the P2P configuration for Settings → Devices.
  *  Editing still happens via config.toml (see P3.2 gap note). */
 export const getP2pSettings = () => invoke<P2pSettings>('get_p2p_settings');
-
-/** Resolve a document sync conflict by keeping the local version:
- *  touches the document (bumps modified_at, so this device wins the
- *  next LWW round) and triggers an immediate sync. */
-export const resolveSyncConflictKeepMine = (docId: string) =>
-	invoke<void>('resolve_sync_conflict_keep_mine', { docId });
 
 export interface GeneratePairQrResult {
 	qr_payload_b64: string;

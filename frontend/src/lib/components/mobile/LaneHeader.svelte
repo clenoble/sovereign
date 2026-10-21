@@ -7,15 +7,15 @@
 	 *
 	 *  Future (Phase 3): pull-down on this header → global search.
 	 */
-	import { canvas, mobileCanvas } from '$lib/stores/canvas.svelte';
+	import { mobileCanvas, mobileLanes } from '$lib/stores/canvas.svelte';
 	import { longPress } from '$lib/actions/longPress';
 	import LaneSwitcherSheet from './LaneSwitcherSheet.svelte';
 
+	// The lanes include the fallback lane ("Unfiled") when a document needs it (S5-12 W3).
+	let lanes = $derived(mobileLanes());
 	let activeIndex = $derived(mobileCanvas.currentLaneIndex);
-	let activeName = $derived(
-		canvas.threads.length > 0 ? canvas.threads[activeIndex]?.name ?? '—' : '(no threads)'
-	);
-	let totalLanes = $derived(canvas.threads.length);
+	let activeName = $derived(lanes.length > 0 ? lanes[activeIndex]?.name ?? '—' : '(no threads)');
+	let totalLanes = $derived(lanes.length);
 
 	let switcherOpen = $state(false);
 
@@ -39,7 +39,7 @@
 
 	{#if totalLanes > 1}
 		<div class="dots" role="tablist" aria-label="Lane indicator">
-			{#each canvas.threads as _t, i}
+			{#each lanes as _t, i}
 				<span class="dot" class:active={i === activeIndex} aria-hidden="true"></span>
 			{/each}
 		</div>

@@ -27,6 +27,13 @@ import {
 	onSyncStarted
 } from '$lib/stores/sync.svelte';
 import { onDevicePaired, onPairingFailed } from '$lib/stores/pairing.svelte';
+import {
+	onPeerNeedsUpdate,
+	onSyncRoundCompleted,
+	onSyncRoundStarted,
+	reloadSyncAlerts
+} from '$lib/stores/syncAlerts.svelte';
+import { showMigrationNotice } from '$lib/stores/migrationNotice.svelte';
 import type { PendingShare } from '$lib/stores/app.svelte';
 import type { ReliabilityResultDto } from '$lib/api/commands';
 
@@ -47,6 +54,14 @@ interface ActionProposedPayload {
 interface ActionExecutedPayload {
 	action: string;
 	success: boolean;
+}
+/** A chat turn's explicit outcome (spec ch. 08), as the one line to show. */
+interface ChatTurnEndedPayload {
+	summary: string;
+	/** The saved trace of a turn stopped at the round limit; nothing opens it by itself. */
+	trace_doc_id: string | null;
+	/** That trace's exact title, which the summary names (thread "Assistant traces"). */
+	trace_title: string | null;
 }
 interface ActionRejectedPayload {
 	action: string;
@@ -160,6 +175,11 @@ interface SyncConflictPayload {
 	doc_id: string;
 	description: string;
 }
+interface PeerNeedsUpdatePayload {
+	peer_id: string;
+	/** Empty when the device is not in the paired list. */
+	device_name: string;
+}
 interface DevicePairedPayload {
 	device_id: string;
 	device_name: string;
@@ -210,6 +230,13 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 				? `Done: ${e.payload.action}`
 				: `Failed: ${e.payload.action}`;
 			pushSystem(msg);
+			app.pendingAction = null;
+		})
+	);
+
+	unlisteners.push(
+		await listen<ChatTurnEndedPayload>('chat-turn-ended', (e) => {
+			pushSystem(e.payload.summary);
 			app.pendingAction = null;
 		})
 	);
@@ -410,8 +437,12 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 			const { peer_id, status } = e.payload;
 			if (status === 'started') {
 				onSyncStarted(peer_id);
+				onSyncRoundStarted(peer_id);
 			} else if (status.startsWith('completed')) {
 				onSyncCompleted(peer_id);
+				onSyncRoundCompleted(peer_id);
+				// A change received in this round may have raised an alert.
+				reloadSyncAlerts();
 				// A paired peer just pushed rows into our DB. Refresh the
 				// canvas + contacts so synced threads/docs/contacts appear
 				// without a manual reload (the "it didn't land on mobile"
@@ -433,6 +464,25 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	unlisteners.push(
 		await listen<SyncConflictPayload>('sync-conflict', (e) => {
 			onSyncConflict(e.payload.doc_id, e.payload.description);
+		})
+	);
+	// C-WIRE 12: a paired device on an older version (documents not exchanged).
+	unlisteners.push(
+		await listen<PeerNeedsUpdatePayload>('peer-needs-update', (e) => {
+			onPeerNeedsUpdate(e.payload.peer_id, e.payload.device_name);
+		})
+	);
+	// C-WIRE 13: the background model verdict raised an alert.
+	unlisteners.push(
+		await listen('sync-alerts-changed', () => {
+			reloadSyncAlerts();
+		})
+	);
+	// C-DOC adoption step 6 (M2): the one-time migration to document format
+	// v2 completed; its notice, once (the backend owns the text).
+	unlisteners.push(
+		await listen<{ text: string }>('documents-migrated', (e) => {
+			showMigrationNotice(e.payload.text);
 		})
 	);
 	unlisteners.push(

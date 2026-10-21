@@ -97,6 +97,16 @@ pub struct EncryptedCommit {
     /// (see `commit_sig_bytes`). Empty = unsigned (rejected, like rows).
     #[serde(default)]
     pub signature: String,
+    /// C-WIRE (spec ch. 05, draft 2026-10-15): the document's wire state —
+    /// trust, trust decision with its stamp, provenance, creation time,
+    /// stamps, author device — AEAD-sealed under the pair key like the
+    /// snapshot, base64. Empty from a peer on an older build. Covered by the
+    /// signature once step 4 is built. Contract field: nothing fills it yet.
+    #[serde(default)]
+    pub sealed_wire: String,
+    /// Nonce paired with `sealed_wire`, base64.
+    #[serde(default)]
+    pub wire_nonce: String,
 }
 
 /// Result of comparing two manifests.
@@ -147,6 +157,8 @@ mod tests {
             timestamp: "2026-01-01T00:00:00Z".into(),
             version_device: String::new(),
             signature: String::new(),
+            sealed_wire: String::new(),
+            wire_nonce: String::new(),
         };
         let json = serde_json::to_string(&commit).unwrap();
         let back: EncryptedCommit = serde_json::from_str(&json).unwrap();

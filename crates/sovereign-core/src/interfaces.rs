@@ -56,6 +56,19 @@ pub enum OrchestratorEvent {
     /// offer self-destructed (expired or attempts exhausted) and the
     /// pairing QR must be regenerated.
     PairingFailed { reason: String, offer_dead: bool },
+    /// A paired device runs an older version: documents are not exchanged
+    /// with it until it is updated; other data still syncs (C-WIRE 12).
+    /// `device_name` is empty when the device is not in the paired list.
+    PeerNeedsUpdate { peer_id: String, device_name: String },
+    /// The alerts on changes from paired devices may have changed (one was
+    /// raised by the background model verdict, C-WIRE 13): the UI re-reads
+    /// them. Alerts raised during sync are re-read on sync completion.
+    SyncAlertsChanged,
+    /// The one-time migration to document format v2 has completed in this
+    /// persona's store (C-DOC adoption step 6, M2): the notice to show, once.
+    /// `text` is `sovereign_docs::MigrationNotice::text()`; it names no
+    /// document.
+    DocumentsMigrated { text: String },
     // Guardian events
     GuardianEnrolled { guardian_id: String, name: String },
     GuardianDropped { guardian_id: String, reason: String },
@@ -96,6 +109,116 @@ pub enum OrchestratorEvent {
     /// Toggle a frontend UI panel. `name` is one of:
     /// "pii_dashboard", "models", "inbox", "browser", "settings".
     OpenPanel { name: String },
+    /// A chat turn handed to the agent loop has ended (spec ch. 08, *Action Gravity*:
+    /// a chat turn always ends with an explicit outcome). Emitted once per chat turn,
+    /// in place of `ActionExecuted`.
+    ChatTurnEnded { outcome: ChatOutcome },
+}
+
+/// How a chat turn ended: the writes that ran, and how the turn itself closed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatOutcome {
+    pub writes: Vec<WriteResult>,
+    pub end: ChatEnd,
+}
+
+/// How the turn closed, apart from its writes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatEnd {
+    /// The assistant gave its answer.
+    Completed,
+    /// Generation failed; the reason is shown to the user.
+    GenerationFailed(String),
+    /// The user chose to stop the turn on flagged content in tool output.
+    StoppedForInjection,
+    /// The turn reached the round limit without a final answer. Not a failure: the
+    /// assistant stopped after `steps` tool steps, and the trace of the turn was saved
+    /// (or could not be) — spec ch. 08, *Chat agent loop*.
+    RoundLimit { steps: u8, trace: TraceLink },
+}
+
+/// Where the trace of a turn that reached the round limit went.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TraceLink {
+    /// Saved as a Sovereign document in the thread "Assistant traces". The outcome names
+    /// the thread and this exact `title`; nothing opens by itself (spec v2.0.39).
+    Saved { doc_id: String, title: String },
+    /// Could not be saved; the reason is shown and no document is named.
+    NotSaved { reason: String },
+}
+
+/// One write tool the turn ran, or proposed, and what came of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WriteResult {
+    pub tool: String,
+    pub outcome: WriteOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum WriteOutcome {
+    Succeeded,
+    Failed(String),
+    /// Proposed to the user and declined (or not confirmed in time).
+    Declined,
+}
+
+impl ChatOutcome {
+    /// The one line every UI shows for the turn. Never empty; says "Done" only of a
+    /// write that succeeded, names every write, and gives each failure's reason.
+    pub fn summary_line(&self) -> String {
+        let mut parts: Vec<String> = self
+            .writes
+            .iter()
+            .map(|w| match &w.outcome {
+                WriteOutcome::Succeeded => format!("✓ Done: {}", w.tool),
+                WriteOutcome::Failed(reason) => format!("✗ Failed: {} ({reason})", w.tool),
+                WriteOutcome::Declined => format!("Declined: {}", w.tool),
+            })
+            .collect();
+        match &self.end {
+            ChatEnd::Completed => {
+                if parts.is_empty() {
+                    parts.push("Answered (no changes made)".to_string());
+                }
+            }
+            ChatEnd::GenerationFailed(reason) => {
+                parts.push(format!("✗ Reply failed: {reason}"));
+            }
+            ChatEnd::StoppedForInjection => {
+                parts.push("Stopped: flagged content in tool output".to_string());
+            }
+            ChatEnd::RoundLimit { steps, trace } => {
+                parts.push(format!(
+                    "Stopped after {steps} steps without a final answer — rephrase or split the request"
+                ));
+                parts.push(match trace {
+                    TraceLink::Saved { title, .. } => {
+                        format!("Trace saved in \"Assistant traces\": {title}")
+                    }
+                    TraceLink::NotSaved { reason } => format!("Trace not saved: {reason}"),
+                });
+            }
+        }
+        parts.join(" · ")
+    }
+
+    /// The document holding the trace of this turn, when the turn reached the round
+    /// limit and the trace was saved. `None` for every other turn end.
+    pub fn trace_doc_id(&self) -> Option<&str> {
+        match &self.end {
+            ChatEnd::RoundLimit { trace: TraceLink::Saved { doc_id, .. }, .. } => Some(doc_id),
+            _ => None,
+        }
+    }
+
+    /// The exact title of that saved trace, under the same condition as
+    /// [`Self::trace_doc_id`].
+    pub fn trace_title(&self) -> Option<&str> {
+        match &self.end {
+            ChatEnd::RoundLimit { trace: TraceLink::Saved { title, .. }, .. } => Some(title),
+            _ => None,
+        }
+    }
 }
 
 /// Lightweight milestone summary for milestone events.
@@ -222,3 +345,11 @@ pub trait ModelBackend: Send + Sync {
     async fn generate(&self, prompt: &str, max_tokens: u32) -> anyhow::Result<String>;
     async fn unload(&mut self) -> anyhow::Result<()>;
 }
+
+#[cfg(test)]
+#[path = "chat_outcome_tests.rs"]
+mod chat_outcome_tests;
+
+#[cfg(test)]
+#[path = "chat_round_limit_tests.rs"]
+mod chat_round_limit_tests;

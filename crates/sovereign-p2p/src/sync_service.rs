@@ -4,7 +4,7 @@ use libp2p::identity::{Keypair, PublicKey};
 use libp2p::PeerId;
 use sha2::{Digest, Sha256};
 use sovereign_db::schema::{
-    Contact, Conversation, Document, Entity, Message, Milestone, PiiRecord, RelatedTo,
+    Contact, Conversation, Entity, Message, Milestone, PiiRecord, RelatedTo,
     ShareRecord, SuggestedLink, Thread,
 };
 #[cfg(test)]
@@ -58,7 +58,7 @@ pub struct SyncService {
     /// This device's libp2p identity keypair. Every outgoing row envelope
     /// is Ed25519-signed with it (P1.3 / P2P-003); receivers verify
     /// against the public key embedded in the sender's PeerId.
-    keypair: Keypair,
+    pub(crate) keypair: Keypair,
     /// Per-device Lamport clock + per-row version map (P1.3). Guards the
     /// row-level LWW so resolution orders by signed `(counter, device_id)`
     /// stamps instead of forgeable wall-clock timestamps. std Mutex —
@@ -70,6 +70,15 @@ pub struct SyncService {
     /// [`Self::set_pair_keys`]. A peer with no entry fails CLOSED — no
     /// data can be sealed for or unsealed from it.
     pair_keys: std::sync::RwLock<std::collections::HashMap<String, [u8; 32]>>,
+    /// The persona's document service (C-WIRE, step 4): every document state
+    /// is read from it and applied through it. Without one, this device
+    /// exchanges no documents (rows only).
+    pub(crate) documents: Option<Arc<sovereign_docs::DocumentService>>,
+    /// The incoming-change analysis (C-WIRE 13), run on every applied
+    /// document change.
+    pub(crate) analysis: Option<Arc<dyn crate::wire::IncomingAnalysis>>,
+    /// The model's verdict, run in the background (C-WIRE 13, v2.0.22).
+    pub(crate) model_verdicts: std::sync::RwLock<Option<Arc<crate::wire::ModelVerdicts>>>,
 }
 
 impl SyncService {
@@ -87,6 +96,9 @@ impl SyncService {
             keypair,
             versions: Mutex::new(versions),
             pair_keys: std::sync::RwLock::new(std::collections::HashMap::new()),
+            documents: None,
+            analysis: None,
+            model_verdicts: std::sync::RwLock::new(None),
         }
     }
 
@@ -115,7 +127,7 @@ impl SyncService {
     /// The sealing key for envelopes exchanged with `peer`. Fails closed:
     /// without a pair key no row or commit can leave for — or be accepted
     /// from — that peer.
-    fn pair_key_for(&self, peer: &PeerId) -> P2pResult<[u8; 32]> {
+    pub(crate) fn pair_key_for(&self, peer: &PeerId) -> P2pResult<[u8; 32]> {
         self.pair_keys
             .read()
             .expect("pair key lock poisoned")
@@ -139,8 +151,22 @@ impl SyncService {
     /// data — including deleted PII.
     pub async fn build_manifest(&self) -> P2pResult<SyncManifest> {
         let mut manifest = SyncManifest::new(self.device_id.clone());
+        manifest.wire_version = Some(crate::wire::WIRE_VERSION);
 
-        // --- Documents (commit-chain tracked) ---
+        // --- Documents (C-WIRE: normalised hashes, stamps, purge markers,
+        // from the document service). The pre-step-4 entries are not sent
+        // then: an older build exchanges no documents with this one (C-WIRE
+        // 12). Without a document service (tests of the row protocol), the
+        // documents are listed as before, read-only.
+        if let Some(docs) = self.documents.clone() {
+            self.manifest_documents(&docs, &mut manifest).await?;
+        } else {
+            self.manifest_legacy_documents(&mut manifest).await?;
+        }
+        self.manifest_rows(manifest).await
+    }
+
+    async fn manifest_legacy_documents(&self, manifest: &mut SyncManifest) -> P2pResult<()> {
         let docs = self
             .db
             .list_documents_including_deleted()
@@ -172,7 +198,10 @@ impl SyncService {
                 deleted_at: doc.deleted_at.clone(),
             });
         }
+        Ok(())
+    }
 
+    async fn manifest_rows(&self, mut manifest: SyncManifest) -> P2pResult<SyncManifest> {
         // --- Threads ---
         let threads = self
             .db
@@ -190,6 +219,16 @@ impl SyncService {
                 content_hash: hash_thread(t),
                 deleted_at: t.deleted_at.clone(),
             });
+            if let Some(st) = t.stamp.as_deref().and_then(sovereign_docs::parse_thread_stamp) {
+                manifest.thread_stamps.push(crate::protocol::manifest::ThreadStampEntry {
+                    thread_id: t.id_string().unwrap_or_default(),
+                    stamp: crate::protocol::manifest::WireStamp {
+                        wall_ms: st.wall_ms,
+                        counter: st.counter,
+                        device: st.device,
+                    },
+                });
+            }
         }
 
         // --- Entities ---
@@ -399,6 +438,25 @@ impl SyncService {
     ) -> P2pResult<Vec<EncryptedCommit>> {
         let key = self.pair_key_for(peer)?;
         let mut result = Vec::with_capacity(commit_ids.len());
+        if let Some(docs) = self.documents.clone() {
+            // C-WIRE: a round asks for documents by id (a pre-step-4 peer
+            // asked by head commit; it is refused documents, C-WIRE 12).
+            for id in commit_ids {
+                let doc_id = if id.starts_with("document:") {
+                    id.clone()
+                } else {
+                    match self.db.get_commit(id).await {
+                        Ok(c) => c.document_id,
+                        Err(_) => continue,
+                    }
+                };
+                match self.seal_wire_states(&docs, &doc_id, &key).await {
+                    Ok(cs) => result.extend(cs),
+                    Err(e) => tracing::warn!("not sending {doc_id}: {e}"),
+                }
+            }
+            return Ok(result);
+        }
         for commit_id in commit_ids {
             let commit = self
                 .db
@@ -426,6 +484,9 @@ impl SyncService {
         peer: &PeerId,
     ) -> P2pResult<Vec<EncryptedCommit>> {
         let key = self.pair_key_for(peer)?;
+        if let Some(docs) = self.documents.clone() {
+            return self.seal_wire_states(&docs, doc_id, &key).await;
+        }
         Ok(vec![self.seal_document_state(doc_id, None, &key).await?])
     }
 
@@ -472,195 +533,24 @@ impl SyncService {
         Ok(commit)
     }
 
-    /// Apply received document states to the local database (content-LWW).
-    ///
-    /// The envelopes must unseal under the pair key shared with `sender`
-    /// (P1.4 / P2P-005) — a peer we hold no pair key for is refused. The
-    /// manifest diff already decided direction (we only receive docs the
-    /// remote is newer on, or that we lack), so each received state is
-    /// upserted: a missing document is created **under its origin id**
-    /// (`create_document_with_id`) so it doesn't duplicate on the next sync;
-    /// an existing one is overwritten with the newer content. Plaintext
-    /// content is re-encrypted at rest by the db's encrypting layer. Returns
-    /// the number of documents written.
+    /// Apply received document states through the document service (C-WIRE,
+    /// step 4 of the C-DOC adoption): the envelopes must unseal under the
+    /// pair key shared with `sender`, carry the sender's valid signature and
+    /// authorship, and carry a wire state (a peer on an older build is
+    /// refused documents, C-WIRE 12). Sync writes no document itself.
+    /// Without a document service no document is applied. Returns the number
+    /// of documents changed here.
     pub async fn apply_commits(
         &self,
         commits: Vec<EncryptedCommit>,
         sender: &PeerId,
     ) -> P2pResult<u32> {
-        let key = self.pair_key_for(sender)?;
-        let sender_key = match public_key_from_peer_id(sender) {
-            Some(k) => k,
-            None => {
-                return Err(P2pError::SyncError(format!(
-                    "cannot extract a public key from sender peer id {sender}; rejecting commits"
-                )));
-            }
+        let Some(docs) = self.documents.clone() else {
+            return Err(P2pError::SyncError(
+                "no document service: documents are not applied on this device".into(),
+            ));
         };
-        let sender_id = sender.to_string();
-        let mut docs_updated = std::collections::HashSet::new();
-
-        // Apply in timestamp order so the newest state lands last.
-        let mut sorted = commits;
-        sorted.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-
-        for ec in &sorted {
-            // AUTOCOMMIT-001 / P2P-001: the envelope must carry a valid Ed25519
-            // signature by the sender AND claim the sender as its author. This
-            // stops a paired peer from forging a document update "from" another
-            // device, and rejects unsigned (pre-signing) commits.
-            if !verify_commit(ec, &sender_key) {
-                tracing::warn!(
-                    "rejecting commit {} for doc {}: missing or invalid signature",
-                    ec.commit_id,
-                    ec.document_id
-                );
-                continue;
-            }
-            if ec.version_device != sender_id {
-                tracing::warn!(
-                    "rejecting commit {} for doc {}: version_device '{}' != verified sender (authorship forgery)",
-                    ec.commit_id,
-                    ec.document_id,
-                    ec.version_device
-                );
-                continue;
-            }
-            // P2P-001: also reject a commit whose timestamp is implausibly far in
-            // the future (or unparseable) — bounds clock-forge LWW wins. Content
-            // integrity + authorship are covered by the signature above; this is
-            // belt-and-suspenders for the modified_at content-LWW resolution.
-            match chrono::DateTime::parse_from_rfc3339(&ec.timestamp) {
-                Ok(ts) if ts.with_timezone(&chrono::Utc) <= chrono::Utc::now() + MAX_FUTURE_SKEW => {}
-                _ => {
-                    tracing::warn!(
-                        "rejecting commit {} for doc {}: timestamp '{}' is unparseable or beyond max future skew",
-                        ec.commit_id,
-                        ec.document_id,
-                        ec.timestamp
-                    );
-                    continue;
-                }
-            }
-
-            let snapshot = transport_to_snapshot(ec, &key)?;
-
-            if let Ok(local) = self.db.get_document(&ec.document_id).await {
-                // p2p-no-per-doc-authz: a paired peer's overwrite is
-                // NON-DESTRUCTIVE. Skip identical re-syncs (the common case —
-                // every round re-pushes); otherwise snapshot the current local
-                // version as a commit FIRST so it stays restorable, apply the
-                // peer's content, then flag the doc so the change is surfaced
-                // for review on next open instead of silently replacing it.
-                let content_changed =
-                    local.title != snapshot.title || local.content != snapshot.content;
-                let remote_deleted = snapshot.deleted_at.is_some();
-                let locally_deleted = local.deleted_at.is_some();
-                if content_changed {
-                    let prior_commit = self
-                        .db
-                        .commit_document(&ec.document_id, "pre-sync snapshot (peer overwrite)")
-                        .await
-                        .ok()
-                        .and_then(|c| c.id_string());
-                    self.db
-                        .update_document(
-                            &ec.document_id,
-                            Some(&snapshot.title),
-                            Some(&snapshot.content),
-                        )
-                        .await
-                        .map_err(|e| P2pError::SyncError(format!("failed to update doc: {e}")))?;
-                    // Best-effort: a failure to flag must not abort the sync,
-                    // but the content is already preserved in the commit above.
-                    if let Err(e) = self
-                        .db
-                        .set_document_peer_review(
-                            &ec.document_id,
-                            &sender_id,
-                            prior_commit.as_deref(),
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            "failed to flag doc {} for peer review: {e}",
-                            ec.document_id
-                        );
-                    }
-                    docs_updated.insert(ec.document_id.clone());
-                }
-                // H-p2p1: converge on the deleted state. Deletion is
-                // NON-DESTRUCTIVE too — soft-delete only (trash, restorable),
-                // preceded by a pre-delete commit, and flagged for review
-                // like any other peer overwrite.
-                if remote_deleted && !locally_deleted {
-                    let prior_commit = self
-                        .db
-                        .commit_document(&ec.document_id, "pre-sync snapshot (peer delete)")
-                        .await
-                        .ok()
-                        .and_then(|c| c.id_string());
-                    self.db
-                        .soft_delete_document(&ec.document_id)
-                        .await
-                        .map_err(|e| P2pError::SyncError(format!("peer soft-delete: {e}")))?;
-                    if let Err(e) = self
-                        .db
-                        .set_document_peer_review(
-                            &ec.document_id,
-                            &sender_id,
-                            prior_commit.as_deref(),
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            "failed to flag doc {} deletion for peer review: {e}",
-                            ec.document_id
-                        );
-                    }
-                    docs_updated.insert(ec.document_id.clone());
-                } else if !remote_deleted && locally_deleted {
-                    // The winning remote state is live (e.g. the user restored
-                    // the doc from trash on the other device) — un-delete.
-                    self.db
-                        .restore_soft_deleted_document(&ec.document_id)
-                        .await
-                        .map_err(|e| P2pError::SyncError(format!("peer un-delete: {e}")))?;
-                    docs_updated.insert(ec.document_id.clone());
-                }
-            } else {
-                // Recreate the document under its ORIGIN id so both devices
-                // agree on the identity (no duplication on re-sync).
-                let id = sovereign_db::schema::raw_to_thing(&ec.document_id).ok_or_else(|| {
-                    P2pError::SyncError(format!("bad document id {}", ec.document_id))
-                })?;
-                // A document synced from a paired device is the user's OWN
-                // content (same account / AccountKey), so it's owned — not
-                // external. Marking it `false` here made it render with the
-                // external (parallelogram) provenance cue on the receiver.
-                // Thread membership now rides in the sealed snapshot; older
-                // commits predate the field and decode to "" → fall back to
-                // "default" so they still land somewhere renderable.
-                let thread_id = if snapshot.thread_id.is_empty() {
-                    "default".to_string()
-                } else {
-                    snapshot.thread_id.clone()
-                };
-                let mut doc = Document::new(snapshot.title.clone(), thread_id, true);
-                doc.id = Some(id);
-                doc.content = snapshot.content.clone();
-                // H-p2p1: a snapshot of a deleted document lands as a
-                // tombstone, not as a live resurrection.
-                doc.deleted_at = snapshot.deleted_at.clone();
-                self.db
-                    .create_document_with_id(doc)
-                    .await
-                    .map_err(|e| P2pError::SyncError(format!("failed to create doc: {e}")))?;
-                docs_updated.insert(ec.document_id.clone());
-            }
-        }
-
-        Ok(docs_updated.len() as u32)
+        self.apply_wire_commits(&docs, commits, sender).await
     }
 
     // ----- Row-level sync (non-document tables, Phase 3 v0.0.5) -----
@@ -1002,8 +892,14 @@ impl SyncService {
             "thread" => {
                 let t: Thread = serde_json::from_slice(&prior_json)
                     .map_err(|e| P2pError::SyncError(format!("recovery decode thread: {e}")))?;
-                self.db
-                    .update_thread(&rec.row_id, Some(&t.name), Some(&t.description))
+                // Through the one thread-write path (THREAD-sync S1): putting
+                // a previous name back is a new action here, stamped, so it
+                // wins over the overwrite it undoes. Without a document
+                // service nothing is written.
+                let docs = self.documents.clone().ok_or_else(|| {
+                    P2pError::SyncError("restore thread: no document service on this device".into())
+                })?;
+                docs.thread_update(&rec.row_id, Some(&t.name), Some(&t.description))
                     .await
                     .map_err(|e| P2pError::SyncError(format!("restore thread: {e}")))?;
             }
@@ -1104,84 +1000,34 @@ impl SyncService {
         Ok(())
     }
 
+    /// A received thread row (THREAD-sync S1–S6, S8): applied through the
+    /// document service's thread path, which orders it by its stamp — or, from
+    /// an older build, by its modification time — against the local row, and
+    /// refuses one more than 5 minutes ahead of this device's clock. The row
+    /// counters do not decide (S2); the applied version is still recorded so
+    /// this device's counters keep following what it has seen (an older peer
+    /// orders by them). Without a document service nothing is written.
     async fn apply_thread_row(&self, row: &EncryptedRow, key: &[u8; 32]) -> P2pResult<bool> {
         let remote: Thread = decode_row_inner(row, key)?;
-
-        // P2P-003 belt-and-suspenders: far-future timestamps are rejected
-        // even though resolution no longer trusts them (display ordering
-        // and the manifest diff still read them).
-        if remote.modified_at > chrono::Utc::now() + MAX_FUTURE_SKEW {
+        let Some(docs) = self.documents.clone() else {
             tracing::warn!(
-                "rejecting thread row {}: modified_at {} is beyond max future skew",
-                row.id,
-                remote.modified_at
+                "thread row {} not applied: no document service on this device (threads are written only through it)",
+                row.id
             );
             return Ok(false);
+        };
+        let hash = hash_thread(&remote);
+        let applied = docs
+            .thread_apply_remote(&row.id, remote, &row.version_device)
+            .await
+            .map_err(|e| P2pError::SyncError(format!("apply thread row: {e}")))?;
+        if applied {
+            self.record_row_applied(
+                &row.id,
+                RowVersion { counter: row.version_counter, device_id: row.version_device.clone(), content_hash: hash },
+            );
         }
-
-        match self.db.get_thread(&row.id).await {
-            Ok(local) => {
-                // P1.3: resolution by signed (counter, device_id) stamp.
-                let winner = self.resolve_row_version(
-                    &row.id,
-                    row.version_counter,
-                    &row.version_device,
-                    hash_thread(&remote),
-                    &hash_thread(&local),
-                );
-                let Some(version) = winner else {
-                    return Ok(false);
-                };
-                tracing::warn!(
-                    "thread row {} overwriting local copy (remote version {}@{} wins)",
-                    row.id,
-                    version.counter,
-                    version.device_id
-                );
-                self.db
-                    .update_thread(
-                        &row.id,
-                        Some(&remote.name),
-                        Some(&remote.description),
-                    )
-                    .await
-                    .map_err(|e| P2pError::SyncError(format!("update_thread: {e}")))?;
-                // H-p2p1: converge on the winner's deleted state (soft-delete
-                // only — restorable from trash on this device too).
-                if remote.deleted_at.is_some() && local.deleted_at.is_none() {
-                    self.db
-                        .soft_delete_thread(&row.id)
-                        .await
-                        .map_err(|e| P2pError::SyncError(format!("soft_delete_thread: {e}")))?;
-                } else if remote.deleted_at.is_none() && local.deleted_at.is_some() {
-                    self.db
-                        .restore_soft_deleted_thread(&row.id)
-                        .await
-                        .map_err(|e| P2pError::SyncError(format!("restore_soft_deleted_thread: {e}")))?;
-                }
-                self.record_row_applied(&row.id, version);
-                Ok(true)
-            }
-            Err(_) => {
-                // Thread missing locally — create it UNDER ITS ORIGIN ID
-                // (P2): a minted local id would make the remote id look
-                // forever-missing and re-fetch the row every sync round.
-                let version = RowVersion {
-                    counter: row.version_counter,
-                    device_id: row.version_device.clone(),
-                    content_hash: hash_thread(&remote),
-                };
-                let mut remote = remote;
-                remote.id = Some(envelope_thing(&row.id)?);
-                let inserted = self
-                    .db
-                    .create_thread_with_id(remote)
-                    .await
-                    .map_err(|e| P2pError::SyncError(format!("create_thread_with_id: {e}")))?;
-                self.record_row_applied(&row.id, version);
-                Ok(inserted)
-            }
-        }
+        Ok(applied)
     }
 
     async fn apply_entity_row(&self, row: &EncryptedRow, key: &[u8; 32]) -> P2pResult<bool> {
@@ -1377,8 +1223,22 @@ impl SyncService {
                     )
                     .await
                     .map_err(|e| P2pError::SyncError(format!("update_contact: {e}")))?;
-                // Addresses: append any the local copy lacks (no removal
-                // path exists; removals don't propagate yet).
+                // Addresses as a set (C-WIRE 15): remove what the winner no
+                // longer has, then append what the local copy lacks.
+                for addr in &local.addresses {
+                    let kept = remote
+                        .addresses
+                        .iter()
+                        .any(|a| a.address == addr.address && a.channel == addr.channel);
+                    if !kept {
+                        self.db
+                            .remove_contact_address(&row.id, addr.channel.clone(), &addr.address)
+                            .await
+                            .map_err(|e| {
+                                P2pError::SyncError(format!("remove_contact_address: {e}"))
+                            })?;
+                    }
+                }
                 for addr in &remote.addresses {
                     let have = local
                         .addresses
@@ -1507,9 +1367,14 @@ impl SyncService {
                 let Some(version) = winner else {
                     return Ok(false);
                 };
-                // Mutable fields with dedicated setters: unread count,
-                // last_message_at, thread link. (Title changes have no
-                // update path yet — deferred.)
+                // Mutable fields with dedicated setters: title (C-WIRE 15),
+                // unread count, last_message_at, thread link.
+                if remote.title != local.title {
+                    self.db
+                        .update_conversation_title(&row.id, &remote.title)
+                        .await
+                        .map_err(|e| P2pError::SyncError(format!("update_conversation_title: {e}")))?;
+                }
                 if remote.unread_count != local.unread_count {
                     self.db
                         .update_conversation_unread(&row.id, remote.unread_count)
@@ -1837,12 +1702,22 @@ fn commit_sig_bytes(commit: &EncryptedCommit) -> Vec<u8> {
     }
     // Disambiguate parent_commit None vs Some("").
     out.push(commit.parent_commit.is_some() as u8);
+    // C-WIRE 16: the sealed wire state is covered too (appended only when
+    // present, so an envelope from an older build still verifies — and is
+    // then refused for carrying no wire state).
+    if !commit.sealed_wire.is_empty() || !commit.wire_nonce.is_empty() {
+        out.extend_from_slice(b"wire:v1");
+        for field in [commit.sealed_wire.as_str(), commit.wire_nonce.as_str()] {
+            out.extend_from_slice(&(field.len() as u32).to_le_bytes());
+            out.extend_from_slice(field.as_bytes());
+        }
+    }
     out
 }
 
 /// Sign a commit envelope with the sending device's identity keypair.
 /// `version_device` must already be set.
-fn sign_commit(commit: &mut EncryptedCommit, keypair: &Keypair) -> P2pResult<()> {
+pub(crate) fn sign_commit(commit: &mut EncryptedCommit, keypair: &Keypair) -> P2pResult<()> {
     use base64::Engine;
     let sig = keypair
         .sign(&commit_sig_bytes(commit))
@@ -1853,7 +1728,7 @@ fn sign_commit(commit: &mut EncryptedCommit, keypair: &Keypair) -> P2pResult<()>
 
 /// Verify a commit envelope's signature against the sender's public key.
 /// An absent signature fails (pre-signing commits are rejected).
-fn verify_commit(commit: &EncryptedCommit, sender_key: &PublicKey) -> bool {
+pub(crate) fn verify_commit(commit: &EncryptedCommit, sender_key: &PublicKey) -> bool {
     use base64::Engine;
     if commit.signature.is_empty() {
         return false;
@@ -1915,10 +1790,9 @@ fn decode_row_inner<T: serde::de::DeserializeOwned>(
 pub struct RowApplyReport {
     pub written: u32,
     pub skipped: u32,
-    /// Rows whose prior local value was stashed for review — a peer
-    /// overwrote an existing row. Surfaced as a [`crate::P2pEvent`] so the
-    /// UI can badge the review panel instead of the change staying
-    /// invisible until the user happens to open it (review C2).
+    /// Rows whose prior local value was kept (a `RowRecovery`) because a
+    /// peer overwrote an existing row. Restorable from the list of previous
+    /// values; no badge since C-WIRE 13 (the count is only reported).
     pub review_flagged: u32,
 }
 
@@ -1945,13 +1819,34 @@ pub fn content_hash(content: &str) -> String {
 /// LWW so two devices that converged on the same value via different
 /// histories produce the same hash and short-circuit the diff to
 /// "in sync".
+///
+/// Threads (THREAD-sync S10): a deleted thread compares on its deleted state
+/// and its stamp only — name and description left out, so a marker (S6) and
+/// a tombstone not yet shrunk with the same deletion stamp are the same row.
+/// A live stamped thread adds its stamp, so two devices converge on one
+/// stamp, not only on one name. A row without a stamp hashes as before (an
+/// older build computes the same hash for it).
 fn hash_thread(t: &Thread) -> String {
     let mut h = Sha256::new();
-    h.update(t.name.as_bytes());
-    h.update(t.description.as_bytes());
-    if let Some(ref d) = t.deleted_at {
-        h.update(b"|deleted:");
-        h.update(d.as_bytes());
+    match (&t.deleted_at, &t.stamp) {
+        (Some(_), Some(stamp)) => {
+            h.update(b"thread-deleted|stamp:");
+            h.update(stamp.as_bytes());
+        }
+        (None, Some(stamp)) => {
+            h.update(t.name.as_bytes());
+            h.update(t.description.as_bytes());
+            h.update(b"|stamp:");
+            h.update(stamp.as_bytes());
+        }
+        (deleted, None) => {
+            h.update(t.name.as_bytes());
+            h.update(t.description.as_bytes());
+            if let Some(d) = deleted {
+                h.update(b"|deleted:");
+                h.update(d.as_bytes());
+            }
+        }
     }
     format!("{:x}", h.finalize())
 }
@@ -2130,7 +2025,7 @@ fn hash_suggested_link(l: &SuggestedLink) -> String {
 /// AEAD-seal a (plaintext) document snapshot under the transport key for
 /// the wire. `commit_id`/`document_id`/`timestamp` stay in the clear as
 /// metadata; the title + content are sealed (P2P-002).
-fn seal_snapshot(
+pub(crate) fn seal_snapshot(
     commit_id: String,
     document_id: String,
     timestamp: String,
@@ -2152,6 +2047,8 @@ fn seal_snapshot(
         timestamp,
         version_device: String::new(),
         signature: String::new(),
+        sealed_wire: String::new(),
+        wire_nonce: String::new(),
     })
 }
 
@@ -2176,12 +2073,14 @@ fn commit_to_transport(commit: &Commit, key: &[u8; 32]) -> P2pResult<EncryptedCo
         timestamp: commit.timestamp.to_rfc3339(),
         version_device: String::new(),
         signature: String::new(),
+        sealed_wire: String::new(),
+        wire_nonce: String::new(),
     })
 }
 
 /// Decrypt a transport EncryptedCommit back to a DocumentSnapshot.
 /// Rejects the old empty-nonce plaintext shape (P2P-002).
-fn transport_to_snapshot(
+pub(crate) fn transport_to_snapshot(
     ec: &EncryptedCommit,
     key: &[u8; 32],
 ) -> P2pResult<sovereign_db::schema::DocumentSnapshot> {
@@ -2270,12 +2169,134 @@ mod tests {
         row
     }
 
-    /// Sign a transport commit as the device whose keypair seed is `seed` —
-    /// its PeerId must be the `sender` passed to apply_commits (AUTOCOMMIT-001).
-    fn sign_commit_as(mut ec: EncryptedCommit, seed: u8) -> EncryptedCommit {
-        ec.version_device = test_keypair(seed).public().to_peer_id().to_string();
-        sign_commit(&mut ec, &test_keypair(seed)).unwrap();
-        ec
+    // ── Threads through the document service (THREAD-sync S1) ──────────
+    //
+    // Since S1 (decided by Céline 2026-10-18) a thread is written only through
+    // the document service's stamped thread-write path, and a received thread
+    // row is applied through it (none: nothing written). The thread tests
+    // below therefore run over an encrypted in-memory store with a document
+    // service, the way a device runs; migrated by the THREAD-sync test author,
+    // each keeping the property it checked (or, where S2/S5 replaced the
+    // property — "the version counter decides" — checking its replacement,
+    // said in the test).
+
+    /// A device: an encrypted in-memory store, its document service and a
+    /// sync service over both, identity `seed`.
+    struct ThreadDev {
+        db: Arc<sovereign_db::encrypted::EncryptedGraphDB>,
+        docs: Arc<sovereign_docs::DocumentService>,
+        svc: SyncService,
+        peer: PeerId,
+    }
+
+    async fn service_device(seed: u8, tag: &str) -> ThreadDev {
+        use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
+        let raw = SurrealGraphDB::new(StorageMode::Memory).await.unwrap();
+        raw.connect().await.unwrap();
+        raw.init_schema().await.unwrap();
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let stem = format!("sovereign-p2p-unit-{}-{n}-{nanos}-{tag}", std::process::id());
+        let kdb = |s: &str| {
+            Arc::new(tokio::sync::RwLock::new(sovereign_crypto::key_db::KeyDatabase::new(
+                std::env::temp_dir().join(format!("{stem}-{s}.db")),
+            )))
+        };
+        let mk = sovereign_crypto::master_key::MasterKey::generate();
+        let db = Arc::new(sovereign_db::encrypted::EncryptedGraphDB::new(
+            Arc::new(raw) as Arc<dyn GraphDB>,
+            kdb("doc"),
+            kdb("msg"),
+            kdb("thr"),
+            kdb("conv"),
+            kdb("con"),
+            kdb("shr"),
+            Arc::new(sovereign_crypto::kek::Kek::generate()),
+            Arc::new(sovereign_crypto::index_key::IndexKey::generate()),
+            Arc::new(sovereign_crypto::device_key::DeviceKey::derive(&mk, tag).unwrap()),
+        ));
+        struct SystemClock;
+        impl sovereign_docs::Clock for SystemClock {
+            fn now(&self) -> chrono::DateTime<chrono::Utc> {
+                chrono::Utc::now()
+            }
+        }
+        struct NoEvents;
+        impl sovereign_docs::DocumentEvents for NoEvents {
+            fn emit(&self, _e: sovereign_docs::DocumentChanged) {}
+        }
+        struct NoMedia;
+        impl sovereign_docs::MediaFiles for NoMedia {
+            fn sha256(&self, _p: &str) -> Option<String> {
+                None
+            }
+        }
+        struct PassThrough;
+        #[async_trait::async_trait]
+        impl sovereign_docs::PiiIngest for PassThrough {
+            async fn ingest(
+                &self,
+                r: sovereign_docs::IngestRequest,
+            ) -> Result<Vec<sovereign_docs::IngestedItem>, sovereign_docs::PiiError> {
+                Ok(r.items.into_iter().map(|i| sovereign_docs::IngestedItem { field: i.field, text: i.text }).collect())
+            }
+        }
+        let peer = test_keypair(seed).public().to_peer_id();
+        let docs = Arc::new(sovereign_docs::DocumentService::new(sovereign_docs::ServiceDeps {
+            store: db.clone(),
+            commit_policy: Arc::new(sovereign_docs::DefaultCommitPolicy::default()),
+            pii: Arc::new(PassThrough),
+            media: Arc::new(NoMedia),
+            clock: Arc::new(SystemClock),
+            events: Arc::new(NoEvents),
+            device: peer.to_string(),
+        }));
+        let svc = SyncService::new(
+            db.clone() as Arc<dyn GraphDB>,
+            peer.to_string(),
+            [7u8; 32],
+            test_keypair(seed),
+            VersionStore::ephemeral(),
+        )
+        .with_documents(docs.clone());
+        ThreadDev { db, docs, svc, peer }
+    }
+
+    /// Two devices, paired both ways.
+    async fn service_pair(tag: &str) -> (ThreadDev, ThreadDev) {
+        let a = service_device(0xA1, &format!("{tag}-a")).await;
+        let b = service_device(0xB2, &format!("{tag}-b")).await;
+        register_peer(&a.svc, &b.peer);
+        register_peer(&b.svc, &a.peer);
+        (a, b)
+    }
+
+    /// A thread stamp as stored on a thread record (`wall_ms:counter:device`).
+    fn thread_stamp_str(wall_ms: i64, counter: u32, device: &str) -> String {
+        format!("{wall_ms}:{counter}:{device}")
+    }
+
+    /// The stamp of thread `id` on `d`.
+    async fn stamp_of(d: &ThreadDev, id: &str) -> sovereign_docs::Stamp {
+        d.docs.thread_stamp(id).await.unwrap().expect("stamped")
+    }
+
+    /// Thread `id` on `d` as a remote device would send it after renaming it
+    /// to `name` with the stamp `(wall_ms, 0, device)`.
+    async fn remote_thread(d: &ThreadDev, id: &str, name: &str, wall_ms: i64, device: &str) -> Thread {
+        let mut t = d.db.get_thread(id).await.unwrap();
+        t.name = name.into();
+        t.stamp = Some(thread_stamp_str(wall_ms, 0, device));
+        t
+    }
+
+    /// Pulls rows of `table` from `from` into `to`; (written, skipped).
+    async fn pull(from: &ThreadDev, to: &ThreadDev, table: SyncTable, ids: &[String]) -> (u32, u32) {
+        let rows = from.svc.get_rows(table, ids, &to.peer).await.unwrap();
+        assert_eq!(rows.len(), ids.len(), "every requested {table:?} row must be served");
+        let r = to.svc.apply_rows(table, rows, &from.peer).await.unwrap();
+        (r.written, r.skipped)
     }
 
     #[tokio::test]
@@ -2291,6 +2312,17 @@ mod tests {
         // P2P-001: the manifest identity is the service's verifiable PeerId.
         assert_eq!(manifest.device_id, svc.device_id());
         assert_eq!(manifest.documents.len(), 2);
+    }
+
+    /// C-WIRE 11: without a document service, sync applies no document
+    /// (it never writes one itself).
+    #[tokio::test]
+    async fn apply_commits_without_a_document_service_applies_nothing() {
+        let (db, svc) = mock_sync_service();
+        let peer = remote_peer();
+        register_peer(&svc, &peer);
+        assert!(svc.apply_commits(vec![], &peer).await.is_err());
+        assert!(db.list_documents(None).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -2392,282 +2424,6 @@ mod tests {
         assert_eq!(result[0].document_id, doc_id);
     }
 
-    #[tokio::test]
-    async fn apply_commits_preserves_document_id() {
-        // A document synced from a peer must land under its ORIGIN id so it
-        // doesn't duplicate on the next manifest exchange (P2P-004).
-        let (db, svc) = mock_sync_service();
-        let peer = remote_peer();
-        register_peer(&svc, &peer);
-        let ec = seal_snapshot(
-            "commit:remote_head".into(),
-            "document:origin_abc".into(),
-            "2026-02-01T00:00:00Z".into(),
-            sovereign_db::schema::DocumentSnapshot {
-                document_id: "document:origin_abc".into(),
-                title: "Shared".into(),
-                content: "shared body".into(),
-                thread_id: "default".into(),
-                ..Default::default()
-            },
-            &TEST_PAIR_KEY,
-        )
-        .unwrap();
-
-        let n = svc.apply_commits(vec![sign_commit_as(ec, 0xD9)], &peer).await.unwrap();
-        assert_eq!(n, 1);
-
-        // Stored under the origin id, content intact.
-        let got = db.get_document("document:origin_abc").await.unwrap();
-        assert_eq!(got.content, "shared body");
-        assert_eq!(got.title, "Shared");
-
-        // Re-applying the same state is idempotent — still one document.
-        let ec2 = seal_snapshot(
-            "commit:remote_head".into(),
-            "document:origin_abc".into(),
-            "2026-02-02T00:00:00Z".into(),
-            sovereign_db::schema::DocumentSnapshot {
-                document_id: "document:origin_abc".into(),
-                title: "Shared".into(),
-                content: "shared body v2".into(),
-                thread_id: "default".into(),
-                ..Default::default()
-            },
-            &TEST_PAIR_KEY,
-        )
-        .unwrap();
-        svc.apply_commits(vec![sign_commit_as(ec2, 0xD9)], &peer).await.unwrap();
-        assert_eq!(db.list_documents(None).await.unwrap().len(), 1);
-        assert_eq!(
-            db.get_document("document:origin_abc").await.unwrap().content,
-            "shared body v2"
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_commits_creates_new_doc() {
-        let (db, svc) = mock_sync_service();
-        let peer = remote_peer();
-        register_peer(&svc, &peer);
-
-        // Seal the commit under the pair key shared with the test peer
-        // so apply_commits can decrypt it (P2P-002 / P1.4).
-        let ec = commit_to_transport(
-            &Commit {
-                id: None,
-                document_id: "document:remote_doc".into(),
-                parent_commit: None,
-                message: "remote commit".into(),
-                timestamp: chrono::Utc::now(),
-                snapshot: sovereign_db::schema::DocumentSnapshot {
-                    document_id: "document:remote_doc".into(),
-                    title: "Remote Doc".into(),
-                    content: "synced content".into(),
-                    thread_id: "default".into(),
-                    ..Default::default()
-                },
-                signature: None,
-            },
-            &[7u8; 32],
-        )
-        .unwrap();
-
-        let count = svc.apply_commits(vec![sign_commit_as(ec, 0xD9)], &peer).await.unwrap();
-        assert_eq!(count, 1);
-
-        // Verify a document was created
-        let docs = db.list_documents(None).await.unwrap();
-        assert_eq!(docs.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn apply_commits_new_doc_lands_in_transported_thread() {
-        // Membership fix: the sealed snapshot now carries thread_id, so a
-        // synced doc lands in its real lane instead of "default" (the root
-        // cause of "N docs synced but only one lane renders").
-        let (db, svc) = mock_sync_service();
-        let peer = remote_peer();
-        register_peer(&svc, &peer);
-
-        let ec = commit_to_transport(
-            &Commit {
-                id: None,
-                document_id: "document:in_thread".into(),
-                parent_commit: None,
-                message: "remote commit".into(),
-                timestamp: chrono::Utc::now(),
-                snapshot: sovereign_db::schema::DocumentSnapshot {
-                    document_id: "document:in_thread".into(),
-                    title: "Lane Doc".into(),
-                    content: "body".into(),
-                    thread_id: "thread:work".into(),
-                    ..Default::default()
-                },
-                signature: None,
-            },
-            &[7u8; 32],
-        )
-        .unwrap();
-
-        svc.apply_commits(vec![sign_commit_as(ec, 0xD9)], &peer).await.unwrap();
-        let created = db.get_document("document:in_thread").await.unwrap();
-        assert_eq!(
-            created.thread_id, "thread:work",
-            "synced doc must land in its transported thread, not 'default'"
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_commits_updates_existing_doc() {
-        let (db, svc) = mock_sync_service();
-        let peer = remote_peer();
-        register_peer(&svc, &peer);
-        let t = db.create_thread(Thread::new("T".into(), "".into())).await.unwrap();
-        let tid = t.id_string().unwrap();
-
-        let doc = db.create_document(Document::new("Existing".into(), tid, true)).await.unwrap();
-        let doc_id = doc.id_string().unwrap();
-
-        let ec = commit_to_transport(
-            &Commit {
-                id: None,
-                document_id: doc_id.clone(),
-                parent_commit: None,
-                message: "sync update".into(),
-                timestamp: chrono::Utc::now(),
-                snapshot: sovereign_db::schema::DocumentSnapshot {
-                    document_id: doc_id.clone(),
-                    title: "Updated Title".into(),
-                    content: "updated content".into(),
-                    thread_id: "default".into(),
-                    ..Default::default()
-                },
-                signature: None,
-            },
-            &[7u8; 32],
-        )
-        .unwrap();
-
-        let count = svc.apply_commits(vec![sign_commit_as(ec, 0xD9)], &peer).await.unwrap();
-        assert_eq!(count, 1);
-
-        // Verify the document was updated
-        let updated = db.get_document(&doc_id).await.unwrap();
-        assert_eq!(updated.title, "Updated Title");
-        assert_eq!(updated.content, "updated content");
-    }
-
-    #[tokio::test]
-    async fn apply_commits_peer_overwrite_is_nondestructive_and_flagged() {
-        // p2p-no-per-doc-authz: a paired peer's overwrite must NOT silently
-        // destroy the local version. The prior content is preserved as a
-        // restorable commit, the new content is applied, and the doc is flagged
-        // for review (surfaced on next open).
-        let (db, svc) = mock_sync_service();
-        let peer = remote_peer();
-        register_peer(&svc, &peer);
-        let t = db.create_thread(Thread::new("T".into(), "".into())).await.unwrap();
-        let tid = t.id_string().unwrap();
-        let doc = db
-            .create_document(Document::new("Mine".into(), tid, true))
-            .await
-            .unwrap();
-        let doc_id = doc.id_string().unwrap();
-        db.update_document(&doc_id, Some("Mine"), Some("local body"))
-            .await
-            .unwrap();
-
-        let ec = commit_to_transport(
-            &Commit {
-                id: None,
-                document_id: doc_id.clone(),
-                parent_commit: None,
-                message: "peer change".into(),
-                timestamp: chrono::Utc::now(),
-                snapshot: sovereign_db::schema::DocumentSnapshot {
-                    document_id: doc_id.clone(),
-                    title: "Mine".into(),
-                    content: "PEER BODY".into(),
-                    thread_id: "default".into(),
-                    ..Default::default()
-                },
-                signature: None,
-            },
-            &[7u8; 32],
-        )
-        .unwrap();
-        svc.apply_commits(vec![sign_commit_as(ec, 0xD9)], &peer)
-            .await
-            .unwrap();
-
-        let after = db.get_document(&doc_id).await.unwrap();
-        assert_eq!(after.content, "PEER BODY", "peer content is applied");
-        assert!(after.peer_review_pending, "doc must be flagged for review");
-        assert_eq!(
-            after.peer_review_peer.as_deref(),
-            Some(peer.to_string().as_str()),
-            "the originating peer must be recorded"
-        );
-        let prior = after
-            .peer_review_prior_commit
-            .clone()
-            .expect("prior local version must be recorded as a commit");
-
-        // The prior local version is fully restorable.
-        let restored = db.restore_document(&doc_id, &prior).await.unwrap();
-        assert_eq!(
-            restored.content, "local body",
-            "the pre-overwrite local version must be restorable"
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_commits_rejects_unsigned_forged_author_and_wrong_signer() {
-        // AUTOCOMMIT-001 / P2P-001: commit-envelope authentication.
-        let (db, svc) = mock_sync_service();
-        let peer = remote_peer(); // PeerId of test_keypair(0xD9)
-        register_peer(&svc, &peer);
-
-        fn make_ec() -> EncryptedCommit {
-            seal_snapshot(
-                "commit:h".into(),
-                "document:victim".into(),
-                "2026-02-01T00:00:00Z".into(),
-                sovereign_db::schema::DocumentSnapshot {
-                    document_id: "document:victim".into(),
-                    title: "T".into(),
-                    content: "x".into(),
-                    thread_id: "default".into(),
-                    ..Default::default()
-                },
-                &TEST_PAIR_KEY,
-            )
-            .unwrap()
-        }
-
-        // 1. Unsigned (empty signature) → rejected.
-        let n = svc.apply_commits(vec![make_ec()], &peer).await.unwrap();
-        assert_eq!(n, 0, "unsigned commit must be rejected");
-
-        // 2. Signed by the sender but claiming a ghost author device → rejected.
-        let mut forged_author = make_ec();
-        forged_author.version_device = "ghost-device".into();
-        sign_commit(&mut forged_author, &test_keypair(0xD9)).unwrap();
-        let n = svc.apply_commits(vec![forged_author], &peer).await.unwrap();
-        assert_eq!(n, 0, "forged version_device must be rejected");
-
-        // 3. Signed by a DIFFERENT key than the claimed sender → rejected.
-        let wrong_signer = sign_commit_as(make_ec(), 0xC7);
-        let n = svc.apply_commits(vec![wrong_signer], &peer).await.unwrap();
-        assert_eq!(n, 0, "commit signed by a non-sender key must be rejected");
-
-        // 4. Correctly signed by the sender → applied.
-        let n = svc.apply_commits(vec![sign_commit_as(make_ec(), 0xD9)], &peer).await.unwrap();
-        assert_eq!(n, 1, "a correctly signed commit from the sender applies");
-        assert!(db.get_document("document:victim").await.is_ok());
-    }
-
     #[test]
     fn content_hash_deterministic() {
         let h1 = content_hash(r#"{"body":"hello","images":[]}"#);
@@ -2764,46 +2520,49 @@ mod tests {
 
     #[tokio::test]
     async fn apply_thread_row_rejects_far_future_timestamp() {
-        let (db, svc) = mock_sync_service();
-        let local = db
-            .create_thread(Thread::new("Original".into(), "orig desc".into()))
-            .await
-            .unwrap();
-        let tid = local.id_string().unwrap();
+        // Through the service (S1): without one, every thread row is skipped
+        // and this test would pass without checking the bound. The bound is
+        // now 5 minutes for threads (S5, S8), so 48 h ahead is refused both as
+        // a modification time (a row without a stamp) and as a stamp.
+        let d = service_device(0xE1, "far-future").await;
+        let tid = d.docs.thread_create("Original", "orig desc").await.unwrap();
 
         // Forge a remote row whose modified_at is 48h in the future. Even
-        // with a winning version stamp, the skew bound must reject it.
-        let mut forged = db.get_thread(&tid).await.unwrap();
+        // with a winning version counter, the skew bound must reject it.
+        let mut forged = d.db.get_thread(&tid).await.unwrap();
         forged.name = "Forged".into();
+        forged.stamp = None;
         forged.modified_at = chrono::Utc::now() + chrono::Duration::hours(48);
         let row = stamp(row_from_thread(&forged, &[7u8; 32]).unwrap(), 99, "device-2");
-
-        let applied = svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap();
+        let applied = d.svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap();
         assert!(!applied, "far-future row must be rejected (skipped)");
 
+        // The same, as a stamp 48 h ahead (a sane modification time).
+        let ahead = (chrono::Utc::now() + chrono::Duration::hours(48)).timestamp_millis();
+        let forged = remote_thread(&d, &tid, "Forged", ahead, "device-2").await;
+        let row = stamp(row_from_thread(&forged, &[7u8; 32]).unwrap(), 99, "device-2");
+        assert!(!d.svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap(), "far-future stamp must be rejected");
+
         // Local row must be unchanged.
-        let after = db.get_thread(&tid).await.unwrap();
+        let after = d.db.get_thread(&tid).await.unwrap();
         assert_eq!(after.name, "Original");
     }
 
     #[tokio::test]
     async fn apply_thread_row_accepts_newer_version_within_skew() {
-        let (db, svc) = mock_sync_service();
-        let local = db
-            .create_thread(Thread::new("Original".into(), "orig desc".into()))
-            .await
-            .unwrap();
-        let tid = local.id_string().unwrap();
+        // S2: the newer version is the higher stamp (here 5 s after the local
+        // one, within the bound); it wins.
+        let d = service_device(0xE1, "newer-within-skew").await;
+        let tid = d.docs.thread_create("Original", "orig desc").await.unwrap();
+        let local = stamp_of(&d, &tid).await;
 
-        // A remote row with a higher Lamport stamp (and sane timestamp) wins.
-        let mut newer = db.get_thread(&tid).await.unwrap();
-        newer.name = "Updated".into();
+        let mut newer = remote_thread(&d, &tid, "Updated", local.wall_ms + 5_000, "device-2").await;
         newer.modified_at = chrono::Utc::now() + chrono::Duration::seconds(5);
         let row = stamp(row_from_thread(&newer, &[7u8; 32]).unwrap(), 99, "device-2");
 
-        let applied = svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap();
+        let applied = d.svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap();
         assert!(applied, "higher-version row should apply");
-        let after = db.get_thread(&tid).await.unwrap();
+        let after = d.db.get_thread(&tid).await.unwrap();
         assert_eq!(after.name, "Updated");
     }
 
@@ -2897,113 +2656,110 @@ mod tests {
 
     #[tokio::test]
     async fn version_stamp_decides_not_timestamp() {
-        let (db, svc) = mock_sync_service();
-        let local = db
-            .create_thread(Thread::new("Original".into(), String::new()))
-            .await
-            .unwrap();
-        let tid = local.id_string().unwrap();
+        // What decides is the signed stamp inside the row, never the
+        // wall-clock modification time (forgeable). Before THREAD-sync that
+        // stamp was the row counter; under S2 it is the thread's clock stamp,
+        // so the remote stamps here are thread stamps (the counters, 50 and
+        // 99, decide nothing). The old second half — "a newer timestamp with no
+        // stamp loses" — no longer holds by design (S5: a row without a stamp
+        // is ordered by its modification time); its replacement is the third
+        // half: with no stamp, a counter does not make an older row win.
+        let d = service_device(0xE1, "stamp-decides").await;
+        let tid = d.docs.thread_create("Original", "").await.unwrap();
+        let local = stamp_of(&d, &tid).await;
 
-        // Remote row with an OLDER wall-clock timestamp but a HIGHER
-        // version stamp must win (timestamps are forgeable; stamps are
-        // what's signed).
-        let mut remote = db.get_thread(&tid).await.unwrap();
-        remote.name = "From remote".into();
+        // Remote row with an OLDER wall-clock timestamp but a HIGHER stamp
+        // must win.
+        let mut remote = remote_thread(&d, &tid, "From remote", local.wall_ms + 1_000, "device-2").await;
         remote.modified_at = chrono::Utc::now() - chrono::Duration::hours(3);
         let row = stamp(row_from_thread(&remote, &[7u8; 32]).unwrap(), 50, "device-2");
-        assert!(svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap());
-        assert_eq!(db.get_thread(&tid).await.unwrap().name, "From remote");
+        assert!(d.svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap());
+        assert_eq!(d.db.get_thread(&tid).await.unwrap().name, "From remote");
 
-        // Remote row with a NEWER timestamp but a zero/absent version
-        // stamp must lose against the local row's stamp.
-        let mut forged = db.get_thread(&tid).await.unwrap();
-        forged.name = "Timestamp forger".into();
+        // Remote row with a NEWER timestamp but a LOWER stamp must lose.
+        let mut forged = remote_thread(&d, &tid, "Timestamp forger", local.wall_ms + 500, "device-2").await;
         forged.modified_at = chrono::Utc::now() + chrono::Duration::seconds(30);
-        let row = row_from_thread(&forged, &[7u8; 32]).unwrap(); // counter 0
-        assert!(!svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap());
-        assert_eq!(db.get_thread(&tid).await.unwrap().name, "From remote");
+        let row = stamp(row_from_thread(&forged, &[7u8; 32]).unwrap(), 99, "device-2");
+        assert!(!d.svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap());
+        assert_eq!(d.db.get_thread(&tid).await.unwrap().name, "From remote");
+
+        // A row without a stamp, older than the local state, with a high
+        // counter: the counter does not decide, it loses.
+        let mut unstamped = d.db.get_thread(&tid).await.unwrap();
+        unstamped.name = "Counter forger".into();
+        unstamped.stamp = None;
+        unstamped.modified_at = chrono::Utc::now() - chrono::Duration::hours(1);
+        let row = stamp(row_from_thread(&unstamped, &[7u8; 32]).unwrap(), 999, "device-2");
+        assert!(!d.svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap());
+        assert_eq!(d.db.get_thread(&tid).await.unwrap().name, "From remote");
     }
 
     #[tokio::test]
     async fn replayed_and_stale_rows_are_rejected() {
-        let (db, svc) = mock_sync_service();
-        let local = db
-            .create_thread(Thread::new("Original".into(), String::new()))
-            .await
-            .unwrap();
-        let tid = local.id_string().unwrap();
+        // Same property with thread stamps (S2): a replay (equal stamp) and a
+        // stale earlier write (lower stamp, same device) are skipped.
+        let d = service_device(0xE1, "replay-stale").await;
+        let tid = d.docs.thread_create("Original", "").await.unwrap();
+        let base = stamp_of(&d, &tid).await.wall_ms;
 
-        let mut v5 = db.get_thread(&tid).await.unwrap();
-        v5.name = "Fifth write".into();
+        let v5 = remote_thread(&d, &tid, "Fifth write", base + 5_000, "device-2").await;
         let row_v5 = stamp(row_from_thread(&v5, &[7u8; 32]).unwrap(), 5, "device-2");
-        assert!(svc.apply_thread_row(&row_v5, &TEST_PAIR_KEY).await.unwrap());
+        assert!(d.svc.apply_thread_row(&row_v5, &TEST_PAIR_KEY).await.unwrap());
 
         // Exact replay of the same row: same stamp → not strictly greater
         // → skipped.
         assert!(
-            !svc.apply_thread_row(&row_v5, &TEST_PAIR_KEY).await.unwrap(),
+            !d.svc.apply_thread_row(&row_v5, &TEST_PAIR_KEY).await.unwrap(),
             "replayed row must be skipped"
         );
 
         // A stale (rolled-back) earlier write from the same device.
-        let mut v4 = db.get_thread(&tid).await.unwrap();
-        v4.name = "Fourth write (rollback attempt)".into();
+        let v4 = remote_thread(&d, &tid, "Fourth write (rollback attempt)", base + 4_000, "device-2").await;
         let row_v4 = stamp(row_from_thread(&v4, &[7u8; 32]).unwrap(), 4, "device-2");
         assert!(
-            !svc.apply_thread_row(&row_v4, &TEST_PAIR_KEY).await.unwrap(),
+            !d.svc.apply_thread_row(&row_v4, &TEST_PAIR_KEY).await.unwrap(),
             "stale row must be rejected"
         );
-        assert_eq!(db.get_thread(&tid).await.unwrap().name, "Fifth write");
+        assert_eq!(d.db.get_thread(&tid).await.unwrap().name, "Fifth write");
     }
 
     #[tokio::test]
     async fn local_edit_outranks_already_seen_remote_version() {
-        let (db, svc) = mock_sync_service();
-        let local = db
-            .create_thread(Thread::new("Original".into(), String::new()))
-            .await
-            .unwrap();
-        let tid = local.id_string().unwrap();
+        // Same property with the thread clock (S1, S2): a received stamp
+        // moves this device's clock, so a local edit made after it is stamped
+        // above it, and a replay of the received row no longer wins.
+        let d = service_device(0xE1, "local-outranks").await;
+        let tid = d.docs.thread_create("Original", "").await.unwrap();
+        let base = stamp_of(&d, &tid).await.wall_ms;
 
-        // Apply a remote write at counter 10.
-        let mut remote = db.get_thread(&tid).await.unwrap();
-        remote.name = "Remote v10".into();
+        // Apply a remote write stamped 10 s ahead (within the bound).
+        let remote = remote_thread(&d, &tid, "Remote v10", base + 10_000, "device-2").await;
         let row = stamp(row_from_thread(&remote, &[7u8; 32]).unwrap(), 10, "device-2");
-        assert!(svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap());
+        assert!(d.svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap());
 
-        // User edits locally — the lazy stamp must merge ABOVE counter 10,
-        // so a replay of the remote v10 row no longer wins.
-        db.update_thread(&tid, Some("Local edit after sync"), None)
-            .await
-            .unwrap();
+        // User edits locally (through the one path) — its stamp must come
+        // after the remote's, so a replay of the remote row no longer wins.
+        d.docs.thread_update(&tid, Some("Local edit after sync"), None).await.unwrap();
         assert!(
-            !svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap(),
+            !d.svc.apply_thread_row(&row, &TEST_PAIR_KEY).await.unwrap(),
             "local edit must outrank the previously applied remote version"
         );
         assert_eq!(
-            db.get_thread(&tid).await.unwrap().name,
+            d.db.get_thread(&tid).await.unwrap().name,
             "Local edit after sync"
         );
     }
 
     #[tokio::test]
     async fn apply_rows_rejects_unsigned_and_wrong_signer() {
-        let (db_a, svc_a) = mock_sync_service_with(0xA1, "device-a");
-        let (db_b, svc_b) = mock_sync_service_with(0xB2, "device-b");
-        let a_peer = test_keypair(0xA1).public().to_peer_id();
-
-        // Pair keys both ways (the pair key is symmetric — A's entry for B
-        // equals B's entry for A).
-        let b_peer = test_keypair(0xB2).public().to_peer_id();
-        register_peer(&svc_a, &b_peer);
-        register_peer(&svc_b, &a_peer);
+        // Through the service on both devices (S1): without one, B would skip
+        // every thread row whatever its signature.
+        let (a, b) = service_pair("unsigned-wrong-signer").await;
+        let (db_b, svc_a, svc_b) = (&b.db, &a.svc, &b.svc);
+        let (a_peer, b_peer) = (a.peer, b.peer);
 
         // Seed A with a thread and let A package it for B (stamps + signs).
-        let t = db_a
-            .create_thread(Thread::new("Signed".into(), String::new()))
-            .await
-            .unwrap();
-        let tid = t.id_string().unwrap();
+        let tid = a.docs.thread_create("Signed", "").await.unwrap();
         let signed_rows = svc_a
             .get_rows(SyncTable::Thread, &[tid.clone()], &b_peer)
             .await
@@ -3057,21 +2813,22 @@ mod tests {
         // by a device id that isn't the sender's verified peer id must be
         // rejected — otherwise a paired peer forges a ghost device + inflated
         // counter and overwrites any row cluster-wide via the LWW race.
-        let (db_b, svc_b) = mock_sync_service_with(0xB2, "b");
+        // Through the service (S1), so that without the gate the forged row
+        // would apply (its modification time is later than the victim's
+        // stamp): the rejection is the gate's.
+        let b = service_device(0xB2, "forged-version-device").await;
+        let (db_b, svc_b) = (&b.db, &b.svc);
         let a_peer = test_keypair(0xA1).public().to_peer_id();
-        register_peer(&svc_b, &a_peer);
+        register_peer(svc_b, &a_peer);
 
         // B already holds a thread.
-        let t = db_b
-            .create_thread(Thread::new("Victim".into(), String::new()))
-            .await
-            .unwrap();
-        let tid = t.id_string().unwrap();
+        let tid = b.docs.thread_create("Victim", "").await.unwrap();
 
         // A honestly signs a row for B's thread id, but forges the version
         // stamp: a ghost device with the maximum counter.
-        let mut forged =
-            row_from_thread(&Thread::new("PWNED".into(), String::new()), &TEST_PAIR_KEY).unwrap();
+        let mut pwned = Thread::new("PWNED".into(), String::new());
+        pwned.modified_at = chrono::Utc::now() + chrono::Duration::seconds(1);
+        let mut forged = row_from_thread(&pwned, &TEST_PAIR_KEY).unwrap();
         forged.id = tid.clone();
         forged.version_counter = u64::MAX;
         forged.version_device = "ghost-device-never-existed".into();
@@ -3103,28 +2860,31 @@ mod tests {
         // overwrites the victim's row. This is the bypass the two earlier
         // defensive tests do NOT cover (they use a ghost device / post-sign
         // tamper, both caught earlier in apply_rows).
+        //
+        // THREAD-sync: thread rows no longer order by the counter (S2), so
+        // the counter cap is checked on a table that still does (entities —
+        // the property unchanged); the thread equivalent, a forged far-ahead
+        // stamp, is `apply_rows_refuses_a_forged_far_ahead_thread_stamp`.
         let (db_b, svc_b) = mock_sync_service_with(0xB2, "b");
         let a_keypair = test_keypair(0xA1);
         let a_peer = a_keypair.public().to_peer_id();
         register_peer(&svc_b, &a_peer);
 
-        let t = db_b
-            .create_thread(Thread::new("Victim".into(), String::new()))
-            .await
-            .unwrap();
-        let tid = t.id_string().unwrap();
+        let e = db_b.create_entity(Entity::new("Victim".into(), EntityKind::Org)).await.unwrap();
+        let eid = e.id_string().unwrap();
 
-        // A signs a row for B's thread id with its REAL peer id as
+        // A signs a row for B's entity id with its REAL peer id as
         // version_device (passes the authorship gate) and a u64::MAX counter.
-        let mut forged =
-            row_from_thread(&Thread::new("PWNED".into(), String::new()), &TEST_PAIR_KEY).unwrap();
-        forged.id = tid.clone();
+        let mut pwned = db_b.get_entity(&eid).await.unwrap();
+        pwned.name = "PWNED".into();
+        let mut forged = row_from_entity(&pwned, &TEST_PAIR_KEY).unwrap();
+        forged.id = eid.clone();
         forged.version_counter = u64::MAX;
         forged.version_device = a_peer.to_string();
-        sign_row(&mut forged, SyncTable::Thread, &a_keypair).unwrap();
+        sign_row(&mut forged, SyncTable::Entity, &a_keypair).unwrap();
 
         let RowApplyReport { written, skipped, .. } = svc_b
-            .apply_rows(SyncTable::Thread, vec![forged], &a_peer)
+            .apply_rows(SyncTable::Entity, vec![forged], &a_peer)
             .await
             .unwrap();
         assert_eq!(
@@ -3133,10 +2893,40 @@ mod tests {
             "a forged-high counter from a legitimately-paired peer must be capped"
         );
         assert_eq!(
-            db_b.get_thread(&tid).await.unwrap().name,
+            db_b.get_entity(&eid).await.unwrap().name,
             "Victim",
             "the victim's row must be untouched"
         );
+    }
+
+    #[tokio::test]
+    async fn apply_rows_refuses_a_forged_far_ahead_thread_stamp() {
+        // The thread equivalent of the counter cap (THREAD-sync S2, S8): a row
+        // correctly signed by a paired peer under its real peer id, with a
+        // u64::MAX counter, cannot win by a stamp far in the future (refused
+        // beyond 5 minutes), nor by its counter with an older stamp.
+        let b = service_device(0xB2, "far-ahead-stamp").await;
+        let a_keypair = test_keypair(0xA1);
+        let a_peer = a_keypair.public().to_peer_id();
+        register_peer(&b.svc, &a_peer);
+        let tid = b.docs.thread_create("Victim", "").await.unwrap();
+        let victim = stamp_of(&b, &tid).await.wall_ms;
+
+        for (wall, why) in [
+            ((chrono::Utc::now() + chrono::Duration::days(365)).timestamp_millis(), "a stamp a year ahead"),
+            (victim - 1_000, "an older stamp with a u64::MAX counter"),
+        ] {
+            let pwned = remote_thread(&b, &tid, "PWNED", wall, &a_peer.to_string()).await;
+            let mut forged = row_from_thread(&pwned, &TEST_PAIR_KEY).unwrap();
+            forged.id = tid.clone();
+            forged.version_counter = u64::MAX;
+            forged.version_device = a_peer.to_string();
+            sign_row(&mut forged, SyncTable::Thread, &a_keypair).unwrap();
+            let RowApplyReport { written, skipped, .. } =
+                b.svc.apply_rows(SyncTable::Thread, vec![forged], &a_peer).await.unwrap();
+            assert_eq!((written, skipped), (0, 1), "{why}: refused");
+            assert_eq!(b.db.get_thread(&tid).await.unwrap().name, "Victim", "{why}: the victim's row untouched");
+        }
     }
 
     #[tokio::test]
@@ -3145,19 +2935,13 @@ mod tests {
         // existing row, the prior value is preserved (sealed, pending review)
         // so it's never silently lost. A fresh create stashes nothing.
         use base64::Engine;
-        let (db_a, svc_a) = mock_sync_service_with(0xA1, "device-a");
-        let (db_b, svc_b) = mock_sync_service_with(0xB2, "device-b");
-        let a_peer = test_keypair(0xA1).public().to_peer_id();
-        let b_peer = test_keypair(0xB2).public().to_peer_id();
-        register_peer(&svc_a, &b_peer);
-        register_peer(&svc_b, &a_peer);
+        // Threads written and applied through the service (S1).
+        let (a, b) = service_pair("overwrite-stash").await;
+        let (db_b, svc_a, svc_b) = (&b.db, &a.svc, &b.svc);
+        let (a_peer, b_peer) = (a.peer, b.peer);
 
         // A creates a thread; B receives it (create — no recovery).
-        let t = db_a
-            .create_thread(Thread::new("Original".into(), "".into()))
-            .await
-            .unwrap();
-        let tid = t.id_string().unwrap();
+        let tid = a.docs.thread_create("Original", "").await.unwrap();
         let rows = svc_a
             .get_rows(SyncTable::Thread, &[tid.clone()], &b_peer)
             .await
@@ -3170,7 +2954,7 @@ mod tests {
         );
 
         // A edits the thread; B applies the overwrite → prior preserved.
-        db_a.update_thread(&tid, Some("Updated"), None).await.unwrap();
+        a.docs.thread_update(&tid, Some("Updated"), None).await.unwrap();
         let rows2 = svc_a
             .get_rows(SyncTable::Thread, &[tid.clone()], &b_peer)
             .await
@@ -3205,19 +2989,13 @@ mod tests {
     #[tokio::test]
     async fn restore_row_recovery_reverts_to_prior() {
         // The shadow-recovery is actually recoverable: restore re-applies the
-        // sealed prior value and resolves the recovery.
-        let (db_a, svc_a) = mock_sync_service_with(0xA1, "device-a");
-        let (db_b, svc_b) = mock_sync_service_with(0xB2, "device-b");
-        let a_peer = test_keypair(0xA1).public().to_peer_id();
-        let b_peer = test_keypair(0xB2).public().to_peer_id();
-        register_peer(&svc_a, &b_peer);
-        register_peer(&svc_b, &a_peer);
+        // sealed prior value and resolves the recovery. Threads written and
+        // applied through the service (S1); the restore is a stamped write.
+        let (a, b) = service_pair("restore-recovery").await;
+        let (db_b, svc_a, svc_b) = (&b.db, &a.svc, &b.svc);
+        let (a_peer, b_peer) = (a.peer, b.peer);
 
-        let t = db_a
-            .create_thread(Thread::new("Original".into(), "orig desc".into()))
-            .await
-            .unwrap();
-        let tid = t.id_string().unwrap();
+        let tid = a.docs.thread_create("Original", "orig desc").await.unwrap();
         let rows = svc_a
             .get_rows(SyncTable::Thread, &[tid.clone()], &b_peer)
             .await
@@ -3225,7 +3003,7 @@ mod tests {
         svc_b.apply_rows(SyncTable::Thread, rows, &a_peer).await.unwrap();
 
         // Peer overwrites the thread → recovery stashed.
-        db_a.update_thread(&tid, Some("Hijacked"), Some("bad desc")).await.unwrap();
+        a.docs.thread_update(&tid, Some("Hijacked"), Some("bad desc")).await.unwrap();
         let rows2 = svc_a
             .get_rows(SyncTable::Thread, &[tid.clone()], &b_peer)
             .await
@@ -3242,6 +3020,7 @@ mod tests {
             "Original",
             "restore must revert the row to its prior value"
         );
+        assert_eq!(db_b.get_thread(&tid).await.unwrap().description, "orig desc", "the description too");
         assert!(
             db_b.list_pending_row_recoveries().await.unwrap().is_empty(),
             "the recovery must be resolved after restore"
@@ -3250,18 +3029,13 @@ mod tests {
 
     #[tokio::test]
     async fn tampered_signed_row_fails_verification() {
-        let (db_a, svc_a) = mock_sync_service_with(0xA1, "device-a");
-        let (db_b, svc_b) = mock_sync_service_with(0xB2, "device-b");
-        let a_peer = test_keypair(0xA1).public().to_peer_id();
-        let b_peer = test_keypair(0xB2).public().to_peer_id();
-        register_peer(&svc_a, &b_peer);
-        register_peer(&svc_b, &a_peer);
+        // Through the service on B (S1), so the untampered row would apply:
+        // the rejection is the signature check's.
+        let (a, b) = service_pair("tampered").await;
+        let (db_b, svc_a, svc_b) = (&b.db, &a.svc, &b.svc);
+        let (a_peer, b_peer) = (a.peer, b.peer);
 
-        let t = db_a
-            .create_thread(Thread::new("Genuine".into(), String::new()))
-            .await
-            .unwrap();
-        let tid = t.id_string().unwrap();
+        let tid = a.docs.thread_create("Genuine", "").await.unwrap();
         let rows = svc_a.get_rows(SyncTable::Thread, &[tid], &b_peer).await.unwrap();
 
         // Inflate the signed counter — signature must no longer verify.
@@ -3273,6 +3047,9 @@ mod tests {
             .unwrap();
         assert_eq!((written, skipped), (0, 1), "tampered stamp must be rejected");
         assert!(db_b.list_threads().await.unwrap().is_empty());
+        // The control: the untampered row applies.
+        let r = svc_b.apply_rows(SyncTable::Thread, rows, &a_peer).await.unwrap();
+        assert_eq!((r.written, r.skipped), (1, 0), "the genuine row applies");
     }
 
     #[test]
@@ -3355,21 +3132,23 @@ mod tests {
 
     #[tokio::test]
     async fn full_table_sync_converges_without_duplication() {
-        let p = sync_pair();
+        // Over two devices with a document service (THREAD-sync S1: threads
+        // are written and applied only through it); the other tables'
+        // rows are written to the same encrypted stores as before.
+        let (a, b) = service_pair("full-table").await;
 
         // Seed A with one row of every row-synced table.
-        let thread = p.db_a.create_thread(Thread::new("T".into(), "d".into())).await.unwrap();
-        let tid = thread.id_string().unwrap();
-        p.db_a.create_entity(Entity::new("Acme".into(), EntityKind::Org)).await.unwrap();
-        let contact = p.db_a.create_contact(Contact::new("Alice".into(), true)).await.unwrap();
+        let tid = a.docs.thread_create("T", "d").await.unwrap();
+        a.db.create_entity(Entity::new("Acme".into(), EntityKind::Org)).await.unwrap();
+        let contact = a.db.create_contact(Contact::new("Alice".into(), true)).await.unwrap();
         let cid = contact.id_string().unwrap();
-        let conv = p
-            .db_a
+        let conv = a
+            .db
             .create_conversation(Conversation::new("Chat".into(), ChannelType::Email, vec![cid.clone()]))
             .await
             .unwrap();
         let vid = conv.id_string().unwrap();
-        p.db_a
+        a.db
             .create_message(Message::new(
                 vid.clone(),
                 ChannelType::Email,
@@ -3380,25 +3159,26 @@ mod tests {
             ))
             .await
             .unwrap();
-        p.db_a
+        a.db
             .create_milestone(Milestone::new("Shipped".into(), tid.clone(), "v1".into()))
             .await
             .unwrap();
-        let d1 = p.db_a.create_document(Document::new("A".into(), tid.clone(), true)).await.unwrap();
-        let d2 = p.db_a.create_document(Document::new("B".into(), tid.clone(), true)).await.unwrap();
+        let d1 = a.db.create_document(Document::new("A".into(), tid.clone(), true)).await.unwrap();
+        let d2 = a.db.create_document(Document::new("B".into(), tid.clone(), true)).await.unwrap();
         let d1_id = d1.id_string().unwrap();
         let d2_id = d2.id_string().unwrap();
-        p.db_a
+        a.db
             .create_relationship(&d1_id, &d2_id, RelationType::References, 0.9)
             .await
             .unwrap();
-        p.db_a
+        a.db
             .create_suggested_link(&d1_id, &d2_id, RelationType::Supports, 0.7, "related", SuggestionSource::Consolidation)
             .await
             .unwrap();
 
         // Round 1: pull every row table A → B.
-        let manifest_a = p.svc_a.build_manifest().await.unwrap();
+        let manifest_a = a.svc.build_manifest().await.unwrap();
+        assert_eq!(manifest_a.threads.len(), 1);
         assert_eq!(manifest_a.contacts.len(), 1);
         assert_eq!(manifest_a.messages.len(), 1);
         assert_eq!(manifest_a.conversations.len(), 1);
@@ -3406,29 +3186,29 @@ mod tests {
         assert_eq!(manifest_a.relationships.len(), 1);
         assert_eq!(manifest_a.suggested_links.len(), 1);
         for (table, ids) in manifest_row_ids(&manifest_a) {
-            let (written, skipped) = pull_table(&p, table, &ids).await;
+            let (written, skipped) = pull(&a, &b, table, &ids).await;
             assert_eq!((written as usize, skipped), (ids.len(), 0), "round 1: {table:?}");
         }
 
         // Every row landed on B under its ORIGIN id.
-        assert!(p.db_b.get_thread(&tid).await.is_ok());
-        assert_eq!(p.db_b.get_contact(&cid).await.unwrap().name, "Alice");
-        assert_eq!(p.db_b.get_conversation(&vid).await.unwrap().title, "Chat");
-        assert_eq!(p.db_b.list_all_messages().await.unwrap().len(), 1);
-        assert_eq!(p.db_b.list_all_milestones().await.unwrap().len(), 1);
-        let rels_b = p.db_b.list_all_relationships().await.unwrap();
+        assert!(b.db.get_thread(&tid).await.is_ok());
+        assert_eq!(b.db.get_contact(&cid).await.unwrap().name, "Alice");
+        assert_eq!(b.db.get_conversation(&vid).await.unwrap().title, "Chat");
+        assert_eq!(b.db.list_all_messages().await.unwrap().len(), 1);
+        assert_eq!(b.db.list_all_milestones().await.unwrap().len(), 1);
+        let rels_b = b.db.list_all_relationships().await.unwrap();
         assert_eq!(rels_b.len(), 1);
         assert_eq!(
             rels_b[0].in_.as_ref().map(sovereign_db::schema::thing_to_raw),
             Some(d1_id.clone()),
             "edge endpoints must survive the device boundary"
         );
-        assert_eq!(p.db_b.list_all_suggested_links().await.unwrap().len(), 1);
+        assert_eq!(b.db.list_all_suggested_links().await.unwrap().len(), 1);
 
         // The manifests now agree: no row table has any diff work. (The
         // pre-P2 minted-id bug made this loop re-fetch rows forever.)
-        let manifest_b = p.svc_b.build_manifest().await.unwrap();
-        let manifest_a2 = p.svc_a.build_manifest().await.unwrap();
+        let manifest_b = b.svc.build_manifest().await.unwrap();
+        let manifest_a2 = a.svc.build_manifest().await.unwrap();
         let diffs = crate::sync_engine::compute_all_row_diffs(&manifest_b, &manifest_a2);
         assert!(
             diffs.is_empty(),
@@ -3438,15 +3218,15 @@ mod tests {
 
         // Round 2: replaying the same rows is a no-op everywhere.
         for (table, ids) in manifest_row_ids(&manifest_a2) {
-            let (written, _skipped) = pull_table(&p, table, &ids).await;
+            let (written, _skipped) = pull(&a, &b, table, &ids).await;
             assert_eq!(written, 0, "round 2 must write nothing for {table:?}");
         }
-        assert_eq!(p.db_b.list_threads().await.unwrap().len(), 1);
-        assert_eq!(p.db_b.list_contacts().await.unwrap().len(), 1);
-        assert_eq!(p.db_b.list_all_messages().await.unwrap().len(), 1);
-        assert_eq!(p.db_b.list_all_milestones().await.unwrap().len(), 1);
-        assert_eq!(p.db_b.list_all_relationships().await.unwrap().len(), 1);
-        assert_eq!(p.db_b.list_all_suggested_links().await.unwrap().len(), 1);
+        assert_eq!(b.db.list_threads().await.unwrap().len(), 1);
+        assert_eq!(b.db.list_contacts().await.unwrap().len(), 1);
+        assert_eq!(b.db.list_all_messages().await.unwrap().len(), 1);
+        assert_eq!(b.db.list_all_milestones().await.unwrap().len(), 1);
+        assert_eq!(b.db.list_all_relationships().await.unwrap().len(), 1);
+        assert_eq!(b.db.list_all_suggested_links().await.unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -3544,27 +3324,29 @@ mod tests {
 
     #[tokio::test]
     async fn thread_deletion_converges_via_full_row_loop() {
-        let p = sync_pair();
-        let t = p.db_a.create_thread(Thread::new("Doomed".into(), "".into())).await.unwrap();
-        let tid = t.id_string().unwrap();
+        // Through the service (S1): the thread is created through the path
+        // and deleted the way a host deletes it (`delete_thread_to_trash`).
+        let (a, b) = service_pair("thread-deletion").await;
+        let tid = a.docs.thread_create("Doomed", "").await.unwrap();
 
         // Round 1: B receives the live thread.
-        let (w, _) = pull_table(&p, SyncTable::Thread, &[tid.clone()]).await;
+        let (w, _) = pull(&a, &b, SyncTable::Thread, &[tid.clone()]).await;
         assert_eq!(w, 1);
-        assert!(p.db_b.get_thread(&tid).await.unwrap().deleted_at.is_none());
+        assert!(b.db.get_thread(&tid).await.unwrap().deleted_at.is_none());
 
         // A deletes; round 2 re-pulls the same id (the manifest still lists
-        // it — see manifest_includes_tombstones). The tombstone row gets a
-        // fresh Lamport stamp (its content hash changed) and must win.
-        p.db_a.soft_delete_thread(&tid).await.unwrap();
-        let (w, s) = pull_table(&p, SyncTable::Thread, &[tid.clone()]).await;
+        // it — see manifest_includes_tombstones). The tombstone row carries a
+        // later stamp (S1) and must win (S2).
+        sovereign_docs::delete_thread_to_trash(&a.docs, a.db.as_ref(), &tid).await.unwrap();
+        assert!(a.svc.build_manifest().await.unwrap().threads.iter().any(|t| t.thread_id == tid && t.deleted_at.is_some()));
+        let (w, s) = pull(&a, &b, SyncTable::Thread, &[tid.clone()]).await;
         assert_eq!((w, s), (1, 0), "the tombstone row must apply");
         assert!(
-            p.db_b.get_thread(&tid).await.unwrap().deleted_at.is_some(),
+            b.db.get_thread(&tid).await.unwrap().deleted_at.is_some(),
             "thread deletion must converge instead of B keeping the live copy"
         );
         assert!(
-            p.db_b.list_threads().await.unwrap().iter().all(|x| x.id_string() != Some(tid.clone())),
+            b.db.list_threads().await.unwrap().iter().all(|x| x.id_string() != Some(tid.clone())),
             "the deleted thread must not list on B"
         );
     }
@@ -3606,87 +3388,6 @@ mod tests {
         assert!(
             p.db_b.get_pii_record(&pid).await.unwrap().deleted_at.is_some(),
             "redacted PII must be soft-deleted on the peer too"
-        );
-    }
-
-    #[tokio::test]
-    async fn document_deletion_propagates_via_commits_nondestructively() {
-        let (db, svc) = mock_sync_service();
-        let peer = remote_peer();
-        register_peer(&svc, &peer);
-        let doc = db
-            .create_document(Document::new("Mine".into(), "default".into(), true))
-            .await
-            .unwrap();
-        let doc_id = doc.id_string().unwrap();
-        db.update_document(&doc_id, Some("Mine"), Some("precious body")).await.unwrap();
-
-        // Peer's snapshot: same content, but deleted.
-        let ec = commit_to_transport(
-            &Commit {
-                id: None,
-                document_id: doc_id.clone(),
-                parent_commit: None,
-                message: "peer delete".into(),
-                timestamp: chrono::Utc::now(),
-                snapshot: sovereign_db::schema::DocumentSnapshot {
-                    document_id: doc_id.clone(),
-                    title: "Mine".into(),
-                    content: "precious body".into(),
-                    thread_id: "default".into(),
-                    deleted_at: Some(chrono::Utc::now().to_rfc3339()),
-                    ..Default::default()
-                },
-                signature: None,
-            },
-            &[7u8; 32],
-        )
-        .unwrap();
-        svc.apply_commits(vec![sign_commit_as(ec, 0xD9)], &peer).await.unwrap();
-
-        let after = db.get_document(&doc_id).await.unwrap();
-        assert!(after.deleted_at.is_some(), "peer deletion must apply as a soft delete");
-        assert!(after.peer_review_pending, "a peer deletion must be flagged for review");
-        let prior = after
-            .peer_review_prior_commit
-            .clone()
-            .expect("pre-delete state must be preserved as a commit");
-        // Non-destructive: the content is fully restorable.
-        let restored = db.restore_document(&doc_id, &prior).await.unwrap();
-        assert_eq!(restored.content, "precious body");
-    }
-
-    #[tokio::test]
-    async fn deleted_document_lands_as_tombstone_on_fresh_device() {
-        let (db, svc) = mock_sync_service();
-        let peer = remote_peer();
-        register_peer(&svc, &peer);
-
-        let ec = seal_snapshot(
-            "commit:head".into(),
-            "document:was_deleted".into(),
-            "2026-03-01T00:00:00Z".into(),
-            sovereign_db::schema::DocumentSnapshot {
-                document_id: "document:was_deleted".into(),
-                title: "Gone".into(),
-                content: "body".into(),
-                thread_id: "default".into(),
-                deleted_at: Some("2026-03-02T00:00:00Z".into()),
-                ..Default::default()
-            },
-            &TEST_PAIR_KEY,
-        )
-        .unwrap();
-        svc.apply_commits(vec![sign_commit_as(ec, 0xD9)], &peer).await.unwrap();
-
-        let got = db.get_document("document:was_deleted").await.unwrap();
-        assert!(
-            got.deleted_at.is_some(),
-            "a deleted document syncing to a fresh device must land as a tombstone, not resurrect"
-        );
-        assert!(
-            db.list_documents(None).await.unwrap().is_empty(),
-            "the tombstone must not render as a live document"
         );
     }
 

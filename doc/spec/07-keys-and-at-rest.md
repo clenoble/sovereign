@@ -263,9 +263,28 @@ persona. The two entries are indistinguishable without a passphrase, and the pro
 fixed length so their sizes do not reveal which is which. Stores created before v0.0.9 keep
 unpadded probes until re-created.
 
+**Created once, never replaced by account creation** (decided by Céline 2026-10-19, for v0.0.11
+rc2; to be built). **Every** first write of `auth.store` refuses an existing file (an exclusive
+create, not a replace): account creation fresh or paired, on the phone and on the desktop, and the
+backup recovery that rebuilds an account (ch. 06). Account creation and backup recovery are
+**single-flight** on the phone, one claim excluding the other: a request
+that arrives while one is in progress is refused ("Setup is already in progress") and one that
+arrives after one has completed is refused ("Already onboarded — log in instead"); a refused request
+changes no file. The claim is taken **before** the key derivation, so the check and the write
+cannot be separated by it. *Why:* on rc1 a second tap on "Get started", during the ~10 s of key
+derivation on a phone, passed the existence check, replaced `auth.store` and `salt` with a new KEK
+while the first session had already sealed the key databases under the old one; the account could
+never be unlocked again. v0.0.10 has the same window (the IPC-006 check is check-then-act).
+
 ### Primary and duress personas
 
-**Status:** ✅ Built.
+**Status:** ◐ Partial — the two personas and their separate stores are built as described below,
+but the isolation is not complete yet: some state used after login is kept outside the persona's
+own files, so a duress session can still show that it is not the primary persona — which persona
+is which is what must not be readable (*ATREST-011*); that a duress option exists is not a secret
+(found 2026-10-15
+and by the 2026-10-16 review; tracked in the private backlog, to be closed by C-SESS and C-HOST:
+one persona file layout, per-persona orchestrator state).
 
 A user may set an optional **duress passphrase**. It opens a separate decoy workspace under
 coercion. When none is set, the second entry is created with a random, unreachable passphrase, so
@@ -274,6 +293,52 @@ the auth store always has two entries and the presence of a duress persona canno
 The duress persona is isolated at rest: its own raw database, its own six key databases and Index
 Key, its own KEK and AccountKey, and its own model-trust store. A coerced login decrypts a physically
 separate database under separate keys and cannot reach the primary persona's rows (CRYPTO-001).
+
+### After login — every persona's state stays its own
+
+**Status:** ◐ Partial — built 2026-10-17 (`296c8b7`): per-persona orchestrator state and
+session-log beacon; guardian recovery reachable from the primary persona only. Specified
+2026-10-17 (v2.0.29), to be built: the duress enrollment's waiting screen, the one-time set-aside
+at migration, the persona's own identity profile.
+
+What must not be readable is *which* persona a session is (ATREST-011). A live session must not
+show it either. So, after login:
+
+- **Every file the application writes for the session lives in that persona's own files.** No code
+  running after login writes to, or reads its own state from, a location the personas share. In
+  particular the **orchestrator's state** — the conversation log with its anchor and beacon, and
+  the trust state — is per persona: the host gives the orchestrator the active persona's directory
+  (to be absorbed by C-HOST's host wiring).
+- **Guardian access recovery belongs to the primary persona.** The recovery roster, its bundle and
+  the enrollment queue are the primary's; a duress session never reads or writes them.
+- **In a duress session, guardian enrollment appears to work, waits for the guardian, and never
+  completes** (Céline, 2026-10-17: *"en attente du gardien, qui ne devrait jamais enrôler depuis
+  une session sous contrainte"*; replaces v2.0.27's stop with a message, which contradicted a
+  running-sync screen). The session shows the same enrollment screen as an ordinary one — a code
+  and a QR of the same form, "waiting for the guardian" — but **no offer is armed**: it carries no
+  share, no enrollment key is derived from one, nothing listens for a guardian, and nothing is
+  recorded on this device. A guardian's device that scans it gets no answer, as with a guardian
+  who never connects. Closing the screen leaves the session as an ordinary enrollment left
+  unfinished would.
+- **No user-visible difference.** The same steps in a duress session and on a fresh install with no
+  duress passphrase show the same strings; nothing tells the session that another persona exists.
+- **Migration** (Céline, Q2): the orchestrator directory used before this change, shared by both
+  personas, becomes the **primary** persona's; the duress persona starts with an empty one. If that
+  log's anchor does not verify under the primary's key (it may have been minted in a duress
+  session), it is **set aside unread** — kept on disk, never read — and the primary starts an empty
+  log (Céline, 2026-10-17). **This happens once**, at the first primary login after the change;
+  from then on an anchor that does not verify fails closed and is reported, as before
+  (SESSIONLOG-001), so the rule can never hide later tampering. The primary is told once that an
+  earlier conversation log could not be verified and was set aside. *(The once-only limit and the
+  notice are the PANDA2 maille's reading of Céline's "yes", so that tamper detection is not
+  weakened.)*
+- **The shell's user profile is split** (Céline, 2026-10-17: now, unless it pulls in too much of
+  C-SESS). **Device preferences** read before login — the theme and the bubble style — stay in
+  one file shared by the personas: they identify no one. **The persona's identity** — display
+  name, nickname, designation — lives in the persona's own files and is read and written only
+  after login; before login nothing shows it. At migration the existing profile's identity becomes
+  the primary's; the duress persona starts with defaults. (The phone host's profile is the same
+  class of issue and is not covered here.)
 
 ### Decoy seeding
 
@@ -317,6 +382,10 @@ crypto crate without a caller. (code: `crates/sovereign-crypto/src/canary.rs`)
 A typing-rhythm check on the passphrase. The crypto primitive and an enrollment step exist; login
 does not compare against the reference, and the enrollment step is not enabled by default.
 (code: `crates/sovereign-crypto/src/keystroke.rs`)
+
+Typing timings are optional input to login: a missing, partial or malformed sample (a password
+filled in by the system's autofill produces key events without a key) is ignored and **never
+makes a login fail** (2026-10-17; Android autofill was refused in v0.0.10).
 
 ### ATREST-011 — personas distinguishable by file name
 

@@ -119,6 +119,67 @@ pub struct SyncManifest {
     /// back to `created_at` — status changes must propagate). P2.
     #[serde(default)]
     pub suggested_links: Vec<RowManifestEntry>,
+    /// C-WIRE (spec ch. 05, draft 2026-10-15): the wire version this device
+    /// speaks; `None` = a peer on an older build (no document exchange with it,
+    /// C-WIRE guarantee 12). Contract field: nothing sets it yet.
+    #[serde(default)]
+    pub wire_version: Option<u32>,
+    /// C-WIRE: per document, the normalised hash and the stamp.
+    #[serde(default)]
+    pub document_wire: Vec<DocumentWireEntry>,
+    /// C-WIRE: the purge markers this device knows (id, stamp, fingerprint —
+    /// never content).
+    #[serde(default)]
+    pub purge_markers: Vec<PurgeMarkerEntry>,
+    /// THREAD-sync S1/S2: the stamp of each stamped thread's current state.
+    /// With it the direction of the thread row exchange is decided by stamps,
+    /// never by `modified_at`; a thread with no entry (no stamp, or an older
+    /// build's manifest) is placed at its `modified_at` (S5). A field with a
+    /// default (C-WIRE).
+    #[serde(default)]
+    pub thread_stamps: Vec<ThreadStampEntry>,
+}
+
+/// THREAD-sync: a thread's stamp, in the manifest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadStampEntry {
+    pub thread_id: String,
+    pub stamp: WireStamp,
+}
+
+/// A hybrid-logical-clock stamp on the wire (C-WIRE *Stamps*).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WireStamp {
+    pub wall_ms: i64,
+    pub counter: u32,
+    pub device: String,
+}
+
+/// C-WIRE: a document's normalised hash and stamp, in the manifest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DocumentWireEntry {
+    pub doc_id: String,
+    pub normalized_hash: String,
+    pub stamp: WireStamp,
+    /// The stamp of the state this one replaced (step 4): with `history`,
+    /// what tells a fast-forward from a concurrent edit in the plan.
+    #[serde(default)]
+    pub prev_stamp: Option<WireStamp>,
+    /// Earlier stamps of the document on this device (bounded).
+    #[serde(default)]
+    pub history: Vec<WireStamp>,
+    /// The stamp was recorded by a write; `false` when derived for a document
+    /// written before step 4 (which then follows a stamped state).
+    #[serde(default)]
+    pub stamped: bool,
+}
+
+/// C-WIRE: a purge marker, in the manifest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PurgeMarkerEntry {
+    pub doc_id: String,
+    pub stamp: WireStamp,
+    pub fingerprint: String,
 }
 
 /// An encrypted sync manifest for wire transport.
@@ -147,6 +208,10 @@ impl SyncManifest {
             milestones: Vec::new(),
             relationships: Vec::new(),
             suggested_links: Vec::new(),
+            wire_version: None,
+            document_wire: Vec::new(),
+            purge_markers: Vec::new(),
+            thread_stamps: Vec::new(),
         }
     }
 

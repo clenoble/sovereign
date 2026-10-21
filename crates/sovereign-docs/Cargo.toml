@@ -1,0 +1,44 @@
+[package]
+name = "sovereign-docs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The document service (contract C-DOC, spec ch. 03): the one door through which documents are created, read, saved, deleted, restored and purged."
+
+# Built (lot 2b) against a suite written first: tests/ was written against
+# spec ch. 03, *Document service — contract (C-DOC)*, before the service
+# existed, by a different author; the service was built to make it pass
+# WITHOUT modifying tests/ (spec ch. 12 method: tests first, invariants only).
+# See TESTS.md. No call site uses the service yet (adoption is a later step).
+#
+# Why not inside sovereign-core: core has no storage; the service holds a
+# GraphDB, keys, the PII hook and the commit policy.
+# Why not inside sovereign-db: the db crate is storage — rows in, rows out —
+# and is held by every layer; the service is policy over it (format,
+# migration, restore points, ingest, provenance, events). Putting policy in
+# the db would make every `GraphDB` holder a writer that bypasses it, which is
+# the defect this crate exists to end (30-odd call sites each handling
+# `content` themselves).
+# Why not depending on sovereign-ai: the PII pipeline lives there and needs
+# llama/CUDA features; the service takes ingest as a trait (`PiiIngest`), and
+# the PII ingest service (C-PII, lot 2d) implements it.
+
+[dependencies]
+sovereign-db = { workspace = true, features = ["encryption"] }
+sovereign-docformat = { path = "../sovereign-docformat" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+# The service's write lock (an async mutex: a write awaits the store while
+# holding it).
+tokio = { workspace = true }
+# The normalised hash and the purge fingerprint (C-WIRE).
+sha2 = { workspace = true }
+# The queued model verdict stored on the document row (C-WIRE 13).
+serde_json = { workspace = true }
+# A one-time migration that does not complete says so (step 6): counts and
+# errors only, never a document's title or content.
+tracing = { workspace = true }
+
+[dev-dependencies]
+sovereign-crypto = { workspace = true }

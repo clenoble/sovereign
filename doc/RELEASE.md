@@ -146,12 +146,18 @@ scripts/prepublish.sh
 
 It stops at the first failing step:
 
+0. `cargo fetch --locked` — every locked dependency in the registry cache, because the editor's
+   dependency-graph tests run `cargo metadata --offline` on purpose
 1. `cargo check --workspace --exclude sovereign-ai --all-targets`
 2. `cargo check -p sovereign-shell` — the shell with its own features, as it ships
 3. `cargo check -p sovereign-app --no-default-features --features mobile` — the APK's feature
    set (host target)
 4. `cargo test --workspace --exclude sovereign-ai`
 5. `cargo test -p sovereign-ai --no-default-features`
+   - 5b. `cargo test --release` on the tests whose second half only exists in a release build:
+     the backup host's release-delay override, the guardian's `--auto-approve`, the shell's
+     development switches and its default log filter (no P2P debug logging in release). A debug
+     test run checks only their debug half.
 6. `cargo audit` — exceptions only through `.cargo/audit.toml`
 7. `npx vitest run` (frontend)
 8. `npm audit --omit=dev --audit-level=high` (frontend)

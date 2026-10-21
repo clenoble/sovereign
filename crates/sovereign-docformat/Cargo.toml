@@ -1,0 +1,22 @@
+[package]
+name = "sovereign-docformat"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The stored document format v2 (spec ch. 03, *Document format v2 — blocks*): read every stored form, write one. No I/O."
+
+# The v2 model, moved here from the editor's provisional `src/doc.rs` (lot 2b)
+# so that the editor and the document service share one model. Tested in
+# `crates/sovereign-docs/tests/` and through the editor's suite.
+#
+# Why a crate of its own, apart from `sovereign-docs`: the editor
+# (`crates/sovereign-editor`) reads and writes this format, and its guarantee
+# g4 forbids storage and networking crates (surrealdb, tokio, ...) anywhere in
+# its dependency tree. `sovereign-docs` depends on `sovereign-db`, hence on
+# surrealdb. `cargo metadata` unifies features workspace-wide, so a feature
+# gate inside `sovereign-docs` would not keep surrealdb out of the editor's
+# tree; a separate crate does.
+#
+# Keep [dependencies] free of I/O, storage and networking crates.
+
+[dependencies]

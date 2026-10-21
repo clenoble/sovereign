@@ -103,6 +103,15 @@
 	// seconds — or fail with a wrong code).
 	let pairingInProgress = $state(false);
 	let pairingError = $state('');
+	// rc2 (spec ch. 12, "While the account is being created"): one account
+	// creation at a time, fresh or paired. While it runs, every button that
+	// could start or leave it ("Get Started", "Skip this step", "Back") is
+	// disabled and a status line says what is happening; a failure is shown
+	// here (first-device flow; the paired flow keeps its own `pairingError`)
+	// and gives the buttons back. The backend refuses a second request anyway
+	// (ch. 07, Auth store) — this is one layer.
+	let creating = $state(false);
+	let createError = $state('');
 	// Phase 4.4: camera-first input on the paired branch, with paste
 	// fallback (the QrScanner component itself surfaces the fallback
 	// option if the camera API isn't available).
@@ -258,6 +267,7 @@
 	// Handlers
 	// ---------------------------------------------------------------------------
 	function handleBack() {
+		if (creating) return;
 		if (step > 0) {
 			step--;
 			// Hop over the Bubble step (index 2) on mobile.
@@ -273,6 +283,7 @@
 	}
 
 	function handleNext() {
+		if (creating) return;
 		if (!canAdvance && !canSkipCurrentStep()) return;
 
 		if (isFinalStep) {
@@ -326,6 +337,7 @@
 	}
 
 	function handleSkip() {
+		if (creating) return;
 		if (isFinalStep) {
 			handleComplete();
 			return;
@@ -355,6 +367,20 @@
 	}
 
 	async function handleComplete() {
+		// Single flight: every path here (Get Started, Skip on the last step,
+		// Enter in the last field) passes this guard, set synchronously before
+		// the first await so a second tap during key derivation is a no-op.
+		if (creating) return;
+		creating = true;
+		createError = '';
+		try {
+			await runCompletion();
+		} finally {
+			creating = false;
+		}
+	}
+
+	async function runCompletion() {
 		// Paired flow: run the P3.1 handshake (dial the existing device,
 		// prove the code, receive the keys) and persist the new install.
 		if (flowMode === 'paired') {
@@ -409,6 +435,8 @@
 			app.authState = 'ready';
 		} catch (e) {
 			console.error('Onboarding failed:', e);
+			// On the screen, not only in a log (spec ch. 12).
+			createError = String(e);
 		}
 	}
 
@@ -432,10 +460,18 @@
 			submitKeystrokeSample();
 			return;
 		}
+		// Typing timings are optional (spec ch. 07): an event without a key — what a
+		// system autofill dispatches — is ignored, never recorded as a sample.
+		if (!hasKey(e)) return;
 		currentKeyTimings.set(e.key, Date.now());
 	}
 
+	function hasKey(e: KeyboardEvent): boolean {
+		return typeof e.key === 'string' && e.key.length > 0;
+	}
+
 	function handleKeystrokeKeyup(e: KeyboardEvent) {
+		if (!hasKey(e)) return;
 		const pressTime = currentKeyTimings.get(e.key);
 		if (pressTime) {
 			currentKeystrokes.push({
@@ -896,7 +932,7 @@
 						<p class="error-text">Passwords do not match</p>
 					{/if}
 
-					<button class="skip-link" onclick={handleSkip}>Skip this step</button>
+					<button class="skip-link" onclick={handleSkip} disabled={creating}>Skip this step</button>
 				</div>
 
 			<!-- Step 8: Canary Phrase (crypto only) -->
@@ -940,7 +976,7 @@
 						<p class="error-text">Phrases do not match</p>
 					{/if}
 
-					<button class="skip-link" onclick={handleSkip}>Skip this step</button>
+					<button class="skip-link" onclick={handleSkip} disabled={creating}>Skip this step</button>
 				</div>
 
 			<!-- Step 9: Keystroke Enrollment (crypto only) -->
@@ -991,15 +1027,30 @@
 						{/each}
 					</div>
 
-					<button class="skip-link" onclick={handleSkip}>Skip this step</button>
+					<button class="skip-link" onclick={handleSkip} disabled={creating}>Skip this step</button>
 				</div>
 			{/if}
 		</div>
 
+		<!-- While the account is being created (spec ch. 12): say so. -->
+		{#if creating}
+			<div class="creating-status" role="status" aria-live="polite">
+				<span class="spinner" aria-hidden="true"></span>
+				{#if flowMode === 'paired'}
+					Creating your account from your existing device…
+				{:else}
+					Creating your account…
+				{/if}
+			</div>
+		{/if}
+		{#if createError && flowMode === 'first'}
+			<p class="error-text create-error" role="alert">{createError}</p>
+		{/if}
+
 		<!-- Navigation -->
 		<div class="nav-row">
 			{#if step > 0}
-				<button class="nav-btn back-btn" onclick={handleBack}>
+				<button class="nav-btn back-btn" onclick={handleBack} disabled={creating}>
 					Back
 				</button>
 			{:else}
@@ -1009,7 +1060,7 @@
 			<button
 				class="nav-btn next-btn"
 				onclick={handleNext}
-				disabled={!canAdvance && !canSkipCurrentStep()}
+				disabled={creating || (!canAdvance && !canSkipCurrentStep())}
 			>
 				{#if isFinalStep}
 					Get Started
@@ -1569,8 +1620,53 @@
 		transition: color 0.15s;
 	}
 
-	.skip-link:hover {
+	.skip-link:hover:not(:disabled) {
 		color: var(--text-secondary, #999);
+	}
+
+	.skip-link:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	/* ===================================================================
+	   Account creation in progress (spec ch. 12)
+	   =================================================================== */
+	.creating-status {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 10px;
+		margin: 12px 0 0 0;
+		font-size: 0.85rem;
+		color: var(--text-primary, #e0e0e0);
+	}
+
+	.spinner {
+		width: 16px;
+		height: 16px;
+		flex: none;
+		border-radius: 50%;
+		border: 2px solid var(--border, #333340);
+		border-top-color: var(--accent, #F59E0B);
+		animation: creating-spin 0.9s linear infinite;
+	}
+
+	@keyframes creating-spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.spinner {
+			animation-duration: 2.4s;
+		}
+	}
+
+	.create-error {
+		text-align: center;
+		margin: 12px 0 0 0;
 	}
 
 	/* ===================================================================
@@ -1663,9 +1759,14 @@
 		border: 1px solid var(--border, #333340);
 	}
 
-	.back-btn:hover {
+	.back-btn:hover:not(:disabled) {
 		background: var(--bg-hover, #30303d);
 		color: var(--text-primary, #e0e0e0);
+	}
+
+	.back-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	.next-btn {

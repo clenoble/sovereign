@@ -16,7 +16,7 @@ use sovereign_db::schema::{MessageDirection, PiiKind, ReviewState};
 use sovereign_db::traits::GraphDB;
 
 use crate::canvas::{lane_color, Card};
-use crate::text::{draw_text, end_caret, Brush, TextShaper};
+use crate::text::{draw_text, Brush, TextShaper};
 use crate::theme::pal;
 
 // ---- Document window (first chrome panel — roll-our-own on vello 0.9) ----
@@ -60,119 +60,92 @@ pub(crate) fn search_split(body: Rect) -> (Rect, Rect) {
     (input, results)
 }
 
-/// An open document: raw text kept so we can re-shape on resize, plus the
-/// shaped title/body layouts and the current scroll offset.
-pub(crate) const DW_BODY_PX: f32 = 15.0;
-
-/// A header button in the doc window (right-aligned before the × close).
+/// A header button in the doc window (right-aligned before the × close). The
+/// editor edits in place and saves by itself: History is the only one
+/// (contract E2).
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum DocBtn {
     History,
-    Edit,
-    Save,
-    Cancel,
 }
 
+/// An open document's window: its bar (title, History, ×) around the editor,
+/// which draws and edits the body (`app/editor_v2.rs`).
 pub(crate) struct DocWindow {
     pub(crate) doc_id: String, // the card's document id (open-or-focus dedupe)
-    pub(crate) body_text: String,
     pub(crate) external: bool,
     pub(crate) title: Layout<Brush>,
-    pub(crate) body: Layout<Brush>,
-    pub(crate) inner_w: f64,
-    pub(crate) scroll_y: f64,
-    // Inline editing (caret pinned to end, matching the rest of the UI).
-    pub(crate) editing: bool,
-    pub(crate) edit_buf: String,    // working copy while `editing`
-    pub(crate) dirty: bool,         // buffer differs from the saved body
-    pub(crate) needs_reshape: bool, // body text changed -> re-wrap next frame
-    // Pre-shaped header-button labels (no shaper at draw time).
+    // Pre-shaped header-button label (no shaper at draw time).
     lbl_history: Layout<Brush>,
-    lbl_edit: Layout<Brush>,
-    lbl_save: Layout<Brush>,
-    lbl_cancel: Layout<Brush>,
+    /// "…", drawn where a bar title too long for the bar is cut (T8).
+    lbl_ellipsis: Layout<Brush>,
+    /// The document editor. `App::open_doc_window` opens a window only with
+    /// it (E1, E3): `None` exists only for a window built outside the app
+    /// (tests), which then has no body.
+    pub(crate) v2: Option<Box<crate::app::editor_v2::EditorPane>>,
 }
+/// The size of a document window's bar title (title contract T8: small, the
+/// page carries the large one) [choice].
+const BAR_TITLE_PX: f32 = 14.0;
+
+/// A document window's bar title: 14 px, on one line (never wrapped; cut
+/// with an ellipsis where the bar ends, `draw_doc_window`).
+fn bar_title(title: &str, shaper: &mut TextShaper) -> Layout<Brush> {
+    shaper.shape(crate::canvas::display_title(title), 100_000.0, BAR_TITLE_PX)
+}
+
 impl DocWindow {
-    pub(crate) fn new(card: &Card, shaper: &mut TextShaper, inner_w: f64) -> Self {
+    /// The title in the window's bar follows a saved title (title contract
+    /// T8: 14 px, one line). Called by the editor's save path.
+    pub(crate) fn set_title(&mut self, title: &str, shaper: &mut TextShaper) {
+        self.title = bar_title(title, shaper);
+    }
+
+    /// A window for `card`'s document, without its editor yet (the app sets
+    /// `v2` before it shows the window). `_body_w`: the body's width, which
+    /// the editor lays out itself (kept for the callers).
+    pub(crate) fn new(card: &Card, shaper: &mut TextShaper, _body_w: f64) -> Self {
         Self {
             doc_id: card.id.clone(),
-            title: shaper.shape(&card.title, 4000.0, 21.0), // no wrap; clipped to titlebar
-            body: shaper.shape(&card.body, inner_w as f32, DW_BODY_PX),
-            body_text: card.body.clone(),
+            title: bar_title(&card.title, shaper),
+            lbl_ellipsis: shaper.shape("\u{2026}", 100.0, BAR_TITLE_PX),
             external: card.external,
-            inner_w,
-            scroll_y: 0.0,
-            editing: false,
-            edit_buf: String::new(),
-            dirty: false,
-            needs_reshape: false,
             lbl_history: shaper.shape("History", 100.0, 12.5),
-            lbl_edit: shaper.shape("Edit", 100.0, 12.5),
-            lbl_save: shaper.shape("Save", 100.0, 12.5),
-            lbl_cancel: shaper.shape("Cancel", 100.0, 12.5),
+            v2: None,
         }
     }
-    /// The text currently displayed in the body (edit buffer while editing).
-    fn shown_text(&self) -> &str {
-        if self.editing {
-            &self.edit_buf
-        } else {
-            &self.body_text
-        }
+    /// The document editor this window holds (seam read by the contract E1-E9
+    /// tests, `src/editor_default_tests.rs`).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn editor_pane(&self) -> Option<&crate::app::editor_v2::EditorPane> {
+        self.v2.as_deref()
     }
-    /// Re-wrap the body when the panel width changed (resize) or the text changed.
-    pub(crate) fn ensure_shaped(&mut self, shaper: &mut TextShaper, inner_w: f64) {
-        if (inner_w - self.inner_w).abs() > 0.5 || self.needs_reshape {
-            self.body = shaper.shape(self.shown_text(), inner_w as f32, DW_BODY_PX);
-            self.inner_w = inner_w;
-            self.needs_reshape = false;
-        }
+    /// [`editor_pane`](Self::editor_pane), mutable.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn editor_pane_mut(&mut self) -> Option<&mut crate::app::editor_v2::EditorPane> {
+        self.v2.as_deref_mut()
     }
-    /// True when leaving edit mode now would lose typed text (lot 0.3): any
-    /// path that would discard the buffer must ask first.
+    /// The header buttons this window shows: [History] (the editor edits in
+    /// place and saves by itself).
+    pub(crate) fn buttons(&self, bounds: Rect) -> Vec<(Rect, DocBtn)> {
+        doc_buttons(bounds)
+    }
+    /// True when closing the window now would lose typed text (lot 0.3), body
+    /// or title: the editor holds edits not yet saved. Any path that would
+    /// discard the window must not lose them (E4).
     pub(crate) fn has_unsaved_edits(&self) -> bool {
-        self.editing && self.dirty
-    }
-    /// Enter edit mode: copy the saved body into the working buffer.
-    pub(crate) fn begin_edit(&mut self) {
-        self.editing = true;
-        self.edit_buf = self.body_text.clone();
-        self.dirty = false;
-        self.needs_reshape = true;
-    }
-    /// Leave edit mode, discarding the working buffer.
-    pub(crate) fn cancel_edit(&mut self) {
-        self.editing = false;
-        self.dirty = false;
-        self.needs_reshape = true;
-    }
-    /// Append a typed character to the buffer.
-    pub(crate) fn insert_char(&mut self, ch: char) {
-        self.edit_buf.push(ch);
-        self.dirty = self.edit_buf != self.body_text;
-        self.needs_reshape = true;
-    }
-    /// Delete the last character (caret is at the end).
-    pub(crate) fn backspace(&mut self) {
-        self.edit_buf.pop();
-        self.dirty = self.edit_buf != self.body_text;
-        self.needs_reshape = true;
+        self.v2.as_ref().is_some_and(|p| p.has_unsaved())
     }
 }
 
-/// Doc-window header buttons, right-aligned before the × close. View mode shows
-/// [Edit]; edit mode shows [Save][Cancel]. Shared by draw + click hit-testing.
-pub(crate) fn doc_buttons(bounds: Rect, editing: bool) -> Vec<(Rect, DocBtn)> {
+/// Doc-window header buttons, right-aligned before the × close: [History].
+/// Shared by draw + click hit-testing.
+pub(crate) fn doc_buttons(bounds: Rect) -> Vec<(Rect, DocBtn)> {
     let (header, close, _body) = window_chrome(bounds);
     let bh = 22.0;
     let by0 = header.y0 + (header.height() - bh) * 0.5;
     // Buttons are placed right→left from the × close, so the slice reads in that
-    // order. View mode: [Edit][History]; edit mode: [Save][Cancel].
-    let specs: &[(f64, DocBtn)] = if editing {
-        &[(54.0, DocBtn::Save), (64.0, DocBtn::Cancel)]
-    } else {
-        &[(52.0, DocBtn::Edit), (66.0, DocBtn::History)]
-    };
+    // order.
+    let specs: &[(f64, DocBtn)] = &[(66.0, DocBtn::History)];
     let mut x = close.x0 - 8.0;
     let mut out = Vec::new();
     for &(w, b) in specs {
@@ -210,18 +183,13 @@ pub(crate) fn draw_doc_window(scene: &mut Scene, win: &DocWindow, bounds: Rect) 
     // Title bar provenance accent (owned = trust green, external = warm — the
     // same owned/external language as the canvas parallelogram cue).
     let accent = if win.external { Color::from_rgb8(190, 120, 70) } else { Color::from_rgb8(90, 150, 110) };
-    let (panel_rr, header, close, body_vp) = draw_window_chrome(scene, bounds, accent);
+    let (panel_rr, header, close, _body) = draw_window_chrome(scene, bounds, accent);
 
-    // Header buttons (Edit / Save+Cancel), right-aligned before the ×.
-    let buttons = doc_buttons(bounds, win.editing);
+    // Header buttons (History), right-aligned before the ×.
+    let buttons = win.buttons(bounds);
     for (r, b) in &buttons {
-        // Save is bright green only when there are unsaved changes (dirty).
-        let save_bg = if win.dirty { Color::from_rgb8(58, 104, 74) } else { Color::from_rgb8(46, 58, 50) };
         let (lbl, fg, bg) = match b {
             DocBtn::History => (&win.lbl_history, Color::from_rgb8(220, 210, 188), Color::from_rgb8(54, 50, 42)),
-            DocBtn::Edit => (&win.lbl_edit, pal().text, pal().surface_alt),
-            DocBtn::Save => (&win.lbl_save, Color::from_rgb8(228, 240, 230), save_bg),
-            DocBtn::Cancel => (&win.lbl_cancel, Color::from_rgb8(220, 210, 210), Color::from_rgb8(70, 56, 58)),
         };
         scene.fill(Fill::NonZero, Affine::IDENTITY, bg, None, &RoundedRect::from_rect(*r, 6.0));
         let tx = r.x0 + (r.width() - lbl.width() as f64) * 0.5;
@@ -229,42 +197,24 @@ pub(crate) fn draw_doc_window(scene: &mut Scene, win: &DocWindow, bounds: Rect) 
         draw_text(scene, lbl, Affine::translate((tx, ty)), fg);
     }
 
-    // Title text, clipped left of the leftmost header button (or the × close).
+    // Title text, on one line, left of the leftmost header button (or the ×
+    // close); too long, it is cut and ends with an ellipsis (T8).
     let title_right = buttons.iter().map(|(r, _)| r.x0).fold(close.x0, f64::min) - 8.0;
-    scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &Rect::new(header.x0, header.y0, title_right, header.y1));
-    draw_text(scene, &win.title, Affine::translate((bounds.x0 + DW_PAD, header.y0 + 12.0)), pal().text);
+    let tx = bounds.x0 + DW_PAD;
+    let ty = header.y0 + ((header.height() - win.title.height() as f64) * 0.5).max(0.0);
+    let cut = tx + win.title.width() as f64 > title_right;
+    let text_right = if cut { title_right - win.lbl_ellipsis.width() as f64 } else { title_right };
+    scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &Rect::new(header.x0, header.y0, text_right, header.y1));
+    draw_text(scene, &win.title, Affine::translate((tx, ty)), pal().text);
     scene.pop_layer();
-
-    // Body, clipped to the viewport and offset by the scroll position. While
-    // editing, tint the area and draw the end caret.
-    scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &body_vp);
-    if win.editing {
-        // Edit mode: an inset editable field in the theme's input color — NOT a
-        // hardcoded dark tint, which rendered dark-on-dark (invisible) under the
-        // light theme. The contrasting body text now reads on either theme.
-        scene.fill(Fill::NonZero, Affine::IDENTITY, pal().input, None, &body_vp);
-        scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().input_border, None, &body_vp);
+    if cut && text_right > tx {
+        draw_text(scene, &win.lbl_ellipsis, Affine::translate((text_right, ty)), pal().text);
     }
-    let body_color = if win.editing { pal().text } else { pal().text_body };
-    let body_origin = (body_vp.x0, body_vp.y0 - win.scroll_y);
-    draw_text(scene, &win.body, Affine::translate(body_origin), body_color);
-    if win.editing {
-        let (cx, cy) = end_caret(&win.body, DW_BODY_PX);
-        let x = body_origin.0 + cx + 1.0;
-        let y = body_origin.1 + cy;
-        scene.stroke(
-            &Stroke::new(1.5),
-            Affine::IDENTITY,
-            pal().caret,
-            None,
-            &Line::new(Point::new(x, y - DW_BODY_PX as f64), Point::new(x, y + 3.0)),
-        );
-    }
-    scene.pop_layer();
 
+    // The body is the editor's, drawn by the app over this chrome
+    // (`App::v2_draw`).
     scene.pop_layer(); // panel clip
     scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &panel_rr);
-    draw_scrollbar(scene, &bounds, &body_vp, win.body.height() as f64, win.scroll_y);
 }
 
 // ---- Contact-first inbox -------------------------------------------------
@@ -891,7 +841,7 @@ impl HistoryPanel {
         let width_changed = (inner_w - self.inner_w).abs() > 0.5;
         if self.title_lbl.is_none() || width_changed {
             self.title_lbl = Some(shaper.shape(&format!("History \u{2014} {}", self.doc_title), 4000.0, 16.0));
-            self.restore_lbl = Some(shaper.shape("Restore this version", 300.0, 13.0));
+            self.restore_lbl = Some(shaper.shape("Use this version", 300.0, 13.0));
             self.empty_lbl = Some(shaper.shape("No saved versions yet \u{2014} edits you save appear here.", 600.0, 14.0));
         }
         if self.rows.len() != self.commits.len() || width_changed {
@@ -1567,318 +1517,812 @@ pub(crate) fn draw_pii(scene: &mut Scene, pp: &PiiPanel, bounds: Rect) {
     scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &panel_rr);
 }
 
-// ---- Peer-review (p2p-no-per-doc-authz) ----------------------------------
-// A paired peer's sync overwrites are NON-destructive: the prior value is kept
-// (a commit for documents, a sealed RowRecovery for rows) and the change is
-// flagged for review. This panel lists pending peer-originated changes with
-// their audit verdict and per-row Restore-prior / Keep-synced actions. The
-// native-shell mirror of the Tauri/Svelte PeerReviewPanel; calls the backend
-// in-process (no IPC).
+// ---- Alerts on changes from paired devices (C-WIRE 13) --------------------
+// A change from one of the user's paired devices applies without asking (the
+// state it replaced is in History). Every received document change is
+// analysed; only a detection is listed here, until the user dismisses it.
+// Dismissing changes nothing in the document; going back is the ordinary
+// "Use this version" in History. Spec ch. 05, decided by Céline 2026-10-15.
 
-pub(crate) const PR_ROW_H: f64 = 94.0;
+pub(crate) const ALERT_ROW_H: f64 = 104.0;
+
+/// Primary button (white text on indigo-600: 6.3:1).
+const PRIMARY_BTN: Color = Color::from_rgb8(79, 70, 229);
+/// The "looks suspicious" pill (dark text on amber: well above 4.5:1).
+const ALERT_PILL: Color = Color::from_rgb8(0xF5, 0x9E, 0x0B);
+const ALERT_PILL_TEXT: Color = Color::from_rgb8(26, 26, 26);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) enum PeerReviewBtn {
-    Restore,
-    Keep,
+pub(crate) enum AlertBtn {
+    Open,
+    Previous,
+    Dismiss,
 }
 
-/// Per-row buttons (right-aligned, stacked): [Restore prior] over [Keep synced].
-/// Restore is omitted when the prior value can't be recovered for this item.
-pub(crate) fn peer_review_row_buttons(row: Rect, can_restore: bool) -> Vec<(Rect, PeerReviewBtn)> {
-    let (bw, bh, gap) = (112.0, 24.0, 8.0);
+/// The per-row buttons, left to right along the row's bottom: [Open the
+/// document] [Open the previous version] [Dismiss]. "Previous version" is
+/// left out for a first arrival (there is none).
+pub(crate) fn alert_row_buttons(row: Rect, has_previous: bool) -> Vec<(Rect, AlertBtn)> {
+    let (bh, gap) = (26.0, 8.0);
+    let y0 = row.y1 - bh - 10.0;
+    let mut x = row.x0 + 12.0;
+    let mut out = Vec::new();
+    for (w, b) in [(150.0, AlertBtn::Open), (196.0, AlertBtn::Previous), (84.0, AlertBtn::Dismiss)] {
+        if b == AlertBtn::Previous && !has_previous {
+            continue;
+        }
+        out.push((Rect::new(x, y0, x + w, y0 + bh), b));
+        x += w + gap;
+    }
+    out
+}
+
+pub(crate) struct AlertRow {
+    pub(crate) doc_id: String,
+    pub(crate) title: String,
+    /// The device's name, or its id when it is not a paired device.
+    pub(crate) device: String,
+    pub(crate) finding: String,
+    pub(crate) previous_version: Option<String>,
+}
+
+impl AlertRow {
+    /// The notice, in words: "A change from <device> to <document> looks suspicious".
+    pub(crate) fn notice(&self) -> String {
+        let title = if self.title.is_empty() { "a document" } else { &self.title };
+        let device = if self.device.is_empty() { "a paired device" } else { &self.device };
+        format!("A change from {device} to \u{201c}{title}\u{201d} looks suspicious")
+    }
+}
+
+struct AlertShaped {
+    notice: Layout<Brush>,
+    finding: Layout<Brush>,
+}
+
+pub(crate) struct AlertsPanel {
+    pub(crate) rows: Vec<AlertRow>,
+    /// The row the keyboard acts on.
+    pub(crate) selected: usize,
+    pub(crate) scroll: f64,
+    pub(crate) inner_w: f64,
+    title_lbl: Option<Layout<Brush>>,
+    empty_lbl: Option<Layout<Brush>>,
+    hint_lbl: Option<Layout<Brush>>,
+    pill_lbl: Option<Layout<Brush>>,
+    open_lbl: Option<Layout<Brush>>,
+    prev_lbl: Option<Layout<Brush>>,
+    dismiss_lbl: Option<Layout<Brush>>,
+    shaped: Vec<AlertShaped>,
+    /// Documents whose thread was deleted (S5-12 W5), below the alerts.
+    orphans: crate::orphans::OrphansSection,
+    orphan_shaped: Option<OrphanShaped>,
+}
+
+/// The section's shaped text: heading, each line's notice and origin, each
+/// group's label, and the buttons' labels (line, then group; in `ACTIONS`
+/// order).
+struct OrphanShaped {
+    ids: Vec<String>,
+    heading: Layout<Brush>,
+    lines: Vec<(Layout<Brush>, Layout<Brush>)>,
+    groups: Vec<Layout<Brush>>,
+    line_btns: Vec<Layout<Brush>>,
+    group_btns: Vec<Layout<Brush>>,
+}
+
+/// What the keys do in the Alerts window (said in the window and to a screen reader).
+pub(crate) const ALERTS_KEYS: &str =
+    "Up and Down choose an alert. Enter or O opens the document, V opens the previous version, D dismisses, Escape closes.";
+
+impl AlertsPanel {
+    pub(crate) fn new(rows: Vec<AlertRow>) -> Self {
+        Self {
+            rows,
+            selected: 0,
+            scroll: 0.0,
+            inner_w: 0.0,
+            title_lbl: None,
+            empty_lbl: None,
+            hint_lbl: None,
+            pill_lbl: None,
+            open_lbl: None,
+            prev_lbl: None,
+            dismiss_lbl: None,
+            shaped: Vec::new(),
+            orphans: crate::orphans::OrphansSection::empty(),
+            orphan_shaped: None,
+        }
+    }
+
+    /// The panel with the section "Documents whose thread was deleted".
+    pub(crate) fn with_orphans(mut self, orphans: crate::orphans::OrphansSection) -> Self {
+        self.orphans = orphans;
+        self
+    }
+
+    /// The alert row the keyboard acts on (none while the keyboard is in the
+    /// section of documents whose thread was deleted).
+    pub(crate) fn selected_row(&self) -> Option<&AlertRow> {
+        if self.orphans.selected.is_some() {
+            return None;
+        }
+        self.rows.get(self.selected)
+    }
+
+    /// The section "Documents whose thread was deleted" (S5-12 W5), loaded
+    /// with the alerts by [`load_alerts`].
+    pub(crate) fn orphans(&self) -> &crate::orphans::OrphansSection {
+        &self.orphans
+    }
+
+    pub(crate) fn orphans_mut(&mut self) -> &mut crate::orphans::OrphansSection {
+        &mut self.orphans
+    }
+
+    /// Hands the section over (when the window is rebuilt).
+    pub(crate) fn take_orphans(&mut self) -> crate::orphans::OrphansSection {
+        std::mem::replace(&mut self.orphans, crate::orphans::OrphansSection::empty())
+    }
+
+    /// Where the section starts in the list's content (below the alerts).
+    pub(crate) fn orphans_top(&self) -> f64 {
+        self.rows.len() as f64 * ALERT_ROW_H
+    }
+
+    /// The keyboard's Up / Down across the alerts and then the section's
+    /// documents, keeping the focused row in view.
+    pub(crate) fn move_focus(&mut self, down: bool, view_h: f64) {
+        let in_section = self.orphans.selected.is_some();
+        let last_alert = self.rows.is_empty() || self.selected + 1 >= self.rows.len();
+        if in_section || (down && last_alert && self.orphans.count() > 0) {
+            let stayed = self.orphans.move_selection(down);
+            if !stayed && self.rows.is_empty() {
+                // Nothing above the section: stay on its first line.
+                self.orphans.move_selection(true);
+            }
+            if let Some(top) = self.orphans.selected.and_then(|i| self.orphans.line_top(i)) {
+                let top = self.orphans_top() + top;
+                let h = crate::orphans::LINE_H;
+                if top < self.scroll {
+                    self.scroll = top;
+                } else if top + h > self.scroll + view_h {
+                    self.scroll = (top + h - view_h).max(0.0);
+                }
+                return;
+            }
+        }
+        self.move_selection(down, view_h);
+    }
+
+    pub(crate) fn move_selection(&mut self, down: bool, view_h: f64) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.selected = if down { (self.selected + 1).min(self.rows.len() - 1) } else { self.selected.saturating_sub(1) };
+        // Keep the selected row in view.
+        let top = self.selected as f64 * ALERT_ROW_H;
+        if top < self.scroll {
+            self.scroll = top;
+        } else if top + ALERT_ROW_H > self.scroll + view_h {
+            self.scroll = (top + ALERT_ROW_H - view_h).max(0.0);
+        }
+    }
+
+    /// Readable lines for the accessibility tree: each alert, which one is
+    /// selected, its actions, and the keys.
+    pub(crate) fn a11y_lines(&self) -> Vec<String> {
+        let mut out = self.alert_a11y_lines();
+        out.extend(self.orphans.a11y_lines());
+        out
+    }
+
+    fn alert_a11y_lines(&self) -> Vec<String> {
+        if self.rows.is_empty() {
+            return vec!["No alerts. Changes from your devices that look suspicious show up here.".into()];
+        }
+        let n = self.rows.len();
+        let mut out: Vec<String> = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let sel = if i == self.selected && self.orphans.selected.is_none() { ", selected" } else { "" };
+                let prev = if r.previous_version.is_some() { "Open the previous version, " } else { "" };
+                format!(
+                    "Alert {} of {n}{sel}: {}. Found: {}. Actions: Open the document, {prev}Dismiss.",
+                    i + 1,
+                    r.notice(),
+                    r.finding
+                )
+            })
+            .collect();
+        out.push(ALERTS_KEYS.into());
+        out
+    }
+
+    pub(crate) fn ensure_shaped(&mut self, shaper: &mut TextShaper, inner_w: f64) {
+        let width_changed = (inner_w - self.inner_w).abs() > 0.5;
+        if self.title_lbl.is_none() {
+            self.title_lbl = Some(shaper.shape("Alerts", 4000.0, 16.0));
+            self.empty_lbl = Some(shaper.shape(
+                "No alerts. Changes from your devices apply on their own; one that looks suspicious shows up here.",
+                600.0,
+                13.5,
+            ));
+            self.pill_lbl = Some(shaper.shape("Looks suspicious", 200.0, 11.0));
+            self.open_lbl = Some(shaper.shape("Open the document", 200.0, 12.0));
+            self.prev_lbl = Some(shaper.shape("Open the previous version", 220.0, 12.0));
+            self.dismiss_lbl = Some(shaper.shape("Dismiss", 120.0, 12.0));
+        }
+        let orphan_ids: Vec<String> = self.orphans.lines().iter().map(|l| l.id.clone()).collect();
+        if width_changed || self.hint_lbl.is_none() || self.orphan_shaped.as_ref().map(|o| &o.ids) != Some(&orphan_ids) {
+            let tw = (inner_w - 24.0).max(120.0) as f32;
+            let keys = match (self.rows.is_empty(), orphan_ids.is_empty()) {
+                (_, true) => ALERTS_KEYS.to_string(),
+                (true, false) => crate::orphans::ORPHAN_KEYS.to_string(),
+                (false, false) => format!("{ALERTS_KEYS} {}", crate::orphans::ORPHAN_KEYS),
+            };
+            self.hint_lbl = Some(shaper.shape(&keys, tw, 11.5));
+            self.orphan_shaped = Some(OrphanShaped {
+                ids: orphan_ids,
+                heading: shaper.shape(crate::orphans::HEADING, tw, 14.5),
+                lines: self
+                    .orphans
+                    .lines()
+                    .iter()
+                    .map(|l| (shaper.shape(&l.notice(), tw, 13.5), shaper.shape(&l.origin(), tw, 12.0)))
+                    .collect(),
+                groups: self
+                    .orphans
+                    .groups()
+                    .iter()
+                    .map(|g| {
+                        let n = g.ids.len();
+                        let text = if n > 1 { format!("{} ({n} documents)", g.label) } else { g.label.clone() };
+                        shaper.shape(&text, tw, 12.5)
+                    })
+                    .collect(),
+                line_btns: crate::orphans::ACTIONS.iter().map(|a| shaper.shape(a.label(), 200.0, 12.0)).collect(),
+                group_btns: crate::orphans::ACTIONS.iter().map(|a| shaper.shape(a.group_label(), 220.0, 12.0)).collect(),
+            });
+        }
+        if self.shaped.len() != self.rows.len() || width_changed {
+            self.inner_w = inner_w;
+            let tw = (inner_w - 24.0).max(120.0) as f32;
+            self.shaped = self
+                .rows
+                .iter()
+                .map(|r| AlertShaped {
+                    notice: shaper.shape(&r.notice(), tw, 13.5),
+                    finding: shaper.shape(&format!("Found: {}", r.finding), tw, 12.0),
+                })
+                .collect();
+        }
+    }
+
+    /// The height of the keys line above the list.
+    pub(crate) fn hint_h(&self) -> f64 {
+        self.hint_lbl.as_ref().map(|l| l.height() as f64 + 10.0).unwrap_or(24.0)
+    }
+
+    pub(crate) fn content_h(&self) -> f64 {
+        if self.orphans.count() == 0 {
+            return self.rows.len().max(1) as f64 * ALERT_ROW_H + 8.0;
+        }
+        self.orphans_top() + self.orphans.height() + 8.0
+    }
+}
+
+/// The open alerts, with each document's title and each device's name, and
+/// the documents whose thread was deleted (S5-12). A section that cannot be
+/// read is left empty: the alerts load as before.
+pub(crate) async fn load_alerts(
+    docs: &sovereign_docs::DocumentService,
+    device_names: &HashMap<String, String>,
+) -> AlertsPanel {
+    let mut rows = Vec::new();
+    for a in docs.alerts().await.unwrap_or_default() {
+        let title = match docs.read(&a.id).await {
+            Ok(v) => v.labelled_title(),
+            Err(_) => String::new(),
+        };
+        let device = device_names.get(&a.device).cloned().unwrap_or_else(|| a.device.clone());
+        rows.push(AlertRow { doc_id: a.id, title, device, finding: a.finding, previous_version: a.previous_version });
+    }
+    let orphans = crate::orphans::OrphansSection::load(docs, device_names)
+        .await
+        .unwrap_or_else(|_| crate::orphans::OrphansSection::empty());
+    AlertsPanel::new(rows).with_orphans(orphans)
+}
+
+/// Sample alerts for screenshot/debug (SHELL_OPEN_ALERTS=1).
+pub(crate) fn synthetic_alerts() -> AlertsPanel {
+    AlertsPanel::new(vec![
+        AlertRow {
+            doc_id: "document:a1".into(),
+            title: "Q3 strategy notes".into(),
+            device: "Laptop".into(),
+            finding: "injected instructions in the new content".into(),
+            previous_version: Some("commit:p1".into()),
+        },
+        AlertRow {
+            doc_id: "document:a2".into(),
+            title: "Reading list".into(),
+            device: "Phone".into(),
+            finding: "the model judged the change suspicious".into(),
+            previous_version: None,
+        },
+    ])
+}
+
+fn draw_button(scene: &mut Scene, br: Rect, lbl: &Option<Layout<Brush>>, primary: bool) {
+    let (fg, bg) = if primary { (Color::WHITE, PRIMARY_BTN) } else { (pal().text_body, pal().surface) };
+    scene.fill(Fill::NonZero, Affine::IDENTITY, bg, None, &RoundedRect::from_rect(br, 5.0));
+    if !primary {
+        scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &RoundedRect::from_rect(br, 5.0));
+    }
+    if let Some(l) = lbl {
+        let tx = br.x0 + (br.width() - l.width() as f64) * 0.5;
+        let ty = br.y0 + (br.height() - l.height() as f64) * 0.5;
+        draw_text(scene, l, Affine::translate((tx, ty)), fg);
+    }
+}
+
+/// The list viewport below the keys line.
+pub(crate) fn alerts_list_vp(body_vp: Rect, hint_h: f64) -> Rect {
+    Rect::new(body_vp.x0, body_vp.y0 + hint_h, body_vp.x1, body_vp.y1)
+}
+
+pub(crate) fn draw_alerts(scene: &mut Scene, ap: &AlertsPanel, bounds: Rect) {
+    let (panel_rr, header, _close, body_vp) = draw_window_chrome(scene, bounds, ALERT_PILL);
+    let dim = pal().text_dim;
+    if let Some(l) = &ap.title_lbl {
+        draw_text(scene, l, Affine::translate((header.x0 + DW_PAD, header.y0 + 14.0)), pal().text);
+    }
+    scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &body_vp);
+    if ap.rows.is_empty() && ap.orphans.count() == 0 {
+        if let Some(e) = &ap.empty_lbl {
+            draw_text(scene, e, Affine::translate((body_vp.x0 + 4.0, body_vp.y0 + 8.0)), dim);
+        }
+        scene.pop_layer();
+        scene.pop_layer();
+        scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &panel_rr);
+        return;
+    }
+    if let Some(h) = &ap.hint_lbl {
+        draw_text(scene, h, Affine::translate((body_vp.x0 + 4.0, body_vp.y0 + 4.0)), dim);
+    }
+    let list_vp = alerts_list_vp(body_vp, ap.hint_h());
+    scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &list_vp);
+    for (i, sh) in ap.shaped.iter().enumerate() {
+        let y = list_vp.y0 - ap.scroll + i as f64 * ALERT_ROW_H;
+        let row = Rect::new(list_vp.x0, y, list_vp.x1, y + ALERT_ROW_H);
+        if row.y1 < list_vp.y0 || row.y0 > list_vp.y1 {
+            continue;
+        }
+        let r = &ap.rows[i];
+        scene.fill(Fill::NonZero, Affine::IDENTITY, ALERT_PILL, None, &Rect::new(row.x0, row.y0 + 8.0, row.x0 + 3.0, row.y1 - 8.0));
+        if let Some(p) = &ap.pill_lbl {
+            let pill = Rect::new(row.x0 + 12.0, row.y0 + 8.0, row.x0 + 12.0 + p.width() as f64 + 16.0, row.y0 + 26.0);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, ALERT_PILL, None, &RoundedRect::from_rect(pill, 5.0));
+            draw_text(scene, p, Affine::translate((pill.x0 + 8.0, pill.y0 + 3.0)), ALERT_PILL_TEXT);
+        }
+        draw_text(scene, &sh.notice, Affine::translate((row.x0 + 12.0, row.y0 + 30.0)), pal().text);
+        draw_text(scene, &sh.finding, Affine::translate((row.x0 + 12.0, row.y0 + 50.0)), pal().text_body);
+        for (br, b) in alert_row_buttons(row, r.previous_version.is_some()) {
+            let lbl = match b {
+                AlertBtn::Open => &ap.open_lbl,
+                AlertBtn::Previous => &ap.prev_lbl,
+                AlertBtn::Dismiss => &ap.dismiss_lbl,
+            };
+            draw_button(scene, br, lbl, b == AlertBtn::Open);
+        }
+        // The keyboard's row: a visible focus outline (WCAG 2.4.7).
+        if i == ap.selected && ap.orphans.selected.is_none() {
+            scene.stroke(
+                &Stroke::new(2.0),
+                Affine::IDENTITY,
+                pal().accent,
+                None,
+                &RoundedRect::from_rect(Rect::new(row.x0 + 1.0, row.y0 + 2.0, row.x1 - 1.0, row.y1 - 2.0), 6.0),
+            );
+        }
+        scene.fill(Fill::NonZero, Affine::IDENTITY, pal().divider, None, &Rect::new(row.x0, row.y1 - 1.0, row.x1, row.y1));
+    }
+    draw_orphans_section(scene, ap, list_vp);
+    scene.pop_layer();
+    scene.pop_layer();
+    draw_scrollbar(scene, &bounds, &list_vp, ap.content_h(), ap.scroll);
+    scene.pop_layer(); // panel clip
+    scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &panel_rr);
+}
+
+/// The section "Documents whose thread was deleted" (S5-12 W5), below the
+/// alerts in the list: its heading, each deleted thread's row (with the "all"
+/// buttons when it holds several documents), and each document with its
+/// three ways out. No document text.
+fn draw_orphans_section(scene: &mut Scene, ap: &AlertsPanel, list_vp: Rect) {
+    use crate::orphans::{group_buttons, line_buttons, SectionRow};
+    let Some(sh) = &ap.orphan_shaped else { return };
+    if ap.orphans.count() == 0 || sh.lines.len() != ap.orphans.count() {
+        return;
+    }
+    let top = list_vp.y0 - ap.scroll + ap.orphans_top();
+    let groups = ap.orphans.groups();
+    for (row, y, h) in ap.orphans.layout() {
+        let r = Rect::new(list_vp.x0, top + y, list_vp.x1, top + y + h);
+        if r.y1 < list_vp.y0 || r.y0 > list_vp.y1 {
+            continue;
+        }
+        match row {
+            SectionRow::Heading => {
+                scene.fill(Fill::NonZero, Affine::IDENTITY, pal().divider, None, &Rect::new(r.x0, r.y0 + 6.0, r.x1, r.y0 + 7.0));
+                draw_text(scene, &sh.heading, Affine::translate((r.x0 + 4.0, r.y0 + 14.0)), pal().text);
+            }
+            SectionRow::Group(g) => {
+                if let Some(l) = sh.groups.get(g) {
+                    draw_text(scene, l, Affine::translate((r.x0 + 4.0, r.y0 + 6.0)), pal().text_body);
+                }
+                if groups.get(g).is_some_and(|g| g.ids.len() > 1) {
+                    for (i, (br, _)) in group_buttons(r).into_iter().enumerate() {
+                        draw_button(scene, br, &sh.group_btns.get(i).cloned(), false);
+                    }
+                }
+            }
+            SectionRow::Line(i) => {
+                scene.fill(Fill::NonZero, Affine::IDENTITY, pal().accent, None, &Rect::new(r.x0, r.y0 + 8.0, r.x0 + 3.0, r.y1 - 8.0));
+                if let Some((notice, origin)) = sh.lines.get(i) {
+                    draw_text(scene, notice, Affine::translate((r.x0 + 12.0, r.y0 + 8.0)), pal().text);
+                    draw_text(scene, origin, Affine::translate((r.x0 + 12.0, r.y0 + 28.0)), pal().text_dim);
+                }
+                for (bi, (br, _)) in line_buttons(r).into_iter().enumerate() {
+                    draw_button(scene, br, &sh.line_btns.get(bi).cloned(), bi == 0);
+                }
+                // The keyboard's line: a visible focus outline (WCAG 2.4.7).
+                if ap.orphans.selected == Some(i) {
+                    scene.stroke(
+                        &Stroke::new(2.0),
+                        Affine::IDENTITY,
+                        pal().accent,
+                        None,
+                        &RoundedRect::from_rect(Rect::new(r.x0 + 1.0, r.y0 + 2.0, r.x1 - 1.0, r.y1 - 2.0), 6.0),
+                    );
+                }
+                scene.fill(Fill::NonZero, Affine::IDENTITY, pal().divider, None, &Rect::new(r.x0, r.y1 - 1.0, r.x1, r.y1));
+            }
+        }
+    }
+}
+
+// ---- Previous values of synced items (C-WIRE 13) ---------------------------
+// A paired device's sync can replace a row (a thread, a contact, a
+// personal-data record…). Its previous value is kept, sealed, and can be put
+// back from this list. No pending badge: nothing here waits on the user.
+
+pub(crate) const PV_ROW_H: f64 = 78.0;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum PrevBtn {
+    Restore,
+    Forget,
+}
+
+/// Per-row buttons (right-aligned, stacked): [Restore] over [Remove from list].
+/// Restore is left out for an item that cannot be put back.
+pub(crate) fn previous_value_buttons(row: Rect, can_restore: bool) -> Vec<(Rect, PrevBtn)> {
+    let (bw, bh, gap) = (132.0, 24.0, 8.0);
     let x1 = row.x1 - 12.0;
     let x0 = x1 - bw;
     if can_restore {
         let total = bh * 2.0 + gap;
         let y0 = row.y0 + (row.height() - total) * 0.5;
         vec![
-            (Rect::new(x0, y0, x1, y0 + bh), PeerReviewBtn::Restore),
-            (Rect::new(x0, y0 + bh + gap, x1, y0 + bh + gap + bh), PeerReviewBtn::Keep),
+            (Rect::new(x0, y0, x1, y0 + bh), PrevBtn::Restore),
+            (Rect::new(x0, y0 + bh + gap, x1, y0 + bh + gap + bh), PrevBtn::Forget),
         ]
     } else {
         let y0 = row.y0 + (row.height() - bh) * 0.5;
-        vec![(Rect::new(x0, y0, x1, y0 + bh), PeerReviewBtn::Keep)]
+        vec![(Rect::new(x0, y0, x1, y0 + bh), PrevBtn::Forget)]
     }
 }
 
-fn risk_label(risk: &str) -> &'static str {
-    match risk {
-        "high" => "High risk",
-        "medium" => "Review",
-        "low" => "Low risk",
-        _ => "Unreviewed",
-    }
-}
-
-fn risk_color(risk: &str) -> Color {
-    match risk {
-        "high" => Color::from_rgb8(0xEF, 0x44, 0x44),
-        "medium" => Color::from_rgb8(0xF5, 0x9E, 0x0B),
-        "low" => Color::from_rgb8(120, 175, 135),
-        _ => Color::from_rgb8(120, 124, 134),
-    }
-}
-
-fn risk_text_color(risk: &str) -> Color {
-    // Amber needs dark text for contrast; the rest carry white.
-    if risk == "medium" {
-        Color::from_rgb8(26, 26, 26)
-    } else {
-        Color::WHITE
-    }
-}
-
-/// RFC3339 -> "YYYY-MM-DD HH:MM" (best-effort, char-safe).
-fn friendly_when(rfc3339: Option<String>) -> String {
-    match rfc3339 {
-        Some(s) => s.replace('T', " ").chars().take(16).collect(),
-        None => String::new(),
-    }
-}
-
-/// Extract (risk, summary, llm_assessed) from a serialized `PeerChangeVerdict`.
-/// Parsed loosely (serde_json::Value) so the panel doesn't couple to the struct;
-/// a missing / malformed assessment reads as unreviewed.
-fn parse_verdict(json: Option<&str>) -> (String, String, bool) {
-    let Some(j) = json else {
-        return (String::new(), String::new(), false);
-    };
-    match serde_json::from_str::<serde_json::Value>(j) {
-        Ok(v) => (
-            v.get("risk").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            v.get("summary").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            v.get("llm_assessed").and_then(|x| x.as_bool()).unwrap_or(false),
-        ),
-        Err(_) => (String::new(), String::new(), false),
-    }
-}
-
-pub(crate) struct PeerReviewRow {
-    pub(crate) kind: String, // "document" | "row" — the accept/restore handle's kind
+pub(crate) struct PreviousValueRow {
     pub(crate) id: String,
-    pub(crate) title: String,
-    pub(crate) peer: String,
+    pub(crate) label: String,
+    pub(crate) device: String,
     pub(crate) when: String,
-    pub(crate) risk: String, // "low" | "medium" | "high" | "" (unreviewed)
-    pub(crate) summary: String,
-    pub(crate) llm_assessed: bool,
     pub(crate) can_restore: bool,
 }
 
-struct PeerReviewShaped {
-    badge: Layout<Brush>,
-    title: Layout<Brush>,
-    meta: Layout<Brush>,
-    summary: Option<Layout<Brush>>,
-}
+pub(crate) const PREVIOUS_KEYS: &str =
+    "Up and Down choose an item. Enter or R restores its previous value, X removes it from the list, Escape closes.";
 
-pub(crate) struct PeerReviewPanel {
-    pub(crate) rows: Vec<PeerReviewRow>,
+pub(crate) struct PreviousValuesPanel {
+    pub(crate) rows: Vec<PreviousValueRow>,
+    pub(crate) selected: usize,
     pub(crate) scroll: f64,
     pub(crate) inner_w: f64,
     title_lbl: Option<Layout<Brush>>,
     empty_lbl: Option<Layout<Brush>>,
+    hint_lbl: Option<Layout<Brush>>,
     restore_lbl: Option<Layout<Brush>>,
-    keep_lbl: Option<Layout<Brush>>,
-    shaped: Vec<PeerReviewShaped>,
+    forget_lbl: Option<Layout<Brush>>,
+    shaped: Vec<(Layout<Brush>, Layout<Brush>)>,
 }
-impl PeerReviewPanel {
+
+impl PreviousValuesPanel {
+    pub(crate) fn new(rows: Vec<PreviousValueRow>) -> Self {
+        Self {
+            rows,
+            selected: 0,
+            scroll: 0.0,
+            inner_w: 0.0,
+            title_lbl: None,
+            empty_lbl: None,
+            hint_lbl: None,
+            restore_lbl: None,
+            forget_lbl: None,
+            shaped: Vec::new(),
+        }
+    }
+
+    pub(crate) fn selected_row(&self) -> Option<&PreviousValueRow> {
+        self.rows.get(self.selected)
+    }
+
+    pub(crate) fn move_selection(&mut self, down: bool, view_h: f64) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.selected = if down { (self.selected + 1).min(self.rows.len() - 1) } else { self.selected.saturating_sub(1) };
+        let top = self.selected as f64 * PV_ROW_H;
+        if top < self.scroll {
+            self.scroll = top;
+        } else if top + PV_ROW_H > self.scroll + view_h {
+            self.scroll = (top + PV_ROW_H - view_h).max(0.0);
+        }
+    }
+
     pub(crate) fn a11y_lines(&self) -> Vec<String> {
         if self.rows.is_empty() {
-            return vec!["No synced changes awaiting review".into()];
+            return vec!["No previous values. When a sync replaces an item, its earlier value is kept here.".into()];
         }
-        self.rows
+        let n = self.rows.len();
+        let mut out: Vec<String> = self
+            .rows
             .iter()
-            .map(|r| {
+            .enumerate()
+            .map(|(i, r)| {
+                let sel = if i == self.selected { ", selected" } else { "" };
+                let restore = if r.can_restore { "Restore, " } else { "" };
                 format!(
-                    "{} \u{2014} {} \u{2014} {} \u{2014} from {}",
-                    risk_label(&r.risk),
-                    r.title,
-                    if r.summary.is_empty() { "(no assessment)" } else { &r.summary },
-                    if r.peer.is_empty() { "a paired device" } else { &r.peer },
+                    "Item {} of {n}{sel}: {}, replaced by a sync from {} on {}. Actions: {restore}Remove from list.",
+                    i + 1,
+                    r.label,
+                    if r.device.is_empty() { "a paired device" } else { &r.device },
+                    r.when
                 )
             })
-            .collect()
+            .collect();
+        out.push(PREVIOUS_KEYS.into());
+        out
     }
+
     pub(crate) fn ensure_shaped(&mut self, shaper: &mut TextShaper, inner_w: f64) {
         let width_changed = (inner_w - self.inner_w).abs() > 0.5;
         if self.title_lbl.is_none() {
-            self.title_lbl = Some(shaper.shape("Synced changes to review", 4000.0, 16.0));
+            self.title_lbl = Some(shaper.shape("Previous values", 4000.0, 16.0));
             self.empty_lbl = Some(shaper.shape(
-                "No changes awaiting review \u{2014} a paired device's edits show up here to keep or revert.",
+                "No previous values. When a sync from one of your devices replaces an item, its earlier value is kept here.",
                 600.0,
                 13.5,
             ));
-            self.restore_lbl = Some(shaper.shape("Restore prior", 140.0, 12.0));
-            self.keep_lbl = Some(shaper.shape("Keep synced", 140.0, 12.0));
+            self.restore_lbl = Some(shaper.shape("Restore", 140.0, 12.0));
+            self.forget_lbl = Some(shaper.shape("Remove from list", 140.0, 12.0));
         }
         if self.shaped.len() != self.rows.len() || width_changed {
             self.inner_w = inner_w;
-            let tw = (inner_w - 148.0).max(120.0) as f32;
+            let tw = (inner_w - 168.0).max(120.0) as f32;
+            self.hint_lbl = Some(shaper.shape(PREVIOUS_KEYS, (inner_w - 24.0).max(120.0) as f32, 11.5));
             self.shaped = self
                 .rows
                 .iter()
                 .map(|r| {
-                    let mut meta = format!(
-                        "{} \u{00b7} from {}",
-                        r.kind,
-                        if r.peer.is_empty() { "a paired device" } else { &r.peer }
+                    let meta = format!(
+                        "Replaced by a sync from {} \u{00b7} {}",
+                        if r.device.is_empty() { "a paired device" } else { &r.device },
+                        r.when
                     );
-                    if !r.when.is_empty() {
-                        meta.push_str(&format!(" \u{00b7} {}", r.when));
-                    }
-                    if !r.risk.is_empty() && !r.llm_assessed {
-                        meta.push_str(" \u{00b7} heuristic");
-                    }
-                    PeerReviewShaped {
-                        badge: shaper.shape(risk_label(&r.risk), 120.0, 11.0),
-                        title: shaper.shape(&r.title, tw, 13.5),
-                        meta: shaper.shape(&meta, tw, 11.5),
-                        summary: if r.summary.is_empty() {
-                            None
-                        } else {
-                            Some(shaper.shape(&r.summary, tw, 11.5))
-                        },
-                    }
+                    (shaper.shape(&r.label, tw, 13.5), shaper.shape(&meta, tw, 11.5))
                 })
                 .collect();
         }
     }
+
+    pub(crate) fn hint_h(&self) -> f64 {
+        self.hint_lbl.as_ref().map(|l| l.height() as f64 + 10.0).unwrap_or(24.0)
+    }
+
     pub(crate) fn content_h(&self) -> f64 {
-        self.rows.len().max(1) as f64 * PR_ROW_H + 8.0
+        self.rows.len().max(1) as f64 * PV_ROW_H + 8.0
     }
 }
 
-/// Load pending peer-review items (overwritten documents + rows) into a panel.
-pub(crate) async fn load_peer_reviews(db: &Arc<dyn GraphDB>) -> PeerReviewPanel {
-    let mut rows = Vec::new();
-    for d in db.list_documents_pending_peer_review().await.unwrap_or_default() {
-        let (risk, summary, llm_assessed) = parse_verdict(d.peer_review_assessment.as_deref());
-        rows.push(PeerReviewRow {
-            kind: "document".to_string(),
-            id: d.id_string().unwrap_or_default(),
-            title: d.title,
-            peer: d.peer_review_peer.unwrap_or_default(),
-            when: friendly_when(d.peer_review_at.map(|t| t.to_rfc3339())),
-            risk,
-            summary,
-            llm_assessed,
-            can_restore: d.peer_review_prior_commit.is_some(),
-        });
+/// A row's label in words, from its current value.
+async fn previous_value_label(db: &Arc<dyn GraphDB>, table: &str, row_id: &str) -> String {
+    match table {
+        "thread" => match db.get_thread(row_id).await {
+            Ok(t) => format!("Thread: {}", t.name),
+            Err(_) => "A thread".into(),
+        },
+        "contact" => match db.get_contact(row_id).await {
+            Ok(c) => format!("Contact: {}", c.name),
+            Err(_) => "A contact".into(),
+        },
+        "pii_record" => match db.get_pii_record(row_id).await {
+            Ok(p) => match p.label {
+                Some(l) if !l.is_empty() => format!("Personal data: {l}"),
+                _ => "A personal-data record".into(),
+            },
+            Err(_) => "A personal-data record".into(),
+        },
+        "entity" => "A person or organisation".into(),
+        "message" => "A message".into(),
+        "conversation" => "A conversation".into(),
+        "suggested_link" => "A suggested link".into(),
+        other => format!("An item ({other})"),
     }
-    for r in db.list_pending_row_recoveries().await.unwrap_or_default() {
-        let (risk, summary, llm_assessed) = parse_verdict(r.assessment.as_deref());
-        rows.push(PeerReviewRow {
-            kind: "row".to_string(),
+}
+
+/// The previous values a sync replaced, newest first.
+pub(crate) async fn load_previous_values(
+    db: &Arc<dyn GraphDB>,
+    device_names: &HashMap<String, String>,
+) -> PreviousValuesPanel {
+    let mut recs = db.list_pending_row_recoveries().await.unwrap_or_default();
+    recs.sort_by(|a, b| b.overwritten_at.cmp(&a.overwritten_at));
+    let mut rows = Vec::with_capacity(recs.len());
+    for r in recs {
+        rows.push(PreviousValueRow {
             id: r.id_string().unwrap_or_default(),
-            title: format!("{}: {}", r.table, r.row_id),
-            peer: r.peer,
-            when: friendly_when(Some(r.overwritten_at.to_rfc3339())),
-            risk,
-            summary,
-            llm_assessed,
+            label: previous_value_label(db, &r.table, &r.row_id).await,
+            device: device_names.get(&r.peer).cloned().unwrap_or_else(|| r.peer.clone()),
+            when: r.overwritten_at.format("%Y-%m-%d %H:%M").to_string(),
             // Restore is wired for these tables (SyncService::restore_row_recovery).
             can_restore: matches!(r.table.as_str(), "thread" | "contact" | "pii_record"),
         });
     }
-    PeerReviewPanel {
-        rows,
-        scroll: 0.0,
-        inner_w: 0.0,
-        title_lbl: None,
-        empty_lbl: None,
-        restore_lbl: None,
-        keep_lbl: None,
-        shaped: Vec::new(),
-    }
+    PreviousValuesPanel::new(rows)
 }
 
-/// Sample peer-review rows for screenshot/debug (SHELL_OPEN_PEERREVIEW=1) — a
-/// fresh no-auth DB has no synced changes, so this shows the card layout.
-pub(crate) fn synthetic_peer_reviews() -> PeerReviewPanel {
-    let row = |kind: &str, id: &str, title: &str, peer: &str, when: &str, risk: &str, summary: &str, llm: bool, can_restore: bool| PeerReviewRow {
-        kind: kind.into(),
-        id: id.into(),
-        title: title.into(),
-        peer: peer.into(),
-        when: when.into(),
-        risk: risk.into(),
-        summary: summary.into(),
-        llm_assessed: llm,
-        can_restore,
-    };
-    let rows = vec![
-        row("document", "doc:1", "Q3 strategy notes", "laptop-2f3a", "2026-06-22 09:14", "high", "Replaced most of the document and added an instruction-like block.", true, true),
-        row("row", "rec:2", "contact: alice", "phone-9c1d", "2026-06-22 08:50", "medium", "Contact note changed by a peer \u{2014} review before keeping.", false, true),
-        row("document", "doc:3", "Reading list", "laptop-2f3a", "2026-06-21 19:02", "low", "Minor append; looks benign.", true, false),
-    ];
-    PeerReviewPanel {
-        rows,
-        scroll: 0.0,
-        inner_w: 0.0,
-        title_lbl: None,
-        empty_lbl: None,
-        restore_lbl: None,
-        keep_lbl: None,
-        shaped: Vec::new(),
-    }
-}
-
-pub(crate) fn draw_peer_review(scene: &mut Scene, pr: &PeerReviewPanel, bounds: Rect) {
-    let (panel_rr, header, _close, body_vp) =
-        draw_window_chrome(scene, bounds, Color::from_rgb8(120, 130, 200));
+pub(crate) fn draw_previous_values(scene: &mut Scene, pv: &PreviousValuesPanel, bounds: Rect) {
+    let (panel_rr, header, _close, body_vp) = draw_window_chrome(scene, bounds, Color::from_rgb8(120, 130, 200));
     let dim = pal().text_dim;
-    if let Some(l) = &pr.title_lbl {
+    if let Some(l) = &pv.title_lbl {
         draw_text(scene, l, Affine::translate((header.x0 + DW_PAD, header.y0 + 14.0)), pal().text);
     }
-
     scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &body_vp);
-    if pr.rows.is_empty() {
-        if let Some(e) = &pr.empty_lbl {
+    if pv.rows.is_empty() {
+        if let Some(e) = &pv.empty_lbl {
             draw_text(scene, e, Affine::translate((body_vp.x0 + 4.0, body_vp.y0 + 8.0)), dim);
         }
+        scene.pop_layer();
+        scene.pop_layer();
+        scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &panel_rr);
+        return;
     }
-    for (i, sh) in pr.shaped.iter().enumerate() {
-        let y = body_vp.y0 - pr.scroll + i as f64 * PR_ROW_H;
-        let row = Rect::new(body_vp.x0, y, body_vp.x1, y + PR_ROW_H);
-        if row.y1 < body_vp.y0 || row.y0 > body_vp.y1 {
+    if let Some(h) = &pv.hint_lbl {
+        draw_text(scene, h, Affine::translate((body_vp.x0 + 4.0, body_vp.y0 + 4.0)), dim);
+    }
+    let list_vp = alerts_list_vp(body_vp, pv.hint_h());
+    scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &list_vp);
+    for (i, (label, meta)) in pv.shaped.iter().enumerate() {
+        let y = list_vp.y0 - pv.scroll + i as f64 * PV_ROW_H;
+        let row = Rect::new(list_vp.x0, y, list_vp.x1, y + PV_ROW_H);
+        if row.y1 < list_vp.y0 || row.y0 > list_vp.y1 {
             continue;
         }
-        let r = &pr.rows[i];
-        let rc = risk_color(&r.risk);
-        // Left risk bar.
-        scene.fill(Fill::NonZero, Affine::IDENTITY, rc, None, &Rect::new(row.x0, row.y0 + 8.0, row.x0 + 3.0, row.y1 - 8.0));
-        // Risk badge pill (sized to its text).
-        let bw = sh.badge.width() as f64 + 16.0;
-        let pill = Rect::new(row.x0 + 12.0, row.y0 + 10.0, row.x0 + 12.0 + bw, row.y0 + 28.0);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, rc, None, &RoundedRect::from_rect(pill, 5.0));
-        draw_text(scene, &sh.badge, Affine::translate((pill.x0 + 8.0, pill.y0 + 3.0)), risk_text_color(&r.risk));
-        // Title / meta / summary.
-        draw_text(scene, &sh.title, Affine::translate((row.x0 + 12.0, row.y0 + 34.0)), pal().text);
-        draw_text(scene, &sh.meta, Affine::translate((row.x0 + 12.0, row.y0 + 54.0)), dim);
-        if let Some(s) = &sh.summary {
-            draw_text(scene, s, Affine::translate((row.x0 + 12.0, row.y0 + 72.0)), pal().text_body);
-        }
-        // Actions.
-        for (br, kind) in peer_review_row_buttons(row, r.can_restore) {
-            let (lbl, fg, bg) = match kind {
-                PeerReviewBtn::Restore => (&pr.restore_lbl, Color::WHITE, Color::from_rgb8(99, 102, 241)),
-                PeerReviewBtn::Keep => (&pr.keep_lbl, pal().text_body, pal().surface),
+        let r = &pv.rows[i];
+        draw_text(scene, label, Affine::translate((row.x0 + 12.0, row.y0 + 16.0)), pal().text);
+        draw_text(scene, meta, Affine::translate((row.x0 + 12.0, row.y0 + 38.0)), dim);
+        for (br, b) in previous_value_buttons(row, r.can_restore) {
+            let lbl = match b {
+                PrevBtn::Restore => &pv.restore_lbl,
+                PrevBtn::Forget => &pv.forget_lbl,
             };
-            scene.fill(Fill::NonZero, Affine::IDENTITY, bg, None, &RoundedRect::from_rect(br, 5.0));
-            if let Some(l) = lbl {
-                let tx = br.x0 + (br.width() - l.width() as f64) * 0.5;
-                let ty = br.y0 + (br.height() - l.height() as f64) * 0.5;
-                draw_text(scene, l, Affine::translate((tx, ty)), fg);
-            }
+            draw_button(scene, br, lbl, b == PrevBtn::Restore);
+        }
+        if i == pv.selected {
+            scene.stroke(
+                &Stroke::new(2.0),
+                Affine::IDENTITY,
+                pal().accent,
+                None,
+                &RoundedRect::from_rect(Rect::new(row.x0 + 1.0, row.y0 + 2.0, row.x1 - 1.0, row.y1 - 2.0), 6.0),
+            );
         }
         scene.fill(Fill::NonZero, Affine::IDENTITY, pal().divider, None, &Rect::new(row.x0, row.y1 - 1.0, row.x1, row.y1));
     }
     scene.pop_layer();
-    draw_scrollbar(scene, &bounds, &body_vp, pr.content_h(), pr.scroll);
+    scene.pop_layer();
+    draw_scrollbar(scene, &bounds, &list_vp, pv.content_h(), pv.scroll);
     scene.pop_layer(); // panel clip
     scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &panel_rr);
+}
+
+#[cfg(test)]
+mod alerts_panel_tests {
+    use super::*;
+
+    fn row(title: &str, device: &str, prev: bool) -> AlertRow {
+        AlertRow {
+            doc_id: "document:x".into(),
+            title: title.into(),
+            device: device.into(),
+            finding: "injected instructions in the new content".into(),
+            previous_version: prev.then(|| "commit:p".into()),
+        }
+    }
+
+    #[test]
+    fn the_notice_names_the_device_and_the_document_in_plain_words() {
+        assert_eq!(row("Plan", "Laptop", true).notice(), "A change from Laptop to \u{201c}Plan\u{201d} looks suspicious");
+        assert_eq!(row("", "", true).notice(), "A change from a paired device to \u{201c}a document\u{201d} looks suspicious");
+    }
+
+    #[test]
+    fn a_first_arrival_has_no_previous_version_button() {
+        let r = Rect::new(0.0, 0.0, 600.0, ALERT_ROW_H);
+        let with: Vec<_> = alert_row_buttons(r, true).into_iter().map(|(_, b)| b).collect();
+        assert_eq!(with, vec![AlertBtn::Open, AlertBtn::Previous, AlertBtn::Dismiss]);
+        let without: Vec<_> = alert_row_buttons(r, false).into_iter().map(|(_, b)| b).collect();
+        assert_eq!(without, vec![AlertBtn::Open, AlertBtn::Dismiss]);
+        for (b, _) in alert_row_buttons(r, true) {
+            assert!(b.y1 <= r.y1 && b.y0 >= r.y0 && b.x1 <= r.x1, "inside the row");
+        }
+    }
+
+    #[test]
+    fn the_accessibility_lines_say_which_alert_is_selected_its_actions_and_the_keys() {
+        let mut p = AlertsPanel::new(vec![row("A", "Laptop", true), row("B", "Phone", false)]);
+        p.move_selection(true, 1000.0);
+        let lines = p.a11y_lines();
+        assert!(lines[0].starts_with("Alert 1 of 2: A change from Laptop"));
+        assert!(lines[0].contains("Open the previous version"));
+        assert!(lines[1].contains("Alert 2 of 2, selected"));
+        assert!(!lines[1].contains("previous version"), "no previous version for a first arrival");
+        assert_eq!(lines.last().unwrap(), ALERTS_KEYS);
+        assert!(AlertsPanel::new(vec![]).a11y_lines()[0].starts_with("No alerts"));
+    }
+
+    #[test]
+    fn selection_stays_in_range_and_in_view() {
+        let mut p = AlertsPanel::new((0..5).map(|i| row(&i.to_string(), "d", true)).collect());
+        for _ in 0..10 {
+            p.move_selection(true, ALERT_ROW_H * 2.0);
+        }
+        assert_eq!(p.selected, 4);
+        assert!(p.scroll >= ALERT_ROW_H * 3.0 - 0.5);
+        for _ in 0..10 {
+            p.move_selection(false, ALERT_ROW_H * 2.0);
+        }
+        assert_eq!((p.selected, p.scroll), (0, 0.0));
+    }
+
+    #[test]
+    fn previous_values_have_no_pending_badge_and_say_their_actions() {
+        let p = PreviousValuesPanel::new(vec![PreviousValueRow {
+            id: "row_recovery:1".into(),
+            label: "Thread: Work".into(),
+            device: "Phone".into(),
+            when: "2026-10-15 10:00".into(),
+            can_restore: true,
+        }]);
+        let l = p.a11y_lines();
+        assert!(l[0].contains("Thread: Work") && l[0].contains("Restore, Remove from list"));
+        assert!(!l[0].to_lowercase().contains("review") && !l[0].to_lowercase().contains("pending"));
+    }
 }
 
 // ---- Devices & Sync (P2P, Batch 6c) --------------------------------------
@@ -2700,7 +3144,7 @@ pub(crate) fn draw_auth(scene: &mut Scene, form: &AuthForm, w: f64, h: f64) {
         }
         let focused = i == form.focus;
         let frr = RoundedRect::from_rect(*fr, 8.0);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, pal().on_accent, None, &frr);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, crate::theme::field_fill(&pal()), None, &frr);
         scene.stroke(
             &Stroke::new(if focused { 1.6 } else { 1.0 }),
             Affine::IDENTITY,
@@ -3872,7 +4316,7 @@ pub(crate) fn draw_search(scene: &mut Scene, sp: &SearchPanel, bounds: Rect) {
 
     // Query input box.
     let input_rr = RoundedRect::from_rect(input, 8.0);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, pal().on_accent, None, &input_rr);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, crate::theme::field_fill(&pal()), None, &input_rr);
     scene.stroke(&Stroke::new(1.4), Affine::IDENTITY, Color::from_rgb8(120, 150, 180), None, &input_rr);
     let ty = input.y0 + (input.height() - 16.0) * 0.5;
     let tx = input.x0 + 12.0;
@@ -4003,7 +4447,6 @@ mod inbox_layout_tests {
 #[cfg(test)]
 mod doc_edit_tests {
     use super::*;
-    use crate::text::TextShaper;
 
     #[test]
     fn pii_row_buttons_are_ordered_and_in_bounds() {
@@ -4030,78 +4473,6 @@ mod doc_edit_tests {
         // Vertically centered within the row.
         assert!((r.y0 - row.y0 - (del.y0 - row.y0)).abs() < 0.01);
         assert!(r.y0 > row.y0 && r.y1 < row.y1);
-    }
-
-    fn make_doc(body: &str) -> (TextShaper, DocWindow) {
-        let mut shaper = TextShaper::new();
-        let layout = shaper.shape("t", 100.0, 12.0);
-        let card = Card {
-            id: "doc:1".into(),
-            x: 0.0,
-            lane: 0,
-            external: false,
-            pinned: false,
-            title: "Title".into(),
-            body: body.into(),
-            layout,
-        };
-        let dw = DocWindow::new(&card, &mut shaper, 200.0);
-        (shaper, dw)
-    }
-
-    /// Lot 0.3: the predicate every discard path consults before dropping the
-    /// edit buffer (Esc, Cancel, the × close, quitting the app, a skill or a
-    /// restore rewriting the document).
-    #[test]
-    fn only_a_dirty_edit_buffer_counts_as_unsaved() {
-        let (_s, mut dw) = make_doc("hello");
-        assert!(!dw.has_unsaved_edits(), "view mode has nothing to lose");
-        dw.begin_edit();
-        assert!(!dw.has_unsaved_edits(), "an untouched buffer has nothing to lose");
-        dw.insert_char('!');
-        assert!(dw.has_unsaved_edits());
-        dw.backspace();
-        assert!(!dw.has_unsaved_edits(), "typed back to the saved text");
-        dw.insert_char('?');
-        dw.cancel_edit();
-        assert!(!dw.has_unsaved_edits());
-    }
-
-    #[test]
-    fn edit_buffer_tracks_dirty_against_saved_body() {
-        let (_s, mut dw) = make_doc("hello");
-        dw.begin_edit();
-        assert!(dw.editing);
-        assert_eq!(dw.edit_buf, "hello");
-        assert!(!dw.dirty, "fresh edit buffer matches the saved body");
-
-        dw.insert_char('!');
-        assert_eq!(dw.edit_buf, "hello!");
-        assert!(dw.dirty);
-
-        dw.backspace();
-        assert_eq!(dw.edit_buf, "hello");
-        assert!(!dw.dirty, "reverting to the saved text clears dirty");
-    }
-
-    #[test]
-    fn cancel_leaves_edit_mode() {
-        let (_s, mut dw) = make_doc("body");
-        dw.begin_edit();
-        dw.insert_char('x');
-        dw.cancel_edit();
-        assert!(!dw.editing);
-        // The saved body is untouched by a cancelled edit.
-        assert_eq!(dw.body_text, "body");
-    }
-
-    #[test]
-    fn newline_appends_to_buffer() {
-        let (_s, mut dw) = make_doc("a");
-        dw.begin_edit();
-        dw.insert_char('\n');
-        dw.insert_char('b');
-        assert_eq!(dw.edit_buf, "a\nb");
     }
 }
 

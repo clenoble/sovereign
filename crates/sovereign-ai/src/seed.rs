@@ -2,11 +2,10 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::Result;
-use sovereign_core::content::ContentFields;
 use sovereign_core::profile::{BubbleStyle, SuggestionFeedback, UserProfile};
 use sovereign_db::schema::{
-    ChannelAddress, ChannelType, Contact, Conversation, Document, Message, MessageDirection,
-    ReadStatus, RelationType, Thread,
+    ChannelAddress, ChannelType, Contact, Conversation, Message, MessageDirection, ReadStatus,
+    RelationType,
 };
 // `GraphDB` methods are reached through the `T: sovereign_db::GraphDB` bound, and
 // `SurrealGraphDB` is only used by the tests below — both imports live where used
@@ -19,14 +18,42 @@ use sovereign_db::schema::{
 // always available.
 use std::sync::Arc;
 use sovereign_crypto::account_key::AccountKey;
+use sovereign_docs::{DocumentService, Origin, Provenance, Trust};
+
+/// The source named in the provenance of the external sample documents.
+const SAMPLE_SOURCE: &str = "sample data";
+
+/// One sample document, created through the document service at its
+/// original time (origin: import — the app brings it in, nobody typed it).
+async fn seed_document(
+    docs: &DocumentService,
+    title: &str,
+    thread_id: &str,
+    text: &str,
+    trust: Trust,
+    provenance: Provenance,
+    at: chrono::DateTime<chrono::Utc>,
+) -> Result<String> {
+    let mut new = crate::docs_host::new_document(title, thread_id, text, trust, provenance, Origin::Import);
+    new.created_at = Some(at);
+    new.modified_at = Some(at);
+    let created = crate::docs_host::create(docs, new)
+        .await
+        .map_err(|e| anyhow::anyhow!("create document {title:?}: {e}"))?;
+    Ok(created.id)
+}
 
 /// Populate the database with sample data when it's empty.
 /// Provides a visual baseline for testing the canvas.
 ///
-/// Generic over `T: GraphDB` so it can be called against the raw
-/// `SurrealGraphDB` at boot (pre-login plaintext seed) or against the
-/// `LayeredGraphDB` post-login (writes flow through encryption).
-pub async fn seed_if_empty<T: sovereign_db::GraphDB + ?Sized>(db: &T) -> Result<()> {
+/// Generic over `T: GraphDB` for the rows that are not documents (threads,
+/// relationships, contacts, conversations, messages). **Documents are created
+/// through the document service** (C-DOC adoption step 3): format v2, a
+/// version from creation, personal-data ingest, trust and provenance. The
+/// owned samples are *written* (owned); the external ones come from the
+/// sample data (`import`, external). Their original times are kept; the
+/// version from creation is dated when the seed runs.
+pub async fn seed_if_empty<T: sovereign_db::GraphDB + ?Sized>(db: &T, docs: &sovereign_docs::DocumentService) -> Result<()> {
     use chrono::{Duration, Utc};
 
     let threads = db.list_threads().await?;
@@ -50,12 +77,13 @@ pub async fn seed_if_empty<T: sovereign_db::GraphDB + ?Sized>(db: &T) -> Result<
 
     let mut thread_ids = Vec::new();
     if needs_base {
+        // Through the one thread-write path, stamped (THREAD-sync S1).
         for (name, desc) in &thread_defs {
-            let t = Thread::new(name.to_string(), desc.to_string());
-            let created = db.create_thread(t).await?;
-            thread_ids.push(
-                created.id_string().ok_or_else(|| anyhow::anyhow!("Thread missing ID after creation"))?,
-            );
+            let id = docs
+                .thread_create(name, desc)
+                .await
+                .map_err(|e| anyhow::anyhow!("create thread {name:?}: {e}"))?;
+            thread_ids.push(id);
         }
     } else {
         // Threads already exist — collect their IDs in definition order
@@ -116,43 +144,18 @@ pub async fn seed_if_empty<T: sovereign_db::GraphDB + ?Sized>(db: &T) -> Result<
     let mut ts_idx = 0;
 
     for (title, body, thread_idx) in &owned_docs {
-        let mut doc = Document::new(
-            title.to_string(),
-            thread_ids[*thread_idx].clone(),
-            true,
-        );
-        let content = ContentFields {
-            body: body.to_string(),
-            ..Default::default()
-        };
-        doc.content = content.serialize();
-        doc.created_at = timestamps[ts_idx % timestamps.len()];
-        doc.modified_at = doc.created_at;
+        let at = timestamps[ts_idx % timestamps.len()];
         ts_idx += 1;
-        let created = db.create_document(doc).await?;
-        created_doc_ids.push(
-            created.id_string().ok_or_else(|| anyhow::anyhow!("Document missing ID after creation"))?,
-        );
+        let id = seed_document(docs, title, &thread_ids[*thread_idx], body, Trust::Owned, Provenance::Written, at).await?;
+        created_doc_ids.push(id);
     }
 
     for (title, body, thread_idx) in &external_docs {
-        let mut doc = Document::new(
-            title.to_string(),
-            thread_ids[*thread_idx].clone(),
-            false,
-        );
-        let content = ContentFields {
-            body: body.to_string(),
-            ..Default::default()
-        };
-        doc.content = content.serialize();
-        doc.created_at = timestamps[ts_idx % timestamps.len()];
-        doc.modified_at = doc.created_at;
+        let at = timestamps[ts_idx % timestamps.len()];
         ts_idx += 1;
-        let created = db.create_document(doc).await?;
-        created_doc_ids.push(
-            created.id_string().ok_or_else(|| anyhow::anyhow!("Document missing ID after creation"))?,
-        );
+        let provenance = Provenance::Import { source_path: SAMPLE_SOURCE.into() };
+        let id = seed_document(docs, title, &thread_ids[*thread_idx], body, Trust::External, provenance, at).await?;
+        created_doc_ids.push(id);
     }
 
     // Add relationships between related documents
@@ -187,20 +190,9 @@ pub async fn seed_if_empty<T: sovereign_db::GraphDB + ?Sized>(db: &T) -> Result<
         ).await?;
     }
 
-    let commit_targets = [
-        (0, vec!["Initial research notes", "Added GTK4 findings"]),
-        (1, vec!["Draft project plan", "Added Phase 2 details", "Finalized milestones"]),
-        (3, vec!["Initial API spec", "Added relationship graph endpoints"]),
-        (6, vec!["Initial design system", "Updated color palette"]),
-    ];
-
-    for (doc_idx, messages) in &commit_targets {
-        if let Some(doc_id) = created_doc_ids.get(*doc_idx) {
-            for msg in messages {
-                let _ = db.commit_document(doc_id, msg).await;
-            }
-        }
-    }
+    // No made-up history: the service makes versions (each document has the
+    // one from its creation); the commits of identical states with invented
+    // messages this seed used to add are gone (C-DOC adoption step 3).
     } // needs_base
 
     // ── Contacts ───────────────────────────────────────────────────────────
@@ -454,7 +446,16 @@ pub fn seed_profile_and_history(profile_dir: &Path) -> Result<()> {
 /// Skipped if any entity already exists, so it's idempotent across restarts.
 /// Requires the `encryption` feature because vault entries need a real
 /// AccountKey for the encrypt → reveal round-trip to work in the dashboard.
-pub async fn seed_pii_if_empty<T: sovereign_db::GraphDB + ?Sized>(db: &T, account_key: &Arc<AccountKey>) -> Result<()> {
+///
+/// The two PII-bearing documents are created through the document service
+/// (adoption step 3) with their tokens already in place; the seed then lists
+/// each document among its records' sources and writes its raw body (the
+/// values inline), as before.
+pub async fn seed_pii_if_empty<T: sovereign_db::GraphDB + ?Sized>(
+    db: &T,
+    docs: &DocumentService,
+    account_key: &Arc<AccountKey>,
+) -> Result<()> {
     use chrono::{Duration, Utc};
     use sovereign_crypto::vault::EncryptedBlob;
     use sovereign_db::schema::{
@@ -651,16 +652,8 @@ pub async fn seed_pii_if_empty<T: sovereign_db::GraphDB + ?Sized>(db: &T, accoun
                 spans.push((*rec_idx, span_start, span_end));
             }
 
-            let mut doc = Document::new(title.to_string(), thread_id.clone(), true);
-            let content = ContentFields {
-                body: canonical,
-                ..Default::default()
-            };
-            doc.content = content.serialize();
-            let created = db.create_document(doc).await?;
-            let doc_id = created
-                .id_string()
-                .ok_or_else(|| anyhow::anyhow!("PII doc missing ID"))?;
+            let doc_id =
+                seed_document(docs, title, &thread_id, &canonical, Trust::Owned, Provenance::Written, now).await?;
 
             // Encrypt the raw (PII-inline) body so reveal can decrypt it later.
             let raw_blob = EncryptedBlob::encrypt_str(&raw, account_key)
@@ -710,19 +703,21 @@ mod tests {
     // GraphDB trait must be in scope for its methods (list_entities, etc.) to
     // resolve on the concrete SurrealGraphDB the tests use.
     use sovereign_db::GraphDB;
-    use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
+    use sovereign_db::encrypted::EncryptedGraphDB;
 
-    async fn test_db() -> SurrealGraphDB {
-        let db = SurrealGraphDB::new(StorageMode::Memory).await.unwrap();
-        db.connect().await.unwrap();
-        db.init_schema().await.unwrap();
-        db
+    /// The encrypted store and the document service over it (documents are
+    /// seeded through the service), with the test account key.
+    async fn stack(tag: &str) -> (Arc<EncryptedGraphDB>, DocumentService, Arc<AccountKey>) {
+        let db = crate::docs_host::testing::encrypted_memory_store(tag).await;
+        let ak = crate::docs_host::testing::account_key();
+        let docs = crate::docs_host::build_document_service(db.clone(), Some(ak.clone()), "test".into());
+        (db, docs, ak)
     }
 
     #[tokio::test]
     async fn seed_populates_empty_db() {
-        let db = test_db().await;
-        seed_if_empty(&db).await.unwrap();
+        let (db, svc, _) = stack("seed-populates").await;
+        seed_if_empty(db.as_ref(), &svc).await.unwrap();
 
         let threads = db.list_threads().await.unwrap();
         assert_eq!(threads.len(), 4, "Should create 4 threads");
@@ -734,6 +729,23 @@ mod tests {
         let external = docs.iter().filter(|d| !d.is_owned).count();
         assert_eq!(owned, 8);
         assert_eq!(external, 6);
+
+        // C-DOC adoption step 3: through the service — v2, one version from
+        // creation, provenance recorded, original time kept.
+        for d in &docs {
+            let id = d.id_string().unwrap();
+            let view = svc.read(&id).await.unwrap();
+            assert_eq!(view.stored_form, sovereign_docs::StoredForm::Read(sovereign_docs::SourceForm::V2));
+            assert_eq!(svc.versions(&id).await.unwrap().len(), 1, "{}: one version", d.title);
+            let expected = if d.is_owned {
+                Provenance::Written
+            } else {
+                Provenance::Import { source_path: SAMPLE_SOURCE.into() }
+            };
+            assert_eq!(view.provenance, expected);
+            // The newest sample is dated 8 hours back.
+            assert!(view.created_at < chrono::Utc::now() - chrono::Duration::hours(1), "original time kept");
+        }
 
         // Contacts
         let contacts = db.list_contacts().await.unwrap();
@@ -750,9 +762,9 @@ mod tests {
 
     #[tokio::test]
     async fn seed_is_idempotent() {
-        let db = test_db().await;
-        seed_if_empty(&db).await.unwrap();
-        seed_if_empty(&db).await.unwrap(); // Should be a no-op
+        let (db, svc, _) = stack("seed-idempotent").await;
+        seed_if_empty(db.as_ref(), &svc).await.unwrap();
+        seed_if_empty(db.as_ref(), &svc).await.unwrap(); // Should be a no-op
 
         let threads = db.list_threads().await.unwrap();
         assert_eq!(threads.len(), 4, "Should still be 4 threads after double seed");
@@ -793,19 +805,14 @@ mod tests {
 
         #[tokio::test]
     async fn seed_pii_populates_empty_db() {
-        use sovereign_core::content::ContentFields;
-        use sovereign_crypto::account_key::AccountKey;
-        use sovereign_crypto::master_key::MasterKey;
         use sovereign_crypto::vault::EncryptedBlob;
         use sovereign_db::schema::ReviewState;
 
-        let db = test_db().await;
+        let (db, svc, ak) = stack("seed-pii").await;
         // Threads are needed for the PII-bearing doc seed to land.
-        seed_if_empty(&db).await.unwrap();
-        let mk = MasterKey::generate();
-        let ak = Arc::new(AccountKey::derive(&mk).unwrap());
+        seed_if_empty(db.as_ref(), &svc).await.unwrap();
 
-        seed_pii_if_empty(&db, &ak).await.unwrap();
+        seed_pii_if_empty(db.as_ref(), &svc, &ak).await.unwrap();
 
         let entities = db.list_entities().await.unwrap();
         assert_eq!(entities.len(), 5, "Should create 5 PII entities");
@@ -844,19 +851,26 @@ mod tests {
 
         // ── PII-bearing documents ───────────────────────────────────────
         let docs = db.list_documents(None).await.unwrap();
+        // Every document created through the service has a raw body now; the
+        // PII-bearing ones are the two that carry tokens.
         let pii_docs: Vec<_> = docs
             .iter()
-            .filter(|d| d.body_raw_encrypted.is_some())
+            .filter(|d| ["Personal contact card", "Insurance application draft"].contains(&d.title.as_str()))
             .collect();
         assert_eq!(pii_docs.len(), 2, "Should create 2 PII-bearing docs");
 
         for doc in &pii_docs {
+            // The tokens are tokens in their document (it is among the
+            // records' sources), so they show as labels there.
+            let view = svc.read(&doc.id_string().unwrap()).await.unwrap();
+            assert_eq!(view.tokens.len(), 3);
+            assert!(view.tokens.iter().all(|t| matches!(t.status, sovereign_docs::TokenStatus::Token { .. })));
             // Canonical body must contain at least one [pii:...] token.
-            let cf = ContentFields::parse(&doc.content);
+            let body = sovereign_docformat::plain_text_of(&doc.content);
             assert!(
-                cf.body.contains("[pii:"),
+                body.contains("[pii:"),
                 "Canonical body should carry [pii:<id>] tokens, got: {}",
-                cf.body
+                body
             );
             // pii_scanned_at marks the doc as scanned.
             assert!(doc.pii_scanned_at.is_some());
@@ -868,7 +882,7 @@ mod tests {
             };
             let raw = String::from_utf8(raw_blob.decrypt(&ak).unwrap()).unwrap();
             assert!(!raw.contains("[pii:"), "Raw body should NOT contain tokens");
-            assert!(raw.len() > cf.body.len() / 2, "Raw body should be substantial");
+            assert!(raw.len() > body.len() / 2, "Raw body should be substantial");
         }
 
         // At least one referenced record gained non-empty sources.
@@ -878,16 +892,11 @@ mod tests {
 
         #[tokio::test]
     async fn seed_pii_is_idempotent() {
-        use sovereign_crypto::account_key::AccountKey;
-        use sovereign_crypto::master_key::MasterKey;
+        let (db, svc, ak) = stack("seed-pii-idempotent").await;
+        seed_if_empty(db.as_ref(), &svc).await.unwrap();
 
-        let db = test_db().await;
-        seed_if_empty(&db).await.unwrap();
-        let mk = MasterKey::generate();
-        let ak = Arc::new(AccountKey::derive(&mk).unwrap());
-
-        seed_pii_if_empty(&db, &ak).await.unwrap();
-        seed_pii_if_empty(&db, &ak).await.unwrap(); // no-op
+        seed_pii_if_empty(db.as_ref(), &svc, &ak).await.unwrap();
+        seed_pii_if_empty(db.as_ref(), &svc, &ak).await.unwrap(); // no-op
 
         let entities = db.list_entities().await.unwrap();
         assert_eq!(entities.len(), 5, "Still 5 entities after double seed");

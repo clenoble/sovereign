@@ -27,11 +27,6 @@ use tauri::State;
 use sovereign_crypto::account_key::AccountKey;
 use sovereign_crypto::auth::AuthStore;
 use sovereign_crypto::pair_payload as pp;
-// `GraphDB` trait must be in scope for `resolve_sync_conflict_keep_mine`'s
-// `state.db.update_document(...)` call (pre-existing build break in the p2p
-// feature — pairing.rs uses explicit imports, not a glob, so the trait method
-// was never resolvable here).
-use sovereign_db::GraphDB;
 
 use crate::err::ToStringErr;
 use crate::tauri_state::AppState;
@@ -231,19 +226,19 @@ pub async fn complete_onboarding_paired(
 
         let profile_dir = &state.profile_dir;
 
+        // rc2 (spec ch. 07, *Auth store*, "Created once"): the single-flight
+        // claim, taken first — before the pairing handshake (which derives the
+        // master key in its callback) and before any file write — and held to
+        // the end of this command, past the write of auth.store. It also
+        // carries IPC-001 (v0.0.7): an existing credential store refuses, even
+        // without the `onboarding_done` marker (written last, so a crash or a
+        // pre-login race can leave auth.store without it); without that an
+        // unauthenticated IPC caller could OVERWRITE the victim's auth.store
+        // with an attacker-supplied QR / password / AccountKey.
+        let _claim = crate::onboarding_claim::claim(profile_dir).map_err(|e| e.to_string())?;
+
         if profile_dir.join("onboarding_done").exists() {
             return Err("onboarding already complete on this device".to_string());
-        }
-        // IPC-001 (v0.0.7): also refuse if a credential store already exists —
-        // mirror complete_onboarding's IPC-006 guard. `onboarding_done` is
-        // written LAST during fresh onboarding (after auth.store), so guarding on
-        // it alone leaves a window where auth.store exists but the marker does
-        // not (a crash between the two writes, or a pre-login race). Without this
-        // an unauthenticated IPC caller could OVERWRITE the victim's auth.store
-        // below with an attacker-supplied QR / password / AccountKey — account
-        // lockout or takeover.
-        if profile_dir.join("crypto").join("auth.store").exists() {
-            return Err("Already onboarded — log in instead.".to_string());
         }
 
         // 1. Decode the scanned offer (plaintext — the QR carries no
@@ -298,9 +293,9 @@ pub async fn complete_onboarding_paired(
             .ok_or_else(|| "handshake finished without deriving an identity".to_string())?;
         let imported_account_key = AccountKey::from_bytes(outcome.secrets.account_key_bytes);
 
-        // 3. Persist salt, then the AuthStore with the imported
-        //    AccountKey wrapped under the new local passphrase's DeviceKey.
-        std::fs::write(crypto_dir.join("salt"), &outcome.secrets.salt).str_err()?;
+        // 3. Persist the AuthStore with the imported AccountKey wrapped
+        //    under the new local passphrase's DeviceKey, then the salt (in
+        //    that order, so a refused exclusive write changes no file).
         // Duress optional → RANDOM unreachable decoy, never the shared
         // source-visible literal (H-shell1 theme; matches the wizard).
         let random_duress = sovereign_crypto::random_hex_32();
@@ -313,8 +308,13 @@ pub async fn complete_onboarding_paired(
             &imported_account_key,
         )
         .str_err()?;
-        auth_store
-            .save(&crypto_dir.join("auth.store"))
+        // Exclusive create: never replaces an existing auth.store. The mode
+        // (hard link or in-place) is logged, to observe it on the device.
+        let mode = auth_store
+            .save_new(&crypto_dir.join("auth.store"))
+            .map_err(crate::onboarding_claim::save_new_error)?;
+        tracing::info!("auth.store published (paired onboarding): {mode:?}");
+        sovereign_crypto::fs_private::write_private(&crypto_dir.join("salt"), &outcome.secrets.salt)
             .str_err()?;
 
         // 4. Save user profile (nickname, bubble_style, theme — same as
@@ -543,31 +543,6 @@ pub async fn get_p2p_settings(
             running: false,
         })
     }
-}
-
-/// Resolve a document sync conflict by keeping the local version: touch
-/// the document (bumps `modified_at`, so this device wins the next
-/// content-LWW round) and immediately trigger a sync so the peers
-/// converge on it. "Keep theirs"/"keep both" need a fetch-document
-/// protocol verb and are deferred (see the P2P completion plan).
-#[tauri::command]
-pub async fn resolve_sync_conflict_keep_mine(
-    webview: tauri::Webview,
-    state: State<'_, AppState>,
-    doc_id: String,
-) -> Result<(), String> {
-    state.require_unlocked(&webview).await?;
-    // Touch: update with no field changes still bumps modified_at.
-    state
-        .db
-        .update_document(&doc_id, None, None)
-        .await
-        .map_err(|e| format!("touch document: {e}"))?;
-    #[cfg(feature = "p2p")]
-    {
-        crate::sync_startup::trigger_sync_for_all_paired(&state).await;
-    }
-    Ok(())
 }
 
 /// Return this device's libp2p PeerId for display in the Settings

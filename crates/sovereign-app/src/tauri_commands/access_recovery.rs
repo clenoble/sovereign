@@ -236,7 +236,14 @@ pub async fn access_recovery_poll(
         // rather than re-sealing over a truncated set.
         rec.unseal(&seal_key).str_err()?;
         rec.poll_round(Duration::from_secs(20)).await;
-        rec.save(&dir, &seal_key).str_err()?;
+        if let Err(e) = rec.save(&dir, &seal_key) {
+            // The owner logged in (or the recovery was cancelled) during the round:
+            // the save refused to bring it back, and there is no recovery to report.
+            if rec.is_cancelled(&dir) {
+                return Ok(None);
+            }
+            return Err(e.to_string());
+        }
         Ok(Some(status_of(&rec)))
     }
     #[cfg(not(all(feature = "p2p", feature = "encryption")))]
@@ -338,7 +345,7 @@ pub async fn access_recovery_finalize(
             );
             match crate::setup::create_db(&duress_config).await {
                 Ok(ddb) => {
-                    if let Err(e) = crate::duress::seed_duress_db(&ddb).await {
+                    if let Err(e) = crate::duress::seed_duress_db(&ddb, &state.config.p2p.device_name).await {
                         tracing::warn!("duress decoy pre-seed at access recovery failed: {e}");
                     }
                 }

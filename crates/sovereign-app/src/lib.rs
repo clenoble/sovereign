@@ -9,6 +9,41 @@ mod llm_bridge;
 // half-wired (seed_duress_db / persona_db_path were dead code).
 #[cfg(feature = "encryption")]
 mod duress;
+mod doc_saves;
+// C-DOC adoption step 5: the mobile trash and the host's purge.
+mod doc_trash;
+// The step-5 tests (S5-2, S5-9), written before the code; kept in their own
+// file so whoever implements step 5 does not edit them.
+#[cfg(test)]
+mod step5_tests;
+// S5-12: documents whose thread was deleted (the phone's commands and their
+// layer).
+mod doc_orphans;
+// The S5-12 tests of that layer, written before the code; the implementer
+// does not edit them.
+#[cfg(test)]
+mod orphans_tests;
+// The step-6 tests (M5: the decoy seeded in format v2), written before the
+// code; the implementer does not edit them.
+#[cfg(all(test, feature = "encryption"))]
+mod step6_tests;
+// rc2: account creation is single-flight (spec ch. 07, *Auth store*, "Created
+// once"). The tests of `onboarding_claim` and the order scan of the two
+// onboarding commands, written before the code; the implementer does not edit
+// them. Registered here because `onboarding_claim.rs` does not exist yet.
+#[cfg(test)]
+#[path = "onboarding_claim_tests.rs"]
+mod onboarding_claim_tests;
+#[cfg(test)]
+mod onboarding_order_tests;
+// rc2, the laptop's second position (Q1: save_new's mode logged; Q2: the salt
+// written atomically): source scans, written before the code; the implementer
+// does not edit them.
+#[cfg(test)]
+mod rc2_second_position_tests;
+// rc2: the single-flight claim taken by every first write of auth.store
+// (onboarding fresh or paired, backup recovery).
+pub(crate) mod onboarding_claim;
 mod err;
 // Server-side login lockout (CRYPTO-002). Only the encryption build's
 // `validate_password` enforces it; gating avoids dead-code warnings elsewhere.
@@ -23,7 +58,9 @@ mod tauri_events;
 mod sync_startup;
 // recovery_setup moved to sovereign_crypto::recovery_store (2026-07-16) so the
 // native shell can share one implementation; reached via setup::recovery_store().
-mod pii_ingest;
+// (pii_ingest — the one-shot document ingest of the create/import/save
+// commands — is gone: the document service's hook, docs_host::RegexDocumentIngest,
+// ingests every write; C-DOC adoption steps 2 and 3.)
 #[cfg(all(feature = "comms", feature = "encryption"))]
 mod pii_contact_hook;
 #[cfg(all(feature = "comms", feature = "encryption"))]
@@ -57,7 +94,6 @@ use sovereign_core::config::AppConfig;
 use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent};
 use sovereign_core::security::ActionDecision;
 use sovereign_core::lifecycle;
-use sovereign_db::GraphDB;
 
 use cli::{Cli, Commands};
 use setup::create_db;
@@ -270,6 +306,14 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::documents::create_document,
             tauri_commands::documents::close_document,
             tauri_commands::documents::delete_document,
+            // Trash (C-DOC adoption step 5, S5-9)
+            doc_trash::commands::list_trash,
+            doc_trash::commands::restore_from_trash,
+            doc_trash::commands::empty_trash,
+            // Documents whose thread was deleted (S5-12)
+            doc_orphans::commands::list_orphaned_documents,
+            doc_orphans::commands::resolve_orphan,
+            doc_orphans::commands::resolve_orphans_of_thread,
             tauri_commands::documents::list_commits,
             tauri_commands::documents::restore_commit,
             tauri_commands::documents::list_skills_for_doc,
@@ -329,11 +373,12 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::suggestions::accept_link_suggestion,
             tauri_commands::suggestions::dismiss_link_suggestion,
             tauri_commands::suggestions::trigger_consolidation,
-            // Peer-write review (p2p-no-per-doc-authz)
-            tauri_commands::peer_review::list_peer_reviews,
-            tauri_commands::peer_review::accept_peer_review,
-            tauri_commands::peer_review::restore_peer_review,
-            tauri_commands::peer_review::audit_peer_reviews,
+            // Alerts on changes from paired devices; previous values of synced items (C-WIRE 13)
+            tauri_commands::sync_alerts::list_sync_alerts,
+            tauri_commands::sync_alerts::dismiss_sync_alert,
+            tauri_commands::sync_alerts::list_previous_values,
+            tauri_commands::sync_alerts::restore_previous_value,
+            tauri_commands::sync_alerts::forget_previous_value,
             // PII resolution
             tauri_commands::pii::resolve_pii_tokens,
             tauri_commands::pii::list_pii_entities,
@@ -378,7 +423,6 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             #[cfg(feature = "encryption")]
             tauri_commands::pairing::get_p2p_settings,
             #[cfg(feature = "encryption")]
-            tauri_commands::pairing::resolve_sync_conflict_keep_mine,
             // Backup (P4)
             #[cfg(feature = "encryption")]
             tauri_commands::backup::backup_now,
@@ -536,7 +580,6 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 feedback_tx: backend.feedback_tx,
                 orch_tx: backend.orch_tx,
                 theme: std::sync::Mutex::new(theme_initial),
-                autocommit: backend.autocommit.clone(),
                 model_assignments: std::sync::Mutex::new(backend.model_assignments),
                 profile_dir: backend.profile_dir,
                 #[cfg(feature = "encryption")]
@@ -549,6 +592,11 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 p2p_identity_key: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "encryption")]
                 pending_pairing: tokio::sync::RwLock::new(None),
+                #[cfg(feature = "encryption")]
+                docs: tokio::sync::RwLock::new(None),
+                #[cfg(feature = "encryption")]
+                migration_task: std::sync::Mutex::new(None),
+                edit_sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
                 #[cfg(feature = "p2p")]
                 p2p_command_tx: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "p2p")]
@@ -725,30 +773,15 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 tauri_events::spawn_voice_forwarder(app.handle().clone(), vrx);
             }
 
-            // Periodic auto-commit (30s)
-            let autocommit = backend.autocommit;
-            tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-                loop {
-                    interval.tick().await;
-                    autocommit.lock().await.check_and_commit().await;
-                }
-            });
+            // (The 30-second auto-commit loop is retired: versions are made by
+            // the document service, by amount of change — C-DOC adoption step 2.)
 
-            // Hourly purge of soft-deleted items
-            let purge_db = backend.db.clone();
-            tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-                loop {
-                    interval.tick().await;
-                    let max_age = std::time::Duration::from_secs(30 * 24 * 3600);
-                    match (*purge_db).purge_deleted(max_age).await {
-                        Ok(n) if n > 0 => tracing::info!("Purged {n} soft-deleted items"),
-                        Err(e) => tracing::warn!("Purge failed: {e}"),
-                        _ => {}
-                    }
-                }
-            });
+            // The trash purge (C-DOC adoption step 5, S5-3): through the
+            // document service, at unlock and then hourly — what has been 30
+            // days in the trash goes, with its versions, key and edges, and
+            // leaves a purge marker. (It replaces the `purge_deleted` loop,
+            // which removed rows only and kept their versions.)
+            tauri::async_runtime::spawn(doc_trash::run_purge_ticks(app.handle().clone()));
 
             // Memory consolidation idle-watcher
             if let Some(orch) = backend.orchestrator.clone() {
@@ -907,7 +940,6 @@ struct BackendInit {
     feedback_tx: tokio::sync::mpsc::Sender<FeedbackEvent>,
     orch_tx: mpsc::Sender<OrchestratorEvent>,
     orch_rx: mpsc::Receiver<OrchestratorEvent>,
-    autocommit: Arc<tokio::sync::Mutex<sovereign_ai::AutoCommitEngine>>,
     model_assignments: tauri_state::ModelAssignments,
     #[cfg(feature = "voice-stt")]
     stt_engine: Option<Arc<tokio::sync::Mutex<sovereign_ai::voice::stt::SttEngine>>>,
@@ -997,6 +1029,11 @@ async fn init_backend(
         config.ai.clone(),
         db_dyn,
         orch_tx.clone(),
+        // Built at startup, before any login: this frozen host uses the primary persona's paths.
+        sovereign_ai::OrchestratorStatePaths::for_persona(
+            &sovereign_core::sovereign_dir(),
+            sovereign_core::auth::PersonaKind::Primary,
+        ),
     )
     .await
     {
@@ -1020,10 +1057,6 @@ async fn init_backend(
             None
         }
     };
-
-    let autocommit = Arc::new(tokio::sync::Mutex::new(
-        sovereign_ai::AutoCommitEngine::new(db_arc.clone()),
-    ));
 
     let model_assignments = tauri_state::ModelAssignments {
         router: config.ai.router_model.clone(),
@@ -1067,7 +1100,6 @@ async fn init_backend(
         feedback_tx,
         orch_tx,
         orch_rx,
-        autocommit,
         model_assignments,
         #[cfg(feature = "voice-stt")]
         stt_engine,
@@ -1148,6 +1180,12 @@ mod ipc_classification_guard {
         "create_document",
         "close_document",
         "delete_document",
+        "list_trash",
+        "restore_from_trash",
+        "empty_trash",
+        "list_orphaned_documents",
+        "resolve_orphan",
+        "resolve_orphans_of_thread",
         "list_commits",
         "restore_commit",
         "list_skills_for_doc",
@@ -1190,11 +1228,12 @@ mod ipc_classification_guard {
         "accept_link_suggestion",
         "dismiss_link_suggestion",
         "trigger_consolidation",
-        // peer-write review (p2p-no-per-doc-authz)
-        "list_peer_reviews",
-        "accept_peer_review",
-        "restore_peer_review",
-        "audit_peer_reviews",
+        // alerts on changes from paired devices; previous values (C-WIRE 13)
+        "list_sync_alerts",
+        "dismiss_sync_alert",
+        "list_previous_values",
+        "restore_previous_value",
+        "forget_previous_value",
         // mobile / share (IPC-001: now require_unlocked + main-webview)
         "receive_shared_content",
         // pii (account_key-gated ones included)
@@ -1223,7 +1262,6 @@ mod ipc_classification_guard {
         "trigger_sync_now",
         "cancel_pairing",
         "get_p2p_settings",
-        "resolve_sync_conflict_keep_mine",
         // backup (P4)
         "backup_now",
         "backup_status",
@@ -1262,6 +1300,12 @@ mod ipc_classification_guard {
         "create_document",
         "close_document",
         "delete_document",
+        "list_trash",
+        "restore_from_trash",
+        "empty_trash",
+        "list_orphaned_documents",
+        "resolve_orphan",
+        "resolve_orphans_of_thread",
         "list_commits",
         "restore_commit",
         "list_skills_for_doc",
@@ -1313,11 +1357,12 @@ mod ipc_classification_guard {
         "accept_link_suggestion",
         "dismiss_link_suggestion",
         "trigger_consolidation",
-        // peer-write review
-        "list_peer_reviews",
-        "accept_peer_review",
-        "restore_peer_review",
-        "audit_peer_reviews",
+        // alerts on changes from paired devices; previous values
+        "list_sync_alerts",
+        "dismiss_sync_alert",
+        "list_previous_values",
+        "restore_previous_value",
+        "forget_previous_value",
         // pii
         "resolve_pii_tokens",
         "list_pii_entities",
@@ -1347,7 +1392,6 @@ mod ipc_classification_guard {
         "trigger_sync_now",
         "cancel_pairing",
         "get_p2p_settings",
-        "resolve_sync_conflict_keep_mine",
         // backup (P4)
         "backup_now",
         "backup_status",

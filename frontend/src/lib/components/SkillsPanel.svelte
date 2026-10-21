@@ -4,6 +4,7 @@
 	import { listAllSkills, executeSkill } from '$lib/api/commands';
 	import type { SkillInfo, SkillActionInfo } from '$lib/api/commands';
 	import { focusTrap } from '$lib/actions/focusTrap';
+	import { panels, save, refresh } from '$lib/stores/documents.svelte';
 
 	let skills = $state<SkillInfo[]>([]);
 	let loading = $state(false);
@@ -29,10 +30,24 @@
 	async function runAction(skillName: string, action: SkillActionInfo) {
 		const docId = canvas.selectedCardId;
 		if (!docId) return;
+		// The skill runs on the stored document and writes a content update
+		// back itself (C-DOC adoption step 2): an open panel saves its edits
+		// first and reloads after.
+		const open = panels.find((p) => p.doc.id === docId);
+		if (open) {
+			await save(docId);
+			if (open.dirty) {
+				error = 'This document has edits that could not be saved; the skill was not run.';
+				return;
+			}
+		}
 		try {
-			await executeSkill(skillName, action.action_id, docId, '');
+			const result = await executeSkill(skillName, action.action_id, docId, '');
+			if (result.kind === 'content_update') await refresh(docId);
 		} catch (e) {
 			console.error('Skill failed:', e);
+			error = String(e);
+			return;
 		}
 		app.skillsPanelVisible = false;
 	}

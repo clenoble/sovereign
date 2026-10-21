@@ -1,0 +1,42 @@
+[package]
+name = "sovereign-editor"
+version = "0.0.11"
+edition = "2021"
+publish = false
+description = "Document editor component (contract C-TEXT, spec ch. 12)."
+
+# Tests first (spec ch. 12, "The document editor — contract (C-TEXT)"): the
+# test suite in tests/ was written before the editor; the editor was built to
+# make it pass, by a different author, who did not modify tests/.
+#
+# Guarantee 4 (no network) is checked by tests/g4_no_network.rs against the
+# NORMAL and BUILD dependency tree of this crate: keep networking crates (and
+# tokio, wry, surrealdb, sovereign-p2p/-comms/-db, …) out of [dependencies].
+
+[dependencies]
+# The v2 document model (moved here from this crate's provisional `src/doc.rs`;
+# re-exported as `sovereign_editor::doc`). No dependencies of its own.
+sovereign-docformat = { path = "../sovereign-docformat" }
+# The accessibility sink speaks AccessKit (guarantee 10). Same version as the shell.
+accesskit = "0.24"
+# The editor paints into a vello Scene like the rest of the shell. Same version as the shell.
+vello = "0.9"
+# Bidi classes (UAX #9) for the marks that keep a piece of a long paragraph
+# resolving as inside it. Already in the tree through parley.
+icu_properties = { version = "2.1", default-features = false, features = ["compiled_data"] }
+# Text layout, shaping, bidi and caret geometry (decided: in-house editor on
+# parley). Same version as the shell.
+parley = "0.10"
+# Grapheme clusters and words (UAX #29) for caret movement and deletion.
+unicode-segmentation = "1.13"
+
+[dev-dependencies]
+# Reads the editor's AccessKit output the way a platform adapter would (g10).
+accesskit_consumer = "0.37"
+serde_json = { workspace = true }
+# Reference grapheme / word segmentation (UAX #29) for g5 and g7.
+unicode-segmentation = "1.13"
+# Log capture for g3.
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+log = "0.4"

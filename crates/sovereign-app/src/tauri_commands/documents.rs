@@ -93,42 +93,6 @@ pub async fn get_theme(state: State<'_, AppState>) -> Result<String, String> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn to_full_document(doc: Document) -> FullDocument {
-    let id = doc
-        .id
-        .as_ref()
-        .map(sovereign_db::schema::thing_to_raw)
-        .unwrap_or_default();
-    let fields = ContentFields::parse(&doc.content);
-    FullDocument {
-        id,
-        title: doc.title,
-        body: fields.body,
-        images: fields
-            .images
-            .into_iter()
-            .map(|i| ContentImageDto {
-                path: i.path,
-                caption: i.caption,
-            })
-            .collect(),
-        videos: fields
-            .videos
-            .into_iter()
-            .map(|v| ContentVideoDto {
-                path: v.path,
-                caption: v.caption,
-                duration_secs: v.duration_secs,
-                thumbnail_path: v.thumbnail_path,
-            })
-            .collect(),
-        thread_id: doc.thread_id,
-        is_owned: doc.is_owned,
-        created_at: doc.created_at.to_rfc3339(),
-        modified_at: doc.modified_at.to_rfc3339(),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Document CRUD
 // ---------------------------------------------------------------------------
@@ -141,12 +105,37 @@ pub async fn get_document(
     id: String,
 ) -> Result<FullDocument, String> {
     state.require_unlocked(&webview).await?;
-    let doc = state.db.get_document(&id).await.str_err()?;
-    Ok(to_full_document(doc))
+    // C-DOC adoption step 2: read through the document service, which also
+    // gives the revision a save must be based on.
+    let docs = state.docs().await?;
+    crate::doc_saves::read_document(&docs, &id).await
 }
 
-/// Save document content (title + body + images + videos).
+/// A preview of stored content for a list (version history, search hits):
+/// its text read through the v2 model (C-DOC adoption step 1 — never the
+/// stored JSON), tokens kept as `[pii:<id>]`, cut at `max_chars` characters
+/// (char-safe: a byte slice panics inside a multibyte character) with "..."
+/// when cut.
+pub(crate) fn text_preview(stored: &str, max_chars: usize) -> String {
+    let text = sovereign_docformat::plain_text_of(stored);
+    if text.chars().count() > max_chars {
+        format!("{}...", text.chars().take(max_chars).collect::<String>())
+    } else {
+        text
+    }
+}
+
+/// Save the document panel's state (desktop Tauri and the mobile reader):
+/// through the document service (C-DOC adoption step 2) — written as v2, a
+/// version of the prior state when another writer made it, personal data
+/// ingested on every save, versions by amount of change (or `explicit`, Ctrl+S).
+/// Refused, with nothing written, when the document changed since
+/// `base_revision` was read (the error starts with
+/// [`crate::doc_saves::CONFLICT_PREFIX`]), when images or videos changed, or
+/// when a changed body would have to replace several text blocks. Returns the
+/// document as stored (tokens in place of personal data, the new revision).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn save_document(
     webview: tauri::Webview,
     state: State<'_, AppState>,
@@ -155,42 +144,20 @@ pub async fn save_document(
     body: String,
     images: Vec<ContentImageDto>,
     videos: Vec<ContentVideoDto>,
-) -> Result<(), String> {
+    base_revision: String,
+    explicit: Option<bool>,
+) -> Result<FullDocument, String> {
     state.require_unlocked(&webview).await?;
-    // PII-002: PII ingest on the body before persisting — runs regardless of
-    // the `encryption` feature so PII is tokenized in non-encryption builds
-    // too. The helper short-circuits gracefully when no account_key is
-    // available or the document was already scanned — see
-    // `pii_ingest::maybe_ingest_document_body` for the policy.
-    let body = crate::pii_ingest::maybe_ingest_document_body(&state, &id, &body).await?;
-
-    let fields = ContentFields {
+    let docs = state.docs().await?;
+    let save = crate::doc_saves::PanelSave {
+        title,
         body,
-        images: images
-            .into_iter()
-            .map(|i| sovereign_core::content::ContentImage {
-                path: i.path,
-                caption: i.caption,
-            })
-            .collect(),
-        videos: videos
-            .into_iter()
-            .map(|v| sovereign_core::content::ContentVideo {
-                path: v.path,
-                caption: v.caption,
-                duration_secs: v.duration_secs,
-                thumbnail_path: v.thumbnail_path,
-            })
-            .collect(),
+        images,
+        videos,
+        base_revision,
+        explicit: explicit.unwrap_or(false),
     };
-    let content_json = fields.serialize();
-    state
-        .db
-        .update_document(&id, Some(&title), Some(&content_json))
-        .await
-        .str_err()?;
-    state.autocommit.lock().await.record_edit(&id);
-    Ok(())
+    crate::doc_saves::save_from_panel(&docs, &state.edit_sessions, &id, save).await
 }
 
 /// Create a new document and return its ID.
@@ -202,20 +169,18 @@ pub async fn create_document(
     thread_id: String,
 ) -> Result<String, String> {
     state.require_unlocked(&webview).await?;
-    let doc = Document::new(title, thread_id, true);
-    let created = state
-        .db
-        .create_document(doc)
+    // C-DOC adoption step 3: through the document service — v2, a version
+    // from creation, the user's own (owned, provenance written).
+    let docs = state.docs().await?;
+    let new = sovereign_ai::docs_host::new_user_document(title, thread_id, "");
+    let created = sovereign_ai::docs_host::create(&docs, new)
         .await
-        .str_err()?;
-    Ok(created
-        .id
-        .as_ref()
-        .map(sovereign_db::schema::thing_to_raw)
-        .unwrap_or_default())
+        .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?;
+    Ok(created.id)
 }
 
-/// Close a document (flush auto-commit).
+/// Close a document: its editing session ends, so its last saved state
+/// becomes a version (C-DOC adoption step 2; the auto-commit engine is retired).
 #[tauri::command]
 pub async fn close_document(
     webview: tauri::Webview,
@@ -223,8 +188,8 @@ pub async fn close_document(
     id: String,
 ) -> Result<(), String> {
     state.require_unlocked(&webview).await?;
-    state.autocommit.lock().await.commit_on_close(&id).await;
-    Ok(())
+    let docs = state.docs().await?;
+    crate::doc_saves::close_panel(&docs, &state.edit_sessions, &id).await
 }
 
 // ---------------------------------------------------------------------------
@@ -248,12 +213,7 @@ pub async fn list_commits(
     Ok(commits
         .into_iter()
         .map(|c| {
-            // Char-safe: a byte slice at 200 panics inside a multibyte character.
-            let preview = if c.snapshot.content.chars().count() > 200 {
-                format!("{}...", c.snapshot.content.chars().take(200).collect::<String>())
-            } else {
-                c.snapshot.content.clone()
-            };
+            let preview = text_preview(&c.snapshot.content, 200);
             CommitSummaryDto {
                 id: c
                     .id
@@ -278,12 +238,9 @@ pub async fn restore_commit(
     commit_id: String,
 ) -> Result<FullDocument, String> {
     state.require_unlocked(&webview).await?;
-    let doc = state
-        .db
-        .restore_document(&doc_id, &commit_id)
-        .await
-        .str_err()?;
-    Ok(to_full_document(doc))
+    // C-DOC adoption step 2: the current state becomes a version first.
+    let docs = state.docs().await?;
+    crate::doc_saves::restore(&docs, &doc_id, &commit_id).await
 }
 
 // ---------------------------------------------------------------------------
@@ -330,12 +287,17 @@ pub async fn execute_skill(
     params: String,
 ) -> Result<SkillResultDto, String> {
     state.require_unlocked(&webview).await?;
-    let doc = state.db.get_document(&doc_id).await.str_err()?;
-    let fields = ContentFields::parse(&doc.content);
+    // C-DOC adoption step 2: the skill reads the document through the
+    // service, and a content update is written back here, through the service
+    // (`apply_skill_output`: the prior state versioned first, the result after)
+    // — the frontend reloads the document instead of saving the output itself.
+    let docs = state.docs().await?;
+    let view = docs.read(&doc_id).await.map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?;
+    let fields = sovereign_ai::docs_host::view_fields(&view);
     let skill_doc = SkillDocument {
-        id: doc_id,
-        title: doc.title,
-        content: fields,
+        id: doc_id.clone(),
+        title: view.title.clone(),
+        content: fields.clone(),
     };
     // Auto-grant exactly the capabilities the skill declares.
     let granted: HashSet<_> = state
@@ -343,9 +305,15 @@ pub async fn execute_skill(
         .find_skill(&skill_name)
         .map(|s| s.required_capabilities().into_iter().collect())
         .unwrap_or_default();
+    // C-DOC adoption step 3: what the skill creates (daily journal, file
+    // import, duplicate, a WASM plugin's documents) goes through the document
+    // service; its reads go to the store access skills always had.
+    let skill_db: std::sync::Arc<dyn sovereign_skills::SkillDbAccess> = std::sync::Arc::new(
+        sovereign_ai::docs_host::ServiceSkillDb::new(state.skill_db.clone(), docs.clone(), &skill_name),
+    );
     let ctx = SkillContext {
         granted,
-        db: Some(state.skill_db.clone()),
+        db: Some(skill_db),
         llm: state.skill_llm.clone(),
     };
     let output = state
@@ -354,35 +322,22 @@ pub async fn execute_skill(
         .str_err()?;
 
     match output {
-        sovereign_skills::traits::SkillOutput::ContentUpdate(cf) => Ok(SkillResultDto {
-            kind: "content_update".into(),
-            body: Some(cf.body),
-            images: Some(
-                cf.images
-                    .into_iter()
-                    .map(|i| ContentImageDto {
-                        path: i.path,
-                        caption: i.caption,
-                    })
-                    .collect(),
-            ),
-            videos: Some(
-                cf.videos
-                    .into_iter()
-                    .map(|v| ContentVideoDto {
-                        path: v.path,
-                        caption: v.caption,
-                        duration_secs: v.duration_secs,
-                        thumbnail_path: v.thumbnail_path,
-                    })
-                    .collect(),
-            ),
-            file_name: None,
-            file_mime: None,
-            file_data_base64: None,
-            structured_kind: None,
-            structured_json: None,
-        }),
+        sovereign_skills::traits::SkillOutput::ContentUpdate(cf) => {
+            crate::doc_saves::apply_skill(&docs, &doc_id, view.revision.clone(), &skill_name, &fields, &cf).await?;
+            // What is stored now (personal data tokenized by the ingest).
+            let stored = crate::doc_saves::read_document(&docs, &doc_id).await?;
+            Ok(SkillResultDto {
+                kind: "content_update".into(),
+                body: Some(stored.body),
+                images: Some(stored.images),
+                videos: Some(stored.videos),
+                file_name: None,
+                file_mime: None,
+                file_data_base64: None,
+                structured_kind: None,
+                structured_json: None,
+            })
+        }
         sovereign_skills::traits::SkillOutput::File { name, mime_type, data } => {
             use base64::Engine;
             let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
@@ -448,6 +403,9 @@ pub async fn list_all_skills(
 }
 
 
+/// Moves a document to the trash through the document service (C-DOC
+/// adoption step 5, S5-1): recoverable for 30 days, then purged by the host's
+/// purge tick. Nothing is hard-deleted here.
 #[tauri::command]
 pub async fn delete_document(
     webview: tauri::Webview,
@@ -455,11 +413,8 @@ pub async fn delete_document(
     id: String,
 ) -> Result<(), String> {
     state.require_unlocked(&webview).await?;
-    state
-        .db
-        .soft_delete_document(&id)
-        .await
-        .str_err()
+    let docs = state.docs().await?;
+    docs.trash(&id).await.map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))
 }
 
 
@@ -509,32 +464,32 @@ pub async fn import_file(
         .map_err(|e| format!("Failed to read file: {e}"))?;
 
     let tid = thread_id.unwrap_or_else(|| "thread:default".to_string());
-    let doc = Document::new(title, tid.clone(), true);
-    let created = state.db.create_document(doc).await.str_err()?;
-    let id = created
-        .id
-        .as_ref()
-        .map(sovereign_db::schema::thing_to_raw)
-        .unwrap_or_default();
-
-    // PII-002: PII ingest on the imported content — runs regardless of the
-    // `encryption` feature. The body is rewritten with `[pii:<record_id>]`
-    // tokens (and the original preserved encrypted) whenever an account_key is
-    // available; otherwise it's a graceful pass-through.
-    let content = crate::pii_ingest::maybe_ingest_document_body(&state, &id, &content).await?;
-
-    // Save the content
-    state
-        .db
-        .update_document(&id, None, Some(&content))
+    // C-DOC adoption step 3: through the document service — a version from
+    // creation, personal-data ingest by the service's hook (the one-shot
+    // ingest this command ran before is gone), and the import's trust: a file
+    // is not the user's own words because she picked it (spec ch. 04,
+    // *Ownership is not decided at landing*) — **undetermined**, fenced until
+    // she adopts it; provenance import with the file's path.
+    let docs = state.docs().await?;
+    let new = sovereign_ai::docs_host::new_document(
+        title,
+        tid.clone(),
+        content,
+        sovereign_docs::Trust::Undetermined,
+        sovereign_docs::Provenance::Import { source_path: path.display().to_string() },
+        sovereign_docs::Origin::Import,
+    );
+    let id = sovereign_ai::docs_host::create(&docs, new)
         .await
-        .str_err()?;
+        .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?
+        .id;
+    let created = state.db.get_document(&id).await.str_err()?;
 
     Ok(CanvasDocDto {
         id,
         title: created.title,
         thread_id: tid,
-        is_owned: true,
+        is_owned: created.is_owned,
         spatial_x: created.spatial_x,
         spatial_y: created.spatial_y,
         created_at: created.created_at.to_rfc3339(),
@@ -543,5 +498,67 @@ pub async fn import_file(
         reliability_score: None,
         source_url: None,
     })
+}
+
+#[cfg(test)]
+mod adoption_step1_tests {
+    //! C-DOC adoption step 1: the document readers of the Tauri commands read
+    //! a v2 document, a v1 envelope and raw text through the v2 model (since
+    //! step 2, through the document service). The writes: `crate::doc_saves`.
+    use super::*;
+    use sovereign_db::schema::Document;
+
+    const V2: &str = r#"{"format":"sovereign.doc","v":2,"blocks":[{"type":"text","id":"00000000000000000000000000000e01","text":"Héllo [pii:pii_record:e1]"},{"type":"image","id":"00000000000000000000000000000e02","ref":{"path":"/i.png"},"alt":"a","caption":"cap"},{"type":"text","id":"00000000000000000000000000000e03","text":"world"}]}"#;
+    const V1: &str = r#"{"body":"Héllo [pii:pii_record:e1]","images":[{"path":"/i.png","caption":"cap"}],"videos":[{"path":"/v.mp4","caption":"","duration_secs":2.0,"thumbnail_path":"/t.png"}]}"#;
+    const RAW: &str = "Héllo [pii:pii_record:e1]";
+
+    /// The DTO of a document stored in `content`, read through the service.
+    async fn dto(content: &str) -> FullDocument {
+        use sovereign_ai::docs_host::{build_document_service, testing::encrypted_memory_store};
+        let store = encrypted_memory_store("dto").await;
+        let mut d = Document::new("T".into(), "thread:1".into(), true);
+        d.content = content.into();
+        let id = store.create_document(d).await.unwrap().id_string().unwrap();
+        let docs = build_document_service(store, None, "test".into());
+        crate::doc_saves::read_document(&docs, &id).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn full_document_reads_v2_v1_and_raw() {
+        let f = dto(V2).await;
+        assert_eq!(f.body, "Héllo [pii:pii_record:e1]\n\nworld");
+        assert_eq!(f.images.len(), 1);
+        assert_eq!(f.images[0].path, "/i.png");
+        assert_eq!(f.images[0].caption, "cap");
+        assert!(!f.revision.is_empty(), "a save needs the revision");
+
+        let f = dto(V1).await;
+        assert_eq!(f.body, "Héllo [pii:pii_record:e1]");
+        assert_eq!(f.images.len(), 1);
+        assert_eq!(f.videos.len(), 1);
+        assert_eq!(f.videos[0].duration_secs, Some(2.0));
+        assert_eq!(f.videos[0].thumbnail_path.as_deref(), Some("/t.png"));
+
+        let f = dto(RAW).await;
+        assert_eq!(f.body, RAW);
+        assert!(f.images.is_empty() && f.videos.is_empty());
+    }
+
+    #[test]
+    fn previews_are_text_with_tokens_kept() {
+        for (stored, want) in [
+            (V2, "Héllo [pii:pii_record:e1]\n\nworld"),
+            (V1, "Héllo [pii:pii_record:e1]"),
+            (RAW, RAW),
+        ] {
+            let p = text_preview(stored, 200);
+            assert_eq!(p, want);
+            assert!(p.contains("[pii:pii_record:e1]"), "tokens stay tokens");
+            assert!(!p.contains("\"body\"") && !p.contains("sovereign.doc"));
+        }
+        // Char-safe cut on the text, not on the stored JSON.
+        assert_eq!(text_preview(V2, 3), "Hél...");
+        assert_eq!(text_preview(&"é".repeat(130), 120), format!("{}...", "é".repeat(120)));
+    }
 }
 

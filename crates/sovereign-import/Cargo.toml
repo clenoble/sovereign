@@ -6,6 +6,10 @@ description = "Bulk import engine: scan a folder tree into the Sovereign graph (
 
 [dependencies]
 sovereign-db = { workspace = true }
+# The document service (C-DOC adoption step 3): every imported document is
+# created through it — format v2, a version from creation, personal-data
+# ingest, trust (undetermined) and provenance (the source path).
+sovereign-docs = { path = "../sovereign-docs" }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
@@ -16,9 +20,12 @@ tracing = { workspace = true }
 # zips — deflate-only to keep the dep tree lean (no aes/zstd/bzip2).
 htmd = "0.5"
 pdf-extract = { workspace = true }
-zip = { version = "6", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 quick-xml = "0.41"
 
 [dev-dependencies]
 tokio = { workspace = true }
 tempfile = "3"
+# The hosts' document-service wiring (an encrypted in-memory store, the
+# personal-data hook) for the tests.
+sovereign-ai = { workspace = true }

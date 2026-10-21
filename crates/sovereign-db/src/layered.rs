@@ -24,7 +24,7 @@ use chrono::{DateTime, Utc};
 
 use crate::error::DbResult;
 use crate::schema::{
-    ChannelType, Commit, Contact, Conversation, Document, Entity, EntityKind, Message, Milestone,
+    ChannelType, Commit, Contact, Conversation, Document, DocumentPatch, PurgeMarker, Entity, EntityKind, Message, Milestone,
     PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, RowRecovery, ShareRecord,
     SourceRef, SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
@@ -222,6 +222,7 @@ impl GraphDB for ArcWrapper {
     async fn update_contact_pii_fields(&self, id: &str, pii_scanned_at: Option<DateTime<Utc>>) -> DbResult<()> { self.0.update_contact_pii_fields(id, pii_scanned_at).await }
 
     async fn create_thread_with_id(&self, thread: Thread) -> DbResult<bool> { self.0.create_thread_with_id(thread).await }
+    async fn put_thread(&self, thread: Thread) -> DbResult<()> { self.0.put_thread(thread).await }
     async fn create_entity_with_id(&self, entity: Entity) -> DbResult<bool> { self.0.create_entity_with_id(entity).await }
     async fn create_pii_record_with_id(&self, record: PiiRecord) -> DbResult<bool> { self.0.create_pii_record_with_id(record).await }
     async fn create_share_record_with_id(&self, record: ShareRecord) -> DbResult<bool> { self.0.create_share_record_with_id(record).await }
@@ -245,6 +246,21 @@ impl GraphDB for ArcWrapper {
     async fn list_contacts_including_deleted(&self) -> DbResult<Vec<Contact>> { self.0.list_contacts_including_deleted().await }
     async fn list_messages_including_deleted(&self) -> DbResult<Vec<Message>> { self.0.list_messages_including_deleted().await }
     async fn list_conversations_including_deleted(&self) -> DbResult<Vec<Conversation>> { self.0.list_conversations_including_deleted().await }
+    async fn update_document_fields(&self, id: &str, patch: DocumentPatch) -> DbResult<()> { self.0.update_document_fields(id, patch).await }
+    async fn insert_commit(&self, commit: Commit) -> DbResult<Commit> { self.0.insert_commit(commit).await }
+    async fn delete_document_commits(&self, doc_id: &str) -> DbResult<u64> { self.0.delete_document_commits(doc_id).await }
+    async fn delete_document_relationships(&self, doc_id: &str) -> DbResult<u64> { self.0.delete_document_relationships(doc_id).await }
+    async fn delete_document_suggested_links(&self, doc_id: &str) -> DbResult<u64> { self.0.delete_document_suggested_links(doc_id).await }
+    async fn delete_pii_record(&self, id: &str) -> DbResult<()> { self.0.delete_pii_record(id).await }
+    async fn set_purge_marker(&self, marker: PurgeMarker) -> DbResult<()> { self.0.set_purge_marker(marker).await }
+    async fn get_purge_marker(&self, document_id: &str) -> DbResult<Option<PurgeMarker>> { self.0.get_purge_marker(document_id).await }
+    async fn list_purge_markers(&self) -> DbResult<Vec<PurgeMarker>> { self.0.list_purge_markers().await }
+    async fn get_store_record(&self, key: &str) -> DbResult<Option<String>> { self.0.get_store_record(key).await }
+    async fn put_store_record(&self, key: &str, value: &str) -> DbResult<()> { self.0.put_store_record(key, value).await }
+    async fn put_store_record_sealed(&self, key: &str, ciphertext: &str, nonce: &str) -> DbResult<()> { self.0.put_store_record_sealed(key, ciphertext, nonce).await }
+    async fn get_store_record_sealed(&self, key: &str) -> DbResult<Option<(String, Option<String>)>> { self.0.get_store_record_sealed(key).await }
+    async fn update_conversation_title(&self, id: &str, title: &str) -> DbResult<()> { self.0.update_conversation_title(id, title).await }
+    async fn remove_contact_address(&self, contact_id: &str, channel: ChannelType, address: &str) -> DbResult<Contact> { self.0.remove_contact_address(contact_id, channel, address).await }
 }
 
 #[async_trait]
@@ -390,6 +406,7 @@ impl GraphDB for LayeredGraphDB {
     async fn update_contact_pii_fields(&self, id: &str, pii_scanned_at: Option<DateTime<Utc>>) -> DbResult<()> { self.current().update_contact_pii_fields(id, pii_scanned_at).await }
 
     async fn create_thread_with_id(&self, thread: Thread) -> DbResult<bool> { self.current().create_thread_with_id(thread).await }
+    async fn put_thread(&self, thread: Thread) -> DbResult<()> { self.current().put_thread(thread).await }
     async fn create_entity_with_id(&self, entity: Entity) -> DbResult<bool> { self.current().create_entity_with_id(entity).await }
     async fn create_pii_record_with_id(&self, record: PiiRecord) -> DbResult<bool> { self.current().create_pii_record_with_id(record).await }
     async fn create_share_record_with_id(&self, record: ShareRecord) -> DbResult<bool> { self.current().create_share_record_with_id(record).await }
@@ -413,6 +430,21 @@ impl GraphDB for LayeredGraphDB {
     async fn list_contacts_including_deleted(&self) -> DbResult<Vec<Contact>> { self.current().list_contacts_including_deleted().await }
     async fn list_messages_including_deleted(&self) -> DbResult<Vec<Message>> { self.current().list_messages_including_deleted().await }
     async fn list_conversations_including_deleted(&self) -> DbResult<Vec<Conversation>> { self.current().list_conversations_including_deleted().await }
+    async fn update_document_fields(&self, id: &str, patch: DocumentPatch) -> DbResult<()> { self.current().update_document_fields(id, patch).await }
+    async fn insert_commit(&self, commit: Commit) -> DbResult<Commit> { self.current().insert_commit(commit).await }
+    async fn delete_document_commits(&self, doc_id: &str) -> DbResult<u64> { self.current().delete_document_commits(doc_id).await }
+    async fn delete_document_relationships(&self, doc_id: &str) -> DbResult<u64> { self.current().delete_document_relationships(doc_id).await }
+    async fn delete_document_suggested_links(&self, doc_id: &str) -> DbResult<u64> { self.current().delete_document_suggested_links(doc_id).await }
+    async fn delete_pii_record(&self, id: &str) -> DbResult<()> { self.current().delete_pii_record(id).await }
+    async fn set_purge_marker(&self, marker: PurgeMarker) -> DbResult<()> { self.current().set_purge_marker(marker).await }
+    async fn get_purge_marker(&self, document_id: &str) -> DbResult<Option<PurgeMarker>> { self.current().get_purge_marker(document_id).await }
+    async fn list_purge_markers(&self) -> DbResult<Vec<PurgeMarker>> { self.current().list_purge_markers().await }
+    async fn get_store_record(&self, key: &str) -> DbResult<Option<String>> { self.current().get_store_record(key).await }
+    async fn put_store_record(&self, key: &str, value: &str) -> DbResult<()> { self.current().put_store_record(key, value).await }
+    async fn put_store_record_sealed(&self, key: &str, ciphertext: &str, nonce: &str) -> DbResult<()> { self.current().put_store_record_sealed(key, ciphertext, nonce).await }
+    async fn get_store_record_sealed(&self, key: &str) -> DbResult<Option<(String, Option<String>)>> { self.current().get_store_record_sealed(key).await }
+    async fn update_conversation_title(&self, id: &str, title: &str) -> DbResult<()> { self.current().update_conversation_title(id, title).await }
+    async fn remove_contact_address(&self, contact_id: &str, channel: ChannelType, address: &str) -> DbResult<Contact> { self.current().remove_contact_address(contact_id, channel, address).await }
 }
 
 #[cfg(test)]

@@ -225,20 +225,42 @@ pub fn prepare_auth() -> Result<AuthPrepareResult> {
     }
 }
 
-/// Load or create the persistent salt.
+/// Load or create the persistent salt in the crypto directory `dir`.
+///
+/// An existing salt file is read as is. If it is missing beside an
+/// `auth.store` (the salt is written after the store, so a crash between the
+/// two loses it — rc2 Q2), it is restored from the store's own salt, so the
+/// pairing offer and the backup manifest keep carrying the account's salt. A
+/// new random salt is minted only when neither exists. Written with
+/// `write_private` (atomic, owner-only). An `auth.store` that cannot be read
+/// is an error, never a reason to mint a salt that is not the account's.
 #[cfg(feature = "encryption")]
 fn load_or_create_salt(dir: &std::path::Path) -> Result<Vec<u8>> {
     let salt_path = dir.join("salt");
     if salt_path.exists() {
-        Ok(std::fs::read(&salt_path)?)
+        return Ok(std::fs::read(&salt_path)?);
+    }
+    let store_path = dir.join("auth.store");
+    let s = if store_path.exists() {
+        let salt = sovereign_crypto::auth::AuthStore::load(&store_path)?.salt;
+        tracing::warn!("crypto/salt was missing beside auth.store; restored from the store's salt");
+        salt
     } else {
         let mut s = vec![0u8; 32];
         use rand::Rng;
         rand::rng().fill_bytes(&mut s);
-        sovereign_crypto::fs_private::write_private(&salt_path, &s)?;
-        Ok(s)
-    }
+        s
+    };
+    sovereign_crypto::fs_private::write_private(&salt_path, &s)?;
+    Ok(s)
 }
+
+// rc2 Q2 (laptop's second position): the salt restored from auth.store. The
+// tests, written before the code; the implementer does not edit them. A child
+// of this module because `load_or_create_salt` is private here.
+#[cfg(all(test, feature = "encryption"))]
+#[path = "salt_restore_tests.rs"]
+mod salt_restore_tests;
 
 /// Complete authentication after GUI login — loads persona-specific KeyDatabase.
 #[cfg(feature = "encryption")]

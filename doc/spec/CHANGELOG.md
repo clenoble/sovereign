@@ -6,6 +6,390 @@ the same commit.*
 
 ---
 
+## 2026-10-19 — v2.0.46: account creation is single-flight; readable fields in the dark theme (rc2)
+
+Decided by Céline from rc1's checks. Ch. 07 *Auth store*: an auth store is created once — the
+first write refuses an existing file, account creation (fresh or paired, phone or desktop) is
+single-flight with its claim taken before the key derivation, and a refused request changes no
+file; on rc1 a second tap during the derivation replaced `auth.store` with a new key and locked
+the account for good (the same window exists in v0.0.10). Céline extended it the same day to every
+first write of `auth.store` — the desktop's account creation (fresh and paired) and the phone's
+backup recovery, which joins the same claim. Ch. 12 *Onboarding and the auth gate*: the mobile
+wizard shows progress and disables its buttons while the account is created; text in the auth
+gate's, the wizard's and the search window's fields reaches 4.5:1 against the field's fill in both
+themes. To be built for rc2.
+
+## 2026-10-19 — v2.0.45: the editor is the shell's only document editor, in every build (status)
+
+Decided by Céline (2026-10-19): the plain text edit is removed completely, not kept as a fallback
+("au pire du pire, on restaure une vieille version"). Merged: the C-TEXT editor is compiled into
+every build and opens every document window; when it cannot open a document no window opens and a
+notice says why (ch. 12, *Documents* and *The document editor* status lines; the stale description
+of the plain editor removed).
+
+## 2026-10-19 — v2.0.44: the one-time migration and the end of the tolerant read built on main (status only)
+
+No design change. Merged (C-DOC adoption step 6): the migration runs once per persona at its first
+unlock, in the background, then a notice; its record is sealed at rest (PANDA2's second position);
+the deprecated field parser is removed and a test refuses any write of an old form (ch. 03,
+*Content encoding* status line).
+
+## 2026-10-18 — v2.0.43: renaming a thread in its lane label built on main (status only)
+
+No design change. Merged (`7dd8fbe`): a double-click on a lane label renames the thread through the
+stamped thread path (ch. 03, *Thread deletion* paragraph on threads across devices).
+
+## 2026-10-18 — v2.0.42: the one-time migration runs at the first unlock, with a notice
+
+Decided by Céline (ch. 03, *Content encoding*): she first remembered "converted when opened, never
+in bulk"; the record of 2026-10-10 (the K1 proposal she validated) says "at its next write, and a
+one-time migration converts the rest". She kept the recorded rule (option a) and added: the
+migration runs once, in the background, at the first unlock after the update, and a notice says
+how many documents were converted and that each earlier state is in its History.
+
+## 2026-10-18 — v2.0.41: threads across devices built on main (status only)
+
+No design change. Thread sync (v2.0.38) merged (`24c25a3`): one stamped path for every thread
+write, the later action wins, deleted threads shrink to their id after 30 days. Ch. 03, *Thread
+deletion*.
+
+## 2026-10-18 — v2.0.40: the chat loop's round limit — built (status only)
+
+No design change. T5 merged (`d801a2e`): ch. 08 *Chat agent loop* back to built, round limit
+included (v2.0.35, v2.0.39). The loop has not been driven to the limit against a real model; that
+wiring is checked by compilation and review.
+
+## 2026-10-18 — v2.0.39: the round limit names the trace instead of linking it
+
+Decided by Céline (ch. 08, *Chat agent loop*): when a turn stops at the round limit, the outcome
+says where the trace is — the thread "Assistant traces" and the trace's exact title — and nothing
+opens by itself. Replaces "a link to the trace, which opens it" (v2.0.35): chat lines carry no
+action, and opening a window the user did not ask for is not the outcome's role. To be built.
+
+## 2026-10-18 — v2.0.38: threads across devices — the later action wins; deleted threads shrink to their id; renaming in the label
+
+Decided by Céline, answering three questions left by S5-12 (ch. 03, *Thread deletion*): for the same
+thread id the later action wins (rename vs delete included), with clock stamps on every thread write;
+a deleted thread's tombstone shrinks to its id after 30 days once nothing points to it (replacing
+"never purged"); a thread is renamed in its lane's label or by the assistant. To be built.
+
+## 2026-10-18 — v2.0.37: a document whose thread was deleted asks — built (status only)
+
+No design change. S5-12 merged (`ed719c7`): ch. 03 *Thread deletion* now built on `main`, with the
+technical choice that thread tombstones are never purged (purging them would let a paired device
+re-create the thread); shrinking them to a content-free marker is left for Céline, as is a thread
+deleted here and renamed offline elsewhere.
+
+## 2026-10-18 — v2.0.36: new-thread naming and long/empty titles built on main (status only)
+
+No design change. Merged: naming a new thread first (ch. 12, `537bd37`), in every build; a long
+title scrolls sideways and an empty title reads *Untitled* everywhere (`c9eb90b`, editor v2).
+
+## 2026-10-17 — v2.0.35: the chat loop's round limit — an explicit stop and a saved trace
+
+Decided by Céline 2026-10-17 (relayed by the laptop maille, claude-coord from-laptop/0092; its
+two additions confirmed by her), written by the PANDA2 maille. ch. 08 *Chat agent loop*:
+- **Five rounds stay** (a setting may come later).
+- At the limit the turn is **not a failure**: its outcome says it stopped after 5 steps without a
+  final answer, lists what was done, invites a rephrase or a split, and links to the trace.
+- **The trace is a Sovereign document**, saved at once through the document service (encrypted,
+  PII ingest): **never owned** (trust undetermined, fenced like external content — it quotes tool
+  results), provenance *the assistant*, in a thread **"Assistant traces"** created on first use;
+  a fixed reading order (request; per round: tool, arguments, result as the model saw it, what
+  came of it; why it stopped). If saving fails, the outcome says so, without a link.
+- Status lines: *Chat agent loop* ✅ → ◐ (the limit's behaviour to be built); *Action Gravity*:
+  the chat-outcome rule is built (`2492e2a`).
+
+## 2026-10-17 — v2.0.34: a new thread is named first (as in Tauri)
+
+Ch. 12: the shell's new-thread gestures ask for the name before creating the thread, as the
+Tauri desktop did; renaming in place stays open. Written by the laptop maille on Céline's
+instruction to continue without her, following her "as in Tauri" rule for the title; to confirm.
+
+## 2026-10-17 — v2.0.33: the title is part of the page
+
+Decided by Céline after trying v2.0.32 (the title showed twice, the field fixed and large): the
+title field scrolls with the text, at 1.1 × the body size, semi-bold, as in the Tauri desktop;
+the window's bar keeps the title, small. Ch. 12, document window, *Title*. To be built.
+
+## 2026-10-17 — v2.0.32: document titles built on main (status only)
+
+No design change. Title editing (v2.0.31) is merged (ch. 12, document window), in the editor v2
+window; a shipped build gets it when the editor leaves its development switch.
+
+## 2026-10-17 — v2.0.31: document titles editable in the shell, as in the Tauri desktop
+
+Decided by Céline during the step-5 manual run, where new documents could not be named: the
+title is an editable single-line field at the top of the document window, saved with the body,
+*Untitled* while empty; a new document opens on its title. No *Rename…* in the card menu (ch. 12,
+document window). The native shell never had it; the frozen Tauri desktop did. To be built.
+
+## 2026-10-17 — v2.0.30: delete, trash and purge built on main (status only)
+
+No design change. C-DOC adoption step 5 is merged (`cad9771`): ch. 03 *Deletion*, *Soft delete
+and 30-day purge* and *Thread deletion* now say built on `main`, not yet released, with the
+v0.0.10 description kept until the release; *Content encoding* notes that delete goes through the
+service too. Not built: the warning for a document arriving by sync for a thread deleted here.
+
+## 2026-10-17 — v2.0.29: the duress enrollment waits for a guardian; a one-time set-aside at migration; the shell profile split
+
+Decided by Céline (her answers relayed by the laptop maille, claude-coord from-laptop/0091),
+written by the PANDA2 maille. ch. 07 *After login*:
+
+- **Duress guardian enrollment** shows the ordinary enrollment screen and waits for a guardian
+  forever; no offer is armed, nothing listens, nothing is recorded. Replaces v2.0.27's stop with a
+  message, which contradicted a running-sync screen (found by the T1 implementer).
+- **The moved conversation log** whose anchor does not verify under the primary's key is set aside
+  unread and the primary starts empty — lifts the last ch. 07 **[choice]**. The maille's reading
+  adds two limits, marked as such: **once only**, at the first primary login after the change
+  (afterwards a bad anchor fails closed and is reported, SESSIONLOG-001), and **one notice** to the
+  primary.
+- **The shell's user profile is split**: device preferences read before login (theme, bubble
+  style) stay shared; the persona's identity (display name, nickname, designation) is per persona
+  and read only after login. The phone host's profile: same class, not covered.
+
+The status line of the section moves to ◐ (per-persona state and beacon, and recovery primary-only,
+built in `296c8b7`).
+
+## 2026-10-17 — v2.0.28: delete gestures, the trash in Settings, a deleted thread's documents go to the trash
+
+Decided by Céline on the four questions of C-DOC adoption step 5 (ch. 03, *Soft delete and
+30-day purge*, *Thread deletion and the fallback lane*):
+
+- **No per-item "delete forever"**: emptying the trash (which asks first) or the 30 days are the
+  only permanent deletes.
+- **Deleting a thread** moves every document still in it to the trash and deletes the thread for
+  good; to bring a thread back, create a new one and assign the documents to it from the trash.
+  The confirmation says the documents will be placed in the trash.
+- **Deleting a document is one click**, with a notice that it can be restored for 30 days and an
+  **Undo**.
+- **The trash is in Settings.**
+
+Same day, three precisions (Céline, raised while writing the tests): deleting a thread is all or
+nothing; a deleted thread's documents are grouped in the trash and can be restored all at once
+into a chosen thread or one by one; a document arriving by sync for a thread deleted here raises a
+warning asking whether to move it, create a new thread for it, or trash it.
+
+Not yet built (adoption step 5).
+
+## 2026-10-17 — v2.0.27: a duress enrollment stops before the guardian's device
+
+Decided by Céline (answer "c"), written by the PANDA2 maille. ch. 07 *After login*: in a duress
+session guardian enrollment stops before it involves the guardian's device — no offer a guardian
+could scan is produced, so nothing reaches a guardian; where it stops, the message is one an
+ordinary enrollment can also give. This lifts the **[choice]** "what a guardian's device holds
+after a duress enrollment". The exact stopping point and message are the maille's reading, to be
+confirmed by Céline. The other ch. 07 [choice] (a moved log whose anchor does not verify under the
+primary's key) is still open.
+
+## 2026-10-17 — v2.0.26: ch. 03 labels caught up with decisions already taken (status only)
+
+No design change. Flagged by the PANDA2 maille (K1), extended by the laptop maille to the same
+kind of label: the *Deletion* status and the native-shell paragraph still said the shell deletes
+permanently (soft since v0.0.10); the conflicts table still listed document delete as pending (K3,
+decided 2026-10-10); the D3 box said D3 blocks the undetermined-trust tri-state (K9, decided
+2026-10-10, separates trust from multi-party ownership; D3 itself stays open). *Content
+encoding* (K1): status ○ → ◐ — the v2 format and its single reader are built and used through the
+document service on `main`; the conflict box is kept as the v0.0.9 record, with the one residual
+case (a raw document whose text is a JSON object with a `body`) stated.
+
+## 2026-10-17 — v2.0.25: per-persona state after login; chat outcome; login cancels recovery on the phone; typing timings optional
+
+Specified by the PANDA2 maille from Céline's answers of 2026-10-16 (Q1 c, Q2 a, Q3 b) and the
+cloud review of v0.0.10 (findings 1, 2, 8, 14, 20); to be built (plan
+`doc/plans/PANDA2-PLAN-2026-10-17.md`).
+
+- **ch. 07, new *After login — every persona's state stays its own*:** every file written after
+  login stays in the persona's own files; the orchestrator's state is per persona; guardian
+  recovery belongs to the primary; **in a duress session enrollment appears to work and records
+  nothing** (Céline); no user-visible difference from a fresh install; the shared orchestrator
+  directory becomes the primary's at migration (Céline). Two **[choice]** left for Céline: what a
+  guardian's device holds after a duress enrollment; a moved log whose anchor does not verify
+  under the primary's key (proposed: set aside unread, start empty).
+- **ch. 07 *Keystroke dynamics*:** typing timings are optional input; a missing or malformed
+  sample never makes a login fail.
+- **ch. 06 *Owner cancellation*:** the rule now applies to every host — login clears the stored
+  recovery and the in-memory session, and a step already running cannot bring it back; a duress
+  login cancels nothing.
+- **ch. 08 *Action Gravity*:** **a chat turn always ends with an explicit outcome** (Céline):
+  writes and their result, answered only, or failed/stopped with the reason; "done" only of a
+  successful write.
+
+## 2026-10-16 — v2.0.24: action targets — identity, not position or name (C-HOST AT1–AT8)
+
+Decided by Céline, on a principle proposed by the PANDA2 maille after the cloud review of
+v0.0.10 and discussed with the laptop maille (ch. 08, *Action targets*). Between proposal and
+execution an object is referred to by its id: resolved before proposing (in the type), ambiguity
+asks, re-checked at execution, request ids, the same id for undo and in every host's menus and
+lists. Céline's three decisions: a target found by **partial match** is always confirmed
+explicitly, never by silence (AT3); what invalidates a proposal is the target **and its contents**
+for Destruct, the target alone otherwise (AT4); the confirmation shows a document's title, thread
+and date of last change, a thread's name and document count (AT5). To be built with C-HOST.
+
+## 2026-10-16 — v2.0.23: status lines corrected after the cloud review of v0.0.10
+
+No design change. A second-position review of v0.0.9 → v0.0.10 (private:
+`doc/plans/review-2026-10-16-cloud/`) showed five status lines claiming more than the code does,
+or out of date. Corrected at Céline's request by the PANDA2 maille; findings stay in the private
+backlog, not here.
+
+- **03 · Restore**: ✅ → ◐ (a restore failing midway; the restored version not checked to be the
+  document's own).
+- **03 · Soft delete and 30-day purge**: the shell soft-deletes since v0.0.10 (the line said it
+  deleted permanently); no UI can restore a deleted document yet (K3 trash, decided, not built).
+- **07 · Primary and duress personas**: ✅ → ◐ (isolation not complete after login; C-SESS, C-HOST).
+- **08 · Action Gravity**: direct requests no longer report false success; chat turns still do,
+  and targets are resolved by name after approval (C-HOST).
+- **06 · Owner cancellation of a takeover**: holds on the desktop, not reliably on the phone.
+
+## 2026-10-15 — v2.0.22: the incoming-change analysis never makes sync wait
+
+Decided by Céline after step 4's core was built: the deterministic checks on a received document
+change run at once during sync; the model's verdict runs afterwards in the background, for every
+received document including first arrivals, and raises the same alert if it finds something
+(ch. 05, C-WIRE 13). Built step 4 core (`c151797`) runs the model inline; the interface pass moves
+it to the background.
+
+## 2026-10-15 — v2.0.21: what sync needs from the document service (C-DOC G24–G31), tests first
+
+For C-WIRE (v2.0.20): eight new C-DOC guarantees (ch. 03, *What sync needs from the service*) —
+the wire's fields kept and missing ones never overwriting known ones, hybrid-logical-clock stamps
+with a 5-minute refusal bound **[choice]**, concurrent edits keeping both, purge markers with
+fingerprints, the normalised hash and fingerprint, the stored state for sending, backup restore
+only onto an empty workspace, no review flag and alerts. G19 changed: no review flag on a change
+from her own devices. Tests written before the code, for these and for the 17 C-WIRE guarantees
+(`sovereign-docs`, `sovereign-p2p` over real sealed envelopes without the network, one in
+`sovereign-ai` for the alert decision); they fail until step 4 builds them.
+
+## 2026-10-15 — v2.0.20: the sync wire contract (C-WIRE) — draft
+
+Draft for Céline's review (ch. 05, *Sync wire — contract (C-WIRE)*), no code and no tests yet:
+what travels for a document (v2 content, trust and the user's trust decision, provenance with
+copies, creation time, stamps, author device — all inside the sealed envelope, added with
+defaults per K8), stamps by hybrid logical clock instead of the wall clock **[choice]**, states
+compared on a normalised form (so a migrated and a legacy copy of one document compare equal),
+concurrent edits keeping both versions on both devices (her 2026-10-12 rule for save conflicts),
+every remote state applied through `apply_remote` (with the list of what that API lacks),
+tombstones and purge markers, backup restore through the service, rows (conversation titles,
+contact-address sets, restorable tables). Step-4 plan in the private adoption plan.
+
+Decided by Céline the same day, on the draft's five questions (now guarantees; 17 in all):
+- **Devices on an older build**: no document exchange until updated, a notice on both screens;
+  rows keep syncing.
+- **Purges**: a purge removes the other device's copy only if it is the same version (the marker
+  carries a fingerprint of title and content, never content); a differing copy is kept and comes
+  back to the purging device; purging it again then removes it from both. C-DOC G13 (ch. 03) gains
+  this one exception.
+- **Backup restore**: only onto an empty workspace (a new device, a just-recovered account); a
+  device that holds documents catches up by sync. Her fallback for a backup next to existing data
+  (second empty profile, export, import) depends on the general export, decided 2026-08-04 and not
+  built.
+- **"Keep mine"** is replaced by **"Use this version"** (a version restore that syncs like any
+  edit), mobile and shell.
+- **Alerts, not reviews, for changes from her own devices** (her option (b)): the systematic
+  review (a flag on every change, the review lists, the badge) is retired — everything is in
+  History; the incoming-change analysis (`peer_audit.rs`: injection scan, wholesale-rewrite check,
+  model verdict where loaded) stays, runs on every received change, is silent when nothing is
+  suspicious and raises an alert only on a detection, pointing at the document and its previous
+  version. Her reasoning: security belongs first at pairing and sync, but a paired device can be
+  compromised (stolen, or carrying a trapped page); she never re-reads her own gestures, only the
+  rare alerts. Previous values of rows stay restorable. C-DOC G19 (ch. 03) to change with step 4.
+
+## 2026-10-15 — v2.0.19: C-DOC guarantees G20–G23 (duplicate, adoption gestures, outside content) — draft for review
+
+Written from v2.0.18's decisions, tests first (`crates/sovereign-docs/tests/g20_*`–`g23_*`,
+failing against the service until it is extended):
+- **G20 Duplicate** (ch. 03): a copy keeps its tokens as they were in the source (linked under
+  G14's conditions), keeps the source's trust (never raised or lowered), has its own first version
+  and goes through ingest; provenance *copy of <source>* carrying the source's provenance
+  **[choice]**; the source is unchanged; a trashed, purged or read-only source is refused.
+- **G21 Adoption preview**: exactly the candidates the selector names now (not trashed, not owned),
+  import folders matched by path components, the date warning, nothing changed. **Decided by
+  Céline the same day: thread, import-folder and date gestures take undetermined documents only;
+  an external document is adopted only when she picks it (one document or an explicit selection)**
+  — adopting a thread must never silently move fenced web pages into the trusted plane (also in
+  ch. 04).
+- **G22 Adoption apply**: exactly the previewed documents still candidates (the preview's
+  selection, never recomputed), one recorded trust decision and one event each, whole-or-nothing
+  per document, never a standing rule; lowering stays per document **[choice]**.
+- **G23 Nothing from outside is created owned** (web and import refused as owned); the default
+  state for each creator is the host's, within that bound.
+
+## 2026-10-15 — v2.0.18: trust at creation, adoption gestures, duplicate
+
+Decided by Céline after C-DOC adoption step 3 (creators):
+- **What the user writes inside Sovereign from scratch is owned by default** (new document, journal,
+  a copy of her own document, what the assistant writes at her request); **what comes from outside
+  lands undetermined** (imports, a skill reading an external file) **or external** (web).
+- **Imports land undetermined** — replacing the 2026-07-18 "imports land owned" (ch. 03, *Ownership
+  at import*).
+- **Adoption gestures** (ch. 04): one document, a thread, an import folder, a bulk selection, or by
+  original creation / last modification date older than a chosen date. Each shows a preview first
+  and applies only to the documents selected now — never a standing rule. A date is not proof of
+  authorship; the preview says so.
+- **Duplicate becomes a document-service operation** (C-DOC), so a copy's personal-data tokens
+  stay tokens (today a duplicate of a document with tokens is refused). Contract and tests first.
+
+## 2026-10-14 — v2.0.17: lists continue on Enter
+
+Reported by Céline in the manual run (checklist section 13): starting a list with `-`, `*` or `1.`
+and pressing Enter did not create the next item. Decided: Enter continues a list (same marker, next
+number, same indentation, unchecked box for tasks), Enter on an empty item ends it, Shift+Enter
+breaks the line inside the item (ch. 12, C-TEXT behaviours).
+
+## 2026-10-12 — v2.0.16: the editor in daily use
+
+Decided by Céline after the manual run of the editor (ch. 12, C-TEXT behaviours):
+- **Save conflicts keep both versions without asking**, on the shell and on mobile: the edited text
+  is saved on the current revision, the other state stays in History, a notice says so; a choice
+  is offered only if that save conflicts again.
+- **Dark-theme selection stays bright blue with dark text**, the only way to meet both 3:1 for
+  the highlight and 4.5:1 for the selected text.
+Recorded: the editor follows the shell's theme (WCAG AA pairs), and Han text falls back across the
+system's CJK fonts (the cause of the missing 佢: a single Japanese fallback font on Windows).
+
+## 2026-10-11 — v2.0.15: the document service contract after Céline's review
+
+Decided by Céline:
+- **Versions by amount of change, never by time** (ch. 03, *Auto-commit policy*, C-DOC G6): the
+  50-saves / 5-minutes rule is replaced. A version is made when the change since the last
+  version reaches a threshold; also at Ctrl+S, at the end of an editing session, and after every
+  non-editor write. The measure (a distance between two states: characters outside the common
+  prefix and suffix, per text block and title, plus a weight per non-text block changed) and
+  the threshold are proposals, **to calibrate**.
+- **Titles, captions and alt texts go through personal-data ingest** (C-DOC G10, ch. 09); tokens
+  may appear in them and the resolver rule applies there too (G15).
+- **Hook failure** stores the content, marked not scanned (G10) — was a choice, now decided.
+- **Purge leaves a contentless marker** (G13) — decided; its storage and wire form stay open in
+  C-WIRE.
+- **Trust across devices follows who decided, not the direction** (G12): an explicit trust
+  decision on one device (adopt or lower) travels and is applied on the others in either
+  direction; sync without such a decision never changes trust. The later decision wins by its
+  recorded time (proposed, **[choice]**). The decision's wire field is open in C-WIRE.
+Recorded (main session, technical): pasted-token links happen at the save (G14); the editor's
+save request carrying the pasted tokens is a later C-TEXT change.
+
+## 2026-10-10 — v2.0.14: the document service contract (C-DOC, C-ENC) — draft for review
+
+- **Document service — contract (C-DOC)** (ch. 03, new section): what the service is and owns,
+  what it is given (the store through the encrypted layer only, a commit policy, a
+  personal-data ingest hook, media file access, a clock, an event sink), its operations, and
+  **19 guarantees**, each tested before the service exists (`crates/sovereign-docs/tests`,
+  map in `crates/sovereign-docs/TESTS.md`). Plus an adoption list: 141 call sites measured,
+  replaced by service calls in six steps (readers first, `migrate_all` last).
+- **C-ENC made precise** (ch. 03): a non-empty stored string never reads as empty; a
+  `sovereign.doc` that cannot be read is read-only like a newer `v`; **migration is
+  deterministic per document id** (new — the editor's provisional model gives migrated
+  blocks random ids, which would make two devices migrating the same document conflict
+  forever); migration keeps the timeline position.
+- **Two new crates** (ch. 02): `sovereign-docs` (API + tests) and `sovereign-docformat` (the
+  v2 model's API, kept free of storage crates so the editor can depend on it).
+- Proposed, marked **[choice]**: saves of one editing session may replace each other
+  between versions; a failing ingest hook stores the content as given, marked not scanned; a
+  stale save is refused (optimistic revision); web content cannot be created owned; sync
+  never raises trust to owned; provenance *assistant* and *unrecorded*; per-item purge from
+  the trash. Weaknesses found while writing the tests are listed in `TESTS.md` for Céline.
+
 ## 2026-10-10 — v2.0.13: tokens resolve only where they belong
 
 Decided by Céline, on her question of what a hand-typed `[pii:` actually risks: the protection

@@ -124,11 +124,14 @@ impl sovereign::skill::host_db::Host for PluginState {
             "document",
         )?;
         let db = self.db.as_ref().ok_or("No DB access available")?;
+        // C-DOC adoption step 1: a guest reads the document's text through
+        // the v2 model (tokens as `[pii:<id>]`), never its stored JSON — the
+        // same text a built-in skill gets as its body.
         db.get_document(&id)
             .map(|(title, thread_id, content)| sovereign::skill::types::DocDetail {
                 title,
                 thread_id,
-                content,
+                content: sovereign_docformat::plain_text_of(&content),
             })
             .map_err(|e| e.to_string())
     }
@@ -254,6 +257,50 @@ mod tests {
         assert!(s.get_document(SCOPE_DOC.into()).unwrap_err().contains("No DB access"));
         let err = s.get_document("doc:other".into()).unwrap_err();
         assert!(err.contains("scoped to the current document"), "{err}");
+    }
+
+    /// C-DOC adoption step 1: a guest's `get_document` returns the text of a
+    /// v2 document, a v1 envelope and raw text — never the stored JSON.
+    #[test]
+    fn get_document_hands_a_guest_text_not_stored_json() {
+        struct Stub(String);
+        impl crate::traits::SkillDbAccess for Stub {
+            fn search_documents(&self, _: &str) -> anyhow::Result<Vec<(String, String, String)>> {
+                Ok(vec![])
+            }
+            fn get_document(&self, _: &str) -> anyhow::Result<(String, String, String)> {
+                Ok(("T".into(), SCOPE_THREAD.into(), self.0.clone()))
+            }
+            fn list_documents(&self, _: Option<&str>) -> anyhow::Result<Vec<(String, String)>> {
+                Ok(vec![])
+            }
+            fn create_document(&self, _: &str, _: &str, _: &str) -> anyhow::Result<String> {
+                Ok(String::new())
+            }
+            fn list_relationships(&self, _: &str) -> anyhow::Result<Vec<(String, String)>> {
+                Ok(vec![])
+            }
+            fn list_backlinks(&self, _: &str) -> anyhow::Result<Vec<(String, String)>> {
+                Ok(vec![])
+            }
+            fn list_all_documents_with_link_counts(&self) -> anyhow::Result<Vec<(String, String, u32, u32)>> {
+                Ok(vec![])
+            }
+            fn find_or_create_thread(&self, _: &str, _: &str) -> anyhow::Result<String> {
+                Ok(String::new())
+            }
+        }
+        let v2 = r#"{"format":"sovereign.doc","v":2,"blocks":[{"type":"text","id":"00000000000000000000000000001d01","text":"t [pii:pii_record:e1]"}]}"#;
+        for (stored, want) in [
+            (v2, "t [pii:pii_record:e1]"),
+            (r#"{"body":"t [pii:pii_record:e1]","images":[]}"#, "t [pii:pii_record:e1]"),
+            ("t [pii:pii_record:e1]", "t [pii:pii_record:e1]"),
+        ] {
+            let mut s = state_with(&[ManifestCap::ReadDocument]);
+            s.db = Some(std::sync::Arc::new(Stub(stored.into())));
+            let d = s.get_document(SCOPE_DOC.into()).unwrap();
+            assert_eq!(d.content, want);
+        }
     }
 
     #[test]

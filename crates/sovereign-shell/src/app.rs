@@ -28,8 +28,20 @@ use sovereign_core::auth::PersonaKind as CorePersona;
 use sovereign_crypto::auth::{AuthStore, PasswordPolicy};
 
 use crate::camera::Camera;
+
+/// The document editor in the doc window — the only document editor, in every
+/// build (contract E1–E9, `doc/plans/EDITOR-default.md`).
+pub(crate) mod editor_v2;
+// The editor in every build, the plain text path removed (contract E1-E9,
+// `doc/plans/EDITOR-default.md`): the tests, written before the code; the
+// implementer does not edit them. A child of `app` so they reach the window
+// manager's private paths (open, close, quit, lock), as `editor_v2` does.
+// Index: `crates/sovereign-shell/TESTS-editor-default.md`.
+#[cfg(test)]
+#[path = "editor_default_tests.rs"]
+mod editor_default_tests;
 use crate::canvas::{
-    draw_axis, draw_links, draw_minimap_world, lane_color, load_workspace, make_cards, make_links,
+    draw_axis, draw_links, draw_minimap_world, lane_color, lane_label_rect, load_workspace, make_cards, make_links,
     make_minimap, open_db, parallelogram, x_of_ts, Card, Lcg, AXIS_H, BOTTOM_CHROME,
     CARD_H, CARD_W, DECK_PEEK, LANES, LANE_H, PAD, STATUS_H, WORLD_PER_DAY,
 };
@@ -41,16 +53,16 @@ use crate::canvas::open_db_at;
 use crate::crypto::{build_encrypted_db, map_persona, persona_raw_db_path};
 use crate::panels::{
     auth_layout, auth_reveal_btn, browser_chrome, chat_split, device_forget_btn, devices_pair_btn, devices_panel,
-    devices_sync_btn, doc_buttons, draw_auth, draw_browser, draw_chat, draw_devices,
-    draw_doc_window, draw_history, draw_inbox, draw_models, draw_peer_review, draw_pii, draw_search,
-    draw_settings, hist_restore_rect, hist_split, load_history, load_inbox, load_peer_reviews, load_pii,
-    model_row_buttons, peer_review_row_buttons, synthetic_inbox,
+    devices_sync_btn, draw_auth, draw_browser, draw_chat, draw_devices,
+    draw_alerts, draw_doc_window, draw_history, draw_inbox, draw_models, draw_pii, draw_previous_values, draw_search,
+    draw_settings, hist_restore_rect, hist_split, load_alerts, load_history, load_inbox, load_pii, load_previous_values,
+    alert_row_buttons, alerts_list_vp, model_row_buttons, previous_value_buttons, synthetic_inbox,
     pii_row_buttons, search_split, settings_tab_rects, window_chrome, AuthForm, BrowserPanel, ChatMsg,
     ChatPanel, CommsForm, DeviceRow, DevicesPanel, DocBtn, DocWindow, HistoryPanel, Inbox, ModelBtn,
-    ModelRow, ModelsPanel, PeerReviewBtn, PeerReviewPanel, PiiBtn, PiiPanel, Role, SearchPanel,
+    AlertBtn, AlertsPanel, ModelRow, ModelsPanel, PiiBtn, PiiPanel, PrevBtn, PreviousValuesPanel, Role, SearchPanel,
     SettingsPanel, TrustRow,
     COMMS_PASSWORD_FIELD, DEVICES_HEADER_H, DEVICE_ROW_H, HIST_ROW_H, IB_ROW_H, MODEL_ROW_H,
-    PII_ROW_H, PR_ROW_H, SEARCH_ROW_H, SET_HDR_H, SET_ROW_H, SET_TAB_H,
+    PII_ROW_H, ALERT_ROW_H, PV_ROW_H, SEARCH_ROW_H, SET_HDR_H, SET_ROW_H, SET_TAB_H,
 };
 use crate::panels::{comms_form_layout, compose_form_layout, draw_comms_form, draw_compose_form, ComposeForm};
 use crate::panels::{
@@ -65,7 +77,6 @@ use crate::theme::pal;
 use crate::comms;
 
 use sovereign_comms::config::EmailAccountConfig;
-use sovereign_core::content::ContentFields;
 use sovereign_skills::{traits::SkillOutput, SkillContext, SkillDocument, SkillRegistry};
 
 // ---- Window manager ------------------------------------------------------
@@ -83,7 +94,10 @@ pub(crate) enum WindowContent {
     Pii(PiiPanel),
     Browser(BrowserPanel),
     Devices(DevicesPanel),
-    PeerReview(PeerReviewPanel),
+    /// Alerts on changes from paired devices (C-WIRE 13).
+    Alerts(AlertsPanel),
+    /// Previous values of synced items (rows), restorable.
+    PreviousValues(PreviousValuesPanel),
 }
 
 /// A floating window: a content panel + its on-screen bounds (logical px). Stored
@@ -106,7 +120,8 @@ pub(crate) enum WindowKind {
     Pii,
     Browser,
     Devices,
-    PeerReview,
+    Alerts,
+    PreviousValues,
 }
 
 impl WindowContent {
@@ -122,7 +137,8 @@ impl WindowContent {
             WindowContent::Pii(_) => WindowKind::Pii,
             WindowContent::Browser(_) => WindowKind::Browser,
             WindowContent::Devices(_) => WindowKind::Devices,
-            WindowContent::PeerReview(_) => WindowKind::PeerReview,
+            WindowContent::Alerts(_) => WindowKind::Alerts,
+            WindowContent::PreviousValues(_) => WindowKind::PreviousValues,
         }
     }
 }
@@ -358,25 +374,30 @@ pub(crate) fn build_taskbar_contacts(raw: &[sovereign_db::schema::Contact]) -> V
 
 // ---- Right-click context menu -------------------------------------------
 
-/// What a right-click landed on: a card (Open/Pin/Delete/Skills), the skills
-/// submenu for a card, or empty canvas in a lane (New thread / New document).
-#[derive(Clone, Copy)]
+/// What a right-click landed on: a card (Open/Pin/Delete/Skills, or the skills
+/// submenu), or empty canvas in a lane (New thread / New document).
+///
+/// A card's menu holds the document's **id**, captured when the menu opens
+/// (C-DOC adoption step 5, S5-4; spec ch. 08, AT8): a workspace reload while it
+/// is open (a sync round, a document created from chat) reorders `self.cards`
+/// and must not change which document a row acts on.
+#[derive(Clone)]
 enum CtxTarget {
-    Card(usize),   // index into self.cards
-    Skills(usize), // skills submenu for cards[idx]
-    Canvas(usize), // lane index under the cursor
+    Card(crate::card_menu::CardMenu), // a card's menu or its skills submenu, by document id
+    Canvas(usize),                    // lane index under the cursor
 }
 
-/// An action a context-menu row triggers.
+/// An action a context-menu row triggers. The card rows act on the document
+/// the menu was opened on (`CtxTarget::Card`), never on a card position.
 #[derive(Clone, Copy)]
 enum CtxAction {
-    Open(usize),          // open the document window for cards[idx]
-    TogglePin(usize),     // pin/unpin cards[idx] (persisted)
-    Delete(usize),        // delete cards[idx] — two-step (arms confirm, then deletes)
-    OpenSkills(usize),    // switch the menu to the skills submenu for cards[idx]
-    RunSkill(usize, usize), // run skills[skill_idx] on cards[card_idx]
-    NewThread,            // create a new thread
-    NewDocument(usize),   // create a doc in the lane's thread
+    Open,                     // open the menu's document in a window
+    TogglePin,                // pin/unpin the menu's document (persisted)
+    Delete,                   // move the menu's document to the trash — one click, with Undo
+    OpenSkills,               // switch the menu to the skills submenu for the same document
+    RunSkill { skill: usize }, // run skills[skill] (registry index) on the menu's document
+    NewThread,                // create a new thread
+    NewDocument(usize),       // create a doc in the lane's thread
 }
 
 /// A transient popup anchored at the cursor. Not a window (no z-stack entry);
@@ -384,7 +405,6 @@ enum CtxAction {
 pub(crate) struct ContextMenu {
     target: CtxTarget,
     anchor: Point,
-    confirm_delete: bool, // Delete clicked once -> the row turns into "Confirm delete"
 }
 
 /// A transient result popup (e.g. a skill's output or error), centered and
@@ -392,6 +412,10 @@ pub(crate) struct ContextMenu {
 pub(crate) struct Notice {
     title: parley::Layout<crate::text::Brush>,
     body: parley::Layout<crate::text::Brush>,
+    /// What the notice says, as text (title, body) — read by the tests (E3:
+    /// a notice says why, in plain words, and never the stored content).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) said: (String, String),
 }
 
 /// A modal confirmation for an AI-proposed write/transmit/destruct action
@@ -408,9 +432,7 @@ pub(crate) struct ActionPrompt {
 /// (lot 0.3). Cancel always leaves the window as it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AfterUnsaved {
-    /// Leave edit mode (Esc / the Cancel button).
-    LeaveEdit,
-    /// Close the doc window (its × button).
+    /// Close the doc window (its × button, Esc).
     CloseWindow,
     /// Quit the app (the OS close button).
     Quit,
@@ -570,7 +592,7 @@ pub(crate) struct App {
     // and the index of the window currently being title-bar-dragged.
     pub(crate) windows: Vec<Window>,
     pub(crate) drag_win: Option<usize>,
-    pub(crate) card_drag: Option<usize>,      // a card being dragged to another lane (thread)
+    pub(crate) card_drag: Option<String>,     // the document id of a card being dragged to another lane (AT8)
     // The browser's native wry WebView (the same engine Tauri uses), overlaid on
     // the Browser window's body. Lifecycle managed in `sync_browser_webview`.
     pub(crate) browser: Option<wry::WebView>,
@@ -621,6 +643,17 @@ pub(crate) struct App {
     pub(crate) p2p: Option<crate::p2p::P2pHandle>,
     pub(crate) p2p_config: sovereign_core::config::P2pConfig,
     pub(crate) sync_status: Vec<(String, String)>, // (peer_id, last status line)
+    /// The open alerts' notices (C-WIRE 13), newest first: shown in the status
+    /// bar and to the screen reader until dismissed in the Alerts window.
+    pub(crate) alert_notices: Vec<String>,
+    /// Paired devices on an older version (C-WIRE 12): (peer id, name).
+    /// Documents are not exchanged with them; the status bar says so.
+    pub(crate) older_peers: Vec<(String, String)>,
+    /// Per peer, during a sync round: whether the round said "older version".
+    /// A round that completes without saying it clears the notice.
+    pub(crate) older_round: std::collections::HashMap<String, bool>,
+    /// Where the status-bar notice was drawn (a click opens what it is about).
+    pub(crate) status_notice_rect: Option<Rect>,
     // Pairing accept (Phase 2b): the handshake runs off the UI thread and returns
     // here; on Ok we log in with the password the user just set.
     pub(crate) pair_tx: mpsc::Sender<Result<(), String>>,
@@ -655,7 +688,7 @@ pub(crate) struct App {
     pub(crate) debug_settings: bool,          // SHELL_OPEN_SETTINGS=1 -> auto-open settings (screenshot debug)
     pub(crate) debug_search: bool,            // SHELL_OPEN_SEARCH=<query> -> auto-open search (screenshot debug)
     pub(crate) debug_devices: bool,           // SHELL_OPEN_DEVICES=1 -> auto-open devices & sync (screenshot debug)
-    pub(crate) debug_peer_review: bool,       // SHELL_OPEN_PEERREVIEW=1 -> auto-open peer-review w/ sample rows (screenshot debug)
+    pub(crate) debug_alerts: bool,            // SHELL_OPEN_ALERTS=1 -> auto-open the Alerts window w/ sample rows (screenshot debug)
     pub(crate) debug_pairing: bool,           // SHELL_OPEN_PAIRING=1 -> show a sample pairing modal (screenshot debug)
     pub(crate) debug_guardian: bool,          // SHELL_OPEN_GUARDIAN=1 -> show a sample guardian-enroll modal (screenshot debug)
     pub(crate) debug_join: bool,              // SHELL_OPEN_JOIN=1 -> force the join auth screen (screenshot debug)
@@ -665,6 +698,36 @@ pub(crate) struct App {
     // orchestrator (built lazily on first chat) feeding the OrchestratorEvent channel.
     pub(crate) rt: tokio::runtime::Runtime,
     pub(crate) db: Option<Arc<dyn GraphDB>>,
+    /// The document service (C-DOC) over the persona's encrypted store, built
+    /// at unlock (adoption step 2): every document save, skill write-back and
+    /// restore goes through it. `None` while locked — and in the no-auth
+    /// development mode, which has no encrypted store: saves are refused there.
+    pub(crate) docs: Option<Arc<sovereign_docs::DocumentService>>,
+    /// The trash purge running over `docs` (C-DOC adoption step 5, S5-3): a
+    /// tick at unlock, then every `PURGE_TICK_INTERVAL`, on the runtime (off the
+    /// UI thread). Replaced at every unlock.
+    pub(crate) purge_task: Option<tokio::task::JoinHandle<()>>,
+    /// The one-time migration to document format v2 started at the last unlock
+    /// (C-DOC adoption step 6): a later unlock replaces it, stopping a run
+    /// still under way over the previous persona's store (it resumes at that
+    /// store's next unlock, M3).
+    pub(crate) migration_task: Option<tokio::task::JoinHandle<()>>,
+    /// The trash as last read (Settings → Trash; C-DOC adoption step 5,
+    /// S5-11). `None` while locked.
+    pub(crate) trash: Option<crate::trash::TrashView>,
+    /// A trash modal: the thread to restore into, or Empty trash's
+    /// confirmation (Destruct, K7).
+    pub(crate) trash_modal: Option<crate::trash_ui::TrashModal>,
+    /// The thread chooser of the section "Documents whose thread was deleted"
+    /// (S5-12, in the Alerts window): the thread to move into.
+    pub(crate) orphan_modal: Option<crate::orphans_ui::ThreadChooser>,
+    /// When the new-thread prompt was opened by the section's "New thread…":
+    /// the document(s) its Create moves into the new thread.
+    pub(crate) orphan_prompt_target: Option<crate::orphans_ui::OrphanTarget>,
+    /// How many documents whose thread was deleted wait (the status line, W5).
+    pub(crate) orphan_count: usize,
+    /// The notice after a one-click delete, with its Undo (S5-8).
+    pub(crate) delete_notice: Option<crate::delete_notice::DeleteNotice>,
     pub(crate) orch: Arc<tokio::sync::Mutex<Option<Arc<Orchestrator>>>>,
     pub(crate) orch_tx: mpsc::Sender<OrchestratorEvent>,
     pub(crate) orch_rx: mpsc::Receiver<OrchestratorEvent>,
@@ -693,9 +756,33 @@ pub(crate) struct App {
     pub(crate) scale: f64,
     pub(crate) ui_scale: f64,
     pub(crate) ctrl_down: bool,
+    /// The keyboard modifiers (`WindowEvent::ModifiersChanged`), for the
+    /// text fields built on the editor component.
+    pub(crate) mods: winit::keyboard::ModifiersState,
+    /// The new-thread prompt, while open (contract N1–N7,
+    /// `doc/plans/THREAD-name.md`): *New lane* opens it; nothing is created
+    /// before its Create.
+    pub(crate) new_thread_prompt: Option<crate::new_thread::NewThreadPrompt>,
+    /// The rename field over a lane label, while open (contract R1–R8,
+    /// `doc/plans/THREAD-name.md`): a double-click on the label opens it.
+    pub(crate) lane_rename: Option<crate::lane_rename::LaneRename>,
+    /// The renamable lane labels (the lane, the thread its label shows),
+    /// refreshed with the workspace (`load_workspace_now`).
+    pub(crate) lane_labels: Vec<crate::lane_rename::LaneLabel>,
+    /// The renamable labels as last drawn (screen rects), for hit-testing.
+    pub(crate) label_rects: Vec<(usize, Rect)>,
+    /// The presses on the labels, to recognise a double-click (R1).
+    pub(crate) label_clicks: crate::lane_rename::LabelClicks,
+    /// What was last applied to the winit window: input method allowed, and
+    /// its candidate window's area (physical px). See `apply_ime`.
+    pub(crate) ime_allowed: bool,
+    pub(crate) ime_area: Option<(i32, i32, u32, u32)>,
     pub(crate) framed: Scene,
     // Accessibility: bridges our per-frame a11y tree to the OS screen reader.
     pub(crate) adapter: Option<accesskit_winit::Adapter>,
+    /// The focus of the last tree `build_a11y_tree` built: the editor's
+    /// updates of the same frame fall back to it (`a11y_frame_updates`).
+    pub(crate) a11y_root_focus: accesskit::NodeId,
 }
 
 /// Everything a freshly-built shell orchestrator MUST have wired before it
@@ -713,7 +800,12 @@ async fn wire_new_orchestrator(
     decision_cell: &Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<ActionDecision>>>>,
     injection_cell: &Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<InjectionDecision>>>>,
     account_key: &Option<Arc<sovereign_crypto::account_key::AccountKey>>,
+    docs: &Option<Arc<sovereign_docs::DocumentService>>,
 ) {
+    // C-DOC adoption step 2: the assistant's restore goes through the service.
+    if let Some(d) = docs {
+        o.set_document_service(d.clone());
+    }
     // Action-gate decision channel: Modify/Transmit/Destruct block for the UI's
     // Approve/Reject.
     if let Some(rx) = decision_cell.lock().await.take() {
@@ -883,9 +975,22 @@ impl App {
             account_key: None,
             device_key: None,
             kek: None,
+            docs: None,
+            purge_task: None,
+            migration_task: None,
+            trash: None,
+            trash_modal: None,
+            orphan_modal: None,
+            orphan_prompt_target: None,
+            orphan_count: 0,
+            delete_notice: None,
             p2p: None,
             p2p_config,
             sync_status: Vec::new(),
+            alert_notices: Vec::new(),
+            older_peers: Vec::new(),
+            older_round: std::collections::HashMap::new(),
+            status_notice_rect: None,
             pair_tx,
             pair_rx,
             pending_join_password: None,
@@ -908,7 +1013,7 @@ impl App {
             debug_settings: crate::dev::flag("SHELL_OPEN_SETTINGS"),
             debug_search: crate::dev::flag("SHELL_OPEN_SEARCH"),
             debug_devices: crate::dev::flag("SHELL_OPEN_DEVICES"),
-            debug_peer_review: crate::dev::flag("SHELL_OPEN_PEERREVIEW"),
+            debug_alerts: crate::dev::flag("SHELL_OPEN_ALERTS"),
             debug_pairing: crate::dev::flag("SHELL_OPEN_PAIRING"),
             debug_guardian: crate::dev::flag("SHELL_OPEN_GUARDIAN"),
             debug_join: crate::dev::flag("SHELL_OPEN_JOIN"),
@@ -937,8 +1042,17 @@ impl App {
                 .map(|v| v.clamp(0.6, 3.0))
                 .unwrap_or(1.0),
             ctrl_down: false,
+            mods: winit::keyboard::ModifiersState::empty(),
+            new_thread_prompt: None,
+            lane_rename: None,
+            lane_labels: Vec::new(),
+            label_rects: Vec::new(),
+            label_clicks: crate::lane_rename::LabelClicks::default(),
+            ime_allowed: false,
+            ime_area: None,
             framed: Scene::new(),
             adapter: None,
+            a11y_root_focus: accesskit::NodeId(0),
         }
     }
 
@@ -1002,6 +1116,14 @@ impl App {
         // Auth gate: while locked, the canvas + panels are hidden behind the
         // login/onboarding screen, which owns the keyboard.
         if self.locked {
+            // A lock closes the new-thread prompt; nothing is created (N3).
+            if let Some(mut prompt) = self.new_thread_prompt.take() {
+                prompt.close();
+            }
+            // And the rename field over a lane label; nothing is renamed (R2).
+            if let Some(mut field) = self.lane_rename.take() {
+                field.close();
+            }
             self.ensure_wizard();
             if let Some(wiz) = &self.wizard {
                 crate::onboarding::draw_onboarding(&mut self.scene, &mut self.shaper, wiz, w, h);
@@ -1035,6 +1157,8 @@ impl App {
         }
         let mut reload = false;
         let mut sync_reload = false; // reload caused by a completed sync (may add docs)
+        let mut alerts_changed = false; // C-WIRE 13: re-read the alerts after the loop
+        let mut v2_synced_peer: Option<String> = None; // the peer of that sync, for the open editors
         for ev in events {
             match ev {
                 OrchestratorEvent::ChatResponse { text } => self.push_chat_msg(text),
@@ -1049,6 +1173,23 @@ impl App {
                 OrchestratorEvent::ActionExecuted { action, success } => {
                     self.push_chat_msg(format!("{} {action}", if success { "\u{2713} Done:" } else { "\u{2717} Failed:" }));
                     if success {
+                        reload = true;
+                    }
+                }
+                // A chat turn's explicit outcome (spec ch. 08): one line, "Done" only
+                // for a write that succeeded.
+                OrchestratorEvent::ChatTurnEnded { outcome } => {
+                    self.push_chat_msg(outcome.summary_line());
+                    if outcome.writes.iter().any(|w| {
+                        w.outcome == sovereign_core::interfaces::WriteOutcome::Succeeded
+                    }) {
+                        reload = true;
+                    }
+                    // A turn stopped at the round limit names its saved trace (thread and
+                    // exact title) in the line above; nothing opens by itself (spec ch. 08,
+                    // *Chat agent loop*, v2.0.39). The reload puts the new trace document on
+                    // the canvas, where the user opens it when they want it.
+                    if outcome.trace_doc_id().is_some() {
                         reload = true;
                     }
                 }
@@ -1085,15 +1226,33 @@ impl App {
                 | OrchestratorEvent::ThreadDeleted { .. } => reload = true,
                 // P2P (Batch 6c): keep the Devices window live.
                 OrchestratorEvent::SyncStatus { peer_id, status } => {
+                    // C-WIRE 12: a round that completes without saying "older
+                    // version" means the device was updated.
+                    if status == "started" {
+                        self.older_round.insert(peer_id.clone(), false);
+                    } else if status.starts_with("completed")
+                        && self.older_round.remove(&peer_id) == Some(false)
+                    {
+                        self.older_peers.retain(|(p, _)| *p != peer_id);
+                    }
                     // A completed sync may have written rows into our DB — reload
                     // the canvas so freshly-synced docs/threads show up live.
                     if status.starts_with("completed") {
+                        alerts_changed = true;
                         reload = true;
                         sync_reload = true;
+                        v2_synced_peer = Some(peer_id.clone());
                     }
                     self.note_sync_status(peer_id, status);
                 }
                 OrchestratorEvent::DeviceDiscovered { .. } => self.refresh_devices_windows(),
+                OrchestratorEvent::SyncAlertsChanged => alerts_changed = true,
+                // C-DOC adoption step 6 (M2): the one-time migration's notice.
+                OrchestratorEvent::DocumentsMigrated { text } => self.set_notice("Document format", &text),
+                OrchestratorEvent::PeerNeedsUpdate { peer_id, device_name } => {
+                    self.note_older_peer(peer_id, device_name);
+                    self.refresh_devices_windows();
+                }
                 OrchestratorEvent::DevicePaired { device_name, .. } => {
                     self.refresh_devices_windows();
                     self.set_notice("Devices", &format!("Paired with {device_name}."));
@@ -1128,12 +1287,28 @@ impl App {
         if reload {
             let before = self.cards.len();
             self.load_workspace_now();
+            self.rebuild_settings_windows();
             // First sync into a fresh device populates an empty canvas — fit the
             // whole synced workspace so it isn't mostly off-screen. (Don't reframe
             // on incremental syncs; that would yank a navigating user's view.)
             if sync_reload && before == 0 && !self.cards.is_empty() {
                 self.frame_fit();
             }
+        }
+        if alerts_changed {
+            self.refresh_alerts();
+        }
+        // E5: an open editor learns that its document changed, whatever
+        // changed it — a sync, or the assistant's writes (`ActionExecuted`,
+        // `ChatTurnEnded`, the other orchestrator reloads): reloaded if it
+        // holds nothing unsaved, otherwise kept, its next save resolving
+        // against the newer revision. A reload that changed no open document
+        // changes no editor (`v2_after_sync` compares with what it holds).
+        if let Some(peer) = v2_synced_peer {
+            self.v2_after_sync(&format!("a paired device ({})", crate::panels::short_id(&peer)));
+        } else if reload {
+            // Read by the editor as "This document was changed on <this>".
+            self.v2_after_sync("this device (by the assistant)");
         }
 
         // Browser messages: page info (from injected JS over IPC) + reliability.
@@ -1211,13 +1386,9 @@ impl App {
         // Screenshot-debug affordances: auto-open windows on the first frame
         // (cascaded, so multiple open at once stack visibly).
         if self.debug_open && !self.cards.is_empty() {
-            let bounds = self.next_bounds(WindowKind::Doc);
-            let inner_w = window_chrome(bounds).2.width();
-            let mut dw = DocWindow::new(&self.cards[0], &mut self.shaper, inner_w);
-            if crate::dev::var("SHELL_OPEN_DOC").as_deref() == Some("edit") {
-                dw.begin_edit(); // SHELL_OPEN_DOC=edit -> open in edit mode (screenshot debug)
-            }
-            self.windows.push(Window { content: WindowContent::Doc(dw), bounds });
+            // SHELL_OPEN_DOC: the first document, opened as a click opens it
+            // (in the editor, E6).
+            self.open_doc_window(0);
             self.debug_open = false;
         }
         if self.debug_inbox {
@@ -1253,6 +1424,7 @@ impl App {
             self.debug_chat = false;
         }
         if self.debug_settings {
+            self.refresh_trash();
             let set = self.build_settings();
             let bounds = self.next_bounds(WindowKind::Settings);
             self.windows.push(Window { content: WindowContent::Settings(set), bounds });
@@ -1272,11 +1444,12 @@ impl App {
             self.windows.push(Window { content: WindowContent::Devices(dp), bounds });
             self.debug_devices = false;
         }
-        if self.debug_peer_review {
-            let pr = crate::panels::synthetic_peer_reviews();
-            let bounds = self.next_bounds(WindowKind::PeerReview);
-            self.windows.push(Window { content: WindowContent::PeerReview(pr), bounds });
-            self.debug_peer_review = false;
+        if self.debug_alerts {
+            let ap = crate::panels::synthetic_alerts();
+            self.alert_notices = ap.rows.iter().map(|r| r.notice()).collect();
+            let bounds = self.next_bounds(WindowKind::Alerts);
+            self.windows.push(Window { content: WindowContent::Alerts(ap), bounds });
+            self.debug_alerts = false;
         }
         if self.debug_pairing {
             // A real (but offline) offer so the QR renders at a realistic size.
@@ -1516,7 +1689,10 @@ impl App {
         self.last_visible = visible;
 
         // Thread lane name labels — sticky pills at the left edge, drawn on top
-        // of cards so they stay readable.
+        // of cards so they stay readable. The pill is `lane_label_rect`, which
+        // hit-testing shares: the renamable ones (a live thread's) are kept for
+        // the double-click that opens the rename field (THREAD-name R1).
+        self.label_rects.clear();
         for lane in 0..LANES {
             let name = self.lane_names.get(lane).cloned().unwrap_or_default();
             if name.is_empty() {
@@ -1528,11 +1704,14 @@ impl App {
                 continue;
             }
             let label = self.shaper.shape(&name, 220.0, 12.0);
-            let lw = label.width() as f64;
-            let py = (y + 6.0).max(AXIS_H + 4.0);
-            let pill = RoundedRect::new(6.0, py, 6.0 + lw + 18.0, py + 20.0, 5.0);
+            let rect = lane_label_rect(y, label.width() as f64);
+            if self.lane_labels.iter().any(|l| l.lane == lane) {
+                self.label_rects.push((lane, rect));
+            }
+            let pill = RoundedRect::from_rect(rect, 5.0);
             self.scene.fill(Fill::NonZero, Affine::IDENTITY, lane_color(lane).with_alpha(0.92), None, &pill);
-            crate::text::draw_text(&mut self.scene, &label, Affine::translate((15.0, py + 4.0)), pal().on_accent);
+            let (tx, ty) = crate::canvas::LANE_LABEL_TEXT_INSET;
+            crate::text::draw_text(&mut self.scene, &label, Affine::translate((rect.x0 + tx, rect.y0 + ty)), pal().on_accent);
         }
 
         // "Now" line — at the real current time on the calibrated axis.
@@ -1554,6 +1733,8 @@ impl App {
         // Fanned-open deck overlay: lifted above the canvas, tethered to real time.
         self.draw_deck_fan(w, h);
 
+        self.v2_frame();
+
         // Floating windows, bottom→top so the focused (last) one paints on top.
         // `self.windows[i]` and `self.shaper` are disjoint fields, so we can
         // borrow both: shape/clamp against the window's body, then draw.
@@ -1563,12 +1744,8 @@ impl App {
             let body_w = body.width();
             let body_h = body.height();
             match &mut self.windows[i].content {
-                WindowContent::Doc(win) => {
-                    win.ensure_shaped(&mut self.shaper, body_w);
-                    let max_scroll = (win.body.height() as f64 - body_h).max(0.0);
-                    // While editing, keep the end caret in view (it sits at the bottom).
-                    win.scroll_y = if win.editing { max_scroll } else { win.scroll_y.clamp(0.0, max_scroll) };
-                }
+                // The editor lays out its own body (`v2_draw`, below).
+                WindowContent::Doc(_) => {}
                 WindowContent::Inbox(ib) => {
                     ib.ensure_shaped_list(&mut self.shaper, body_w);
                     if let Some(sel) = ib.selected {
@@ -1622,9 +1799,15 @@ impl App {
                     let content = dp.rows.len().max(1) as f64 * DEVICE_ROW_H + 8.0;
                     dp.scroll = dp.scroll.clamp(0.0, (content - list_h).max(0.0));
                 }
-                WindowContent::PeerReview(pr) => {
-                    pr.ensure_shaped(&mut self.shaper, body_w);
-                    pr.scroll = pr.scroll.clamp(0.0, (pr.content_h() - body_h).max(0.0));
+                WindowContent::Alerts(ap) => {
+                    ap.ensure_shaped(&mut self.shaper, body_w);
+                    let list_h = (body_h - ap.hint_h()).max(0.0);
+                    ap.scroll = ap.scroll.clamp(0.0, (ap.content_h() - list_h).max(0.0));
+                }
+                WindowContent::PreviousValues(pv) => {
+                    pv.ensure_shaped(&mut self.shaper, body_w);
+                    let list_h = (body_h - pv.hint_h()).max(0.0);
+                    pv.scroll = pv.scroll.clamp(0.0, (pv.content_h() - list_h).max(0.0));
                 }
             }
             match &self.windows[i].content {
@@ -1638,8 +1821,10 @@ impl App {
                 WindowContent::Pii(pp) => draw_pii(&mut self.scene, pp, bounds),
                 WindowContent::Browser(br) => draw_browser(&mut self.scene, br, bounds),
                 WindowContent::Devices(dp) => draw_devices(&mut self.scene, dp, bounds),
-                WindowContent::PeerReview(pr) => draw_peer_review(&mut self.scene, pr, bounds),
+                WindowContent::Alerts(ap) => draw_alerts(&mut self.scene, ap, bounds),
+                WindowContent::PreviousValues(pv) => draw_previous_values(&mut self.scene, pv, bounds),
             }
+            self.v2_draw(i);
         }
 
         // Bottom chrome on top of everything: the dock + status bar stay reachable
@@ -1652,7 +1837,40 @@ impl App {
 
         // Right-click context menu floats above all of it; a result notice and
         // (most modal of all) an action confirmation are the topmost layers.
+        if self.delete_notice.as_ref().is_some_and(|n| !n.shown(Instant::now())) {
+            self.delete_notice = None;
+        }
+        if let Some(n) = &self.delete_notice {
+            let cursor = Point::new(self.cursor.0, self.cursor.1);
+            crate::trash_ui::draw_toast(&mut self.scene, &mut self.shaper, n, w, h, cursor);
+        }
         self.draw_context_menu(w, h);
+        // The new-thread prompt (N1), above the canvas, the windows and the
+        // menu; notices and confirmations stay above it.
+        if let Some(prompt) = self.new_thread_prompt.as_mut() {
+            prompt.set_scale(self.scale * self.ui_scale);
+            let cursor = Point::new(self.cursor.0, self.cursor.1);
+            prompt.draw(&mut self.scene, &mut self.shaper, w, h, cursor);
+        }
+        // The rename field over its lane label (R1), above the windows, as
+        // the prompt: it holds the keyboard while open.
+        if let Some(label) = self.lane_rename_label() {
+            let total = self.scale * self.ui_scale;
+            if let Some(field) = self.lane_rename.as_mut() {
+                field.set_scale(total);
+                field.draw(&mut self.scene, label, w, h);
+            }
+        }
+        // The input method follows the prompt's field, else the focused editor.
+        self.apply_ime();
+        if let Some(m) = &self.trash_modal {
+            let cursor = Point::new(self.cursor.0, self.cursor.1);
+            crate::trash_ui::draw_modal(&mut self.scene, &mut self.shaper, m, w, h, cursor);
+        }
+        if let Some(m) = &self.orphan_modal {
+            let cursor = Point::new(self.cursor.0, self.cursor.1);
+            m.draw(&mut self.scene, &mut self.shaper, w, h, cursor);
+        }
         self.draw_notice(w, h);
         self.draw_action_prompt(w, h);
         if let Some(form) = &mut self.comms_form {
@@ -1777,7 +1995,8 @@ impl App {
             WindowKind::Pii => (620.0, 560.0),
             WindowKind::Browser => (960.0, 720.0),
             WindowKind::Devices => (600.0, 520.0),
-            WindowKind::PeerReview => (640.0, 580.0),
+            WindowKind::Alerts => (640.0, 560.0),
+            WindowKind::PreviousValues => (620.0, 520.0),
         };
         let (vw, vh) = self.win_size().unwrap_or((1600.0, 1000.0));
         let step = 28.0 * (self.windows.len() % 6) as f64;
@@ -1802,7 +2021,10 @@ impl App {
         let bounds = self.next_bounds(kind);
         let content = match kind {
             WindowKind::Chat => WindowContent::Chat(ChatPanel::new()),
-            WindowKind::Settings => WindowContent::Settings(self.build_settings()),
+            WindowKind::Settings => {
+                self.refresh_trash();
+                WindowContent::Settings(self.build_settings())
+            }
             WindowKind::Search => WindowContent::Search(SearchPanel::new()),
             WindowKind::Models => WindowContent::Models(self.build_models_panel()),
             WindowKind::Pii => match self.db.as_ref().map(|d| self.rt.block_on(load_pii(d))) {
@@ -1811,8 +2033,15 @@ impl App {
             },
             WindowKind::Browser => WindowContent::Browser(BrowserPanel::new()),
             WindowKind::Devices => WindowContent::Devices(self.build_devices_panel()),
-            WindowKind::PeerReview => match self.db.as_ref().map(|d| self.rt.block_on(load_peer_reviews(d))) {
-                Some(pr) => WindowContent::PeerReview(pr),
+            WindowKind::Alerts => match self.load_alerts_panel() {
+                Some(ap) => WindowContent::Alerts(ap),
+                None => return,
+            },
+            WindowKind::PreviousValues => match self.db.clone() {
+                Some(db) => {
+                    let names = self.device_names();
+                    WindowContent::PreviousValues(self.rt.block_on(load_previous_values(&db, &names)))
+                }
                 None => return,
             },
             WindowKind::Inbox => match self.build_inbox() {
@@ -1829,7 +2058,9 @@ impl App {
     }
 
     /// Open the card's document: if a Doc window already shows that id, focus it;
-    /// otherwise push a fresh Doc window.
+    /// otherwise push a fresh Doc window, its body the editor (E1). When the
+    /// editor cannot open the document, no window opens and a notice says why
+    /// (E3, `v2_open`): there is no other view to fall back to.
     pub(crate) fn open_doc_window(&mut self, card_idx: usize) {
         let Some(card) = self.cards.get(card_idx) else { return };
         let id = card.id.clone();
@@ -1839,9 +2070,14 @@ impl App {
             self.bring_to_front(idx);
             return;
         }
+        // The stored title, raw: the editor's title field shows its own
+        // placeholder for an empty one (T10).
+        let title = self.cards[card_idx].title.clone();
+        let Some(pane) = self.v2_open(&id, &title) else { return };
         let bounds = self.next_bounds(WindowKind::Doc);
         let inner_w = window_chrome(bounds).2.width();
-        let dw = DocWindow::new(&self.cards[card_idx], &mut self.shaper, inner_w);
+        let mut dw = DocWindow::new(&self.cards[card_idx], &mut self.shaper, inner_w);
+        dw.v2 = Some(pane);
         self.windows.push(Window { content: WindowContent::Doc(dw), bounds });
     }
 
@@ -1860,12 +2096,24 @@ impl App {
         let threads = self.lane_names.iter().filter(|s| !s.is_empty()).count();
         let at_rest = if self.persona.is_some() { "encrypted" } else { "raw" };
         let text = format!(
-            "{persona}  \u{00b7}  {} docs  \u{00b7}  {threads} threads  \u{00b7}  {at_rest}  \u{00b7}  zoom {:.0}%  \u{00b7}  c chat \u{00b7} i inbox \u{00b7} m models \u{00b7} p pii \u{00b7} r reviews \u{00b7} b browser \u{00b7} d devices \u{00b7} s settings \u{00b7} arrows pan",
+            "{persona}  \u{00b7}  {} docs  \u{00b7}  {threads} threads  \u{00b7}  {at_rest}  \u{00b7}  zoom {:.0}%  \u{00b7}  c chat \u{00b7} i inbox \u{00b7} m models \u{00b7} p pii \u{00b7} a alerts \u{00b7} v previous values \u{00b7} b browser \u{00b7} d devices \u{00b7} s settings \u{00b7} arrows pan",
             self.cards.len(),
             self.cam.zoom * 100.0,
         );
-        let label = self.shaper.shape(&text, (w as f32 - 24.0).max(50.0), 12.0);
-        crate::text::draw_text(&mut self.scene, &label, Affine::translate((12.0, y0 + 6.0)), pal().text_dim);
+        // C-WIRE 13 / 12: a notice, left, on amber with dark text (well above
+        // 4.5:1); a click opens what it is about. The key hints follow it.
+        let mut x = 12.0;
+        self.status_notice_rect = None;
+        if let (false, Some((notice, _))) = (self.locked, self.status_notice()) {
+            let nl = self.shaper.shape(&notice, (w as f32 * 0.6).max(50.0), 12.0);
+            let r = Rect::new(4.0, y0 + 3.0, 4.0 + nl.width() as f64 + 16.0, h - 3.0);
+            self.scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(0xF5, 0x9E, 0x0B), None, &RoundedRect::from_rect(r, 4.0));
+            crate::text::draw_text(&mut self.scene, &nl, Affine::translate((r.x0 + 8.0, y0 + 6.0)), Color::from_rgb8(26, 26, 26));
+            self.status_notice_rect = Some(r);
+            x = r.x1 + 12.0;
+        }
+        let label = self.shaper.shape(&text, (w as f32 - x as f32 - 12.0).max(50.0), 12.0);
+        crate::text::draw_text(&mut self.scene, &label, Affine::translate((x, y0 + 6.0)), pal().text_dim);
     }
 
     /// The taskbar band (full width, between the canvas and the status bar).
@@ -1929,7 +2177,7 @@ impl App {
             }
             let rect = Rect::new(x, py0, x + pill_w, py0 + pill_h);
             let accent = if card.external { external } else { owned };
-            items.push(TbItem { rect, label: card.title.clone(), kind: TbKind::OpenDoc(ci), accent, active: false });
+            items.push(TbItem { rect, label: crate::canvas::display_title(&card.title).to_string(), kind: TbKind::OpenDoc(ci), accent, active: false });
             x += pill_w + gap;
         }
 
@@ -2135,7 +2383,12 @@ impl App {
     /// close the spent enrollment QR, and refresh Settings → Recovery.
     fn fold_guardian_enrollments(&mut self, guardian_name: &str) {
         let Some(kek) = self.kek.clone() else { return };
-        match crate::p2p::fold_guardian_enrollments(&crate::crypto::recovery_store(), &kek) {
+        // A duress session has no roster here: same as a store with none yet.
+        let folded = match crate::crypto::recovery_store_for(self.persona) {
+            Some(store) => crate::p2p::fold_guardian_enrollments(&store, &kek),
+            None => Ok(None),
+        };
+        match folded {
             Err(e) => {
                 self.set_notice("Guardian enrollment", &format!("The roster couldn't be updated: {e}"));
                 return;
@@ -2208,40 +2461,49 @@ impl App {
             self.ctx_menu = None;
             return;
         }
-        let target = if let Some(ci) = self.card_at(p.x, p.y, w, h) {
-            CtxTarget::Card(ci)
+        let card_menu = self.card_at(p.x, p.y, w, h).and_then(|ci| {
+            let ids: Vec<String> = self.cards.iter().map(|c| c.id.clone()).collect();
+            crate::card_menu::CardMenu::open_on(&ids, ci)
+        });
+        let target = if let Some(menu) = card_menu {
+            CtxTarget::Card(menu)
         } else {
             let world_y = (p.y - self.cam.offset_y) / self.cam.zoom;
             let lane = (world_y / LANE_H).floor();
             let lane = if lane < 0.0 { 0 } else { (lane as usize).min(LANES - 1) };
             CtxTarget::Canvas(lane)
         };
-        self.ctx_menu = Some(ContextMenu { target, anchor: p, confirm_delete: false });
+        self.ctx_menu = Some(ContextMenu { target, anchor: p });
+    }
+
+    /// The position of document `id` among the cards as loaded now (a reload
+    /// may have moved it, or removed it).
+    fn card_index_of(&self, id: &str) -> Option<usize> {
+        self.cards.iter().position(|c| c.id == id)
     }
 
     /// The menu's rows: (label, action, is_danger). Empty when no menu is open.
     fn ctx_menu_rows(&self) -> Vec<(String, CtxAction, bool)> {
         let Some(menu) = &self.ctx_menu else { return Vec::new() };
-        match menu.target {
-            CtxTarget::Card(ci) => {
-                let pinned = self.cards.get(ci).map(|c| c.pinned).unwrap_or(false);
-                let del = if menu.confirm_delete { "Confirm delete" } else { "Delete\u{2026}" };
-                vec![
-                    ("Open".to_string(), CtxAction::Open(ci), false),
-                    (if pinned { "Unpin".to_string() } else { "Pin".to_string() }, CtxAction::TogglePin(ci), false),
-                    ("Skills \u{203a}".to_string(), CtxAction::OpenSkills(ci), false),
-                    (del.to_string(), CtxAction::Delete(ci), true),
-                ]
-            }
+        match &menu.target {
             // Lot 0.1: text-editor "Save" is hidden — run with empty params it
             // would replace any body with "" (doc_writes::MENU_HIDDEN_ACTIONS).
-            CtxTarget::Skills(ci) => crate::doc_writes::menu_skill_entries(&self.skills)
+            CtxTarget::Card(card) if card.in_skills() => crate::doc_writes::menu_skill_entries(&self.skills)
                 .into_iter()
-                .map(|(i, label)| (label, CtxAction::RunSkill(ci, i), false))
+                .map(|(i, label)| (label, CtxAction::RunSkill { skill: i }, false))
                 .collect(),
+            CtxTarget::Card(card) => {
+                let pinned = self.card_index_of(card.target_id()).map(|ci| self.cards[ci].pinned).unwrap_or(false);
+                vec![
+                    ("Open".to_string(), CtxAction::Open, false),
+                    (if pinned { "Unpin".to_string() } else { "Pin".to_string() }, CtxAction::TogglePin, false),
+                    ("Skills \u{203a}".to_string(), CtxAction::OpenSkills, false),
+                    ("Delete".to_string(), CtxAction::Delete, true),
+                ]
+            }
             CtxTarget::Canvas(lane) => vec![
                 ("New lane".to_string(), CtxAction::NewThread, false),
-                ("New document".to_string(), CtxAction::NewDocument(lane), false),
+                ("New document".to_string(), CtxAction::NewDocument(*lane), false),
             ],
         }
     }
@@ -2255,7 +2517,7 @@ impl App {
             return None;
         }
         // The skills submenu has more, longer rows — make it wider + tighter.
-        let is_skills = matches!(menu.target, CtxTarget::Skills(_));
+        let is_skills = matches!(&menu.target, CtxTarget::Card(card) if card.in_skills());
         let mw = if is_skills { 230.0 } else { 176.0 };
         let rh = if is_skills { 27.0 } else { 30.0 };
         const PAD: f64 = 5.0;
@@ -2340,40 +2602,55 @@ impl App {
         true
     }
 
-    /// Execute a context-menu action. Delete is two-step (arms, then deletes).
+    /// Execute a context-menu action. Delete is one click (with Undo).
+    /// A card row acts on the document the menu was opened on (AT8).
     fn run_ctx_action(&mut self, action: CtxAction) {
+        let card = match self.ctx_menu.as_mut().map(|m| &mut m.target) {
+            Some(CtxTarget::Card(card)) => Some(card),
+            _ => None,
+        };
         match action {
-            CtxAction::Open(ci) => {
-                self.open_doc_window(ci);
+            CtxAction::Open => {
+                if let Some(id) = card.map(|c| c.target_id().to_string()) {
+                    match self.card_index_of(&id) {
+                        Some(ci) => self.open_doc_window(ci),
+                        None => self.set_notice("Not opened", "This document is no longer on the canvas."),
+                    }
+                }
                 self.ctx_menu = None;
             }
-            CtxAction::TogglePin(ci) => {
-                self.toggle_pin(ci);
+            CtxAction::TogglePin => {
+                if let Some(id) = card.map(|c| c.target_id().to_string()) {
+                    self.toggle_pin(&id);
+                }
                 self.ctx_menu = None;
             }
-            CtxAction::Delete(ci) => {
-                let armed = self.ctx_menu.as_ref().map(|m| m.confirm_delete).unwrap_or(false);
-                if armed {
-                    self.delete_card(ci);
+            CtxAction::Delete => {
+                // One click (Céline, Q3 → b): the document goes to the trash
+                // and the notice offers Undo.
+                if let Some(id) = card.and_then(|c| c.click_delete()) {
                     self.ctx_menu = None;
-                } else if let Some(m) = self.ctx_menu.as_mut() {
-                    m.confirm_delete = true; // keep open; next click on the red row confirms
+                    self.trash_document(&id);
                 }
             }
-            CtxAction::OpenSkills(ci) => {
+            CtxAction::OpenSkills => {
                 // Switch the same popup to the skills submenu (keep it open).
-                if let Some(m) = self.ctx_menu.as_mut() {
-                    m.target = CtxTarget::Skills(ci);
-                    m.confirm_delete = false;
+                if let Some(card) = card {
+                    card.open_skills();
                 }
             }
-            CtxAction::RunSkill(ci, si) => {
-                self.run_skill(ci, si);
+            CtxAction::RunSkill { skill } => {
+                let picked = card.map(|c| c.click_skill(skill));
                 self.ctx_menu = None;
+                if let Some((id, si)) = picked {
+                    self.run_skill(&id, si);
+                }
             }
             CtxAction::NewThread => {
-                self.new_thread();
+                // Named first (THREAD-name N1): the prompt; nothing exists
+                // until its Create.
                 self.ctx_menu = None;
+                self.open_new_thread_prompt();
             }
             CtxAction::NewDocument(lane) => {
                 self.new_document(lane);
@@ -2387,23 +2664,25 @@ impl App {
     /// so db/llm-backed skills report an honest error; content-transform skills
     /// (word count, readability, redactor, formatters, exporters, …) work.
     ///
-    /// Lot 0.1: a `ContentUpdate` is written only if `doc_writes` allows it (no
-    /// empty body over a non-empty document, no write-back of content the skill
-    /// could not read), only after a restore point exists, and never over a
-    /// doc window's unsaved edits.
-    fn run_skill(&mut self, ci: usize, si: usize) {
-        let Some(card) = self.cards.get(ci) else { return };
-        let (doc_id, title) = (card.id.clone(), card.title.clone());
-        let Some(db) = self.db.clone() else { return };
-        let content = match self.rt.block_on(db.get_document(&doc_id)) {
-            Ok(d) => d.content,
+    /// Lot 0.1 / C-DOC adoption step 2: the skill reads the document through
+    /// the document service, and a `ContentUpdate` is written back through it
+    /// (`doc_writes::apply_skill_update`: never an emptied text, never a media
+    /// change, never a collapsed structure; the prior state and the result
+    /// both versioned), and never over a doc window's unsaved edits.
+    fn run_skill(&mut self, doc_id: &str, si: usize) {
+        let doc_id = doc_id.to_string();
+        let Some(docs) = self.docs.clone() else {
+            self.set_notice("Skill not run", "The workspace is locked: log in to run skills on documents.");
+            return;
+        };
+        let input = match self.rt.block_on(crate::doc_writes::skill_input(&docs, &doc_id)) {
+            Ok(i) => i,
             Err(e) => {
-                self.set_notice("Skill not run", &format!("Couldn't read the document: {e}"));
+                self.set_notice("Skill not run", &e);
                 return;
             }
         };
-        let input = crate::doc_writes::skill_input(&content);
-        let skill_doc = SkillDocument { id: doc_id.clone(), title: title.clone(), content: input.fields.clone() };
+        let skill_doc = SkillDocument { id: doc_id.clone(), title: input.title.clone(), content: input.fields.clone() };
 
         let (skill_name, action_id) = match self.skills.all_skills().get(si) {
             Some(s) => (
@@ -2428,25 +2707,21 @@ impl App {
 
         match result {
             Ok(SkillOutput::ContentUpdate(cf)) => {
-                if let Err(why) = crate::doc_writes::skill_write_verdict(&content, &input, &cf) {
-                    self.set_notice(&format!("{skill_name} \u{2014} not applied"), why);
-                    return;
-                }
                 let unsaved = self.windows.iter().any(|w| {
                     matches!(&w.content, WindowContent::Doc(d) if d.doc_id == doc_id && d.has_unsaved_edits())
                 });
                 if unsaved {
                     self.set_notice(
                         &format!("{skill_name} \u{2014} not applied"),
-                        "This document has unsaved edits. Save or cancel them first. Nothing was changed.",
+                        "This document has unsaved edits. Save them first. Nothing was changed.",
                     );
                     return;
                 }
-                let new_content = cf.serialize();
                 let applied = self.rt.block_on(crate::doc_writes::apply_skill_update(
-                    db.as_ref(),
+                    &docs,
                     &doc_id,
-                    &new_content,
+                    &input,
+                    &cf,
                     &skill_name,
                 ));
                 let note = match applied {
@@ -2454,27 +2729,16 @@ impl App {
                         self.set_notice(&format!("{skill_name} \u{2014} not applied"), &e);
                         return;
                     }
-                    Ok(crate::doc_writes::SkillApplied::Committed) => {
+                    Ok(crate::doc_writes::SkillApplied::Unchanged) => {
+                        self.set_notice(&skill_name, "The skill left the document unchanged.");
+                        return;
+                    }
+                    Ok(crate::doc_writes::SkillApplied::Written) => {
                         "Document updated. The previous version is in History.".to_string()
                     }
-                    Ok(crate::doc_writes::SkillApplied::WrittenNotSnapshotted(e)) => format!(
-                        "Document updated, but this version couldn't be added to History ({e}). \
-                         The previous version is in History."
-                    ),
                 };
-                for win in &mut self.windows {
-                    if let WindowContent::Doc(d) = &mut win.content {
-                        if d.doc_id == doc_id {
-                            d.body_text = new_content.clone();
-                            d.editing = false;
-                            d.dirty = false;
-                            d.needs_reshape = true;
-                        }
-                    }
-                }
-                if let Some(c) = self.cards.iter_mut().find(|c| c.id == doc_id) {
-                    c.body = new_content;
-                }
+                self.reload_stored(&doc_id);
+                self.v2_reopen(&doc_id);
                 self.refresh_history_for(&doc_id);
                 self.set_notice(&skill_name, &note);
             }
@@ -2495,11 +2759,13 @@ impl App {
     /// Show a transient, centered result/error popup (dismissed by click / Esc).
     fn set_notice(&mut self, title: &str, body: &str) {
         const NOTICE_W: f32 = 460.0;
+        let title_s = title;
         let title = self.shaper.shape(title, NOTICE_W - 32.0, 15.0);
         // Cap very long bodies so the popup stays a fixed, readable size.
         let trimmed: String = body.chars().take(1200).collect();
-        let body = self.shaper.shape(&trimmed, NOTICE_W - 32.0, 13.0);
-        self.notice = Some(Notice { title, body });
+        let body_l = self.shaper.shape(&trimmed, NOTICE_W - 32.0, 13.0);
+        let said = (title_s.to_string(), trimmed);
+        self.notice = Some(Notice { title, body: body_l, said });
     }
 
     // ---- Action-gate confirmation (Batch 3) -----------------------------
@@ -2629,7 +2895,8 @@ impl App {
     }
 
     /// Flip a card's pin state and persist it (low-gravity, reversible).
-    fn toggle_pin(&mut self, ci: usize) {
+    fn toggle_pin(&mut self, id: &str) {
+        let Some(ci) = self.card_index_of(id) else { return };
         let Some(card) = self.cards.get_mut(ci) else { return };
         card.pinned = !card.pinned;
         let (id, pinned) = (card.id.clone(), card.pinned);
@@ -2644,40 +2911,399 @@ impl App {
         }
     }
 
-    /// Delete a card's document (Destruct-level — reached only via the two-step
-    /// confirm). Lot 0.4: a **soft** delete — reversible, and carried by sync
-    /// as a tombstone instead of being re-pushed by a paired device; the shell
-    /// never hard-deletes (pending decision K3). Closes any window showing it,
-    /// then reloads the workspace. A failed delete changes nothing and says so.
-    fn delete_card(&mut self, ci: usize) {
-        let Some(card) = self.cards.get(ci) else { return };
-        let id = card.id.clone();
-        let Some(db) = self.db.clone() else { return };
+    /// Move document `id` to the trash (one click, C-DOC adoption step 5,
+    /// S5-1/S5-4/S5-8), through the document service: it is recoverable from
+    /// the trash for 30 days, then purged; sync carries the trash to paired
+    /// devices. Refused while a window holds unsaved edits of it. Closes any
+    /// window showing it, reloads the workspace, and shows the notice with
+    /// Undo. A document gone meanwhile (trashed elsewhere, purged) is not
+    /// touched, and the notice says so.
+    fn trash_document(&mut self, id: &str) {
+        let Some(docs) = self.docs.clone() else {
+            self.set_notice("Not deleted", "The workspace is locked: log in to delete documents.");
+            return;
+        };
         let unsaved = self.windows.iter().any(|w| {
             matches!(&w.content, WindowContent::Doc(d) if d.doc_id == id && d.has_unsaved_edits())
         });
         if unsaved {
-            self.set_notice("Not deleted", "This document has unsaved edits. Save or cancel them first.");
+            self.set_notice("Not deleted", "This document has unsaved edits. Save them first.");
             return;
         }
-        if let Err(e) = self.rt.block_on(crate::doc_writes::delete_document_reversibly(db.as_ref(), &id)) {
-            self.set_notice("Not deleted", &format!("The document couldn't be deleted: {e}"));
+        if let Err(msg) = self.rt.block_on(crate::card_menu::trash_target(&docs, id)) {
+            self.set_notice("Not deleted", &msg);
+            // The card may be stale (the document went elsewhere): redraw
+            // from the store.
+            self.load_workspace_now();
             return;
         }
         self.windows.retain(|win| !matches!(&win.content, WindowContent::Doc(d) if d.doc_id == id));
         self.load_workspace_now();
+        self.delete_notice = Some(crate::delete_notice::DeleteNotice::new(id.to_string(), Instant::now()));
+        self.rebuild_settings_windows();
     }
 
-    /// Create a new (named, empty) thread and reload so its lane appears.
-    fn new_thread(&mut self) {
-        let Some(db) = self.db.clone() else { return };
-        let n = self.lane_names.iter().filter(|s| !s.is_empty()).count() + 1;
-        let name = format!("New lane {n}");
-        if let Err(e) = self.rt.block_on(db.create_thread(sovereign_db::schema::Thread::new(name, String::new()))) {
-            self.set_notice("Lane not created", &format!("{e}"));
+    /// Undo on the delete notice (S5-8): brings the document back while the
+    /// notice is shown; otherwise, or if it left the trash meanwhile, says so.
+    fn undo_delete(&mut self) {
+        let Some(docs) = self.docs.clone() else { return };
+        let Some(mut notice) = self.delete_notice.take() else { return };
+        match self.rt.block_on(notice.undo(&docs, Instant::now())) {
+            Ok(()) => {
+                self.load_workspace_now();
+                self.rebuild_settings_windows();
+            }
+            Err(msg) => self.set_notice("Not undone", &msg),
+        }
+    }
+
+    // ---- Settings → Trash (S5-5..S5-7, S5-11) ---------------------------
+
+    /// Re-reads the trash for Settings (nothing while locked).
+    fn refresh_trash(&mut self) {
+        self.trash = match (self.docs.clone(), self.db.clone()) {
+            (Some(docs), Some(db)) => {
+                match self.rt.block_on(crate::trash::TrashView::load(&docs, db.as_ref(), chrono::Utc::now())) {
+                    Ok(view) => Some(view),
+                    Err(e) => {
+                        println!("sovereign-shell: the trash couldn't be read: {e}");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+    }
+
+    /// Re-reads the trash and rebuilds any open Settings window, keeping its tab.
+    fn rebuild_settings_windows(&mut self) {
+        if !self.windows.iter().any(|w| matches!(&w.content, WindowContent::Settings(_))) {
             return;
         }
-        self.load_workspace_now();
+        self.refresh_trash();
+        for i in 0..self.windows.len() {
+            if let WindowContent::Settings(set) = &self.windows[i].content {
+                let (active, scroll) = (set.active, set.scroll);
+                let mut fresh = self.build_settings();
+                fresh.set_active(active);
+                fresh.scroll = scroll;
+                self.windows[i].content = WindowContent::Settings(fresh);
+            }
+        }
+    }
+
+    /// A click on a row of Settings → Trash.
+    fn trash_row_action(&mut self, action: crate::trash_ui::TrashRowAction) {
+        use crate::trash_ui::{RestoreTarget, TrashModal, TrashRowAction};
+        let (Some(docs), Some(db)) = (self.docs.clone(), self.db.clone()) else { return };
+        match action {
+            TrashRowAction::RestoreOne(id) => {
+                let line = self.trash.as_ref().and_then(|v| v.lines().iter().find(|l| l.id == id).cloned());
+                let Some(line) = line else { return };
+                if line.thread_deleted {
+                    self.open_thread_chooser(RestoreTarget::One(id), format!("Restore \u{201c}{}\u{201d} into\u{2026}", crate::canvas::display_title(&line.title)));
+                    return;
+                }
+                let Some(mut view) = self.trash.take() else { return };
+                let r = self.rt.block_on(view.restore(&docs, db.as_ref(), &id, chrono::Utc::now()));
+                self.trash = Some(view);
+                match r {
+                    Ok(()) => self.load_workspace_now(),
+                    Err(msg) => self.set_notice("Not restored", &msg),
+                }
+                self.rebuild_settings_windows();
+            }
+            TrashRowAction::RestoreGroup(thread_id) => {
+                let label = self
+                    .trash
+                    .as_ref()
+                    .and_then(|v| v.deleted_thread_groups().into_iter().find(|g| g.thread_id == thread_id))
+                    .map(|g| g.label)
+                    .unwrap_or_default();
+                self.open_thread_chooser(RestoreTarget::Group(thread_id), format!("Restore all of {label} into\u{2026}"));
+            }
+            TrashRowAction::EmptyTrash => {
+                let count = self.trash.as_ref().map_or(0, |v| v.count());
+                if let Some(view) = self.trash.as_mut() {
+                    view.request_empty();
+                }
+                if self.trash.as_ref().is_some_and(|v| v.empty_requested()) {
+                    self.trash_modal = Some(TrashModal::ConfirmEmpty { count });
+                }
+            }
+        }
+    }
+
+    /// The modal that asks which (existing) thread to restore into.
+    fn open_thread_chooser(&mut self, target: crate::trash_ui::RestoreTarget, title: String) {
+        let Some(db) = self.db.clone() else { return };
+        let threads: Vec<(String, String)> = self
+            .rt
+            .block_on(db.list_threads())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| t.deleted_at.is_none())
+            .filter_map(|t| t.id_string().map(|id| (id, t.name)))
+            .collect();
+        self.trash_modal = Some(crate::trash_ui::TrashModal::ChooseThread { target, title, threads });
+    }
+
+    /// A click while a trash modal is open: it consumes every click.
+    fn handle_trash_modal_click(&mut self, p: Point, w: f64, h: f64) {
+        use crate::trash_ui::{modal_hit, ModalHit, RestoreTarget, TrashModal};
+        let Some(modal) = self.trash_modal.as_ref() else { return };
+        let hit = modal_hit(modal, w, h, p);
+        let (Some(docs), Some(db)) = (self.docs.clone(), self.db.clone()) else {
+            self.trash_modal = None;
+            return;
+        };
+        match (self.trash_modal.take(), hit) {
+            (Some(TrashModal::ChooseThread { target, threads, .. }), ModalHit::Thread(i)) => {
+                let Some((into, name)) = threads.get(i).cloned() else { return };
+                let Some(mut view) = self.trash.take() else { return };
+                let now = chrono::Utc::now();
+                let r = match &target {
+                    RestoreTarget::One(id) => self.rt.block_on(view.restore_into(&docs, db.as_ref(), id, &into, now)).map(|()| 1),
+                    RestoreTarget::Group(tid) => self.rt.block_on(view.restore_group_into(&docs, db.as_ref(), tid, &into, now)),
+                };
+                self.trash = Some(view);
+                match r {
+                    Ok(n) => {
+                        self.load_workspace_now();
+                        if n != 1 {
+                            self.set_notice("Restored", &format!("{n} documents are back, in \u{201c}{name}\u{201d}."));
+                        }
+                    }
+                    Err(msg) => self.set_notice("Not restored", &msg),
+                }
+                self.rebuild_settings_windows();
+            }
+            (Some(TrashModal::ConfirmEmpty { .. }), ModalHit::Confirm) => {
+                let Some(mut view) = self.trash.take() else { return };
+                let r = self.rt.block_on(view.confirm_empty(&docs));
+                self.trash = Some(view);
+                match r {
+                    Ok(n) => self.set_notice(
+                        "Trash emptied",
+                        &format!("{n} document{} deleted for good.", if n == 1 { " was" } else { "s were" }),
+                    ),
+                    Err(msg) => self.set_notice("Trash not emptied", &msg),
+                }
+                self.rebuild_settings_windows();
+            }
+            (Some(modal), ModalHit::Nothing) => self.trash_modal = Some(modal), // must choose
+            (_, _) => self.cancel_trash_modal_inner(),
+        }
+    }
+
+    /// Cancel or Esc on a trash modal: nothing restored, nothing purged.
+    fn cancel_trash_modal_inner(&mut self) {
+        self.trash_modal = None;
+        if let Some(view) = self.trash.as_mut() {
+            view.cancel_empty();
+        }
+    }
+
+    /// *New lane* (the canvas menu, which the `+` opens): the name prompt
+    /// (THREAD-name N1). It creates nothing; its Create does
+    /// ([`Self::prompt_step`]).
+    fn open_new_thread_prompt(&mut self) {
+        self.ctx_menu = None;
+        if let Some(mut field) = self.lane_rename.take() {
+            field.close();
+        }
+        self.orphan_prompt_target = None;
+        let clipboard = Box::new(crate::clip::FieldClipboard::default());
+        self.new_thread_prompt = Some(crate::new_thread::NewThreadPrompt::open(sovereign_editor::Fonts::System, clipboard));
+    }
+
+    /// The prompt's answer: Create closes it and creates the thread; Cancel
+    /// closes it (N2, N3).
+    fn prompt_step(&mut self, step: crate::new_thread::PromptStep) {
+        use crate::new_thread::PromptStep;
+        match step {
+            PromptStep::Open => {}
+            PromptStep::Cancel => {
+                self.new_thread_prompt = None;
+                self.orphan_prompt_target = None;
+            }
+            PromptStep::Create(name) => {
+                self.new_thread_prompt = None;
+                // Opened by the section "Documents whose thread was deleted"
+                // (S5-12): the new thread is for its document(s).
+                match self.orphan_prompt_target.take() {
+                    Some(target) => self.orphan_new_thread(target, &name),
+                    None => {
+                        self.create_thread_from_prompt(&name);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Create the thread the prompt named, through the document service's
+    /// one thread-write path (THREAD-sync S1), then reload so its lane appears
+    /// with that name (N2). The new thread's id when one was created (the
+    /// section "Documents whose thread was deleted" then moves its document(s)
+    /// there, S5-12).
+    fn create_thread_from_prompt(&mut self, name: &str) -> Option<String> {
+        let Some(docs) = self.docs.clone() else {
+            self.set_notice("Lane not created", "No workspace is open.");
+            return None;
+        };
+        match self.rt.block_on(crate::new_thread::create_named_thread(&*docs, name)) {
+            Ok(Some(id)) => {
+                self.load_workspace_now();
+                Some(id)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                self.set_notice("Lane not created", &e);
+                None
+            }
+        }
+    }
+
+    /// A double-click on lane `lane`'s label: the rename field over it, the
+    /// current name selected (THREAD-name R1). It carries the thread's id, so
+    /// a reload under it does not retarget it.
+    fn open_lane_rename(&mut self, lane: usize) {
+        let Some(label) = self.lane_labels.iter().find(|l| l.lane == lane).cloned() else { return };
+        self.ctx_menu = None;
+        if let Some(mut prompt) = self.new_thread_prompt.take() {
+            prompt.close();
+        }
+        self.orphan_prompt_target = None;
+        let clipboard = Box::new(crate::clip::FieldClipboard::default());
+        self.lane_rename = Some(crate::lane_rename::LaneRename::open(
+            &label.thread_id,
+            &label.name,
+            sovereign_editor::Fonts::System,
+            clipboard,
+        ));
+        // Laid out at once: the release of this double-click, before the next
+        // frame, must find the field under it (a click in it keeps it open).
+        let total = self.scale * self.ui_scale;
+        if let (Some(label), Some((w, h))) = (self.lane_rename_label(), self.win_size()) {
+            if let Some(field) = self.lane_rename.as_mut() {
+                field.set_scale(total);
+                field.layout(label, w, h);
+            }
+        }
+    }
+
+    /// The label rect (screen) of the thread the rename field renames: where
+    /// the field is laid out. `None` when no field is open, or its thread no
+    /// longer has a label.
+    fn lane_rename_label(&mut self) -> Option<Rect> {
+        let id = self.lane_rename.as_ref()?.thread_id().to_string();
+        let lane = self.lane_labels.iter().find(|l| l.thread_id == id)?.lane;
+        let name = self.lane_names.get(lane).cloned().unwrap_or_default();
+        let lw = self.shaper.shape(&name, 220.0, 12.0).width() as f64;
+        Some(lane_label_rect(self.cam.w2s_y(lane as f64 * LANE_H), lw))
+    }
+
+    /// The rename field's answer: Save closes it and writes the name; Cancel
+    /// closes it (R2).
+    fn rename_step(&mut self, step: crate::lane_rename::RenameStep) {
+        use crate::lane_rename::RenameStep;
+        match step {
+            RenameStep::Open => {}
+            RenameStep::Cancel => {
+                if let Some(mut field) = self.lane_rename.take() {
+                    field.close();
+                }
+            }
+            RenameStep::Save { thread_id, name } => {
+                if let Some(mut field) = self.lane_rename.take() {
+                    field.close();
+                }
+                self.save_lane_rename(&thread_id, &name);
+            }
+        }
+    }
+
+    /// Writes a lane label's rename through the one stamped thread-write path
+    /// (THREAD-sync S1, the document service), then reloads so the label shows
+    /// the new name (R2). A thread deleted here meanwhile is not written, and
+    /// a notice says so (R7); an unchanged name writes nothing (R8).
+    fn save_lane_rename(&mut self, thread_id: &str, name: &str) {
+        use crate::lane_rename::{save_thread_rename, RenameOutcome};
+        let (Some(db), Some(docs)) = (self.db.clone(), self.docs.clone()) else {
+            self.set_notice("Thread not renamed", "No workspace is open.");
+            return;
+        };
+        let writes = crate::thread_writes::StampedThreadWrites(docs);
+        match self.rt.block_on(save_thread_rename(&*db, &writes, thread_id, name)) {
+            Ok(RenameOutcome::Written) => self.load_workspace_now(),
+            Ok(RenameOutcome::Unchanged) => {}
+            Ok(RenameOutcome::ThreadGone) => {
+                self.set_notice("Thread not renamed", "This thread was deleted meanwhile; nothing was changed.");
+                self.load_workspace_now();
+            }
+            Err(e) => self.set_notice("Thread not renamed", &e),
+        }
+    }
+
+    /// Whether the new-thread prompt is open with nothing drawn above it
+    /// that takes input first (a modal, a notice, a menu).
+    fn prompt_on_top(&self) -> bool {
+        self.new_thread_prompt.is_some() && self.nothing_above_fields()
+    }
+
+    /// Whether the rename field over a lane label is open with nothing drawn
+    /// above it that takes input first (THREAD-name R1–R3).
+    fn rename_on_top(&self) -> bool {
+        self.lane_rename.is_some()
+            && self.new_thread_prompt.is_none()
+            && self.orphan_modal.is_none()
+            && self.nothing_above_fields()
+    }
+
+    /// Nothing drawn above the new-thread prompt or the rename field that
+    /// takes input first (a lock, a modal, a notice, a menu).
+    fn nothing_above_fields(&self) -> bool {
+        !self.locked
+            && self.unsaved_prompt.is_none()
+            && self.comms_form.is_none()
+            && self.compose_form.is_none()
+            && self.pairing_modal.is_none()
+            && self.guardian_modal.is_none()
+            && self.recovery_wizard.is_none()
+            && self.injection_prompt.is_none()
+            && !self.bubble_picker
+            && self.pending_action.is_none()
+            && self.notice.is_none()
+            && self.ctx_menu.is_none()
+            && self.trash_modal.is_none()
+    }
+
+    /// Apply what the input method should do to the winit window, only when
+    /// it changed: allowed or not, and where its candidate window goes. The
+    /// new-thread prompt's field has it while open; otherwise the focused
+    /// document editor.
+    fn apply_ime(&mut self) {
+        let total = self.scale * self.ui_scale;
+        let (want, area) = match (&self.new_thread_prompt, &self.lane_rename) {
+            (Some(p), _) if !self.locked => p.ime_request(total),
+            (None, Some(r)) if !self.locked => r.ime_request(total),
+            _ => self.v2_ime_request(),
+        };
+        let RenderState::Active { window, .. } = &self.state else { return };
+        if self.ime_allowed != want {
+            window.set_ime_allowed(want);
+            self.ime_allowed = want;
+            self.ime_area = None;
+        }
+        if let (true, Some(a)) = (want, area) {
+            if self.ime_area != Some(a) {
+                window.set_ime_cursor_area(
+                    winit::dpi::PhysicalPosition::new(a.0, a.1),
+                    winit::dpi::PhysicalSize::new(a.2, a.3),
+                );
+                self.ime_area = Some(a);
+            }
+        }
     }
 
     /// Create a new "Untitled" document in the thread mapped to `lane`, then
@@ -2697,21 +3323,36 @@ impl App {
             self.set_notice("Document not created", "There is no lane to put it in \u{2014} create a lane first.");
             return;
         };
-        let created = self.rt.block_on(db.create_document(sovereign_db::schema::Document::new("Untitled".into(), tid, true)));
+        // C-DOC adoption step 3: through the document service — v2, a version
+        // from creation, the user's own (owned, provenance written).
+        let Some(docs) = self.docs.clone() else {
+            self.set_notice("Document not created", "The workspace is locked.");
+            return;
+        };
+        let new = sovereign_ai::docs_host::new_user_document("Untitled", tid, "");
+        let created = self.rt.block_on(sovereign_ai::docs_host::create(&docs, new));
         if let Err(e) = &created {
-            self.set_notice("Document not created", &format!("{e}"));
+            self.set_notice("Document not created", &sovereign_ai::docs_host::doc_error_message(e));
             return;
         }
         self.load_workspace_now();
         self.frame_now(); // a new doc lands at "now" — bring it into view
-        // Open the freshly-created doc straight into edit mode so you can start
-        // typing immediately — don't make the user hunt for it on the canvas.
-        if let Ok(doc) = created {
-            let new_id = doc.id.as_ref().map(|t| t.to_string()).unwrap_or_default();
+        // Open the freshly-created doc straight away so you can start typing
+        // immediately — don't make the user hunt for it on the canvas.
+        if let Ok(out) = created {
+            // Cards carry the store's display form of the id.
+            let new_id = sovereign_db::schema::raw_to_thing(&out.id).map(|t| t.to_string()).unwrap_or(out.id);
             if let Some(idx) = self.cards.iter().position(|c| c.id == new_id) {
                 self.open_doc_window(idx);
-                if let Some(Window { content: WindowContent::Doc(dw), .. }) = self.windows.last_mut() {
-                    dw.begin_edit();
+                // Its window starts on the title, selected, so the name is
+                // typed first (title contract T3). (No window if the editor
+                // could not open it: then the top window is another one.)
+                if let Some(Window { content: WindowContent::Doc(d), .. }) = self.windows.last_mut() {
+                    if d.doc_id == new_id {
+                        if let Some(p) = d.v2.as_mut() {
+                            p.start_on_title();
+                        }
+                    }
                 }
             }
         }
@@ -2730,7 +3371,8 @@ impl App {
     /// Drop a dragged card onto the lane at `cursor_y`: reassign its document to
     /// that lane's thread (move_document_to_thread), then reload. No-op if the
     /// lane is unchanged or has no thread.
-    fn drop_card_on_lane(&mut self, ci: usize, cursor_y: f64) {
+    fn drop_card_on_lane(&mut self, id: &str, cursor_y: f64) {
+        let Some(ci) = self.card_index_of(id) else { return };
         let Some(card) = self.cards.get(ci) else { return };
         let Some(lane) = self.lane_at_y(cursor_y) else { return };
         if lane == card.lane {
@@ -2754,63 +3396,19 @@ impl App {
         self.load_workspace_now();
     }
 
-    // ---- Document editing ------------------------------------------------
+    // ---- Documents written outside the editor ----------------------------
 
-    /// True when the top window is a Doc in edit mode (so it owns the keyboard).
-    fn top_doc_editing(&self) -> bool {
-        matches!(self.windows.last().map(|w| &w.content), Some(WindowContent::Doc(d)) if d.editing)
-    }
-
-    /// Save the top window's edits if it's a Doc in edit mode. Returns true if
-    /// it consumed the request (used by Ctrl+S).
-    fn save_active_doc(&mut self) -> bool {
-        if !self.top_doc_editing() {
-            return false;
+    /// After a write through the document service outside the editor (a
+    /// skill, a restore): the canvas card of `doc_id` shows what is stored now
+    /// (the service writes v2 and replaces personal data by tokens, so what
+    /// was sent is not what is stored). The open editor is refreshed by its
+    /// own path (`v2_reopen`).
+    fn reload_stored(&mut self, doc_id: &str) {
+        let Some(db) = self.db.clone() else { return };
+        let Ok(doc) = self.rt.block_on(db.get_document(doc_id)) else { return };
+        if let Some(card) = self.cards.iter_mut().find(|c| c.id == doc_id) {
+            card.set_stored(doc.content);
         }
-        let top = self.windows.len() - 1;
-        self.save_doc(top);
-        true
-    }
-
-    /// Persist window `wi`'s edit buffer to the document body, snapshot it into
-    /// version history, then commit it into the open window + the canvas card and
-    /// leave edit mode.
-    ///
-    /// Lot 0.3: returns false — and keeps the window in edit mode with the
-    /// buffer intact — when nothing was written; the error is shown, never a
-    /// silent "saved".
-    fn save_doc(&mut self, wi: usize) -> bool {
-        let (id, new_body) = match &self.windows[wi].content {
-            WindowContent::Doc(d) => (d.doc_id.clone(), d.edit_buf.clone()),
-            _ => return false,
-        };
-        let outcome = match self.db.clone() {
-            Some(db) => self.rt.block_on(crate::doc_writes::save_body(db.as_ref(), &id, &new_body)),
-            None => crate::doc_writes::SaveOutcome::NotSaved("no workspace database is open".into()),
-        };
-        match outcome {
-            crate::doc_writes::SaveOutcome::NotSaved(e) => {
-                self.set_notice("Not saved", &format!("Your edits are still open in the window.\n{e}"));
-                return false;
-            }
-            crate::doc_writes::SaveOutcome::SavedNotSnapshotted(e) => self.set_notice(
-                "Saved, without a version",
-                &format!("The document was saved, but this version couldn't be added to History: {e}"),
-            ),
-            crate::doc_writes::SaveOutcome::Saved => {}
-        }
-        if let WindowContent::Doc(d) = &mut self.windows[wi].content {
-            d.body_text = new_body.clone();
-            d.editing = false;
-            d.dirty = false;
-            d.needs_reshape = true;
-        }
-        if let Some(card) = self.cards.iter_mut().find(|c| c.id == id) {
-            card.body = new_body;
-        }
-        // Keep an open History window for this doc in sync.
-        self.refresh_history_for(&id);
-        true
     }
 
     // ---- Unsaved edits (lot 0.3) -----------------------------------------
@@ -2828,7 +3426,7 @@ impl App {
             WindowContent::Doc(d) => d.doc_id.clone(),
             _ => return,
         };
-        let name = self.cards.iter().find(|c| c.id == doc_id).map(|c| c.title.clone()).unwrap_or_default();
+        let name = self.cards.iter().find(|c| c.id == doc_id).map(|c| crate::canvas::display_title(&c.title).to_string()).unwrap_or_default();
         let title = self.shaper.shape("Unsaved edits", 428.0, 15.0);
         let body = self.shaper.shape(
             &format!("\u{201c}{}\u{201d} has edits that aren't saved. Save them, discard them, or go back to editing.", one_line(&name, 60)),
@@ -2838,31 +3436,24 @@ impl App {
         self.unsaved_prompt = Some(UnsavedPrompt { doc_id, then, title, body });
     }
 
-    /// Leave edit mode on doc window `wi` (Esc / Cancel): asks first if the
-    /// buffer has unsaved edits.
-    fn request_leave_edit(&mut self, wi: usize) {
-        let dirty = matches!(&self.windows[wi].content, WindowContent::Doc(d) if d.has_unsaved_edits());
-        if dirty {
-            self.ask_unsaved(wi, AfterUnsaved::LeaveEdit);
-        } else if let WindowContent::Doc(d) = &mut self.windows[wi].content {
-            d.cancel_edit();
-        }
-    }
-
-    /// Close window `wi` (its × button): asks first if it is a doc window with
-    /// unsaved edits.
+    /// Close window `wi` (its × button, or Esc). A document window's editor
+    /// decides (E4: nothing unsaved is lost): nothing unsaved, it closes;
+    /// unsaved, the editor saves and the window closes once saved; a failed
+    /// save asks (the unsaved prompt).
     fn request_close_window(&mut self, wi: usize) {
-        let dirty = matches!(&self.windows[wi].content, WindowContent::Doc(d) if d.has_unsaved_edits());
-        if dirty {
-            self.ask_unsaved(wi, AfterUnsaved::CloseWindow);
-        } else {
-            self.windows.remove(wi);
+        if self.v2_request_close(wi) {
+            return;
         }
+        self.windows.remove(wi);
     }
 
     /// The OS asked to close the app. True if it may exit now; otherwise the
-    /// first doc window with unsaved edits gets the prompt (one at a time).
+    /// editors save what they hold first, and the first that cannot gets the
+    /// prompt (one at a time). Quitting always ends every editor's session.
     fn request_quit(&mut self) -> bool {
+        if let Some(go) = self.v2_quit_check() {
+            return go;
+        }
         let dirty = self
             .windows
             .iter()
@@ -2872,7 +3463,13 @@ impl App {
                 self.ask_unsaved(wi, AfterUnsaved::Quit);
                 false
             }
-            None => true,
+            None => {
+                // C-DOC adoption step 2: the open editors' sessions end, so
+                // what they saved last becomes a version — whether or not
+                // anything was unsaved (E4).
+                self.v2_end_sessions(true);
+                true
+            }
         }
     }
 
@@ -2882,29 +3479,14 @@ impl App {
         if choice == UnsavedChoice::Cancel {
             return; // back to editing, nothing lost
         }
-        if let Some(wi) = self.doc_window_index(&prompt.doc_id) {
-            match choice {
-                UnsavedChoice::Save => {
-                    if !self.save_doc(wi) {
-                        return; // not saved: the edits stay open, the error is shown
-                    }
-                }
-                UnsavedChoice::Discard => {
-                    if let WindowContent::Doc(d) = &mut self.windows[wi].content {
-                        d.cancel_edit();
-                    }
-                }
-                UnsavedChoice::Cancel => unreachable!(),
-            }
+        // The window's editor saves (and closes or quits once saved), or
+        // discards.
+        if self.v2_resolve_unsaved(&prompt.doc_id, prompt.then, choice == UnsavedChoice::Save) {
+            return;
         }
-        match prompt.then {
-            AfterUnsaved::LeaveEdit => {}
-            AfterUnsaved::CloseWindow => {
-                if let Some(wi) = self.doc_window_index(&prompt.doc_id) {
-                    self.windows.remove(wi);
-                }
-            }
-            AfterUnsaved::Quit => self.quit_requested = true,
+        // Its window is gone meanwhile: nothing left to save or discard.
+        if prompt.then == AfterUnsaved::Quit {
+            self.quit_requested = true;
         }
     }
 
@@ -2956,7 +3538,7 @@ impl App {
     /// Reload any open History window for `doc_id` (after a save / restore).
     fn refresh_history_for(&mut self, doc_id: &str) {
         let Some(db) = self.db.clone() else { return };
-        let title = self.cards.iter().find(|c| c.id == doc_id).map(|c| c.title.clone()).unwrap_or_default();
+        let title = self.cards.iter().find(|c| c.id == doc_id).map(|c| crate::canvas::display_title(&c.title).to_string()).unwrap_or_default();
         for i in 0..self.windows.len() {
             let matches = matches!(&self.windows[i].content, WindowContent::History(h) if h.doc_id == doc_id);
             if matches {
@@ -2966,41 +3548,29 @@ impl App {
         }
     }
 
-    /// Restore a document to a previous commit, then refresh the doc window,
-    /// the canvas card, and the history list.
+    /// Restore a document to a previous commit — through the document service
+    /// (C-DOC adoption step 2: the current state becomes a version first) —
+    /// then refresh the doc window, the canvas card, and the history list.
     fn restore_commit(&mut self, doc_id: &str, commit_id: &str) {
-        let Some(db) = self.db.clone() else { return };
+        let Some(docs) = self.docs.clone() else {
+            self.set_notice("Not restored", "The workspace is locked: log in to restore versions.");
+            return;
+        };
         // Lot 0.3: a restore rewrites the open window — never over unsaved edits.
         if let Some(wi) = self.doc_window_index(doc_id) {
             if matches!(&self.windows[wi].content, WindowContent::Doc(d) if d.has_unsaved_edits()) {
-                self.set_notice("Not restored", "This document has unsaved edits. Save or cancel them first.");
+                self.set_notice("Not restored", "This document has unsaved edits. Save them first.");
                 return;
             }
         }
-        let restored = self.rt.block_on(db.restore_document(doc_id, commit_id));
-        let doc = match restored {
-            Ok(doc) => doc,
-            Err(e) => {
-                // Integrity check failed or DB error — surface it, change nothing.
-                self.set_notice("Not restored", &format!("This version couldn't be restored: {e}"));
-                return;
-            }
-        };
-        let new_body = doc.content.clone();
-        // Update any open doc window on this id.
-        for i in 0..self.windows.len() {
-            if let WindowContent::Doc(d) = &mut self.windows[i].content {
-                if d.doc_id == doc_id {
-                    d.body_text = new_body.clone();
-                    d.editing = false;
-                    d.dirty = false;
-                    d.needs_reshape = true;
-                }
-            }
+        if let Err(e) = self.rt.block_on(docs.restore_version(doc_id, commit_id)) {
+            // Integrity check failed or DB error — surface it, change nothing.
+            self.set_notice("Not restored", &sovereign_ai::docs_host::doc_error_message(&e));
+            return;
         }
-        if let Some(card) = self.cards.iter_mut().find(|c| c.id == doc_id) {
-            card.body = new_body;
-        }
+        // Update the card and any open editor on this id.
+        self.reload_stored(doc_id);
+        self.v2_reopen(doc_id);
         // Restoring writes a new version; reflect it in the history list.
         self.refresh_history_for(doc_id);
     }
@@ -3138,7 +3708,7 @@ impl App {
             let shape = RoundedRect::from_rect(*rect, 8.0);
             self.scene.fill(Fill::NonZero, Affine::IDENTITY, card_fill, None, &shape);
             self.scene.stroke(&Stroke::new(1.6), Affine::IDENTITY, accent, None, &shape);
-            let title = self.cards[*ci].title.clone();
+            let title = crate::canvas::display_title(&self.cards[*ci].title).to_string();
             let label = self.shaper.shape(&title, (rect.width() - 20.0) as f32, 13.0);
             self.scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &shape);
             crate::text::draw_text(
@@ -3336,6 +3906,43 @@ impl App {
             return;
         }
 
+        // A trash modal (thread to restore into, Empty trash's confirmation).
+        if self.trash_modal.is_some() {
+            self.handle_trash_modal_click(p, w, h);
+            return;
+        }
+        // A dialog of the section "Documents whose thread was deleted".
+        if self.orphan_modal.is_some() {
+            self.handle_orphan_modal_click(p, w, h);
+            return;
+        }
+
+        // The new-thread prompt: Create creates, a click outside closes it
+        // (N2, N3). A click in its field was the field's at the press.
+        if let Some(prompt) = self.new_thread_prompt.as_mut() {
+            let in_field = prompt.layout(w, h).field.contains(p);
+            let step = if in_field { crate::new_thread::PromptStep::Open } else { prompt.click(p, w, h) };
+            self.prompt_step(step);
+            return;
+        }
+
+        // The rename field over a lane label: a click outside closes it,
+        // renaming nothing (R2). A click in its field was the field's at the
+        // press.
+        if let Some(field) = self.lane_rename.as_mut() {
+            let step = if field.contains(p) { crate::lane_rename::RenameStep::Open } else { field.click(p) };
+            self.rename_step(step);
+            return;
+        }
+
+        // The delete notice's Undo (S5-8), while it is shown.
+        if self.delete_notice.as_ref().is_some_and(|n| n.shown(Instant::now()))
+            && crate::trash_ui::toast_geom(w, h).1.contains(p)
+        {
+            self.undo_delete();
+            return;
+        }
+
         // A fanned-open deck is modal over the canvas: click a lifted card to open
         // it, click anywhere else to collapse.
         if self.expanded_deck.is_some() {
@@ -3352,6 +3959,18 @@ impl App {
         // An open context menu is topmost — it consumes the click (run or dismiss).
         if self.handle_ctx_menu_click(p, w, h) {
             return;
+        }
+
+        // The status-bar notice opens what it is about (C-WIRE 13 / 12).
+        if let Some(r) = self.status_notice_rect {
+            if r.contains(p) {
+                let alerts = !self.alert_notices.is_empty() || self.orphan_count > 0;
+                let kind = if alerts { WindowKind::Alerts } else { WindowKind::Devices };
+                if self.window_index_of(kind).is_none() {
+                    self.focus_or_toggle(kind);
+                }
+                return;
+            }
         }
 
         // The taskbar is on top of everything — it consumes clicks first.
@@ -3374,7 +3993,6 @@ impl App {
             self.ctx_menu = Some(ContextMenu {
                 target: CtxTarget::Canvas(0),
                 anchor: Point::new(pc.x - 88.0, pc.y - pr),
-                confirm_delete: false,
             });
             return;
         }
@@ -3387,29 +4005,20 @@ impl App {
                 self.request_close_window(wi);
                 return;
             }
-            // Doc header buttons (Edit / Save / Cancel) live in the header bar.
-            let doc_editing = match &self.windows[wi].content {
-                WindowContent::Doc(d) => Some(d.editing),
+            // Doc header buttons (History) live in the header bar.
+            let doc_btns = match &self.windows[wi].content {
+                WindowContent::Doc(d) => Some(d.buttons(bounds)),
                 _ => None,
             };
-            if let Some(editing) = doc_editing {
-                if let Some((_, btn)) = doc_buttons(bounds, editing).into_iter().find(|(r, _)| r.contains(p)) {
+            if let Some(btns) = doc_btns {
+                if let Some((_, btn)) = btns.into_iter().find(|(r, _)| r.contains(p)) {
                     match btn {
-                        DocBtn::Edit => {
-                            if let WindowContent::Doc(d) = &mut self.windows[wi].content {
-                                d.begin_edit();
-                            }
-                        }
-                        DocBtn::Cancel => self.request_leave_edit(wi),
-                        DocBtn::Save => {
-                            self.save_doc(wi);
-                        }
                         DocBtn::History => {
                             let id = match &self.windows[wi].content {
                                 WindowContent::Doc(d) => d.doc_id.clone(),
                                 _ => return,
                             };
-                            let title = self.cards.iter().find(|c| c.id == id).map(|c| c.title.clone()).unwrap_or_default();
+                            let title = self.cards.iter().find(|c| c.id == id).map(|c| crate::canvas::display_title(&c.title).to_string()).unwrap_or_default();
                             self.open_history(&id, &title);
                         }
                     }
@@ -3517,35 +4126,67 @@ impl App {
                 }
                 return;
             }
-            // Peer-review: per-row Restore prior / Keep synced (needs &mut self).
-            if matches!(&self.windows[wi].content, WindowContent::PeerReview(_)) {
-                let scroll = match &self.windows[wi].content {
-                    WindowContent::PeerReview(pr) => pr.scroll,
-                    _ => 0.0,
+            // Alerts: per-row Open the document / Open the previous version / Dismiss.
+            if matches!(&self.windows[wi].content, WindowContent::Alerts(_)) {
+                let (scroll, hint_h, n) = match &self.windows[wi].content {
+                    WindowContent::Alerts(ap) => (ap.scroll, ap.hint_h(), ap.rows.len()),
+                    _ => (0.0, 0.0, 0),
                 };
-                let rel = py - body.y0 + scroll;
-                let idx = (rel / PR_ROW_H).floor();
-                let n = match &self.windows[wi].content {
-                    WindowContent::PeerReview(pr) => pr.rows.len(),
-                    _ => 0,
-                };
-                if idx >= 0.0 && (idx as usize) < n {
+                let list = alerts_list_vp(body, hint_h);
+                let idx = ((py - list.y0 + scroll) / ALERT_ROW_H).floor();
+                if py >= list.y0 && idx >= 0.0 && (idx as usize) < n {
                     let idx = idx as usize;
-                    let row_top = body.y0 - scroll + idx as f64 * PR_ROW_H;
-                    let row = Rect::new(body.x0, row_top, body.x1, row_top + PR_ROW_H);
-                    let (kind, id, can_restore) = match &self.windows[wi].content {
-                        WindowContent::PeerReview(pr) => {
-                            let r = &pr.rows[idx];
-                            (r.kind.clone(), r.id.clone(), r.can_restore)
-                        }
-                        _ => (String::new(), String::new(), false),
+                    let row_top = list.y0 - scroll + idx as f64 * ALERT_ROW_H;
+                    let row = Rect::new(list.x0, row_top, list.x1, row_top + ALERT_ROW_H);
+                    if let WindowContent::Alerts(ap) = &mut self.windows[wi].content {
+                        ap.selected = idx;
+                    }
+                    let has_prev = match &self.windows[wi].content {
+                        WindowContent::Alerts(ap) => ap.rows[idx].previous_version.is_some(),
+                        _ => false,
                     };
-                    for (br, btn) in peer_review_row_buttons(row, can_restore) {
+                    for (br, btn) in alert_row_buttons(row, has_prev) {
                         if br.contains(p) {
-                            match btn {
-                                PeerReviewBtn::Keep => self.accept_peer_review(&kind, &id),
-                                PeerReviewBtn::Restore => self.restore_peer_review(&kind, &id),
-                            }
+                            self.alert_action(wi, btn);
+                            return;
+                        }
+                    }
+                    return;
+                }
+                // The section "Documents whose thread was deleted", below the alerts.
+                let hit = match &self.windows[wi].content {
+                    WindowContent::Alerts(ap) if py >= list.y0 => {
+                        ap.orphans().hit(list.y0 - scroll + ap.orphans_top(), list.x0, list.x1, p)
+                    }
+                    _ => None,
+                };
+                if let Some(hit) = hit {
+                    self.orphan_hit(wi, hit);
+                }
+                return;
+            }
+            // Previous values: per-row Restore / Remove from list.
+            if matches!(&self.windows[wi].content, WindowContent::PreviousValues(_)) {
+                let (scroll, hint_h, n) = match &self.windows[wi].content {
+                    WindowContent::PreviousValues(pv) => (pv.scroll, pv.hint_h(), pv.rows.len()),
+                    _ => (0.0, 0.0, 0),
+                };
+                let list = alerts_list_vp(body, hint_h);
+                let idx = ((py - list.y0 + scroll) / PV_ROW_H).floor();
+                if py >= list.y0 && idx >= 0.0 && (idx as usize) < n {
+                    let idx = idx as usize;
+                    let row_top = list.y0 - scroll + idx as f64 * PV_ROW_H;
+                    let row = Rect::new(list.x0, row_top, list.x1, row_top + PV_ROW_H);
+                    if let WindowContent::PreviousValues(pv) = &mut self.windows[wi].content {
+                        pv.selected = idx;
+                    }
+                    let can_restore = match &self.windows[wi].content {
+                        WindowContent::PreviousValues(pv) => pv.rows[idx].can_restore,
+                        _ => false,
+                    };
+                    for (br, btn) in previous_value_buttons(row, can_restore) {
+                        if br.contains(p) {
+                            self.previous_value_action(wi, btn);
                             return;
                         }
                     }
@@ -3562,6 +4203,30 @@ impl App {
                 if let Some(ti) = settings_tab_rects(body, n_tabs).iter().position(|r| r.contains(p)) {
                     if let WindowContent::Settings(set) = &mut self.windows[wi].content {
                         set.set_active(ti);
+                    }
+                    return;
+                }
+                // Settings → Trash: a row's action (restore, restore all, empty).
+                let trash_hit = match &self.windows[wi].content {
+                    WindowContent::Settings(set) if set.tabs.get(set.active).is_some_and(|t| t.starts_with("Trash")) => {
+                        let actions = crate::trash_ui::settings_rows(self.trash.as_ref()).1;
+                        let mut ry = body.y0 + SET_TAB_H + 4.0 - set.scroll;
+                        let mut found = None;
+                        for (i, (header, _key, _val)) in set.rows_src.iter().enumerate() {
+                            let rh = if *header { SET_HDR_H } else { SET_ROW_H };
+                            if Rect::new(body.x0, ry, body.x1, ry + rh).contains(p) {
+                                found = actions.get(i).cloned().flatten();
+                                break;
+                            }
+                            ry += rh;
+                        }
+                        Some(found)
+                    }
+                    _ => None,
+                };
+                if let Some(action) = trash_hit {
+                    if let Some(action) = action {
+                        self.trash_row_action(action);
                     }
                     return;
                 }
@@ -3693,6 +4358,13 @@ impl App {
                 }
                 _ => {}
             }
+            return;
+        }
+
+        // A lane label lies above the cards: a click on a renamable one opens
+        // no card under it (its double-click opens the rename field, at the
+        // press; THREAD-name R1).
+        if crate::lane_rename::label_at(p, &self.label_rects).is_some() {
             return;
         }
 
@@ -3894,14 +4566,25 @@ impl App {
     fn open_guardian_enroll(&mut self) {
         // The roster is sealed under the KEK; a bypassed login has none.
         let Some(kek) = self.kek.clone() else {
-            self.set_notice("Recovery", "Log in first — the guardian roster is encrypted.");
+            self.set_notice("Recovery", crate::crypto::ENROLL_NEEDS_LOGIN);
             return;
         };
         let Some(h) = self.p2p.as_ref() else {
-            self.set_notice("Recovery", "Sync isn't running. Log in to start the P2P node.");
+            self.set_notice("Recovery", crate::crypto::ENROLL_SYNC_NOT_RUNNING);
             return;
         };
-        match h.arm_guardian_offer(&self.rt, &kek, &self.p2p_config.seed_relays) {
+        // Guardian recovery is the primary's (spec ch. 07, v2.0.29): a duress
+        // session gets the same screen with an offer that is never armed, so it
+        // waits for a guardian forever. The modal is display-only — closing it
+        // just drops it, as for an unfinished real enrollment — and no
+        // `GuardianEnrolled` can arrive for an offer the node never had.
+        if crate::crypto::guardian_enroll_mode(self.persona) == crate::crypto::EnrollMode::Decoy {
+            let offer = h.decoy_guardian_offer();
+            self.guardian_modal =
+                Some(GuardianEnrollModal::new(offer.qr_payload, offer.code, offer.slot_ordinal));
+            return;
+        }
+        match h.arm_guardian_offer(&self.rt, &kek, &self.p2p_config.seed_relays, self.persona) {
             Ok(offer) => {
                 self.guardian_modal =
                     Some(GuardianEnrollModal::new(offer.qr_payload, offer.code, offer.slot_ordinal));
@@ -4070,11 +4753,12 @@ impl App {
         match self.rt.block_on(crate::crypto::recover_and_install(pass.as_bytes())) {
             Ok((persona, db, account_key, device_key, kek)) => {
                 // Same unlock sequence as try_login.
-                self.db = Some(db);
+                self.db = Some(db.clone() as Arc<dyn GraphDB>);
                 self.persona = Some(persona);
                 self.account_key = Some(account_key);
                 self.device_key = Some(device_key);
                 self.kek = Some(kek);
+                self.install_document_service(db);
                 self.locked = false;
                 self.recovery_wizard = None;
                 self.auth_form.error = None;
@@ -4174,72 +4858,439 @@ impl App {
         self.refresh_pii_panels();
     }
 
-    // ---- Peer-review (p2p-no-per-doc-authz) -----------------------------
+    // ---- Alerts and previous values (C-WIRE 13) -------------------------
 
-    /// Rebuild any open peer-review window (after an accept / restore).
-    fn refresh_peer_review_panels(&mut self) {
-        let Some(db) = self.db.clone() else { return };
+    /// `peer id -> device name` for the paired devices (empty without sync).
+    pub(crate) fn device_names(&self) -> std::collections::HashMap<String, String> {
+        match &self.p2p {
+            Some(h) => h.paired_devices(&self.rt).into_iter().collect(),
+            None => std::collections::HashMap::new(),
+        }
+    }
+
+    /// The open alerts, as a panel (None while locked).
+    fn load_alerts_panel(&self) -> Option<AlertsPanel> {
+        let docs = self.docs.clone()?;
+        let names = self.device_names();
+        Some(self.rt.block_on(load_alerts(&docs, &names)))
+    }
+
+    /// Re-reads the alerts: the status-bar notice, the screen reader's notice,
+    /// and any open Alerts window (keeping the selected row when it is still
+    /// there).
+    pub(crate) fn refresh_alerts(&mut self) {
+        let Some(mut ap) = self.load_alerts_panel() else {
+            self.alert_notices.clear();
+            self.orphan_count = 0;
+            return;
+        };
+        self.alert_notices = ap.rows.iter().map(|r| r.notice()).collect();
+        let orphans = ap.take_orphans();
+        self.orphan_count = orphans.count();
         for i in 0..self.windows.len() {
-            if matches!(&self.windows[i].content, WindowContent::PeerReview(_)) {
-                let pr = self.rt.block_on(load_peer_reviews(&db));
-                self.windows[i].content = WindowContent::PeerReview(pr);
-            }
-        }
-    }
-
-    /// Accept a peer change — keep the synced version, clear the review flag
-    /// (document) or resolve the recovery (row).
-    fn accept_peer_review(&mut self, kind: &str, id: &str) {
-        if let Some(db) = self.db.clone() {
-            let kind = kind.to_string();
-            let id = id.to_string();
-            let result = self.rt.block_on(async move {
-                match kind.as_str() {
-                    "document" => db.clear_document_peer_review(&id).await,
-                    "row" => db.resolve_row_recovery(&id).await,
-                    _ => Ok(()),
+            if let WindowContent::Alerts(old) = &self.windows[i].content {
+                let keep = old.selected_row().map(|r| r.doc_id.clone());
+                let keep_orphan = old.orphans().selected_line().map(|l| l.id.clone());
+                let mut section = orphans.clone();
+                section.selected = keep_orphan.and_then(|k| section.lines().iter().position(|l| l.id == k));
+                let mut fresh = AlertsPanel::new(ap.rows.iter().map(|r| crate::panels::AlertRow {
+                    doc_id: r.doc_id.clone(),
+                    title: r.title.clone(),
+                    device: r.device.clone(),
+                    finding: r.finding.clone(),
+                    previous_version: r.previous_version.clone(),
+                }).collect())
+                .with_orphans(section);
+                if let Some(k) = keep {
+                    if let Some(j) = fresh.rows.iter().position(|r| r.doc_id == k) {
+                        fresh.selected = j;
+                    }
                 }
-            });
-            if let Err(e) = result {
-                self.set_notice("Not accepted", &format!("The change couldn't be marked as accepted: {e}"));
+                fresh.selected = fresh.selected.min(fresh.rows.len().saturating_sub(1));
+                self.windows[i].content = WindowContent::Alerts(fresh);
             }
         }
-        self.refresh_peer_review_panels();
     }
 
-    /// Restore the prior value — revert a peer overwrite. Documents restore
-    /// inline (re-apply the preserved prior commit); rows route to the P2P node,
-    /// which holds the key to unseal the recovery.
-    fn restore_peer_review(&mut self, kind: &str, id: &str) {
-        match kind {
-            "document" => {
-                if let Some(db) = self.db.clone() {
-                    let id = id.to_string();
-                    // Lot 0.3: the review flag is cleared only once the prior
-                    // version is actually back; any failure is shown.
-                    let result: Result<(), String> = self.rt.block_on(async move {
-                        let doc = db.get_document(&id).await.map_err(|e| e.to_string())?;
-                        let Some(prior) = doc.peer_review_prior_commit else {
-                            return Err("no prior version was kept for this change".into());
-                        };
-                        db.restore_document(&id, &prior).await.map_err(|e| e.to_string())?;
-                        db.clear_document_peer_review(&id).await.map_err(|e| {
-                            format!("restored, but the review flag couldn't be cleared ({e})")
-                        })
-                    });
-                    if let Err(e) = result {
-                        self.set_notice("Restore", &format!("The prior version couldn't be restored: {e}"));
+    /// Re-reads the documents whose thread was deleted (S5-12, a condition
+    /// the document service computes): the status line's count and the
+    /// section of an open Alerts window. Run with every workspace reload, so
+    /// a sync round that brings a thread's deletion (or a document for a
+    /// thread deleted here) shows at once.
+    pub(crate) fn refresh_orphans(&mut self) {
+        let Some(docs) = self.docs.clone() else {
+            self.orphan_count = 0;
+            return;
+        };
+        let names = self.device_names();
+        let Ok(section) = self.rt.block_on(crate::orphans::OrphansSection::load(&docs, &names)) else { return };
+        self.orphan_count = section.count();
+        for w in self.windows.iter_mut() {
+            if let WindowContent::Alerts(ap) = &mut w.content {
+                let keep = ap.orphans().selected_line().map(|l| l.id.clone());
+                let mut fresh = section.clone();
+                fresh.selected = keep.and_then(|k| fresh.lines().iter().position(|l| l.id == k));
+                *ap.orphans_mut() = fresh;
+            }
+        }
+    }
+
+    /// A click in the section "Documents whose thread was deleted".
+    fn orphan_hit(&mut self, wi: usize, hit: crate::orphans::OrphanHit) {
+        use crate::orphans::OrphanHit;
+        use crate::orphans_ui::OrphanTarget;
+        let (lines, groups) = match self.windows.get(wi).map(|w| &w.content) {
+            Some(WindowContent::Alerts(ap)) => (ap.orphans().lines().to_vec(), ap.orphans().groups()),
+            _ => return,
+        };
+        let select = |app: &mut Self, i: usize| {
+            if let Some(WindowContent::Alerts(ap)) = app.windows.get_mut(wi).map(|w| &mut w.content) {
+                ap.orphans_mut().selected = Some(i);
+            }
+        };
+        match hit {
+            OrphanHit::Select(i) => select(self, i),
+            OrphanHit::Line(i, action) => {
+                let Some(l) = lines.get(i) else { return };
+                select(self, i);
+                let what = format!("\u{201c}{}\u{201d}", crate::canvas::display_title(&l.title));
+                self.orphan_start(OrphanTarget::One(l.id.clone()), action, what);
+            }
+            OrphanHit::Group(g, action) => {
+                let Some(g) = groups.get(g) else { return };
+                let what = g.label.replacen("All of", "all of", 1);
+                self.orphan_start(OrphanTarget::Group(g.thread_id.clone()), action, what);
+            }
+        }
+    }
+
+    /// The keyboard's M / N / T on the selected line of the section (with
+    /// Shift: all the documents of its deleted thread).
+    fn orphan_key(&mut self, wi: usize, action: crate::orphans::OrphanAction) {
+        let (line, group) = match self.windows.get(wi).map(|w| &w.content) {
+            Some(WindowContent::Alerts(ap)) => {
+                let Some(line) = ap.orphans().selected else { return };
+                let tid = ap.orphans().lines().get(line).map(|l| l.thread_id.clone());
+                let group = ap.orphans().groups().iter().position(|g| Some(&g.thread_id) == tid.as_ref());
+                (line, group)
+            }
+            _ => return,
+        };
+        match (self.mods.shift_key(), group) {
+            (true, Some(g)) => self.orphan_hit(wi, crate::orphans::OrphanHit::Group(g, action)),
+            _ => self.orphan_hit(wi, crate::orphans::OrphanHit::Line(line, action)),
+        }
+    }
+
+    /// One of the three ways out, chosen: Trash acts at once (the trash keeps
+    /// it 30 days); the two others open their dialog.
+    fn orphan_start(&mut self, target: crate::orphans_ui::OrphanTarget, action: crate::orphans::OrphanAction, what: String) {
+        use crate::orphans::OrphanAction;
+        match action {
+            OrphanAction::MoveTo => {
+                let Some(db) = self.db.clone() else { return };
+                let threads: Vec<(String, String)> = self
+                    .rt
+                    .block_on(db.list_threads())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|t| t.deleted_at.is_none())
+                    .filter_map(|t| t.id_string().map(|id| (id, t.name)))
+                    .collect();
+                self.orphan_modal =
+                    Some(crate::orphans_ui::ThreadChooser::new(target, format!("Move {what} to\u{2026}"), threads));
+            }
+            OrphanAction::NewThread => {
+                // The shell's new-thread prompt (THREAD-name N1-N7); its
+                // Create makes the thread, then the document(s) move there.
+                self.open_new_thread_prompt();
+                self.orphan_prompt_target = Some(target);
+            }
+            OrphanAction::Trash => {
+                self.orphan_resolve(target, sovereign_docs::OrphanResolution::Trash);
+            }
+        }
+    }
+
+    /// Resolves through the section (the document service; W4), then reloads
+    /// the canvas and the section, and says what happened.
+    fn orphan_resolve(&mut self, target: crate::orphans_ui::OrphanTarget, resolution: sovereign_docs::OrphanResolution) -> bool {
+        use crate::orphans_ui::OrphanTarget;
+        use sovereign_docs::OrphanResolution;
+        let Some(docs) = self.docs.clone() else { return false };
+        let wi = self.window_index_of(WindowKind::Alerts);
+        let mut section = match wi.map(|i| &mut self.windows[i].content) {
+            Some(WindowContent::Alerts(ap)) => ap.take_orphans(),
+            _ => crate::orphans::OrphansSection::empty(),
+        };
+        let kind = match &resolution {
+            OrphanResolution::Trash => 0,
+            OrphanResolution::MoveTo(_) => 1,
+            OrphanResolution::NewThread(_) => 2,
+        };
+        let r = match &target {
+            OrphanTarget::One(id) => self.rt.block_on(section.resolve(&docs, id, resolution)).map(|()| 1),
+            OrphanTarget::Group(tid) => self.rt.block_on(section.resolve_group(&docs, tid, resolution)),
+        };
+        if let Some(i) = wi {
+            if let WindowContent::Alerts(ap) = &mut self.windows[i].content {
+                *ap.orphans_mut() = section;
+            }
+        }
+        match r {
+            Ok(n) => {
+                self.load_workspace_now();
+                self.rebuild_settings_windows();
+                let docs_word = if n == 1 { "The document".to_string() } else { format!("{n} documents") };
+                match kind {
+                    0 => self.set_notice(
+                        "Moved to the trash",
+                        &format!("{docs_word} can be restored for 30 days, from Settings \u{2192} Trash."),
+                    ),
+                    _ if n != 1 => self.set_notice("Moved", &format!("{docs_word} moved together.")),
+                    _ => {}
+                }
+                true
+            }
+            Err(msg) => {
+                self.refresh_orphans();
+                self.set_notice("Not done", &msg);
+                false
+            }
+        }
+    }
+
+    /// The new-thread prompt's Create, when the section opened it: if the
+    /// document(s) still wait, the thread is created through the prompt's
+    /// path (`create_named_thread`), then they move there through the
+    /// service. The waiting is checked first, so a refused move is rare (a
+    /// sync resolving them in between, a store error); the thread then stays,
+    /// empty, and the notice says so — a host never deletes a thread around
+    /// the one path (S5-10).
+    fn orphan_new_thread(&mut self, target: crate::orphans_ui::OrphanTarget, name: &str) {
+        use crate::orphans_ui::OrphanTarget;
+        let Some(docs) = self.docs.clone() else { return };
+        let waiting = self.rt.block_on(docs.orphans_of_deleted_threads()).unwrap_or_default();
+        let still = match &target {
+            OrphanTarget::One(id) => waiting.iter().any(|o| &o.id == id),
+            OrphanTarget::Group(tid) => waiting.iter().any(|o| &o.thread_id == tid),
+        };
+        if !still {
+            self.refresh_orphans();
+            self.set_notice("Not done", "This no longer waits for a decision (it was resolved meanwhile). Nothing was changed.");
+            return;
+        }
+        // The prompt's one creation path (it reloads the canvas, N2).
+        if let Some(thread) = self.create_thread_from_prompt(name) {
+            if !self.orphan_resolve(target, sovereign_docs::OrphanResolution::MoveTo(thread)) {
+                self.set_notice(
+                    "Thread created, nothing moved",
+                    &format!(
+                        "The thread \u{201c}{}\u{201d} was created and is empty: the document could not be moved into it. \
+                         Press A to choose again.",
+                        name.trim()
+                    ),
+                );
+            }
+        }
+    }
+
+    /// A click while the section's thread chooser is open: it takes every
+    /// click; a click outside closes it.
+    fn handle_orphan_modal_click(&mut self, p: Point, w: f64, h: f64) {
+        let Some(step) = self.orphan_modal.as_mut().map(|m| m.click(w, h, p)) else { return };
+        self.orphan_chooser_step(step);
+    }
+
+    /// A key while the section's thread chooser is open: it owns the
+    /// keyboard (Up / Down / Home / End / Page keys, Enter, Esc, 1 to 8).
+    fn orphan_modal_key(&mut self, key: &Key) {
+        let Some(step) = self.orphan_modal.as_mut().map(|m| m.key(key)) else { return };
+        self.orphan_chooser_step(step);
+    }
+
+    fn orphan_chooser_step(&mut self, step: crate::orphans_ui::ChooserStep) {
+        use crate::orphans_ui::ChooserStep;
+        match step {
+            ChooserStep::Open => {}
+            ChooserStep::Cancel => self.orphan_modal = None,
+            ChooserStep::Choose(thread) => {
+                if let Some(m) = self.orphan_modal.take() {
+                    self.orphan_resolve(m.target, sovereign_docs::OrphanResolution::MoveTo(thread));
+                }
+            }
+        }
+    }
+
+    /// Enter / O in the Alerts window: opens the alert's document, or the
+    /// selected document of the section.
+    fn alerts_open(&mut self, wi: usize) {
+        let orphan = match self.windows.get(wi).map(|w| &w.content) {
+            Some(WindowContent::Alerts(ap)) => ap.orphans().selected_line().map(|l| l.id.clone()),
+            _ => None,
+        };
+        match orphan {
+            Some(id) => self.open_doc_by_id(&id),
+            None => self.alert_action(wi, AlertBtn::Open),
+        }
+    }
+
+    /// One of an alert's actions (a click, or its key in the Alerts window).
+    fn alert_action(&mut self, wi: usize, btn: AlertBtn) {
+        let Some((doc_id, prev)) = (match &self.windows.get(wi).map(|w| &w.content) {
+            Some(WindowContent::Alerts(ap)) => ap.selected_row().map(|r| (r.doc_id.clone(), r.previous_version.clone())),
+            _ => None,
+        }) else {
+            return;
+        };
+        match btn {
+            AlertBtn::Open => self.open_doc_by_id(&doc_id),
+            AlertBtn::Previous => match prev {
+                Some(prev) => self.open_previous_version(&doc_id, &prev),
+                None => self.set_notice("No previous version", "This document arrived new from the other device: there is no earlier version."),
+            },
+            AlertBtn::Dismiss => {
+                let Some(docs) = self.docs.clone() else { return };
+                if let Err(e) = self.rt.block_on(docs.dismiss_alert(&doc_id)) {
+                    self.set_notice("Not dismissed", &sovereign_ai::docs_host::doc_error_message(&e));
+                }
+                self.refresh_alerts();
+            }
+        }
+    }
+
+    /// Opens a document by id (focusing its window when already open).
+    fn open_doc_by_id(&mut self, doc_id: &str) {
+        match self.cards.iter().position(|c| c.id == doc_id) {
+            Some(ci) => self.open_doc_window(ci),
+            None => self.set_notice("Not on the canvas", "This document is not on the canvas (it may be in the trash)."),
+        }
+    }
+
+    /// Opens a document's History with `commit_id` selected, where "Use this
+    /// version" puts it back (the ordinary version restore).
+    fn open_previous_version(&mut self, doc_id: &str, commit_id: &str) {
+        let title = self.cards.iter().find(|c| c.id == doc_id).map(|c| crate::canvas::display_title(&c.title).to_string()).unwrap_or_default();
+        self.open_history(doc_id, &title);
+        // Ids print as `table:key` or `table:⟨key⟩` depending on the path.
+        let norm = |s: &str| s.replace(['\u{27e8}', '\u{27e9}', '`'], "");
+        let want = norm(commit_id);
+        for w in self.windows.iter_mut() {
+            if let WindowContent::History(hp) = &mut w.content {
+                if hp.doc_id == doc_id {
+                    // Not found (a version since removed): History opens unselected.
+                    hp.selected = hp.commits.iter().position(|c| norm(&c.commit_id) == want);
+                }
+            }
+        }
+    }
+
+    /// Up/Down choose a version in the top History window; Enter uses it
+    /// (the ordinary version restore, "Use this version").
+    fn history_key(&mut self, key: &Key) {
+        let Some(top) = self.windows.len().checked_sub(1) else { return };
+        match key {
+            Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
+                let down = matches!(key, Key::Named(NamedKey::ArrowDown));
+                if let WindowContent::History(hp) = &mut self.windows[top].content {
+                    if !hp.commits.is_empty() {
+                        let last = hp.commits.len() - 1;
+                        hp.selected = Some(match (hp.selected, down) {
+                            (None, _) => 0,
+                            (Some(i), true) => (i + 1).min(last),
+                            (Some(i), false) => i.saturating_sub(1),
+                        });
                     }
                 }
             }
-            "row" => match self.p2p.as_ref() {
-                Some(h) if h.restore_row(id) => {}
-                Some(_) => self.set_notice("Restore", "Couldn't reach the sync node to restore this row."),
-                None => self.set_notice("Restore", "P2P node isn't running \u{2014} can't restore a synced row."),
-            },
+            Key::Named(NamedKey::Enter) => {
+                let target = match &self.windows[top].content {
+                    WindowContent::History(hp) => {
+                        hp.selected.and_then(|i| hp.commits.get(i)).map(|c| (hp.doc_id.clone(), c.commit_id.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some((doc_id, commit_id)) = target {
+                    self.restore_commit(&doc_id, &commit_id);
+                }
+            }
             _ => {}
         }
-        self.refresh_peer_review_panels();
+    }
+
+    /// Re-reads any open Previous values window.
+    fn refresh_previous_values(&mut self) {
+        let Some(db) = self.db.clone() else { return };
+        let names = self.device_names();
+        for i in 0..self.windows.len() {
+            if matches!(&self.windows[i].content, WindowContent::PreviousValues(_)) {
+                let pv = self.rt.block_on(load_previous_values(&db, &names));
+                self.windows[i].content = WindowContent::PreviousValues(pv);
+            }
+        }
+    }
+
+    /// One of a previous value's actions (a click, or its key).
+    fn previous_value_action(&mut self, wi: usize, btn: PrevBtn) {
+        let Some((id, can_restore)) = (match &self.windows.get(wi).map(|w| &w.content) {
+            Some(WindowContent::PreviousValues(pv)) => pv.selected_row().map(|r| (r.id.clone(), r.can_restore)),
+            _ => None,
+        }) else {
+            return;
+        };
+        match btn {
+            PrevBtn::Restore if can_restore => match self.p2p.as_ref() {
+                Some(h) if h.restore_row(&id) => {}
+                Some(_) => self.set_notice("Not restored", "The sync service could not be reached."),
+                None => self.set_notice("Not restored", "Sync is not running: the previous value can't be restored now."),
+            },
+            PrevBtn::Restore => self.set_notice("Not restored", "This kind of item can't be restored."),
+            PrevBtn::Forget => {
+                if let Some(db) = self.db.clone() {
+                    if let Err(e) = self.rt.block_on(db.resolve_row_recovery(&id)) {
+                        self.set_notice("Not removed", &format!("The item could not be removed from the list: {e}"));
+                    }
+                }
+            }
+        }
+        self.refresh_previous_values();
+    }
+
+    /// A paired device runs an older version (C-WIRE 12): kept for the status
+    /// bar and the Devices window until a sync with it no longer says so.
+    fn note_older_peer(&mut self, peer_id: String, device_name: String) {
+        self.older_round.insert(peer_id.clone(), true);
+        let name = if device_name.is_empty() { peer_id.clone() } else { device_name };
+        let first = !self.older_peers.iter().any(|(p, _)| *p == peer_id);
+        if first {
+            self.set_notice(
+                "A device needs an update",
+                &format!("{name} runs an older version of Sovereign. Update it to sync documents with it; other data still syncs."),
+            );
+            self.older_peers.push((peer_id.clone(), name));
+        }
+        self.note_sync_status(peer_id, "older version: update it to sync documents".into());
+    }
+
+    /// The notice the status bar shows (and the screen reader reads first):
+    /// alerts before an older device.
+    pub(crate) fn status_notice(&self) -> Option<(String, bool)> {
+        // S5-12 W5: how many documents whose thread was deleted wait.
+        let orphans = crate::orphans::status_segment(self.orphan_count);
+        let tail = orphans.as_ref().map(|s| format!("; {s}")).unwrap_or_default();
+        match self.alert_notices.len() {
+            0 => {}
+            1 => return Some((format!("{} \u{2014} press A to see it{tail}", self.alert_notices[0]), true)),
+            n => return Some((format!("{n} changes from your devices look suspicious \u{2014} press A to see them{tail}"), true)),
+        }
+        if let Some(seg) = orphans {
+            return Some((format!("{seg} \u{2014} press A to see"), false));
+        }
+        match self.older_peers.as_slice() {
+            [] => None,
+            [(_, name)] => Some((format!("{name} runs an older version: update it to sync documents"), false)),
+            more => Some((format!("{} devices run an older version: update them to sync documents", more.len()), false)),
+        }
     }
 
     // ---- Browser (wry WebView tied to the Browser window) ---------------
@@ -4388,13 +5439,15 @@ impl App {
         let decision_cell = self.decision_rx_cell.clone();
         let injection_cell = self.injection_decision_rx_cell.clone();
         let account_key = self.account_key.clone();
+        let docs = self.docs.clone();
         let tx = self.browser_tx.clone();
+        let state_paths = crate::crypto::orchestrator_state_paths(self.persona);
         self.rt.spawn(async move {
             let mut guard = orch_cell.lock().await;
             if guard.is_none() {
-                match Orchestrator::new(cfg, db, ev_tx).await {
+                match Orchestrator::new(cfg, db, ev_tx, state_paths).await {
                     Ok(mut o) => {
-                        wire_new_orchestrator(&mut o, &decision_cell, &injection_cell, &account_key).await;
+                        wire_new_orchestrator(&mut o, &decision_cell, &injection_cell, &account_key, &docs).await;
                         *guard = Some(Arc::new(o));
                     }
                     Err(e) => {
@@ -4433,12 +5486,16 @@ impl App {
             return;
         };
         let title = if title.trim().is_empty() { url.clone() } else { title };
-        let content = ContentFields { body: format!("{url}\n\n{text}"), ..Default::default() }.serialize();
-        // is_owned = false: external content keeps its (external) provenance.
-        let mut doc = sovereign_db::schema::Document::new(title.clone(), tid, false);
-        doc.content = content;
-        if let Err(e) = self.rt.block_on(db.create_document(doc)) {
-            self.set_notice("Page not saved", &format!("{e}"));
+        // C-DOC adoption step 3: through the document service — external,
+        // provenance web with its URL (web content is never created owned),
+        // a version from creation, personal data tokenized.
+        let Some(docs) = self.docs.clone() else {
+            self.set_notice("Page not saved", "The workspace is locked.");
+            return;
+        };
+        let new = sovereign_ai::docs_host::new_web_document(title.clone(), tid, url.clone(), format!("{url}\n\n{text}"));
+        if let Err(e) = self.rt.block_on(sovereign_ai::docs_host::create(&docs, new)) {
+            self.set_notice("Page not saved", &sovereign_ai::docs_host::doc_error_message(&e));
             return;
         }
         self.load_workspace_now();
@@ -4515,6 +5572,89 @@ impl App {
         }
     }
 
+    /// C-DOC adoption step 2: the document service over the persona's encrypted
+    /// store, built at every unlock (login, onboarding, recovery). Its
+    /// personal-data hook needs the AccountKey, so call this after setting it.
+    ///
+    /// E9: a store replaced under open editors leaves nothing of them — first,
+    /// while the outgoing service is still `self.docs`, every window showing
+    /// its documents (document windows, History, lists of its documents)
+    /// closes, the editors' sessions end on it, and the clipboard forgets this
+    /// process's copy (`v2_leave_store`); no prompt is shown.
+    fn install_document_service(&mut self, store: Arc<sovereign_db::encrypted::EncryptedGraphDB>) {
+        self.v2_leave_store();
+        let docs = Arc::new(sovereign_ai::docs_host::build_document_service(
+            store,
+            self.account_key.clone(),
+            self.p2p_config.device_name.clone(),
+        ));
+        self.docs = Some(docs.clone());
+        self.start_purge_ticks(docs.clone());
+        self.start_unlock_migration(docs.clone());
+        // An orchestrator already built (a second unlock) gets the new one.
+        let cell = self.orch.clone();
+        self.rt.block_on(async move {
+            if let Some(o) = cell.lock().await.as_ref() {
+                o.set_document_service(docs);
+            }
+        });
+    }
+
+    /// The one-time migration to document format v2 (C-DOC adoption step 6,
+    /// M1, M4), through the one seam: at every unlock, in the background on
+    /// the runtime (the canvas does not wait for it), once per persona's store
+    /// — the store's own record says so; a later unlock finds it complete, or
+    /// resumes it. Its notice, once, comes back on the orchestrator channel
+    /// and is shown as a notice popup. The same call for every persona (M5).
+    fn start_unlock_migration(&mut self, docs: Arc<sovereign_docs::DocumentService>) {
+        if let Some(previous) = self.migration_task.take() {
+            previous.abort();
+        }
+        let rt = self.rt.handle().clone();
+        let tx = self.orch_tx.clone();
+        let mut handle = None;
+        sovereign_docs::start_unlock_migration(
+            docs,
+            |task| handle = Some(rt.spawn(task)),
+            move |notice| {
+                let _ = tx.send(OrchestratorEvent::DocumentsMigrated { text: notice.text() });
+            },
+        );
+        self.migration_task = handle;
+    }
+
+    /// The trash purge (C-DOC adoption step 5, S5-3): `sovereign_docs::purge_tick`
+    /// now (at unlock), then every `PURGE_TICK_INTERVAL`, on the runtime, off
+    /// the UI thread. What has been 30 days in the trash is purged with its
+    /// versions, key and edges, and leaves a purge marker. A failure is logged
+    /// without content and retried at the next interval. A later unlock (a
+    /// persona switch, recovery) replaces the task with one over its service.
+    fn start_purge_ticks(&mut self, docs: Arc<sovereign_docs::DocumentService>) {
+        if let Some(previous) = self.purge_task.take() {
+            previous.abort();
+        }
+        self.purge_task = Some(self.rt.spawn(async move {
+            let mut every = tokio::time::interval(sovereign_docs::PURGE_TICK_INTERVAL);
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                every.tick().await; // the first tick completes at once
+                match sovereign_docs::purge_tick(&docs).await {
+                    Ok(report) if !report.documents.is_empty() => {
+                        println!("sovereign-shell: purged {} document(s) 30 days in the trash", report.documents.len());
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        let kind = match e {
+                            sovereign_docs::DocError::Store(_) => "storage error",
+                            _ => "document service error",
+                        };
+                        println!("sovereign-shell: trash purge failed ({kind}); retried in an hour");
+                    }
+                }
+            }
+        }));
+    }
+
     /// After login: bring up the P2P node (Batch 6c). The shell forces P2P on so
     /// multi-device sync works out of the box (the app gates it behind a config
     /// flag the shell has no UI for yet). Idempotent — a second login is a no-op.
@@ -4548,7 +5688,17 @@ impl App {
         };
         let mut cfg = crate::p2p::p2p_config_from_app(&self.p2p_config);
         cfg.enabled = true; // the shell opts in by running the node
-        match crate::p2p::start_p2p_node(&self.rt, db, dk, ak, cfg, self.orch_tx.clone()) {
+        match crate::p2p::start_p2p_node(
+            &self.rt,
+            db,
+            dk,
+            ak,
+            cfg,
+            self.orch_tx.clone(),
+            self.docs.clone(),
+            self.orch.clone(),
+            self.persona,
+        ) {
             Ok(handle) => {
                 println!(
                     "sovereign-shell: P2P up — peer {} on {:?}",
@@ -4559,6 +5709,8 @@ impl App {
             }
             Err(e) => println!("sovereign-shell: P2P start failed: {e}"),
         }
+        // Alerts left open in an earlier session (C-WIRE 13).
+        self.refresh_alerts();
     }
 
     /// Record a per-peer sync-status line for the Devices window (latest wins).
@@ -4727,17 +5879,18 @@ impl App {
     /// Enrollment is wired (Surface 1b): the "Enroll next" hint here points at
     /// the global 'g' key, which arms an in-person guardian offer.
     fn build_recovery_rows(&self) -> Vec<(bool, String, String)> {
-        let roster = self
-            .kek
-            .as_ref()
-            .map(|kek| crate::crypto::recovery_store().load(kek));
+        // A duress session reads as a store with no roster yet ("not set up").
+        let roster = self.kek.as_ref().map(|kek| match crate::crypto::recovery_store_for(self.persona) {
+            Some(store) => store.load(kek),
+            None => Ok(None),
+        });
         recovery_rows(roster, self.p2p.is_some())
     }
 
     pub(crate) fn build_settings(&self) -> SettingsPanel {
         let base = |s: &str| s.rsplit(['/', '\\']).next().unwrap_or(s).to_string();
         let model = |s: &str| if s.is_empty() { "(unset)".to_string() } else { base(s) };
-        let profile = UserProfile::load(&sovereign_core::sovereign_dir()).ok();
+        let profile = self.identity_profile();
         let or_unset = |s: Option<String>| s.filter(|v| !v.is_empty()).unwrap_or_else(|| "(not set)".into());
         let display_name = or_unset(profile.as_ref().and_then(|p| p.display_name.clone()));
         let nickname = or_unset(profile.as_ref().and_then(|p| p.nickname.clone()));
@@ -4844,6 +5997,8 @@ impl App {
         ];
         let mut tabs = tabs;
         tabs.insert(6, ("Recovery".into(), self.build_recovery_rows()));
+        // C-DOC adoption step 5 (S5-11): the trash, beside Recovery, with its count.
+        tabs.insert(7, (crate::trash_ui::tab_label(self.trash.as_ref()), crate::trash_ui::settings_rows(self.trash.as_ref()).0));
         let mut panel = SettingsPanel::new(tabs);
         // Debug aid (headless verification): open on a specific tab index.
         if let Some(Ok(i)) = crate::dev::var("SHELL_SETTINGS_TAB").map(|s| s.parse::<usize>()) {
@@ -4883,8 +6038,26 @@ impl App {
             }
         }
         self.minimap = make_minimap(&self.cards, self.world_w);
+        // The renamable labels (THREAD-name R1, R6), read as the lanes are.
+        let threads = self.rt.block_on(db.list_threads()).unwrap_or_default();
+        self.lane_labels = crate::lane_rename::lane_labels(&threads);
+        // A rename field whose thread no longer has a label (deleted by the
+        // assistant, or by a sync) closes with a notice: nothing is renamed
+        // (R7).
+        let gone = self
+            .lane_rename
+            .as_ref()
+            .is_some_and(|f| !self.lane_labels.iter().any(|l| l.thread_id == f.thread_id()));
+        if gone {
+            if let Some(mut field) = self.lane_rename.take() {
+                field.close();
+            }
+            self.set_notice("Thread not renamed", "This thread was deleted meanwhile; nothing was changed.");
+        }
         let raw = self.db.as_ref().map(|d| self.rt.block_on(d.list_contacts()).unwrap_or_default()).unwrap_or_default();
         self.contacts = build_taskbar_contacts(&raw);
+        // S5-12: what the reload changed in the documents whose thread was deleted.
+        self.refresh_orphans();
     }
 
     /// First-run seed: a few empty, labeled lanes so the canvas opens with
@@ -4892,7 +6065,9 @@ impl App {
     /// welcome document cluttering it. Mirrors the reference design's starter
     /// lanes. The user renames/deletes them or adds more via the `+` button.
     pub(crate) fn seed_starter_lanes(&mut self) {
-        let Some(db) = self.db.clone() else { return };
+        // Through the one thread-write path, stamped (THREAD-sync S1): no
+        // document service, no lanes.
+        let Some(docs) = self.docs.clone() else { return };
         let seeded = self.rt.block_on(async {
             for (name, desc) in [
                 ("Research", "Research and exploration"),
@@ -4900,7 +6075,7 @@ impl App {
                 ("Design", "UX and visual design"),
                 ("Admin", "Administrative and planning"),
             ] {
-                db.create_thread(sovereign_db::schema::Thread::new(name.into(), desc.into())).await?;
+                docs.thread_create(name, desc).await?;
             }
             anyhow::Ok(())
         });
@@ -4930,11 +6105,12 @@ impl App {
                     self.recovery_cleared_by_login = true;
                     self.recovery_wizard = None;
                 }
-                self.db = Some(db);
+                self.db = Some(db.clone() as Arc<dyn GraphDB>);
                 self.persona = Some(persona);
                 self.account_key = Some(account_key);
                 self.device_key = Some(device_key);
                 self.kek = Some(kek);
+                self.install_document_service(db);
                 self.locked = false;
                 self.auth_form.error = None;
                 self.arm_model_integrity(); // MODELTRUST-001: TOFU for unlisted models
@@ -4947,6 +6123,8 @@ impl App {
                 // feature exists to defend against.
                 let _ = persona;
                 println!("sovereign-shell: unlocked");
+                #[cfg(any(debug_assertions, feature = "dev-switches"))]
+                self.v2_seed_pii_test();
             }
             Err(e) => {
                 self.auth_form.error = Some(format!("{e}"));
@@ -4964,6 +6142,28 @@ impl App {
         UserProfile::load(&sovereign_core::sovereign_dir())
             .map(|p| p.designation)
             .unwrap_or_else(|_| UserProfile::default_new().designation)
+    }
+
+    /// The open persona's identity profile (display name, nickname,
+    /// designation), read after login from its own directory
+    /// (`identity_profile_dir`; `None` persona → the primary's). A persona
+    /// with a directory of its own and no file there yet gets defaults, saved
+    /// so they stay the same from one read to the next — never another
+    /// persona's values (spec ch. 07, v2.0.29). Device preferences (theme,
+    /// bubble style) stay in the shared profile at the data directory.
+    fn identity_profile(&self) -> Option<UserProfile> {
+        let base = sovereign_core::sovereign_dir();
+        let dir = sovereign_core::auth::identity_profile_dir(
+            &base,
+            self.persona.unwrap_or(CorePersona::Primary),
+        );
+        let mut profile = UserProfile::load(&dir).ok()?;
+        if dir != base && !dir.join("user_profile.json").exists() {
+            if let Err(e) = profile.save(&dir) {
+                eprintln!("sovereign-shell: could not save profile defaults: {e}");
+            }
+        }
+        Some(profile)
     }
 
     /// Start the first-device onboarding wizard when locked with no account yet
@@ -5155,19 +6355,33 @@ impl App {
                 }
             };
 
-        // Persist profile (nickname / bubble / theme).
+        // Persist profile: bubble / theme are device preferences (the shared
+        // profile at the data dir, read before login); the nickname is the
+        // persona's identity (its identity dir — the same file for the
+        // primary, which onboarding creates).
         let dir = sovereign_core::sovereign_dir();
         // Lot 0.3: anything that fails to persist is reported once set-up ends.
         let mut setup_errors: Vec<String> = Vec::new();
         {
             use sovereign_core::profile::UserProfile;
-            let mut p = UserProfile::load(&dir).unwrap_or_else(|_| UserProfile::default_new());
+            let id_dir = sovereign_core::auth::identity_profile_dir(&dir, persona);
             let nick = wiz.nickname.trim();
-            p.nickname = (!nick.is_empty()).then(|| nick.to_string());
+            let nickname = (!nick.is_empty()).then(|| nick.to_string());
+            let mut p = UserProfile::load(&dir).unwrap_or_else(|_| UserProfile::default_new());
             p.bubble_style = wiz.bubble;
             p.theme = if wiz.theme_dark { "dark".into() } else { "light".into() };
+            if id_dir == dir {
+                p.nickname = nickname.clone();
+            }
             if let Err(e) = p.save(&dir) {
                 setup_errors.push(format!("profile: {e}"));
+            }
+            if id_dir != dir {
+                let mut q = UserProfile::load(&id_dir).unwrap_or_else(|_| UserProfile::default_new());
+                q.nickname = nickname;
+                if let Err(e) = q.save(&id_dir) {
+                    setup_errors.push(format!("profile: {e}"));
+                }
             }
         }
         // Canary phrase (optional) -> sealed under the KEK.
@@ -5185,23 +6399,30 @@ impl App {
         crate::theme::set_palette(crate::theme::palette_for(&self.theme_name));
         self.bubble_style = wiz.bubble;
 
-        self.db = Some(db.clone());
+        self.db = Some(db.clone() as Arc<dyn GraphDB>);
         self.persona = Some(persona);
         self.account_key = Some(account_key.clone());
         self.device_key = Some(device_key);
         self.kek = Some(kek.clone());
+        self.install_document_service(db.clone());
         self.locked = false;
         self.arm_model_integrity();
 
         if wiz.seed_sample {
-            if let Err(e) = self.rt.block_on(sovereign_ai::seed::seed_if_empty(db.as_ref())) {
-                setup_errors.push(format!("sample documents: {e}"));
-            }
-            if let Err(e) = self
-                .rt
-                .block_on(sovereign_ai::seed::seed_pii_if_empty(db.as_ref(), &account_key))
-            {
-                setup_errors.push(format!("sample PII: {e}"));
+            // Documents go through the document service (adoption step 3),
+            // installed just above.
+            match self.docs.clone() {
+                Some(docs) => {
+                    if let Err(e) = self.rt.block_on(sovereign_ai::seed::seed_if_empty(db.as_ref(), &docs)) {
+                        setup_errors.push(format!("sample documents: {e}"));
+                    }
+                    if let Err(e) =
+                        self.rt.block_on(sovereign_ai::seed::seed_pii_if_empty(db.as_ref(), &docs, &account_key))
+                    {
+                        setup_errors.push(format!("sample PII: {e}"));
+                    }
+                }
+                None => setup_errors.push("sample documents: no document service".into()),
             }
         } else {
             self.seed_starter_lanes();
@@ -5257,11 +6478,12 @@ impl App {
         };
         match self.rt.block_on(install_session(&store, primary.as_bytes())) {
             Ok((persona, db, account_key, device_key, kek)) => {
-                self.db = Some(db);
+                self.db = Some(db.clone() as Arc<dyn GraphDB>);
                 self.persona = Some(persona);
                 self.account_key = Some(account_key);
                 self.device_key = Some(device_key);
                 self.kek = Some(kek);
+                self.install_document_service(db);
                 self.locked = false;
                 self.auth_form.error = None;
                 self.arm_model_integrity(); // MODELTRUST-001: TOFU for unlisted models
@@ -5356,12 +6578,14 @@ impl App {
         let decision_cell = self.decision_rx_cell.clone();
         let injection_cell = self.injection_decision_rx_cell.clone();
         let account_key = self.account_key.clone();
+        let docs = self.docs.clone();
+        let state_paths = crate::crypto::orchestrator_state_paths(self.persona);
         self.rt.spawn(async move {
             let mut guard = orch_cell.lock().await;
             if guard.is_none() {
-                match Orchestrator::new(cfg, db, tx.clone()).await {
+                match Orchestrator::new(cfg, db, tx.clone(), state_paths).await {
                     Ok(mut o) => {
-                        wire_new_orchestrator(&mut o, &decision_cell, &injection_cell, &account_key).await;
+                        wire_new_orchestrator(&mut o, &decision_cell, &injection_cell, &account_key, &docs).await;
                         *guard = Some(Arc::new(o));
                     }
                     Err(e) => {
@@ -5391,7 +6615,7 @@ impl App {
         if !q.is_empty() {
             for (i, card) in self.cards.iter().enumerate() {
                 if card.title.to_lowercase().contains(&q) {
-                    sp.results.push((i, card.title.clone()));
+                    sp.results.push((i, crate::canvas::display_title(&card.title).to_string()));
                     if sp.results.len() >= 100 {
                         break;
                     }
@@ -5413,8 +6637,13 @@ impl App {
     /// child node per readable/focusable element (auth fields, chat messages +
     /// composer, inbox/settings lines, or a canvas summary). Pushed each frame
     /// via the adapter; the OS screen reader consumes it.
-    pub(crate) fn build_a11y_tree(&self) -> TreeUpdate {
+    pub(crate) fn build_a11y_tree(&mut self) -> TreeUpdate {
         const ROOT: NodeId = NodeId(0);
+        // The thread chooser's ids (the prompt has `1 << 61`, the document editor `1 << 62`).
+        const ORPHAN_CHOOSER_NS: u64 = 1 << 60;
+        // The lane labels' buttons, and the rename field's tree (THREAD-name R4).
+        const LANE_LABEL_NS: u64 = 1 << 59;
+        const LANE_RENAME_NS: u64 = 1 << 58;
         // (role, label, value, focused)
         let mut items: Vec<(AkRole, String, String, bool)> = Vec::new();
 
@@ -5433,6 +6662,14 @@ impl App {
         if let Some(wiz) = &self.recovery_wizard {
             for line in wiz.a11y_lines() {
                 items.push((AkRole::Label, line, String::new(), false));
+            }
+        }
+        // C-WIRE 13 / 12: the alert notice and the older-device notice, read
+        // whatever window is open.
+        if !self.locked {
+            if let Some((text, is_alert)) = self.status_notice() {
+                let role = if is_alert { AkRole::Alert } else { AkRole::Status };
+                items.push((role, text, String::new(), false));
             }
         }
 
@@ -5492,9 +6729,10 @@ impl App {
                         items.push((AkRole::Label, title.clone(), String::new(), false));
                     }
                 }
-                WindowContent::Doc(d) => {
+                WindowContent::Doc(_) => {
+                    // The title and the text are the editor's own nodes,
+                    // inlined below (never a label holding the body, E2/E8).
                     items.push((AkRole::Label, "Document".into(), String::new(), false));
-                    items.push((AkRole::Label, d.body_text.clone(), String::new(), false));
                 }
                 WindowContent::History(hp) => {
                     items.push((AkRole::Label, format!("History of {}", hp.doc_title), String::new(), false));
@@ -5513,9 +6751,15 @@ impl App {
                         items.push((AkRole::Label, line, String::new(), false));
                     }
                 }
-                WindowContent::PeerReview(pr) => {
-                    items.push((AkRole::Label, "Synced changes to review".into(), String::new(), false));
-                    for line in pr.a11y_lines() {
+                WindowContent::Alerts(ap) => {
+                    items.push((AkRole::Label, "Alerts".into(), String::new(), false));
+                    for line in ap.a11y_lines() {
+                        items.push((AkRole::Label, line, String::new(), false));
+                    }
+                }
+                WindowContent::PreviousValues(pv) => {
+                    items.push((AkRole::Label, "Previous values".into(), String::new(), false));
+                    for line in pv.a11y_lines() {
                         items.push((AkRole::Label, line, String::new(), false));
                     }
                 }
@@ -5562,13 +6806,75 @@ impl App {
             nodes.push((id, n));
             child_ids.push(id);
         }
+        if let Some((child, ed_focus, _)) = self.v2_a11y_slot() {
+            nodes.push((editor_v2::EDITOR_CONTAINER, editor_v2::container_node(child)));
+            child_ids.push(editor_v2::EDITOR_CONTAINER);
+            if let Some(f) = ed_focus {
+                focus = f;
+            }
+        }
+        // The lane labels (R4): one button "Rename thread <name>" per
+        // renamable label, whether or not a window is open (P4).
+        if !self.locked {
+            for (l, n) in self.lane_labels.iter().zip(crate::lane_rename::lane_label_nodes(&self.lane_labels)) {
+                let id = NodeId(LANE_LABEL_NS | l.lane as u64);
+                nodes.push((id, n));
+                child_ids.push(id);
+            }
+        }
+        // The rename field over a lane label (R4): a text input "Thread
+        // name", inlined under its own id range, holding the focus while open.
+        if !self.locked && self.new_thread_prompt.is_none() {
+            if let Some(field) = self.lane_rename.as_mut() {
+                let (root, field_nodes, field_focus) =
+                    crate::new_thread::inline_tree(field.accessibility_tree(), LANE_RENAME_NS);
+                nodes.extend(field_nodes);
+                child_ids.push(root);
+                focus = field_focus;
+            }
+        }
+        // The new-thread prompt (N5): its dialog inlined under its own id
+        // range, holding the focus while it is open. Every frame its whole
+        // tree, as the shell's own items.
+        if !self.locked {
+            if let Some(prompt) = self.new_thread_prompt.as_mut() {
+                let (dialog, prompt_nodes, prompt_focus) =
+                    crate::new_thread::inline_tree(prompt.accessibility_tree(), crate::new_thread::PROMPT_NS);
+                nodes.extend(prompt_nodes);
+                child_ids.push(dialog);
+                focus = prompt_focus;
+            }
+        }
+        // S5-12: the section's thread chooser, a modal dialog with its list
+        // of threads, holding the focus while it is open.
+        if !self.locked {
+            if let Some(m) = &self.orphan_modal {
+                let (dialog, chooser_nodes, chooser_focus) =
+                    crate::new_thread::inline_tree(m.accessibility_tree(), ORPHAN_CHOOSER_NS);
+                nodes.extend(chooser_nodes);
+                child_ids.push(dialog);
+                focus = chooser_focus;
+            }
+        }
         let mut root = Node::new(AkRole::Window);
         root.set_label("Sovereign");
         root.set_children(child_ids);
         let mut all = Vec::with_capacity(nodes.len() + 1);
         all.push((ROOT, root));
         all.extend(nodes);
+        self.a11y_root_focus = focus;
         TreeUpdate { nodes: all, tree: Some(Tree::new(ROOT)), tree_id: TreeId::ROOT, focus }
+    }
+
+    /// The accessibility updates the shell sends **after**
+    /// [`build_a11y_tree`](Self::build_a11y_tree)'s in one frame, in order,
+    /// as if the adapter were active (contract E8): the open document's
+    /// editor tree, inlined — what `render` pushes through `v2_push_a11y` when
+    /// a screen reader is active. Read by the tests; `render` itself goes
+    /// through `v2_push_a11y`, which knows whether the adapter is active.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn a11y_frame_updates(&mut self) -> Vec<TreeUpdate> {
+        self.v2_a11y_updates(true, self.a11y_root_focus)
     }
 
     pub(crate) fn render(&mut self) {
@@ -5602,10 +6908,9 @@ impl App {
         self.framed.append(&self.scene, Some(Affine::scale(total)));
 
         // Push the accessibility tree (a no-op when no screen reader is active).
+        // Then the open document's editor nodes (`v2_push_a11y`).
         let a11y = self.build_a11y_tree();
-        if let Some(adapter) = self.adapter.as_mut() {
-            adapter.update_if_active(move || a11y);
-        }
+        self.v2_push_a11y(a11y);
 
         let RenderState::Active { surface, window } = &mut self.state else {
             return;
@@ -5748,15 +7053,54 @@ impl ApplicationHandler for App {
             }
             WindowEvent::ModifiersChanged(mods) => {
                 self.ctrl_down = mods.state().control_key();
+                self.mods = mods.state();
+                editor_v2::set_modifiers(mods.state());
+            }
+            WindowEvent::Focused(f) => editor_v2::set_window_focused(f),
+            WindowEvent::Ime(ime) => {
+                // The new-thread prompt's field takes the input method while
+                // open (N4); otherwise the focused document editor.
+                if self.prompt_on_top() {
+                    if let Some(p) = self.new_thread_prompt.as_mut() {
+                        p.event(sovereign_editor::input::InputEvent::Ime(crate::winit_input::map_ime(ime)));
+                    }
+                } else if self.rename_on_top() {
+                    // The rename field over a lane label (R3).
+                    if let Some(f) = self.lane_rename.as_mut() {
+                        f.event(sovereign_editor::input::InputEvent::Ime(crate::winit_input::map_ime(ime)));
+                    }
+                } else {
+                    self.v2_ime(ime);
+                }
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => match state {
                 ElementState::Pressed => {
                     self.press_pos = Some(self.cursor);
                     let p = Point::new(self.cursor.0, self.cursor.1);
                     let (vw, vh) = self.win_size().unwrap_or((0.0, 0.0));
-                    if self.unsaved_prompt.is_some() || self.comms_form.is_some() || self.compose_form.is_some() || self.pairing_modal.is_some() || self.guardian_modal.is_some() || self.recovery_wizard.is_some() || self.injection_prompt.is_some() || self.bubble_picker || self.pending_action.is_some() || self.notice.is_some() || self.ctx_menu.is_some() {
+                    // A press off the lane labels ends a double-click on one
+                    // (R1); a press on one is counted where it is handled.
+                    if crate::lane_rename::label_at(p, &self.label_rects).is_none() {
+                        self.label_clicks.press(None, p, Instant::now());
+                    }
+                    if self.unsaved_prompt.is_some() || self.comms_form.is_some() || self.compose_form.is_some() || self.pairing_modal.is_some() || self.guardian_modal.is_some() || self.recovery_wizard.is_some() || self.injection_prompt.is_some() || self.bubble_picker || self.pending_action.is_some() || self.notice.is_some() || self.ctx_menu.is_some() || self.trash_modal.is_some() || self.new_thread_prompt.is_some() || self.orphan_modal.is_some() || self.lane_rename.is_some() {
                         // Modal/menu open: no drag/pan — release dismisses or acts.
                         self.dragging = false;
+                        // The new-thread prompt's field takes a press (caret,
+                        // double-click, drag-select; N4) when nothing is above it.
+                        if self.prompt_on_top() {
+                            let mods = crate::winit_input::editor_modifiers(self.mods);
+                            if let Some(prompt) = self.new_thread_prompt.as_mut() {
+                                prompt.press(p, vw, vh, mods);
+                            }
+                        }
+                        // So does the rename field over a lane label (R3).
+                        if self.rename_on_top() {
+                            let mods = crate::winit_input::editor_modifiers(self.mods);
+                            if let Some(field) = self.lane_rename.as_mut() {
+                                field.press(p, mods);
+                            }
+                        }
                     } else if self.in_taskbar(p, vw, vh) {
                         // Taskbar is always on top: no drag/pan, the click fires on release.
                         self.dragging = false;
@@ -5769,17 +7113,35 @@ impl ApplicationHandler for App {
                         if header.contains(p) && !close.contains(p) {
                             self.drag_win = Some(top);
                         }
+                        self.v2_pointer_down(p);
                         self.dragging = false; // a window has focus, not the canvas
+                    } else if let Some(lane) = crate::lane_rename::label_at(p, &self.label_rects) {
+                        // Press on a renamable lane label (drawn above the
+                        // cards): the second press of a double-click opens
+                        // the rename field over it (R1); otherwise it pans.
+                        if let Some(lane) = self.label_clicks.press(Some(lane), p, Instant::now()) {
+                            self.open_lane_rename(lane);
+                            self.dragging = false;
+                        } else {
+                            self.dragging = true;
+                        }
                     } else if let Some(ci) = self.card_at(p.x, p.y, vw, vh) {
                         // Press on a card: arm a card drag (move to another lane).
                         // A release with no movement opens it instead (handle_click).
-                        self.card_drag = Some(ci);
+                        self.card_drag = self.cards.get(ci).map(|c| c.id.clone());
                         self.dragging = false;
                     } else {
                         self.dragging = true; // canvas pan
                     }
                 }
                 ElementState::Released => {
+                    self.v2_pointer_up(Point::new(self.cursor.0, self.cursor.1));
+                    if let Some(prompt) = self.new_thread_prompt.as_mut() {
+                        prompt.release(Point::new(self.cursor.0, self.cursor.1));
+                    }
+                    if let Some(field) = self.lane_rename.as_mut() {
+                        field.release(Point::new(self.cursor.0, self.cursor.1));
+                    }
                     let card_drag = self.card_drag.take();
                     self.drag_win = None;
                     self.dragging = false;
@@ -5788,13 +7150,33 @@ impl ApplicationHandler for App {
                         let moved = (cx - sx).hypot(cy - sy);
                         if moved < 5.0 {
                             self.handle_click(cx, cy); // a click, not a drag
-                        } else if let Some(ci) = card_drag {
-                            self.drop_card_on_lane(ci, cy); // dragged a card to a lane
+                        } else if let Some(id) = card_drag {
+                            self.drop_card_on_lane(&id, cy); // dragged a card to a lane
                         }
                     }
                 }
             },
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                // With the new-thread prompt open, a right click outside it is
+                // a click outside (N3: it closes, nothing is created); inside
+                // it, nothing. No menu opens over it.
+                if self.prompt_on_top() {
+                    let p = Point::new(self.cursor.0, self.cursor.1);
+                    let (vw, vh) = self.win_size().unwrap_or((0.0, 0.0));
+                    let inside = self.new_thread_prompt.as_mut().is_some_and(|pr| pr.layout(vw, vh).bounds.contains(p));
+                    if !inside {
+                        self.prompt_step(crate::new_thread::PromptStep::Cancel);
+                    }
+                    return;
+                }
+                // Likewise the rename field over a lane label (R2).
+                if self.rename_on_top() {
+                    let p = Point::new(self.cursor.0, self.cursor.1);
+                    if !self.lane_rename.as_ref().is_some_and(|f| f.contains(p)) {
+                        self.rename_step(crate::lane_rename::RenameStep::Cancel);
+                    }
+                    return;
+                }
                 self.open_context_menu();
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -5813,6 +7195,13 @@ impl ApplicationHandler for App {
                     self.cam.offset_y += dy;
                 }
                 self.cursor = (px, py);
+                self.v2_pointer_move(Point::new(px, py));
+                if let Some(prompt) = self.new_thread_prompt.as_mut() {
+                    prompt.drag(Point::new(px, py));
+                }
+                if let Some(field) = self.lane_rename.as_mut() {
+                    field.drag(Point::new(px, py));
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.ctx_menu = None; // any scroll dismisses an open menu
@@ -5822,12 +7211,21 @@ impl ApplicationHandler for App {
                 };
                 let p = Point::new(self.cursor.0, self.cursor.1);
                 let (vw, vh) = self.win_size().unwrap_or((0.0, 0.0));
-                if self.in_taskbar(p, vw, vh) {
+                if let Some(m) = self.orphan_modal.as_mut() {
+                    // The section's thread chooser takes the wheel (its list scrolls).
+                    if m.contains(vw, vh, p) {
+                        m.scroll(lines.round() as i64);
+                    }
+                } else if self.in_taskbar(p, vw, vh) {
                     // Taskbar swallows scroll (no canvas zoom underneath it).
                 } else if let Some(wi) = self.window_at(p) {
+                    // The wheel over a document window is its editor's: over
+                    // the text it scrolls the text.
+                    let editor_took_it = self.v2_wheel(wi, p, lines);
                     // Scroll the window's content (upper clamp applied in build_scene).
                     let d = lines * 48.0;
                     match &mut self.windows[wi].content {
+                        _ if editor_took_it => {}
                         WindowContent::Search(sp) => sp.scroll = (sp.scroll - d).max(0.0),
                         WindowContent::Settings(set) => set.scroll = (set.scroll - d).max(0.0),
                         WindowContent::Chat(chat) => chat.scroll = (chat.scroll - d).max(0.0),
@@ -5838,12 +7236,13 @@ impl ApplicationHandler for App {
                                 ib.list_scroll = (ib.list_scroll - d).max(0.0);
                             }
                         }
-                        WindowContent::Doc(win) => win.scroll_y = (win.scroll_y - d).max(0.0),
+                        WindowContent::Doc(_) => {} // the editor's (above)
                         WindowContent::History(hp) => hp.scroll = (hp.scroll - d).max(0.0),
                         WindowContent::Models(mp) => mp.scroll = (mp.scroll - d).max(0.0),
                         WindowContent::Pii(pp) => pp.scroll = (pp.scroll - d).max(0.0),
                         WindowContent::Devices(dp) => dp.scroll = (dp.scroll - d).max(0.0),
-                        WindowContent::PeerReview(pr) => pr.scroll = (pr.scroll - d).max(0.0),
+                        WindowContent::Alerts(ap) => ap.scroll = (ap.scroll - d).max(0.0),
+                        WindowContent::PreviousValues(pv) => pv.scroll = (pv.scroll - d).max(0.0),
                         WindowContent::Browser(_) => {} // the webview scrolls itself
                     }
                 } else {
@@ -5875,17 +7274,24 @@ impl ApplicationHandler for App {
                             }
                             "f" | "F" => {
                                 // Ctrl+F: open-or-toggle a Search window, focused.
+                                // It closes an open new-thread prompt (N3).
+                                if let Some(mut prompt) = self.new_thread_prompt.take() {
+                                    prompt.close();
+                                }
+                                if let Some(mut field) = self.lane_rename.take() {
+                                    field.close();
+                                }
                                 if !self.locked {
                                     self.focus_or_toggle(WindowKind::Search);
                                 }
                                 return;
                             }
                             "s" | "S" => {
-                                // Ctrl+S: save the doc being edited (no-op otherwise).
+                                // Ctrl+S: save the focused document (no-op otherwise).
                                 if self.unsaved_prompt.is_some() {
                                     self.resolve_unsaved(UnsavedChoice::Save);
                                 } else {
-                                    self.save_active_doc();
+                                    self.v2_command(sovereign_editor::input::Command::Save);
                                 }
                                 return;
                             }
@@ -6064,6 +7470,45 @@ impl ApplicationHandler for App {
                         self.ctx_menu = None;
                         return;
                     }
+                    if self.trash_modal.is_some() {
+                        self.cancel_trash_modal_inner();
+                        return;
+                    }
+                }
+                // A trash modal owns the keyboard (only Esc acts, above).
+                if self.trash_modal.is_some() {
+                    return;
+                }
+                // So does a dialog of the section "Documents whose thread was deleted".
+                if self.orphan_modal.is_some() {
+                    self.orphan_modal_key(&logical_key);
+                    return;
+                }
+
+                // The new-thread prompt owns the keyboard while open: Enter
+                // creates, Esc cancels (both only end an input-method
+                // composition first, N7), the rest goes to its field (N2-N4).
+                if self.prompt_on_top() {
+                    let mods = crate::winit_input::editor_modifiers(self.mods);
+                    if let Some(step) = self.new_thread_prompt.as_mut().map(|p| p.key(&logical_key, text.as_deref(), mods)) {
+                        self.prompt_step(step);
+                    }
+                    return;
+                }
+                // So does the rename field over a lane label: Enter saves, Esc
+                // cancels (both only end a composition first), the rest goes
+                // to its field (R2, R3).
+                if self.rename_on_top() {
+                    let mods = crate::winit_input::editor_modifiers(self.mods);
+                    if let Some(step) = self.lane_rename.as_mut().map(|f| f.key(&logical_key, text.as_deref(), mods)) {
+                        self.rename_step(step);
+                    }
+                    return;
+                }
+
+                // A focused document editor owns the keyboard.
+                if !self.locked && self.v2_key(&logical_key, text.as_deref()) {
+                    return;
                 }
 
                 // The auth gate owns the keyboard while locked.
@@ -6167,34 +7612,6 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
-                // A document being edited owns the keyboard (caret at end).
-                else if self.top_doc_editing() {
-                    let top = self.windows.len() - 1;
-                    match &logical_key {
-                        Key::Named(NamedKey::Escape) => self.request_leave_edit(top),
-                        Key::Named(NamedKey::Enter) => {
-                            if let WindowContent::Doc(d) = &mut self.windows[top].content {
-                                d.insert_char('\n');
-                            }
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            if let WindowContent::Doc(d) = &mut self.windows[top].content {
-                                d.backspace();
-                            }
-                        }
-                        _ => {
-                            if let Some(t) = &text {
-                                if let WindowContent::Doc(d) = &mut self.windows[top].content {
-                                    for ch in t.chars() {
-                                        if !ch.is_control() {
-                                            d.insert_char(ch);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
                 // The TOP (focused) window takes typed text when it's a text widget
                 // (Chat composer or Search query).
                 else if matches!(self.top_kind(), Some(WindowKind::Chat)) {
@@ -6285,6 +7702,62 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                } else if matches!(self.top_kind(), Some(WindowKind::Alerts)) {
+                    // WCAG 2.1.1: every alert action from the keyboard.
+                    let top = self.windows.len() - 1;
+                    let view_h = (self.windows[top].bounds.height() - 120.0).max(ALERT_ROW_H);
+                    match &logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.windows.pop();
+                        }
+                        Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
+                            let down = matches!(logical_key, Key::Named(NamedKey::ArrowDown));
+                            if let WindowContent::Alerts(ap) = &mut self.windows[top].content {
+                                ap.move_focus(down, view_h);
+                            }
+                        }
+                        Key::Named(NamedKey::Enter) => self.alerts_open(top),
+                        Key::Named(NamedKey::Delete) => self.alert_action(top, AlertBtn::Dismiss),
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("o") => self.alerts_open(top),
+                        // S5-12: the three ways out for the selected document of the section.
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("m") => {
+                            self.orphan_key(top, crate::orphans::OrphanAction::MoveTo)
+                        }
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("n") => {
+                            self.orphan_key(top, crate::orphans::OrphanAction::NewThread)
+                        }
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("t") => {
+                            self.orphan_key(top, crate::orphans::OrphanAction::Trash)
+                        }
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("v") => self.alert_action(top, AlertBtn::Previous),
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("d") => self.alert_action(top, AlertBtn::Dismiss),
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("a") => {
+                            self.windows.pop();
+                        }
+                        _ => {}
+                    }
+                } else if matches!(self.top_kind(), Some(WindowKind::PreviousValues)) {
+                    let top = self.windows.len() - 1;
+                    let view_h = (self.windows[top].bounds.height() - 120.0).max(PV_ROW_H);
+                    match &logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.windows.pop();
+                        }
+                        Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
+                            let down = matches!(logical_key, Key::Named(NamedKey::ArrowDown));
+                            if let WindowContent::PreviousValues(pv) = &mut self.windows[top].content {
+                                pv.move_selection(down, view_h);
+                            }
+                        }
+                        Key::Named(NamedKey::Enter) => self.previous_value_action(top, PrevBtn::Restore),
+                        Key::Named(NamedKey::Delete) => self.previous_value_action(top, PrevBtn::Forget),
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("r") => self.previous_value_action(top, PrevBtn::Restore),
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("x") => self.previous_value_action(top, PrevBtn::Forget),
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("v") => {
+                            self.windows.pop();
+                        }
+                        _ => {}
+                    }
                 } else if matches!(self.top_kind(), Some(WindowKind::Browser)) {
                     // The browser URL bar owns the keyboard (Enter navigates).
                     let top = self.windows.len() - 1;
@@ -6315,17 +7788,22 @@ impl ApplicationHandler for App {
                         Key::Named(NamedKey::Escape) => {
                             // A fanned-open deck collapses first; otherwise close the
                             // top window (inbox thread-view backs out first, as before).
+                            // A document window whose editor does not have the
+                            // keyboard closes the way its × does: its editor
+                            // saves first, and asks if that fails (E4).
                             if self.expanded_deck.is_some() {
                                 self.expanded_deck = None;
-                            } else if let Some(top) = self.windows.last_mut() {
-                                if let WindowContent::Inbox(ib) = &mut top.content {
-                                    if ib.selected.is_some() {
+                            } else if let Some(top) = self.windows.len().checked_sub(1) {
+                                match &mut self.windows[top].content {
+                                    WindowContent::Inbox(ib) if ib.selected.is_some() => {
                                         ib.selected = None;
                                         ib.thread_scroll = 0.0;
-                                        return;
+                                    }
+                                    WindowContent::Doc(_) => self.request_close_window(top),
+                                    _ => {
+                                        self.windows.pop();
                                     }
                                 }
-                                self.windows.pop();
                             }
                         }
                         Key::Character(ref s) if s.eq_ignore_ascii_case("i") => {
@@ -6349,8 +7827,11 @@ impl ApplicationHandler for App {
                         Key::Character(ref s) if s.eq_ignore_ascii_case("d") => {
                             self.focus_or_toggle(WindowKind::Devices); // devices & sync
                         }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("r") => {
-                            self.focus_or_toggle(WindowKind::PeerReview); // synced changes to review
+                        Key::Character(ref s) if s.eq_ignore_ascii_case("a") => {
+                            self.focus_or_toggle(WindowKind::Alerts); // alerts on changes from your devices
+                        }
+                        Key::Character(ref s) if s.eq_ignore_ascii_case("v") => {
+                            self.focus_or_toggle(WindowKind::PreviousValues); // previous values of synced items
                         }
                         Key::Character(ref s) if s.eq_ignore_ascii_case("e") => {
                             self.open_comms_form(); // email setup
@@ -6363,7 +7844,12 @@ impl ApplicationHandler for App {
                         }
                         // Keyboard canvas navigation (WCAG 2.1.1), only when no window is open.
                         other => {
-                            if self.windows.is_empty() {
+                            if matches!(self.top_kind(), Some(WindowKind::History)) {
+                                // History from the keyboard (reached from an alert's
+                                // "previous version"): Up/Down choose a version, Enter
+                                // uses it. Other keys keep their global meaning.
+                                self.history_key(&other);
+                            } else if self.windows.is_empty() {
                                 let (vw, vh) = self.win_size().unwrap_or((1600.0, 1000.0));
                                 const STEP: f64 = 60.0;
                                 match other {
@@ -6441,32 +7927,35 @@ pub(crate) fn run_shot(path: String) {
     if let Some(kind) = crate::dev::var("SHELL_OPEN_CTX") {
         if !app.cards.is_empty() {
             let anchor = Point::new(320.0, 300.0);
-            let target = match kind.as_str() {
-                "canvas" => CtxTarget::Canvas(1),
-                "skills" => CtxTarget::Skills(0),
-                _ => CtxTarget::Card(0),
+            let ids: Vec<String> = app.cards.iter().map(|c| c.id.clone()).collect();
+            let card = crate::card_menu::CardMenu::open_on(&ids, 0);
+            let target = match (kind.as_str(), card) {
+                ("canvas", _) | (_, None) => CtxTarget::Canvas(1),
+                ("skills", Some(mut card)) => {
+                    card.open_skills();
+                    CtxTarget::Card(card)
+                }
+                (_, Some(card)) => CtxTarget::Card(card),
             };
             app.cursor = (anchor.x + 40.0, anchor.y + 19.0);
-            app.ctx_menu = Some(ContextMenu { target, anchor, confirm_delete: false });
+            app.ctx_menu = Some(ContextMenu { target, anchor });
         }
     }
     // SHELL_RUN_SKILL=<index>: run that skill on the first doc + show the notice.
     if let Some(idx) = crate::dev::var("SHELL_RUN_SKILL") {
         if let Ok(si) = idx.parse::<usize>() {
-            if !app.cards.is_empty() {
-                app.run_skill(0, si);
+            if let Some(id) = app.cards.first().map(|c| c.id.clone()) {
+                app.run_skill(&id, si);
             }
         }
     }
-    // SHELL_OPEN_HISTORY=1: seed a couple of commits for the first doc + open its
-    // History window with the first version selected (screenshot debug).
+    // SHELL_OPEN_HISTORY=1: open the first doc's History window with the first
+    // version selected (screenshot debug). No commits are seeded any more: a
+    // document has its versions from the document service (adoption step 3:
+    // at least the one from its creation).
     if crate::dev::flag("SHELL_OPEN_HISTORY") && !app.cards.is_empty() {
         let id = app.cards[0].id.clone();
-        let title = app.cards[0].title.clone();
-        if let Some(db) = app.db.clone() {
-            let _ = app.rt.block_on(db.commit_document(&id, "Initial draft"));
-            let _ = app.rt.block_on(db.commit_document(&id, "Saved edit"));
-        }
+        let title = crate::canvas::display_title(&app.cards[0].title).to_string();
         app.open_history(&id, &title);
         if let Some(WindowContent::History(hp)) = app.windows.last_mut().map(|w| &mut w.content) {
             if !hp.commits.is_empty() {
@@ -6477,7 +7966,7 @@ pub(crate) fn run_shot(path: String) {
     // SHELL_DRAG=1: simulate dragging the first card over a different lane so the
     // drop-target highlight renders (screenshot debug).
     if crate::dev::flag("SHELL_DRAG") && !app.cards.is_empty() {
-        app.card_drag = Some(0);
+        app.card_drag = Some(app.cards[0].id.clone());
         let target_lane = (app.cards[0].lane + 2) % LANES;
         app.cursor = (700.0, app.cam.w2s_y(target_lane as f64 * LANE_H + LANE_H * 0.5));
     }
@@ -6531,20 +8020,8 @@ pub(crate) fn run_shot(path: String) {
     // DPI here, so `ui_scale` (SHELL_UI_SCALE) is the only factor.
     let total = app.ui_scale;
     app.build_scene(W as f64 / total, H as f64 / total);
-    // SHELL_DOC_EDIT (with SHELL_OPEN_DOC=1): put the opened doc into edit mode
-    // with a sample addition, then re-lay out — to capture the editor + caret.
-    if crate::dev::flag("SHELL_DOC_EDIT") {
-        if let Some(win) = app.windows.iter_mut().find_map(|w| match &mut w.content {
-            WindowContent::Doc(d) => Some(d),
-            _ => None,
-        }) {
-            win.begin_edit();
-            win.edit_buf.push_str("\n\nEditing inline: type to append, Enter for newline, Ctrl+S to save.");
-            win.dirty = true;
-            win.needs_reshape = true;
-        }
-        app.build_scene(W as f64 / total, H as f64 / total);
-    }
+    // (SHELL_DOC_EDIT, which put the plain window into edit mode, went with
+    // it: a document window is always the editor, E2/E6.)
     let mut framed = Scene::new();
     framed.append(&app.scene, Some(Affine::scale(total)));
 
@@ -6660,12 +8137,11 @@ pub(crate) fn run_auth_probe() {
             .expect("build encrypted db");
         println!("probe: unlocked persona = {persona:?}");
 
-        // 3. Write through the ENCRYPTED db (encrypts at rest).
-        let thread = enc
-            .create_thread(sovereign_db::schema::Thread::new("Welcome".into(), String::new()))
-            .await
-            .expect("create thread");
-        let tid = thread.id.as_ref().map(|t| t.to_string()).unwrap();
+        // 3. Write through the ENCRYPTED db (encrypts at rest); the thread
+        // through the one thread-write path (THREAD-sync S1).
+        let probe_docs =
+            sovereign_ai::docs_host::build_document_service(enc.clone(), None, "auth-probe".into());
+        let tid = probe_docs.thread_create("Welcome", "").await.expect("create thread");
         let mut doc = sovereign_db::schema::Document::new("My secret note".into(), tid, true);
         doc.content = "This body must be ciphertext at rest.".into();
         let created = enc.create_document(doc).await.expect("create doc");

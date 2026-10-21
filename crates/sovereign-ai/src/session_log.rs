@@ -102,36 +102,7 @@ impl SessionLog {
         // file has (truncation/rollback), a forged anchor MAC, a deleted
         // anchor with encrypted entries remaining, or a genesis wipe caught
         // by the out-of-dir beacon.
-        let mut tamper: Option<String> = None;
-        match crate::encrypted_log::read_chain_anchor(&anchor_path, &key) {
-            crate::encrypted_log::AnchorStatus::Valid { count, head } => {
-                if let Err(e) = crate::encrypted_log::check_no_truncation(
-                    &Self::read_all_lines(&path),
-                    count,
-                    &head,
-                ) {
-                    tamper = Some(format!("anchor/file mismatch: {e}"));
-                }
-            }
-            crate::encrypted_log::AnchorStatus::Forged => {
-                tamper = Some("anchor MAC invalid (forged/corrupt)".into());
-            }
-            crate::encrypted_log::AnchorStatus::Missing => {
-                if Self::read_all_lines(&path)
-                    .iter()
-                    .any(|l| crate::encrypted_log::is_encrypted_line(l))
-                {
-                    tamper = Some("anchor missing but encrypted entries exist (deleted anchor)".into());
-                } else if beacon.map(|b| b.exists()).unwrap_or(false) {
-                    // sessionlog-genesis-wipe: the log AND its anchor are both
-                    // gone (a pristine genesis state the in-dir checks would
-                    // wave through as a fresh account), yet the out-of-dir
-                    // beacon says this account's log previously had content.
-                    // Both files were wiped together — fail closed.
-                    tamper = Some("session log + anchor wiped (genesis beacon present)".into());
-                }
-            }
-        }
+        let tamper = Self::tamper_on_open(&path, &anchor_path, &key, beacon);
 
         // SESSIONLOG-001: FAIL CLOSED. Opening the file for append would let the
         // first write re-mint a fully-valid anchor over the truncated/forged
@@ -198,6 +169,45 @@ impl SessionLog {
             anchor_path,
             chain_count,
         })
+    }
+
+    /// The verification [`open_encrypted`](Self::open_encrypted) runs before
+    /// it appends: `Some(reason)` when the log must not be opened under `key`.
+    /// Read-only — it never writes, rotates or re-anchors anything.
+    #[cfg(feature = "encrypted-log")]
+    fn tamper_on_open(
+        path: &Path,
+        anchor_path: &Path,
+        key: &[u8; 32],
+        beacon: Option<&Path>,
+    ) -> Option<String> {
+        match crate::encrypted_log::read_chain_anchor(anchor_path, key) {
+            crate::encrypted_log::AnchorStatus::Valid { count, head } => {
+                crate::encrypted_log::check_no_truncation(&Self::read_all_lines(path), count, &head)
+                    .err()
+                    .map(|e| format!("anchor/file mismatch: {e}"))
+            }
+            crate::encrypted_log::AnchorStatus::Forged => {
+                Some("anchor MAC invalid (forged/corrupt)".into())
+            }
+            crate::encrypted_log::AnchorStatus::Missing => {
+                if Self::read_all_lines(path)
+                    .iter()
+                    .any(|l| crate::encrypted_log::is_encrypted_line(l))
+                {
+                    Some("anchor missing but encrypted entries exist (deleted anchor)".into())
+                } else if beacon.map(|b| b.exists()).unwrap_or(false) {
+                    // sessionlog-genesis-wipe: the log AND its anchor are both
+                    // gone (a pristine genesis state the in-dir checks would
+                    // wave through as a fresh account), yet the out-of-dir
+                    // beacon says this account's log previously had content.
+                    // Both files were wiped together — fail closed.
+                    Some("session log + anchor wiped (genesis beacon present)".into())
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     /// All non-empty lines of the log file (empty if missing).
@@ -592,6 +602,119 @@ impl SessionLogSlot {
         }
         SessionLog::load_recent(&self.dir, max_entries)
     }
+}
+
+/// Marker left in a persona's log directory once
+/// [`set_aside_unverifiable_once`] has run there, so it never acts twice.
+#[cfg(feature = "encrypted-log")]
+pub const SET_ASIDE_MARKER: &str = "session_log.layout-v2";
+
+/// What [`set_aside_unverifiable_once`] did.
+#[cfg(feature = "encrypted-log")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetAside {
+    /// Nothing was moved: already done, no log, or the log verifies.
+    Nothing,
+    /// The log did not verify and was moved, unread, into this directory.
+    MovedTo(PathBuf),
+}
+
+/// One-time migration of the log directory shared by both personas before
+/// the per-persona layout (spec ch. 07, *After login*, *Migration*, v2.0.29).
+///
+/// If the log in `dir` does not verify under `key` — the check
+/// [`SessionLog::open_encrypted`] runs, plus every encrypted entry decrypting
+/// under `key` — its files (log, anchor, rotated logs) and the `beacon` are
+/// moved, unread and unchanged, into a new `set-aside-<UTC time>` directory
+/// inside `dir`, which no read path ever opens; the log then starts empty.
+/// Nothing is deleted. In every case a marker ([`SET_ASIDE_MARKER`]) is left
+/// in `dir`, and once it exists this function does nothing: a log that fails
+/// to verify afterwards fails closed, as before (SESSIONLOG-001), so the rule
+/// can never hide later tampering.
+#[cfg(feature = "encrypted-log")]
+pub fn set_aside_unverifiable_once(
+    dir: &Path,
+    key: [u8; 32],
+    beacon: Option<&Path>,
+) -> Result<SetAside> {
+    use crate::encrypted_log;
+
+    let marker = dir.join(SET_ASIDE_MARKER);
+    if marker.exists() {
+        return Ok(SetAside::Nothing);
+    }
+    let log_path = dir.join("session_log.jsonl");
+    let anchor_path = dir.join("session_log.anchor");
+    let lines = SessionLog::read_all_lines(&log_path);
+    let has_content = !lines.is_empty() || anchor_path.exists();
+    let verifies = !has_content
+        || (SessionLog::tamper_on_open(&log_path, &anchor_path, &key, beacon).is_none()
+            && lines
+                .iter()
+                .filter(|l| encrypted_log::is_encrypted_line(l))
+                .all(|l| encrypted_log::decrypt_entry(l, &key).is_ok()));
+    drop(lines);
+
+    if verifies {
+        write_set_aside_marker(&marker)?;
+        return Ok(SetAside::Nothing);
+    }
+
+    let stamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let mut aside = dir.join(format!("set-aside-{stamp}"));
+    let mut n = 1;
+    while aside.exists() {
+        aside = dir.join(format!("set-aside-{stamp}-{n}"));
+        n += 1;
+    }
+    fs::create_dir_all(&aside)?;
+
+    let mut names = vec!["session_log.jsonl".to_string(), "session_log.anchor".to_string()];
+    names.extend((1..=MAX_ROTATED).map(|i| format!("session_log.{i}.jsonl")));
+    for name in &names {
+        let from = dir.join(name);
+        if from.exists() {
+            move_file(&from, &aside.join(name))?;
+        }
+    }
+    // The beacon goes with the log it vouched for: left behind, it would make
+    // the empty log read as a genesis wipe and fail closed.
+    if let Some(b) = beacon {
+        if b.exists() {
+            let name = b
+                .file_name()
+                .map(|n| n.to_os_string())
+                .unwrap_or_else(|| "session_log.beacon".into());
+            move_file(b, &aside.join(name))?;
+        }
+    }
+
+    write_set_aside_marker(&marker)?;
+    tracing::warn!(
+        "Session log did not verify; set aside unread in {}",
+        aside.display()
+    );
+    Ok(SetAside::MovedTo(aside))
+}
+
+#[cfg(feature = "encrypted-log")]
+fn write_set_aside_marker(marker: &Path) -> Result<()> {
+    if let Some(parent) = marker.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(marker, b"1\n")?;
+    Ok(())
+}
+
+/// Rename, or copy then remove when the two paths are on different volumes.
+#[cfg(feature = "encrypted-log")]
+fn move_file(from: &Path, to: &Path) -> Result<()> {
+    if fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    fs::copy(from, to)?;
+    fs::remove_file(from)?;
+    Ok(())
 }
 
 /// A parsed session log entry for context injection.
@@ -1265,3 +1388,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "encrypted-log"))]
+#[path = "session_log_setaside_tests.rs"]
+mod setaside_tests;

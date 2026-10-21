@@ -13,8 +13,7 @@
 		forgetPairedDevice,
 		getLocalPeerId,
 		triggerSyncNow,
-		getP2pSettings,
-		resolveSyncConflictKeepMine
+		getP2pSettings
 	} from '$lib/api/commands';
 	import type {
 		UserProfileDto,
@@ -29,13 +28,16 @@
 	import BubblePreview from './BubblePreview.svelte';
 	import PairQrPanel from './PairQrPanel.svelte';
 	import RecoveryPanel from './RecoveryPanel.svelte';
+	import TrashPanel from './TrashPanel.svelte';
+	import { trash, loadTrash } from '$lib/stores/trash.svelte';
 	import { device } from '$lib/stores/device.svelte';
 	import { focusTrap } from '$lib/actions/focusTrap';
 	import { sync, clearError, dismissConflict } from '$lib/stores/sync.svelte';
+	import { openById, setMode, loadCommits } from '$lib/stores/documents.svelte';
 	import { pairing } from '$lib/stores/pairing.svelte';
 	import { vision, setWindowSeconds } from '$lib/stores/vision.svelte';
 
-	type Tab = 'profile' | 'ai' | 'security' | 'trust' | 'comms' | 'devices' | 'recovery' | 'vision';
+	type Tab = 'profile' | 'ai' | 'security' | 'trust' | 'comms' | 'devices' | 'recovery' | 'trash' | 'vision';
 
 	const BUBBLE_STYLES = ['icon', 'wave', 'spin', 'pulse', 'blink', 'rings', 'matrix', 'orbit', 'morph'];
 
@@ -89,7 +91,6 @@
 	let pairPanelOpen = $state(false);
 	let syncing = $state(false);
 	let p2pSettings = $state<P2pSettings | null>(null);
-	let resolvingConflict = $state('');
 
 	// Live-refresh the paired list when the P3.1 handshake completes
 	// while the pairing panel is open.
@@ -102,6 +103,8 @@
 	$effect(() => {
 		if (app.settingsVisible) {
 			loadData();
+			// The Trash tab shows its count (C-DOC adoption step 5, S5-11).
+			void loadTrash();
 		}
 	});
 
@@ -242,16 +245,18 @@
 		devicesLoading = false;
 	}
 
-	async function handleKeepMine(docId: string) {
-		resolvingConflict = docId;
+	/** Concurrent edits keep both versions (C-WIRE 7): the later edit is
+	 *  current, the other is in History, where "Use this version" puts it
+	 *  back (the ordinary version restore, C-WIRE 14). */
+	async function openHistory(docId: string) {
 		error = '';
 		try {
-			await resolveSyncConflictKeepMine(docId);
-			dismissConflict(docId);
+			await openById(docId);
+			setMode(docId, 'history');
+			await loadCommits(docId);
 		} catch (e) {
 			error = String(e);
 		}
-		resolvingConflict = '';
 	}
 
 	async function handleForgetDevice(peerId: string) {
@@ -384,6 +389,13 @@
 				onclick={() => (activeTab = 'recovery')}
 			>
 				Recovery
+			</button>
+			<button
+				class="tab"
+				class:active={activeTab === 'trash'}
+				onclick={() => (activeTab = 'trash')}
+			>
+				Trash ({trash.lines.length})
 			</button>
 			<button
 				class="tab"
@@ -899,10 +911,12 @@
 					<!-- Conflicts (if any) -->
 					{#if sync.conflicts.length > 0}
 						<div class="form-section">
-							<label class="field-label">Sync conflicts</label>
+							<label class="field-label">Edited on both devices</label>
 							<p class="hint">
-								Both devices edited these at the same moment. "Keep mine"
-								pushes this device's version to your other devices.
+								These documents were changed on two devices at the same time.
+								Nothing was lost: the later edit is current and the other one is
+								in the document's History. To keep the other one, open History
+								and choose "Use this version".
 							</p>
 							<ul class="conflict-list">
 								{#each sync.conflicts as c (c.docId)}
@@ -912,16 +926,13 @@
 											<span class="conflict-desc">{c.description}</span>
 										</div>
 										<div class="conflict-actions">
-											<button
-												class="conflict-btn primary"
-												disabled={resolvingConflict === c.docId}
-												onclick={() => handleKeepMine(c.docId)}
-											>
-												{resolvingConflict === c.docId ? 'Pushing...' : 'Keep mine'}
+											<button class="conflict-btn primary" onclick={() => openHistory(c.docId)}>
+												Open History
 											</button>
 											<button
 												class="conflict-btn"
 												onclick={() => dismissConflict(c.docId)}
+												aria-label="Dismiss the notice on {c.docId}"
 											>
 												Dismiss
 											</button>
@@ -929,12 +940,6 @@
 									</li>
 								{/each}
 							</ul>
-							<p class="hint">
-								To inspect first, open the document and check its version
-								history. "Keep theirs" needs a remote-fetch step and is
-								coming in a later release — until then, the newer edit wins
-								automatically on the next sync.
-							</p>
 						</div>
 					{/if}
 				{/if}
@@ -942,6 +947,10 @@
 			<!-- Recovery Tab (Surface 1: Guardian Access Recovery setup) -->
 			{:else if activeTab === 'recovery'}
 				<RecoveryPanel />
+
+			<!-- Trash Tab (C-DOC adoption step 5: restore, restore all, empty) -->
+			{:else if activeTab === 'trash'}
+				<TrashPanel />
 			{/if}
 		</div>
 	</div>

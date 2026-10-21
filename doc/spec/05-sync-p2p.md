@@ -404,6 +404,11 @@ chapter 04.
 
 ### Non-destructive peer overwrite and peer review
 
+*Decided 2026-10-15 (Céline; C-WIRE below): the systematic review (flag on every change, the
+review lists, the badge) is retired for changes from her own devices; the audit stays, runs on
+every received change and raises an alert only on a detection; the overwrite preservation stays
+(History, previous values). This section describes the build until step 4 lands.*
+
 **Status:** ◐ Partial — overwrite preservation built; the shell never runs the audit; both UIs
 offer restore for 3 of the 7 restorable tables. (code: crates/sovereign-p2p/src/sync_service.rs;
 crates/sovereign-ai/src/peer_audit.rs; crates/sovereign-app/src/tauri_commands/peer_review.rs;
@@ -451,6 +456,275 @@ merges are not part of device sync.
 
 Multi-user, concurrent editing of one document by several people with merge rather than
 last-writer-wins. Device sync between one user's devices does not need it.
+
+## Sync wire — contract (C-WIRE)
+
+**Status:** ○ Draft 2026-10-15, amended the same day with Céline's answers to all five questions
+(devices on an older build, purges, backup restore, "Keep mine", review of her own devices'
+changes). Technical choices marked **[choice]**. No test and no code yet.
+
+**Why.** Documents are now written by one door, the document service (ch. 03, C-DOC), which keeps
+v2 content, versions, trust, trust decisions, provenance, the trash and purge markers. Sync still
+writes around it (C-DOC adoption, step 4): it compares and sends the **stored bytes**, decides
+direction by **wall-clock** modification time, creates every arriving document **owned** with
+provenance *unrecorded*, and sends neither trust, the user's trust decisions, provenance (copies
+included) nor purge markers. So an undetermined import becomes owned on her other device, a
+trust decision made on the phone never reaches the desktop, a purge is undone by the next sync,
+and a document stored in v2 on one device and in a legacy form on another never compares equal.
+This contract fixes what travels, how two states are compared, and how a remote state is applied
+— through `DocumentService::apply_remote` and nothing else.
+
+**How the wire evolves (K8, decided 2026-10-10).** By **added fields with defaults**, no protocol
+bump. Every field below that is new is optional on the wire; a peer that does not send it is
+treated as described in *Peers on an older build*. Every new field travels **inside** the sealed,
+signed envelope (the document snapshot, the AEAD-sealed manifest); nothing new is sent in clear.
+
+### What travels for a document
+
+The snapshot (sealed under the pair key, signed by the sender) carries:
+
+| Field | Today | Contract |
+|---|---|---|
+| title, thread, trash marker | sent | sent |
+| content | the stored bytes | the stored v2 content; a newer-format document verbatim |
+| trust | — | **new**: owned / external / undetermined |
+| trust decision | — | **new**: the user's last explicit decision — trust, device, and its **stamp** (below) |
+| provenance | — | **new**: written, assistant, web + URL, import + path, paired device, unrecorded, or *copy of <id>* carrying the source's provenance (nested, as stored — ch. 03 G20) |
+| created at | — | **new**: the document's original creation time, so it keeps its place on the timeline |
+| stamp, previous stamp | — (wall-clock `modified_at`) | **new**: the stamp of the write that produced this state, and of the state it replaced (below) |
+| author device | — (the sender) | **new**: the device on which the write was made, when the sender only relays it **[choice]** |
+| modification time | sent | sent, for display and for peers on an older build only |
+
+The manifest (sealed under the account transport key) gains, per document, the **normalised
+hash** and the **stamp**; it keeps today's byte hash for older peers. It gains a list of **purge
+markers** — document id, the stamp of the purge, and the **fingerprint** of the purged version
+(*Deletions and purges*), nothing else — and a **wire version** number so a peer on an older build
+can be recognised.
+
+### Stamps instead of the wall clock **[choice]**
+
+Every write to a document, and every trust decision, gets a **hybrid logical clock** stamp:
+wall-clock time, a counter, and the device — ordered by time, then counter, then device. A device
+never issues a stamp lower than one it has seen, so a later write always carries a greater stamp
+even when the clocks disagree; a received stamp more than **5 minutes** ahead of the receiver's
+clock is refused, as manifests already are (today a document is accepted up to 24 hours ahead).
+The rows already use Lamport stamps (*Rows* above); documents and trust decisions join them. This
+closes the C-DOC weakness that a device whose clock runs ahead wins every disagreement. The
+displayed times stay wall-clock.
+
+### Comparing two states
+
+Two states of a document are equal when their **normalised forms** are equal: the title, the
+thread, the trash state, the trust, the trust decision, the provenance, and the content **as v2**
+— a legacy form converted with the deterministic migration seeded by the document id (ch. 03, G3),
+so the same legacy document is the same on every device whether or not it has been migrated. The
+normalised hash is computed by the document service (`sync` never parses content, per the readers
+gate). A title-only edit or a thread move changes it, so both now travel (they do not today).
+
+### Direction and concurrent edits
+
+- **Fast-forward.** A remote state whose *previous stamp* is the local state's stamp replaces it;
+  a local state whose previous stamp is the remote's is sent. Otherwise the edits were concurrent.
+- **Concurrent edits keep both, without asking** — the rule Céline decided for save conflicts on
+  2026-10-12, applied across devices: the state with the greater stamp is current on **both**
+  devices; the other state is kept as a version on **both** (the losing device versions its own
+  state before applying, as today; the winning device receives the losing state and stores it as
+  a version without making it current); both devices show a notice. Nothing is asked unless the
+  user acts on the notice.
+- With three or more devices, a "concurrent" verdict can be a false alarm (a relayed state whose
+  previous stamp is unknown here); the cost is an extra version and a notice, never a loss
+  **[choice]** — full version vectors are not worth it for one user's devices.
+
+### Applying a remote state
+
+Every remote document state goes through `DocumentService::apply_remote` (C-DOC G19): the local
+state is versioned first, ingest runs (G10), trust moves only with a later decision (G12), a purged
+id is handled as in *Deletions and purges*. Sync keeps no write of its own to documents: no store
+update, commit, create, soft delete or restore from `sovereign-p2p`.
+
+**No systematic review; an alert only when something looks wrong** (decided by Céline,
+2026-10-15). A change arriving from one of her paired devices applies without asking; the state it
+replaced is in History, as for every write. Every received document change still goes through the
+**incoming-change analysis** (`peer_audit.rs`): the deterministic scan of the new content for
+injected instructions, the check for a wholesale rewrite of the previous text, and — where a model
+is loaded — the model's verdict. It is **silent when nothing is suspicious** and **raises an alert
+only on a detection**, pointing at the document and at its previous version in History. Her
+reasoning: security belongs first at device pairing and at data sync — the pairing ceremony, pair
+keys, sealed and signed envelopes, authorship checks — but a paired device can still be
+compromised (stolen, or carrying a trapped page saved on it); she never re-reads her own gestures,
+only the rare alerts. Consequences:
+- **retired:** the per-change review flag as a queue (`peer_review_pending` set on every change),
+  the shell's review list (`r`), the mobile review list, and the `RowsFlaggedForReview` badge;
+- **kept:** `peer_audit.rs` — now run on every received document change rather than on a review
+  queue. **The deterministic checks run at once, during sync, on every device** (mobile
+  included, it has no model). **The model's verdict runs afterwards, in the background, for every
+  received document — first arrivals included — and never makes sync wait** (decided by Céline,
+  2026-10-15: on a machine with a model loaded, a first sync of hundreds of documents would
+  otherwise queue hundreds of model calls ahead of sync and of the user's chat). A background
+  verdict that finds something raises the same alert;
+- **the alert surface** **[choice]**: in the **shell**, a notice in the status bar ("A change from
+  <device> to <document> looks suspicious") that opens an *Alerts* window listing each detection —
+  the document, the device, what was found — with *Open the document* and *Open the previous
+  version*; in the **mobile app**, the same notice as a banner over the canvas, opening the same
+  list in a sheet. An alert stays listed until she dismisses it; dismissing changes nothing in the
+  document. Restoring the previous version is the ordinary version restore ("Use this version");
+- what the review protected stays recoverable: a document's prior state is a version (History); a
+  row's prior value is still kept by sync (`RowRecovery`, sealed) and restorable from a list of
+  *previous values*, without a pending badge **[choice]** — rows are not analysed (the scan reads
+  document text);
+- C-DOC G19 ("the document is flagged for review") changes accordingly: the flag becomes an alert
+  raised only on a detection.
+
+**What `apply_remote` lacks today**, to add in the contract before the tests (not added here):
+1. the original **creation time** (a document arriving today is dated by the sync);
+2. the **stamps** — the service decides with the wall-clock `modified_at`; trust decisions carry a
+   wall-clock `decided_at`;
+3. storing a remote state **as a version without making it current** (the winning side of a
+   concurrent edit);
+4. receiving a **purge marker** from a peer, with its fingerprint (*Deletions and purges*);
+5. the **author device** distinct from the relaying sender;
+6. an outcome that says the edit was **concurrent** (for the notice) and whether **ingest changed
+   the text** (so the rewritten state travels back);
+7. the **normalised hash** and the **purge fingerprint** as service functions, and a way to send the
+   stored state (with trust, decision, provenance, creation time, stamps) without the sync layer
+   reading `content`;
+8. a **backup restore** entry (below);
+9. **row tables** are out of the service: conversation titles and contact-address sets stay with
+   the row apply (below).
+
+### Deletions and purges
+
+- **Every deletion a user makes is a trash** (C-DOC G13) and travels as a tombstone; applying it
+  moves the document to the trash on the other device, restorably; a live state with a greater
+  stamp brings it back (G19). There is no hard delete left to escape this.
+- **A purge removes the other device's copy only if it is the same version** (decided by Céline,
+  2026-10-15). The purge travels as a marker carrying the **fingerprint** of the version that was
+  purged. A device that holds the document — live or in its trash — purges it too **only if its
+  copy has the same fingerprint**. If its copy differs (edited there since, or otherwise
+  different), it is **kept** and synchronised as usual: it comes back to the device that purged
+  it, edits included. To be rid of it, the user deletes it again on either device; that purge
+  then removes it from both, since the copies are now the same.
+- **The fingerprint** **[choice]** is a hash of the purged version's **title and content** (the
+  content as normalised v2, ch. 03 G3), and nothing else: not the thread, trash state, trust or
+  times. A purge erases what was written; a copy that differs only by its lane, its trash state or
+  a trust decision holds nothing that would be lost, so it is purged. The marker carries the hash,
+  never the content.
+- **A purged id comes back only as a differing copy.** A device that purged a document ignores a
+  peer's state for it with the purged fingerprint, and **recreates** it from a state with a
+  different fingerprint — through the service, as a new arrival (its own first version, the
+  sender's trust and provenance, in the trash if the copy was in the peer's trash); the purge
+  marker is then dropped there. This is the one exception to C-DOC G13 ("a purged document is
+  never brought back by sync"), which is amended to say so.
+- A device that never had the document records the marker and refuses an identical copy from then
+  on.
+
+### Peers on an older build
+
+**Documents are not exchanged with a device on an older build until it is updated** (decided by
+Céline, 2026-10-15), and both screens say so ("Update <device> to sync documents"). Threads,
+contacts, messages and the other rows keep syncing. The reason: an older build cannot read v2
+content — its tolerant read shows a v2 document as the raw JSON text, and an edit there would save
+that text back as the document.
+
+A peer is on an older build when its manifest carries no wire version. The new build sends it no
+document state and applies none from it; documents written on the old device stay there until it
+is updated, then sync normally. The v2 format is already written by this build, so "keep writing
+the old form until every device is updated" is not an option.
+
+### Backup restore
+
+**A backup is restored only onto an empty workspace** (decided by Céline, 2026-10-15): a new
+device, or an account just recovered with the guardians. The guardian backup is the sealed copy of
+the whole workspace your guardians hold, for when every device is lost. A device that still holds
+documents never restores a backup: it catches up with your other devices by sync. A restore on a
+non-empty workspace is refused, with the reason ("this device already holds documents; it gets the
+others by sync").
+
+On an empty workspace, the restore goes through the service, document by document: each lands with
+one version ("Restored from backup"), its trust, decision, provenance and times as backed up. There
+is nothing local to conflict with, so everything in the backup comes back. **The purge rule there:**
+an empty device knows no purge, so a document purged after the backup was taken comes back with
+it; the backup carries the purge markers it knew of **[choice]**, which keep a document purged
+before the backup from returning by sync later. When the restored device next syncs with another
+device that still holds a later purge marker, the rule of *Deletions and purges* applies: a copy
+identical to the purged version is purged again; a differing one is kept. If no other device
+survives, what the backup held is what comes back.
+
+**For the rare wish to see a backup next to existing data** (Céline's fallback): restore it into a
+second, empty profile, export what is wanted from there and import it into the first. That depends
+on the **general export**, decided 2026-08-04 (ch. 04, *Export*) and **not built**; until it is,
+this fallback does not exist.
+
+### "Use this version" replaces "Keep mine"
+
+**Decided by Céline, 2026-10-15.** The mobile "Keep mine" (a write that changed only the
+document's time so it would win the next round) is replaced, on mobile and in the shell, by **"Use
+this version"**, offered on the concurrent-edit notice and in History: a version restore (C-DOC
+G9), a normal, later write that syncs like any edit. No "touch" write exists in the contract (an
+identical save does nothing, G11).
+
+### Rows
+
+The row apply (*Rows* above) gains, by added fields: a **conversation's title** applied when it
+changes; a **contact's addresses** applied as a set, removals included (both hashes then converge);
+one shared list of **restorable tables** used by sync and by both *previous values* lists, so every
+table sync can overwrite is one both UIs can restore. Trust of entities and contacts is out of this
+contract.
+
+### Guarantees — each to become a test
+
+1. **Everything that defines a document travels**: title, thread, content (v2; a newer format
+   verbatim), trash state, trust, the last trust decision with its stamp, provenance (copies
+   included), creation time, stamps; all inside the sealed, signed envelope.
+2. **A missing field never overwrites a known one**: a peer that does not send trust, decision,
+   provenance, creation time or stamps leaves the local values as they are, and a document new
+   here gets the safe defaults (undetermined, *paired device*).
+3. **Equal means equal after normalisation**: two devices holding the same document — one
+   migrated to v2, one still legacy — compare equal and exchange nothing; a title-only edit, a
+   thread move, a trust decision or a trash change makes them unequal.
+4. **Order is by stamp, not by clock**: a later write wins whatever the two devices' clocks say;
+   a stamp more than 5 minutes ahead of the receiver is refused.
+5. **Convergence**: after both directions of a round, both devices hold equal states; when the
+   receiver's ingest rewrites the text, the rewritten state travels back once and a further round
+   with no edits exchanges nothing (no loop).
+6. **Nothing is lost**: every local state a remote state replaces is a version first, on every
+   path (overwrite, tombstone, revival, recreation after a purge).
+7. **Concurrent edits keep both without asking**: both devices end with the same current state
+   (the greater stamp) and the other state in History, and both show a notice.
+8. **Trust follows decisions only** (C-DOC G12): a later decision applies in either direction; no
+   other remote difference changes trust; a document new here never arrives owned without a
+   sender trust or decision that says so (closes "synced documents always land owned").
+9. **Tombstones**: every user deletion reaches every paired device as a trash, restorable; a later
+   live state revives.
+10. **A purge removes only the same version** (Céline, 2026-10-15): a device whose copy has the
+    purged fingerprint purges it, wherever it sits; a device whose copy differs keeps it, and that
+    copy comes back to the purging device as a new arrival; a second purge of now-identical copies
+    removes them everywhere; the marker carries no title or content, only the id, stamp and
+    fingerprint.
+11. **Only the service writes documents**: no store write to documents from `sovereign-p2p` (the
+    write gate's step-4 entries removed and its patterns extended to soft delete and restore).
+12. **Older peers exchange no documents** (Céline, 2026-10-15): a peer without a wire version is
+    sent no document state and none of its document states is applied; both screens say which
+    device to update; rows sync with it as before.
+13. **Alerts, not reviews** (Céline, 2026-10-15): a document change received from a paired device
+    is analysed every time; an innocent change applies silently (no flag, no alert) with the
+    replaced state in History; a suspicious one (injected instructions, a wholesale rewrite, or a
+    model verdict against it) is applied too and raises exactly one alert naming the document,
+    the device and the previous version. Rows raise no alert; their previous values stay
+    restorable.
+14. **"Use this version"** is a version restore that travels like any edit; nothing writes a
+    "touch".
+15. **Rows**: conversation titles and contact-address removals converge; every table sync can
+    overwrite is restorable in both UIs.
+16. **Nothing new in clear**: every added field is inside a sealed envelope; the signatures cover
+    them.
+17. **A backup restores only onto an empty workspace** (Céline, 2026-10-15): on a workspace that
+    holds any document, the restore is refused, writes nothing and says why; on an empty one,
+    every backed-up document comes back through the service with one "Restored from backup"
+    version, its trust, decision, provenance and times, and the purge markers in the backup are
+    recorded.
+
+All of Céline's questions on this contract are answered (2026-10-15).
 
 ## Known limits
 

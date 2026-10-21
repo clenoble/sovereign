@@ -49,7 +49,9 @@ struct ScoredPair {
 
 /// Build a short fingerprint for a document: title + first N chars of content body.
 fn build_fingerprint(doc: &Document) -> String {
-    let body = extract_body(&doc.content);
+    // C-DOC adoption step 1: the text through the v2 model (the hand-rolled
+    // envelope parse this replaces fed a v2 document's JSON to the model).
+    let body = sovereign_docformat::plain_text_of(&doc.content);
     let truncated = if body.len() > FINGERPRINT_CHARS {
         // Round to a char boundary — bodies include external/web-ingested
         // text, and slicing mid-codepoint panics the consolidation cycle.
@@ -74,17 +76,6 @@ fn build_fingerprint(doc: &Document) -> String {
         &format!("({ownership}): \"{}\" — {truncated}", doc.title),
     );
     fenced
-}
-
-/// Extract the body text from the JSON content field.
-fn extract_body(content: &str) -> String {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
-        if let Some(body) = v["body"].as_str() {
-            return body.to_string();
-        }
-    }
-    // Fallback: treat entire content as body
-    content.to_string()
 }
 
 /// Run one consolidation cycle: find candidate pairs, score them, persist suggestions.
@@ -341,16 +332,23 @@ mod tests {
         assert!(fp.len() < 500); // should be truncated
     }
 
+    /// C-DOC adoption step 1: the fingerprint carries the document's text for
+    /// a v2 document, a v1 envelope and raw text — never the stored JSON —
+    /// and keeps tokens as tokens.
     #[test]
-    fn test_extract_body_json() {
-        let content = r#"{"body":"Hello world","images":[]}"#;
-        assert_eq!(extract_body(content), "Hello world");
-    }
-
-    #[test]
-    fn test_extract_body_fallback() {
-        let content = "plain text content";
-        assert_eq!(extract_body(content), "plain text content");
+    fn test_build_fingerprint_reads_v2_v1_and_raw() {
+        let v2 = r#"{"format":"sovereign.doc","v":2,"blocks":[{"type":"text","id":"00000000000000000000000000001a01","text":"Hello [pii:pii_record:e1]"},{"type":"text","id":"00000000000000000000000000001a02","text":"world"}]}"#;
+        for (content, want) in [
+            (v2, "Hello [pii:pii_record:e1]\n\nworld"),
+            (r#"{"body":"Hello [pii:pii_record:e1]","images":[]}"#, "Hello [pii:pii_record:e1]"),
+            ("Hello [pii:pii_record:e1] plain", "Hello [pii:pii_record:e1] plain"),
+        ] {
+            let mut doc = Document::new("T".into(), "t:1".into(), true);
+            doc.content = content.into();
+            let fp = build_fingerprint(&doc);
+            assert!(fp.contains(want), "{fp}");
+            assert!(!fp.contains("sovereign.doc") && !fp.contains("\"body\""), "{fp}");
+        }
     }
 
     #[tokio::test]

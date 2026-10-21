@@ -1,6 +1,7 @@
 pub mod action_gate;
-pub mod autocommit;
+pub mod chat_trace;
 pub mod consolidation;
+pub mod docs_host;
 #[cfg(feature = "encrypted-log")]
 pub mod encrypted_log;
 pub mod events;
@@ -26,7 +27,6 @@ pub mod tools;
 pub mod trust;
 pub mod voice;
 
-pub use autocommit::AutoCommitEngine;
 pub use events::{OrchestratorEvent, VoiceEvent};
-pub use orchestrator::Orchestrator;
+pub use orchestrator::{Orchestrator, OrchestratorStatePaths};
 pub use session_log::SessionLog;

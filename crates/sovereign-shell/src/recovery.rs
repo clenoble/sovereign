@@ -175,7 +175,13 @@ pub(crate) async fn poll(passphrase: &str) -> Result<Option<RecoveryStatus>, Str
     rec.unseal(&seal_key).map_err(|e| format!("unseal shares: {e}"))?;
     rec.poll_round(Duration::from_secs(20)).await;
     // Re-seal (now including any share this round added) before it touches disk.
-    rec.save(&dir, &seal_key).map_err(|e| format!("save recovery: {e}"))?;
+    if let Err(e) = rec.save(&dir, &seal_key) {
+        // Cancelled during the round (finding 8): the save did not bring it back.
+        if rec.is_cancelled(&dir) {
+            return Ok(None);
+        }
+        return Err(format!("save recovery: {e}"));
+    }
     Ok(Some(RecoveryStatus::of(&rec)))
 }
 

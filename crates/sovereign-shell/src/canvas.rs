@@ -85,8 +85,66 @@ pub(crate) struct Card {
     pub(crate) external: bool, // external/untrusted content -> parallelogram (provenance cue)
     pub(crate) pinned: bool,   // user-pinned (marker on the card)
     pub(crate) title: String,  // raw title, re-shaped larger for the document window
-    pub(crate) body: String,   // raw content (or a lock placeholder when encrypted)
+    /// What the document window shows: the document's text read through the
+    /// v2 model ([`display_text`]), or a lock placeholder when encrypted.
+    pub(crate) body: String,
+    /// The stored content as read from the database — what today's (pre-v2)
+    /// edit buffer starts from and what a skill's write verdict inspects. Never
+    /// shown as such (adoption step 1: readers use the typed view; the editor
+    /// save path is step 2).
+    pub(crate) stored: String,
     pub(crate) layout: Layout<Brush>, // card-title shaped once, redrawn each frame
+}
+
+impl Card {
+    /// Sets the stored content and the text shown for it.
+    pub(crate) fn set_stored(&mut self, stored: String) {
+        self.body = display_text(&stored);
+        self.stored = stored;
+    }
+
+    /// Sets the title the card shows (after a save changed it: title contract
+    /// T2), re-shaping its layout as cards are shaped when loaded. Called by
+    /// the editor's save path.
+    pub(crate) fn set_title(&mut self, title: &str, shaper: &mut TextShaper) {
+        self.title = title.to_string();
+        self.layout = shaper.shape(display_title(title), (CARD_W - 2.0 * PAD) as f32, TITLE_PX);
+    }
+}
+
+/// How a document's title is displayed (title contract T10): an empty title
+/// reads *Untitled*; any other is shown as stored. The one helper every
+/// surface that shows a document title uses (card, window bar, trash, search,
+/// taskbar, lists); the stored title stays empty, and the editor's title field
+/// keeps its own dimmed placeholder.
+pub(crate) fn display_title(title: &str) -> &str {
+    if title.is_empty() {
+        "Untitled"
+    } else {
+        title
+    }
+}
+
+/// What the shell shows for a stored content string (C-DOC adoption step 1):
+/// its text read through the v2 model — a v2 document, a v1 envelope or raw
+/// text — never the stored JSON. Personal-data tokens stay in their stored
+/// form `[pii:<id>]` (labels need the document service's token status; see
+/// `doc/plans/C-DOC-adoption.md`).
+pub(crate) fn display_text(stored: &str) -> String {
+    use sovereign_editor::doc::DocumentV2;
+    match DocumentV2::read(stored) {
+        Ok((doc, _)) => {
+            let text = doc.plain_text();
+            if text.is_empty() && !doc.blocks().is_empty() {
+                "(This document has no text.)".to_string()
+            } else if text.is_empty() {
+                "(empty document)".to_string()
+            } else {
+                text
+            }
+        }
+        Err(_) => "(This document's format can't be read here. It is kept unchanged.)".to_string(),
+    }
 }
 
 // ---- Deck layout (zoom-reactive, screen-space) --------------------------
@@ -212,6 +270,7 @@ pub(crate) fn make_cards(n: usize, world_w: f64, rng: &mut Lcg, shaper: &mut Tex
                 pinned: i % 7 == 0, // a few pinned in synthetic data to show the marker
                 title: title.to_string(),
                 body: synthetic_body(i),
+                stored: synthetic_body(i),
                 layout: shaper.shape(title, max_w, TITLE_PX),
             }
         })
@@ -277,6 +336,25 @@ pub(crate) async fn open_db_at(path: &Path) -> Option<Arc<dyn GraphDB>> {
 pub(crate) async fn open_db() -> Option<Arc<dyn GraphDB>> {
     open_db_at(&persona_raw_db_path(CorePersona::Primary)).await
 }
+
+/// The name of the lane where documents of a missing thread are drawn (spec
+/// ch. 03, *Thread deletion and the fallback lane*). The trash view names a
+/// document's thread so when the thread is gone.
+pub(crate) const FALLBACK_LANE_NAME: &str = "Unfiled";
+
+/// A lane's name label (the pill at the canvas's left edge), in screen
+/// coordinates, for a lane whose top is at screen y `lane_top` and a label
+/// text `label_w` wide. Shared by drawing and hit-testing, so a double-click
+/// lands where the label is drawn (`THREAD-name.md` R1). The pill sticks
+/// below the time ruler when its lane is scrolled partly under it; the text
+/// is drawn [`LANE_LABEL_TEXT_INSET`] inside it.
+pub(crate) fn lane_label_rect(lane_top: f64, label_w: f64) -> Rect {
+    let py = (lane_top + 6.0).max(AXIS_H + 4.0);
+    Rect::new(6.0, py, 6.0 + label_w + 18.0, py + 20.0)
+}
+
+/// Where a lane label's text sits inside its pill (x, y).
+pub(crate) const LANE_LABEL_TEXT_INSET: (f64, f64) = (9.0, 4.0);
 
 /// Returns `(cards, links, world_w, lane_names, ref_ts)`. `ref_ts` is the unix
 /// time at world-X = 0 (calibrates the time ruler). `None` only when there is
@@ -350,7 +428,11 @@ pub(crate) async fn load_workspace(
                 }
             };
             let x = x_of_ts(d.modified_at.timestamp(), ref_ts);
-            let title = if d.title_nonce.is_none() && !d.title.is_empty() {
+            // A title still under its nonce is ciphertext (raw / no-auth
+            // mode): a lock placeholder. Read through the encrypted store the
+            // nonce is cleared, and the title is the plaintext — possibly
+            // empty, which is a title like any other (T10: shown Untitled).
+            let title = if d.title_nonce.is_none() {
                 d.title.clone()
             } else {
                 let id = d.id.as_ref().map(|t| t.to_string()).unwrap_or_default();
@@ -358,12 +440,17 @@ pub(crate) async fn load_workspace(
                     id.rsplit(':').next().unwrap_or("?").chars().take(6).collect();
                 format!("\u{1f512} {short}")
             };
-            let body = if d.encryption_nonce.is_none() && !d.content.is_empty() {
-                d.content.clone()
+            // Adoption step 1: the card shows the document's text read through
+            // the v2 model (a v1 envelope used to show as JSON, a v2 document
+            // as its blocks' JSON); the stored string is kept for the pre-v2
+            // edit buffer only.
+            let (body, stored) = if d.encryption_nonce.is_none() && !d.content.is_empty() {
+                (display_text(&d.content), d.content.clone())
             } else if !d.content.is_empty() {
-                "\u{1f512} Encrypted — this document unlocks after login.".to_string()
+                let lock = "\u{1f512} Encrypted — this document unlocks after login.".to_string();
+                (lock.clone(), lock)
             } else {
-                "(empty document)".to_string()
+                ("(empty document)".to_string(), String::new())
             };
             cards.push(Card {
                 id: d.id.as_ref().map(|t| t.to_string()).unwrap_or_default(),
@@ -373,12 +460,13 @@ pub(crate) async fn load_workspace(
                 pinned: d.pinned,
                 title: title.clone(),
                 body,
-                layout: shaper.shape(&title, max_w, TITLE_PX),
+                stored,
+                layout: shaper.shape(display_title(&title), max_w, TITLE_PX),
             });
         }
 
         if used_unfiled && lane_names.get(unfiled_lane).is_some_and(|s| s.is_empty()) {
-            lane_names[unfiled_lane] = "Unfiled".to_string();
+            lane_names[unfiled_lane] = FALLBACK_LANE_NAME.to_string();
         }
 
         let mut links = Vec::new();

@@ -18,7 +18,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sovereign_db::mock::MockGraphDB;
+mod doc_harness;
+
+use sovereign_db::encrypted::EncryptedGraphDB;
 use sovereign_db::schema::{
     ChannelType, Contact, Conversation, Document, Entity, EntityKind, Message,
     MessageDirection, Milestone, PiiKind, PiiRecord, RelationType, ReviewState,
@@ -38,7 +40,7 @@ fn keypair_from_seed(seed: &[u8; 32]) -> libp2p::identity::Keypair {
 struct Harness {
     cmd_tx: mpsc::Sender<P2pCommand>,
     event_rx: mpsc::Receiver<P2pEvent>,
-    db: Arc<MockGraphDB>,
+    db: Arc<EncryptedGraphDB>,
     svc: Arc<SyncService>,
     peer_id: libp2p::PeerId,
     listen_addr: libp2p::Multiaddr,
@@ -62,7 +64,9 @@ fn install_pair_keys(a: &Harness, b: &Harness, account_seed: [u8; 32]) {
 }
 
 async fn spawn_node(device_id: &str, seed: [u8; 32], transport_key: [u8; 32]) -> Harness {
-    let db = Arc::new(MockGraphDB::new());
+    // C-WIRE (step 4): documents sync through the document service, over
+    // an encrypted store.
+    let (db, docs) = doc_harness::encrypted_store(device_id).await;
     // The SyncService signs row envelopes with the SAME keypair the node
     // derives its PeerId from (P1.3) — receivers verify against the
     // sender's peer id, so the two must match.
@@ -74,7 +78,8 @@ async fn spawn_node(device_id: &str, seed: [u8; 32], transport_key: [u8; 32]) ->
         transport_key,
         kp.clone(),
         sovereign_p2p::VersionStore::ephemeral(),
-    ));
+    )
+    .with_documents(docs));
 
     let (event_tx, event_rx) = mpsc::channel::<P2pEvent>(64);
     let (cmd_tx, cmd_rx) = mpsc::channel::<P2pCommand>(64);
@@ -324,7 +329,9 @@ async fn two_nodes_sync_doc_entity_and_pii_record() {
     let docs = b.db.list_documents(None).await.unwrap();
     assert_eq!(docs.len(), 2, "B should have both documents after sync");
     let doc_a = docs.iter().find(|d| d.title == "Doc-A").expect("Doc-A synced");
-    assert_eq!(doc_a.content, "body content", "doc body should match");
+    // Stored in v2 by the receiving document service (C-WIRE 1).
+    let text = sovereign_docs::DocumentV2::read(&doc_a.content).unwrap().0.plain_text();
+    assert_eq!(text, "body content", "doc body should match");
 
     let entities = b.db.list_entities().await.unwrap();
     assert_eq!(entities.len(), 1, "B should have 1 entity after sync");

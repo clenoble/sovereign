@@ -17,16 +17,21 @@ impl<T: GraphDB + Send + Sync> SkillDbAccess for T {
             tokio::runtime::Handle::current().block_on(GraphDB::list_documents(self, None))
         })?;
 
+        // C-DOC adoption step 1: match and snippet on the document's text
+        // read through the v2 model, not on its stored JSON (which matched
+        // queries like "body" or "images" in every v1 envelope and showed
+        // JSON as the snippet). Tokens stay `[pii:<id>]`.
         let results = docs
             .iter()
-            .filter(|d| {
-                d.title.to_lowercase().contains(&query_lower)
-                    || d.content.to_lowercase().contains(&query_lower)
-            })
-            .map(|d| {
-                let id = d.id_string().unwrap_or_default();
-                let snippet: String = d.content.chars().take(100).collect();
-                (id, d.title.clone(), snippet)
+            .filter_map(|d| {
+                let text = sovereign_docformat::plain_text_of(&d.content);
+                let hit = d.title.to_lowercase().contains(&query_lower)
+                    || text.to_lowercase().contains(&query_lower);
+                hit.then(|| {
+                    let id = d.id_string().unwrap_or_default();
+                    let snippet: String = text.chars().take(100).collect();
+                    (id, d.title.clone(), snippet)
+                })
             })
             .collect();
 
@@ -99,13 +104,15 @@ impl<T: GraphDB + Send + Sync> SkillDbAccess for T {
             .collect())
     }
 
+    /// Finds the thread; never creates one. Threads are written only through
+    /// the document service's one thread-write path (THREAD-sync S1), which a
+    /// bare store does not have: the host's service-backed wrapper
+    /// (`sovereign-ai` `docs_host::ServiceSkillDb`) creates it.
     fn find_or_create_thread(
         &self,
         name: &str,
-        description: &str,
+        _description: &str,
     ) -> anyhow::Result<String> {
-        use sovereign_db::schema::Thread;
-
         let id_opt = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
                 .block_on(GraphDB::find_thread_by_name(self, name))
@@ -116,15 +123,7 @@ impl<T: GraphDB + Send + Sync> SkillDbAccess for T {
                 return Ok(id);
             }
         }
-
-        let thread = Thread::new(name.to_string(), description.to_string());
-        let created = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(GraphDB::create_thread(self, thread))
-        })?;
-        created
-            .id_string()
-            .ok_or_else(|| anyhow::anyhow!("Created thread had no id"))
+        anyhow::bail!("no thread named {name:?}, and threads are created only through the document service")
     }
 
     fn list_all_documents_with_link_counts(
@@ -164,4 +163,41 @@ impl<T: GraphDB + Send + Sync> SkillDbAccess for T {
 /// Used by sovereign-app to hand the LayeredGraphDB to the skill registry.
 pub fn wrap_db<T: GraphDB + Send + Sync + 'static>(db: Arc<T>) -> Arc<dyn SkillDbAccess> {
     db
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sovereign_db::schema::Document;
+    use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
+
+    /// C-DOC adoption step 1: search matches and snippets the documents' text
+    /// for a v2 document, a v1 envelope and raw text — never their stored
+    /// JSON — with tokens as tokens.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn search_reads_v2_v1_and_raw_documents_as_text() {
+        let db = SurrealGraphDB::new(StorageMode::Memory).await.unwrap();
+        db.connect().await.unwrap();
+        db.init_schema().await.unwrap();
+        let v2 = r#"{"format":"sovereign.doc","v":2,"blocks":[{"type":"text","id":"00000000000000000000000000001e01","text":"needle in v2 [pii:pii_record:e1]"},{"type":"image","id":"00000000000000000000000000001e02","ref":{"path":"/i.png"},"alt":"a"}]}"#;
+        let v1 = r#"{"body":"needle in v1 [pii:pii_record:e1]","images":[],"videos":[]}"#;
+        for (title, content) in [("A", v2), ("B", v1), ("C", "needle in raw [pii:pii_record:e1]")] {
+            let mut d = Document::new(title.into(), "thread:t".into(), true);
+            d.content = content.into();
+            GraphDB::create_document(&db, d).await.unwrap();
+        }
+        let db: Arc<dyn SkillDbAccess> = wrap_db(Arc::new(db));
+
+        let mut hits = db.search_documents("needle").unwrap();
+        hits.sort_by(|a, b| a.1.cmp(&b.1));
+        let snippets: Vec<&str> = hits.iter().map(|h| h.2.as_str()).collect();
+        assert_eq!(
+            snippets,
+            ["needle in v2 [pii:pii_record:e1]", "needle in v1 [pii:pii_record:e1]", "needle in raw [pii:pii_record:e1]"]
+        );
+        // Stored JSON keys are not text: they no longer match.
+        for key in ["images", "sovereign.doc", "blocks"] {
+            assert!(db.search_documents(key).unwrap().is_empty(), "{key} matched stored JSON");
+        }
+    }
 }

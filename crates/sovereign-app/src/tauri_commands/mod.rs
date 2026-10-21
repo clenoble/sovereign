@@ -11,23 +11,24 @@ pub mod guardian;
 pub mod mobile;
 #[cfg(feature = "encryption")]
 pub mod pairing;
-pub mod peer_review;
+pub mod sync_alerts;
 pub mod pii;
 #[cfg(feature = "encryption")]
 pub mod recovery;
 pub mod suggestions;
 pub mod threads;
 pub mod voice;
+#[cfg(test)]
+mod keystroke_dto_tests;
 
 use std::collections::HashSet;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sovereign_core::content::ContentFields;
 use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent};
 use sovereign_core::security::ActionDecision;
 use sovereign_db::GraphDB;
-use sovereign_db::schema::{Document, MessageDirection, ReadStatus, RelationType, Thread};
+use sovereign_db::schema::{MessageDirection, ReadStatus, RelationType};
 use sovereign_skills::traits::{SkillContext, SkillDocument};
 use tauri::State;
 
@@ -96,7 +97,7 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct FullDocument {
     pub id: String,
     pub title: String,
@@ -107,15 +108,18 @@ pub struct FullDocument {
     pub is_owned: bool,
     pub created_at: String,
     pub modified_at: String,
+    /// The revision a save of this state must be based on (C-DOC adoption
+    /// step 2): `save_document` refuses a save on any other revision.
+    pub revision: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ContentImageDto {
     pub path: String,
     pub caption: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ContentVideoDto {
     pub path: String,
     pub caption: String,
@@ -336,11 +340,41 @@ pub struct OnboardingData {
     pub keystrokes: Vec<Vec<KeystrokeSampleDto>>,
 }
 
-#[derive(Deserialize, Clone)]
+/// One typing sample sent with login or onboarding.
+///
+/// Typing timings are optional input (spec ch. 07, *Keystroke dynamics*; finding 20): a
+/// missing, partial or malformed sample never makes the command's arguments fail to decode.
+/// Such a sample decodes to an unusable one (empty `key`, zero timings) which consumers
+/// skip — see [`KeystrokeSampleDto::is_usable`].
+#[derive(Clone, Debug)]
 #[allow(dead_code)] // fields only read with encryption feature
 pub struct KeystrokeSampleDto {
     pub key: String,
     pub press_ms: u64,
     pub release_ms: u64,
+}
+
+#[allow(dead_code)] // only read with encryption feature
+impl KeystrokeSampleDto {
+    /// A sample whose key and both timings were present and well-formed.
+    pub fn is_usable(&self) -> bool {
+        !self.key.is_empty()
+    }
+}
+
+impl<'de> Deserialize<'de> for KeystrokeSampleDto {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        let key = v.get("key").and_then(|k| k.as_str());
+        let press = v.get("press_ms").and_then(|p| p.as_u64());
+        let release = v.get("release_ms").and_then(|r| r.as_u64());
+        Ok(match (key, press, release) {
+            (Some(key), Some(press_ms), Some(release_ms)) if !key.is_empty() => {
+                KeystrokeSampleDto { key: key.to_string(), press_ms, release_ms }
+            }
+            // Anything else is ignored downstream, never refused here.
+            _ => KeystrokeSampleDto { key: String::new(), press_ms: 0, release_ms: 0 },
+        })
+    }
 }
 

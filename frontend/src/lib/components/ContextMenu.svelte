@@ -2,7 +2,8 @@
 	import { app } from '$lib/stores/app.svelte';
 	import { canvas, refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
 	import { openById } from '$lib/stores/documents.svelte';
-	import { deleteDocument, moveDocumentToThread } from '$lib/api/commands';
+	import { moveDocumentToThread } from '$lib/api/commands';
+	import { deleteWithUndo } from '$lib/stores/deleteUndo.svelte';
 
 	let showThreadSub = $state(false);
 
@@ -13,15 +14,18 @@
 		}
 	}
 
+	// One click (C-DOC adoption step 5, S5-8): the document goes to the
+	// trash and the notice offers Undo for 10 s.
 	async function handleDelete() {
 		if (app.contextMenu) {
+			const id = app.contextMenu.docId;
+			app.contextMenu = null;
+			await deleteWithUndo(id);
 			try {
-				await deleteDocument(app.contextMenu.docId);
 				await canvasRefresh();
 			} catch (e) {
-				console.error('Delete failed:', e);
+				console.error('Canvas refresh failed:', e);
 			}
-			app.contextMenu = null;
 		}
 	}
 

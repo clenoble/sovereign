@@ -212,11 +212,17 @@ pub fn is_write_tool(name: &str) -> bool {
 
 /// Execute a write tool call against the database. Returns the result.
 /// The caller is responsible for gating (confirmation) before calling this.
-pub async fn execute_write_tool(call: &ToolCall, db: &dyn GraphDB) -> WriteToolResult {
+/// `docs` is the document service (C-DOC): documents are created through it,
+/// so `create_document` is refused while there is none (no unlocked session).
+pub async fn execute_write_tool(
+    call: &ToolCall,
+    db: &dyn GraphDB,
+    docs: Option<&sovereign_docs::DocumentService>,
+) -> WriteToolResult {
     match call.name.as_str() {
-        "create_document" => execute_create_document(call, db).await,
-        "create_thread" => execute_create_thread(call, db).await,
-        "rename_thread" => execute_rename_thread(call, db).await,
+        "create_document" => execute_create_document(call, db, docs).await,
+        "create_thread" => execute_create_thread(call, docs).await,
+        "rename_thread" => execute_rename_thread(call, db, docs).await,
         "move_document" => execute_move_document(call, db).await,
         _ => WriteToolResult {
             tool_name: call.name.clone(),
@@ -236,7 +242,11 @@ pub struct WriteToolResult {
     pub event: Option<sovereign_core::interfaces::OrchestratorEvent>,
 }
 
-async fn execute_create_document(call: &ToolCall, db: &dyn GraphDB) -> WriteToolResult {
+async fn execute_create_document(
+    call: &ToolCall,
+    db: &dyn GraphDB,
+    docs: Option<&sovereign_docs::DocumentService>,
+) -> WriteToolResult {
     let title = call
         .arguments
         .get("title")
@@ -262,10 +272,29 @@ async fn execute_create_document(call: &ToolCall, db: &dyn GraphDB) -> WriteTool
         .and_then(|t| t.id_string())
         .unwrap_or_default();
 
-    let doc = sovereign_db::schema::Document::new(title.clone(), thread_id.clone(), true);
-    match db.create_document(doc).await {
+    let Some(docs) = docs else {
+        return WriteToolResult {
+            tool_name: call.name.clone(),
+            success: false,
+            output: "Failed to create document: the workspace is locked".into(),
+            event: None,
+        };
+    };
+    // C-DOC adoption step 3: through the document service (a version from
+    // creation, personal-data ingest, trust and provenance). The document is
+    // empty and titled by the model under the action gate's confirmation: the
+    // user's (owned), provenance *assistant*.
+    let new = crate::docs_host::new_document(
+        title.clone(),
+        thread_id.clone(),
+        "",
+        sovereign_docs::Trust::Owned,
+        sovereign_docs::Provenance::Assistant,
+        sovereign_docs::Origin::Assistant,
+    );
+    match crate::docs_host::create(docs, new).await {
         Ok(created) => {
-            let doc_id = created.id_string().unwrap_or_default();
+            let doc_id = created.id;
             WriteToolResult {
                 tool_name: call.name.clone(),
                 success: true,
@@ -286,7 +315,18 @@ async fn execute_create_document(call: &ToolCall, db: &dyn GraphDB) -> WriteTool
     }
 }
 
-async fn execute_create_thread(call: &ToolCall, db: &dyn GraphDB) -> WriteToolResult {
+/// Threads are written through the document service's one thread-write path
+/// (THREAD-sync S1): refused while there is none (no unlocked session).
+fn locked(call: &ToolCall, what: &str) -> WriteToolResult {
+    WriteToolResult {
+        tool_name: call.name.clone(),
+        success: false,
+        output: format!("Failed to {what}: the workspace is locked"),
+        event: None,
+    }
+}
+
+async fn execute_create_thread(call: &ToolCall, docs: Option<&sovereign_docs::DocumentService>) -> WriteToolResult {
     let name = call
         .arguments
         .get("name")
@@ -294,10 +334,9 @@ async fn execute_create_thread(call: &ToolCall, db: &dyn GraphDB) -> WriteToolRe
         .unwrap_or("New Thread")
         .to_string();
 
-    let thread = sovereign_db::schema::Thread::new(name.clone(), String::new());
-    match db.create_thread(thread).await {
-        Ok(created) => {
-            let tid = created.id_string().unwrap_or_default();
+    let Some(docs) = docs else { return locked(call, "create thread") };
+    match docs.thread_create(&name, "").await {
+        Ok(tid) => {
             WriteToolResult {
                 tool_name: call.name.clone(),
                 success: true,
@@ -317,7 +356,11 @@ async fn execute_create_thread(call: &ToolCall, db: &dyn GraphDB) -> WriteToolRe
     }
 }
 
-async fn execute_rename_thread(call: &ToolCall, db: &dyn GraphDB) -> WriteToolResult {
+async fn execute_rename_thread(
+    call: &ToolCall,
+    db: &dyn GraphDB,
+    docs: Option<&sovereign_docs::DocumentService>,
+) -> WriteToolResult {
     let old_name = call
         .arguments
         .get("old_name")
@@ -342,8 +385,9 @@ async fn execute_rename_thread(call: &ToolCall, db: &dyn GraphDB) -> WriteToolRe
 
     if let Some(thread) = thread {
         let tid = thread.id_string().unwrap_or_default();
-        match db.update_thread(&tid, Some(new_name), None).await {
-            Ok(_) => WriteToolResult {
+        let Some(docs) = docs else { return locked(call, "rename thread") };
+        match docs.thread_update(&tid, Some(new_name), None).await {
+            Ok(()) => WriteToolResult {
                 tool_name: call.name.clone(),
                 success: true,
                 output: format!("Renamed thread '{}' to '{}'", old_name, new_name),
@@ -523,6 +567,11 @@ async fn execute_get_document(call: &ToolCall, db: &dyn GraphDB) -> String {
     let docs = db.search_documents_by_title(title).await.unwrap_or_default();
     if let Some(doc) = docs.first() {
         let ownership = if doc.is_owned { "owned" } else { "external" };
+        // C-DOC adoption step 1: the model reads the document's text through
+        // the v2 model (a v1 envelope or a v2 document used to reach it as
+        // JSON, and the 500-character cut fell on the JSON). Tokens stay in
+        // canonical form here; the masking below turns them into labels.
+        let text = sovereign_docformat::plain_text_of(&doc.content);
         // PII-002: replace any `[pii:<id>]` tokens with type-only labels
         // (`[Email]`, …) before the content reaches the model — no decryption.
         // PII-001: a doc that was never PII-scanned (pii_scanned_at==None:
@@ -530,7 +579,7 @@ async fn execute_get_document(call: &ToolCall, db: &dyn GraphDB) -> String {
         // resolve_to_preview would pass its raw SSN/IBAN/card/etc. straight to
         // the model. Fail safe: regex-redact the structured PII first.
         let preview = if doc.pii_scanned_at.is_none() {
-            crate::pii::resolve::redact_raw_regex(&doc.content, crate::pii::Locale::Swiss)
+            crate::pii::resolve::redact_raw_regex(&text, crate::pii::Locale::Swiss)
         } else {
             let records = db
                 .list_pii_records(None, None, None)
@@ -540,7 +589,7 @@ async fn execute_get_document(call: &ToolCall, db: &dyn GraphDB) -> String {
             // scanned under a narrower locale (no AVS rule) can't leak raw
             // structured PII it never tokenized.
             crate::pii::resolve::resolve_to_preview_redacted(
-                &doc.content,
+                &text,
                 &records,
                 crate::pii::Locale::Swiss,
             )
@@ -861,6 +910,43 @@ mod tests {
         assert!(result.output.contains("owned"));
     }
 
+    /// C-DOC adoption step 1: the model gets the document's text whatever its
+    /// stored form — never the stored JSON — and personal data only as tokens
+    /// or labels, never as values.
+    #[tokio::test]
+    async fn execute_get_document_reads_v2_v1_and_raw_as_text() {
+        let text = "Visit [pii:pii_record:e1] and mail bob@example.com";
+        let v2 = format!(
+            r#"{{"format":"sovereign.doc","v":2,"blocks":[{{"type":"text","id":"00000000000000000000000000000f01","text":"{text}"}},{{"type":"image","id":"00000000000000000000000000000f02","ref":{{"path":"/i.png"}},"alt":"a"}},{{"type":"text","id":"00000000000000000000000000000f03","text":"Second block"}}]}}"#
+        );
+        let v1 = sovereign_core::content::ContentFields { body: text.into(), ..Default::default() }.serialize();
+        for (title, content, scanned) in [
+            ("Alpha v2", v2.clone(), false),
+            ("Beta v1", v1.clone(), false),
+            ("Gamma raw", text.to_string(), false),
+            ("Delta v2 scanned", v2.clone(), true),
+        ] {
+            let db = mock_db();
+            let mut d = Document::new(title.into(), "t:1".into(), true);
+            d.content = content;
+            if scanned {
+                d.pii_scanned_at = Some(chrono::Utc::now());
+            }
+            db.create_document(d).await.unwrap();
+            let call = tool_call("get_document", serde_json::json!({ "title": title }));
+            let out = execute_tool(&call, &db).await.output;
+            assert!(out.contains("Visit "), "{title}: {out}");
+            assert!(!out.contains("sovereign.doc") && !out.contains("\"body\"") && !out.contains("\"text\""), "{title}: {out}");
+            assert!(!out.contains("bob@example.com"), "{title}: a raw value reached the model");
+            assert!(out.contains("[Email]"), "{title}: {out}");
+            // The token is never resolved to a value: canonical, or a label.
+            assert!(out.contains("[pii:pii_record:e1]") || out.contains("[pii]"), "{title}: {out}");
+            if title.contains("v2") {
+                assert!(out.contains("Second block"), "{title}: {out}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn execute_get_document_not_found() {
         let db = mock_db();
@@ -918,42 +1004,93 @@ mod tests {
         assert!(result.output.contains("email"));
     }
 
+    /// C-DOC adoption step 3: the assistant creates through the document
+    /// service — a version from creation, owned, provenance *assistant*.
     #[tokio::test]
     async fn execute_write_tool_create_document() {
-        let db = mock_db();
-        let t = db.create_thread(Thread::new("Default".into(), "".into())).await.unwrap();
-        let _tid = t.id_string().unwrap();
+        use crate::docs_host::{build_document_service, testing};
+        let store = testing::encrypted_memory_store("tool-create").await;
+        let docs = build_document_service(store.clone(), Some(testing::account_key()), "t".into());
+        store.create_thread(Thread::new("Default".into(), "".into())).await.unwrap();
 
         let call = tool_call("create_document", serde_json::json!({"title": "New Doc"}));
-        let result = execute_write_tool(&call, &db).await;
-        assert!(result.success);
+        let result = execute_write_tool(&call, store.as_ref(), Some(&docs)).await;
+        assert!(result.success, "{}", result.output);
         assert!(result.output.contains("New Doc"));
         assert!(result.event.is_some());
 
-        let docs = db.list_documents(None).await.unwrap();
-        assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].title, "New Doc");
+        let listed = docs.list(None).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        let view = docs.read(&listed[0].id).await.unwrap();
+        assert_eq!(view.title, "New Doc");
+        assert_eq!(view.trust, sovereign_docs::Trust::Owned);
+        assert_eq!(view.provenance, sovereign_docs::Provenance::Assistant);
+        assert_eq!(docs.versions(&listed[0].id).await.unwrap().len(), 1, "a version from creation");
+    }
+
+    /// Without a document service (no unlocked session) nothing is created.
+    #[tokio::test]
+    async fn execute_write_tool_create_document_without_a_service_creates_nothing() {
+        let db = mock_db();
+        db.create_thread(Thread::new("Default".into(), "".into())).await.unwrap();
+        let call = tool_call("create_document", serde_json::json!({"title": "New Doc"}));
+        let result = execute_write_tool(&call, &db, None).await;
+        assert!(!result.success);
+        assert!(result.event.is_none());
+        assert!(db.list_documents(None).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn execute_write_tool_create_thread() {
-        let db = mock_db();
+        // THREAD-sync S1: the assistant creates threads through the document
+        // service's stamped path. Same checks as before, plus that the thread
+        // is in the store and stamped.
+        use crate::docs_host::{build_document_service, testing};
+        let store = testing::encrypted_memory_store("tool-create-thread").await;
+        let docs = build_document_service(store.clone(), Some(testing::account_key()), "t".into());
         let call = tool_call("create_thread", serde_json::json!({"name": "Marketing"}));
-        let result = execute_write_tool(&call, &db).await;
-        assert!(result.success);
+        let result = execute_write_tool(&call, store.as_ref(), Some(&docs)).await;
+        assert!(result.success, "{}", result.output);
         assert!(result.output.contains("Marketing"));
         assert!(result.event.is_some());
+        let threads = store.list_threads().await.unwrap();
+        assert_eq!(threads.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), vec!["Marketing"]);
+        let id = threads[0].id_string().unwrap();
+        assert!(docs.thread_stamp(&id).await.unwrap().is_some(), "written through the stamped path");
     }
 
     #[tokio::test]
     async fn execute_write_tool_rename_thread() {
-        let db = mock_db();
-        db.create_thread(Thread::new("Old Name".into(), "".into())).await.unwrap();
+        use crate::docs_host::{build_document_service, testing};
+        let store = testing::encrypted_memory_store("tool-rename-thread").await;
+        let docs = build_document_service(store.clone(), Some(testing::account_key()), "t".into());
+        let id = docs.thread_create("Old Name", "").await.unwrap();
+        let before = docs.thread_stamp(&id).await.unwrap();
 
         let call = tool_call("rename_thread", serde_json::json!({"old_name": "Old", "new_name": "New Name"}));
-        let result = execute_write_tool(&call, &db).await;
-        assert!(result.success);
+        let result = execute_write_tool(&call, store.as_ref(), Some(&docs)).await;
+        assert!(result.success, "{}", result.output);
         assert!(result.output.contains("Renamed"));
+        assert_eq!(store.get_thread(&id).await.unwrap().name, "New Name");
+        assert!(docs.thread_stamp(&id).await.unwrap() > before, "a new stamp: the rename travels");
+    }
+
+    /// Without a document service (no unlocked session) no thread is created
+    /// or renamed (THREAD-sync S1: a path without a service does not write).
+    #[tokio::test]
+    async fn execute_write_tool_thread_writes_without_a_service_write_nothing() {
+        let db = mock_db();
+        let call = tool_call("create_thread", serde_json::json!({"name": "Marketing"}));
+        let result = execute_write_tool(&call, &db, None).await;
+        assert!(!result.success);
+        assert!(result.event.is_none());
+        assert!(db.list_threads().await.unwrap().is_empty());
+
+        db.create_thread(Thread::new("Old Name".into(), "".into())).await.unwrap();
+        let call = tool_call("rename_thread", serde_json::json!({"old_name": "Old", "new_name": "New Name"}));
+        let result = execute_write_tool(&call, &db, None).await;
+        assert!(!result.success);
+        assert_eq!(db.list_threads().await.unwrap()[0].name, "Old Name");
     }
 
     #[tokio::test]
@@ -966,7 +1103,7 @@ mod tests {
         db.create_document(Document::new("My Doc".into(), tid1, true)).await.unwrap();
 
         let call = tool_call("move_document", serde_json::json!({"document_title": "My Doc", "thread_name": "Dest"}));
-        let result = execute_write_tool(&call, &db).await;
+        let result = execute_write_tool(&call, &db, None).await;
         assert!(result.success);
         assert!(result.output.contains("Moved"));
     }

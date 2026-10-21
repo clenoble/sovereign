@@ -26,6 +26,10 @@ pub enum CryptoError {
     #[error("Key database I/O error: {0}")]
     KeyDbIo(String),
 
+    /// An exclusive create (`AuthStore::save_new`) found the path taken.
+    #[error("Refusing to replace an existing file: {0}")]
+    AlreadyExists(String),
+
     #[error("Key not found for document: {0}")]
     KeyNotFound(String),
 

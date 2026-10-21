@@ -17,8 +17,8 @@ use tokio::sync::RwLock;
 
 use crate::error::{DbError, DbResult};
 use crate::schema::{
-    ChannelType, Commit, Contact, Conversation, Document, Entity, EntityKind, Message, Milestone,
-    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, RowRecovery, ShareRecord,
+    ChannelType, Commit, Contact, Conversation, Document, DocumentPatch, Entity, EntityKind,
+    Message, Milestone, PiiRecord, PurgeMarker, ReadStatus, RelatedTo, RelationType, ReviewState, RowRecovery, ShareRecord,
     SourceRef, SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
@@ -504,6 +504,64 @@ impl EncryptedGraphDB {
     }
 }
 
+/// A commit's integrity, checked over its at-rest fields (AUTOCOMMIT-001).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitIntegrity {
+    /// The MAC verifies under this device's key.
+    Verified,
+    /// A legacy commit made before commits were MAC'd.
+    Unsigned,
+    /// The MAC does not verify: tampered, forged, or from another key.
+    Invalid,
+}
+
+impl EncryptedGraphDB {
+    fn commit_integrity(&self, commit: &Commit) -> CommitIntegrity {
+        match &commit.signature {
+            None => CommitIntegrity::Unsigned,
+            Some(_) if self.commit_mac_ok(commit) => CommitIntegrity::Verified,
+            Some(_) => CommitIntegrity::Invalid,
+        }
+    }
+
+    /// A document's commits, newest first, each with its integrity (checked
+    /// before the snapshot is decrypted, on the fields as stored). A snapshot
+    /// that cannot be decrypted keeps its `content_nonce` set.
+    pub async fn list_document_commits_checked(
+        &self,
+        doc_id: &str,
+    ) -> DbResult<Vec<(Commit, CommitIntegrity)>> {
+        let commits = self.inner.list_document_commits(doc_id).await?;
+        let mut out = Vec::with_capacity(commits.len());
+        for c in commits {
+            let integrity = self.commit_integrity(&c);
+            out.push((self.decrypt_commit_snapshot(c).await, integrity));
+        }
+        Ok(out)
+    }
+
+    /// One commit with its integrity (see [`Self::list_document_commits_checked`]).
+    pub async fn get_commit_checked(&self, commit_id: &str) -> DbResult<(Commit, CommitIntegrity)> {
+        let c = self.inner.get_commit(commit_id).await?;
+        let integrity = self.commit_integrity(&c);
+        Ok((self.decrypt_commit_snapshot(c).await, integrity))
+    }
+
+    /// Crypto-shredding (C-DOC G13): forgets every key of a document and
+    /// persists the key database, so no copy of its ciphertext can be opened
+    /// again. Returns whether a key was there.
+    pub async fn shred_document_key(&self, doc_id: &str) -> DbResult<bool> {
+        let mut kdb = self.key_db.write().await;
+        let had = kdb.remove(doc_id);
+        if had {
+            kdb.save(&self.kek).map_err(|e| {
+                DbError::Query(format!("key DB save failed after shredding {doc_id}: {e}"))
+            })?;
+        }
+        Ok(had)
+    }
+}
+
 #[async_trait]
 impl GraphDB for EncryptedGraphDB {
     async fn connect(&self) -> DbResult<()> {
@@ -558,40 +616,25 @@ impl GraphDB for EncryptedGraphDB {
     }
 
     async fn create_document_with_id(&self, doc: Document) -> DbResult<bool> {
-        // `doc` arrives with PLAINTEXT title/content from the sync boundary.
-        // Insert the row under its own id, then overwrite title + content
-        // with ciphertext under this device's local key (same pattern as
-        // create_document). The brief plaintext write is immediately
-        // replaced by the encrypted setters.
+        // `doc` arrives with PLAINTEXT title/content (the sync boundary, the
+        // document service). The id is known, so the row's key can be minted
+        // and both fields sealed BEFORE the insert: the row lands in ONE
+        // statement, already encrypted. (H-db2: plaintext never at rest; C-DOC
+        // G4: no blanked row left listed by a crash between insert and fill.)
         let doc_id = doc
             .id_string()
             .ok_or_else(|| DbError::Query("create_document_with_id: doc.id unset".into()))?;
         let title_hashes = self.token_hashes(&doc.title);
-        let plain_title = doc.title.clone();
-        let plain_content = doc.content.clone();
-
-        // H-db2: blank the sensitive fields before the raw insert so plaintext
-        // never lands at rest (see create_document).
-        let mut blanked = doc;
-        blanked.title = String::new();
-        blanked.content = String::new();
-        let inserted = self.inner.create_document_with_id(blanked).await?;
-        if !inserted {
-            return Ok(false);
-        }
-
-        let (ct, content_nonce) = self.encrypt_content(&doc_id, &plain_content).await?;
-        self.inner
-            .set_document_content_encryption(&doc_id, &ct, &content_nonce)
-            .await?;
-
+        let (content_ct, content_nonce) = self.encrypt_content(&doc_id, &doc.content).await?;
         let (title_ct, title_nonce) =
-            self.encrypt_with(&self.key_db, &doc_id, plain_title.as_bytes()).await?;
-        self.inner
-            .set_document_title_encryption(&doc_id, &title_ct, &title_nonce, &title_hashes)
-            .await?;
-
-        Ok(true)
+            self.encrypt_with(&self.key_db, &doc_id, doc.title.as_bytes()).await?;
+        let mut sealed = doc;
+        sealed.title = title_ct;
+        sealed.title_nonce = Some(title_nonce);
+        sealed.title_token_hashes = title_hashes;
+        sealed.content = content_ct;
+        sealed.encryption_nonce = Some(content_nonce);
+        self.inner.create_document_with_id(sealed).await
     }
 
     async fn get_document(&self, id: &str) -> DbResult<Document> {
@@ -1752,6 +1795,31 @@ impl GraphDB for EncryptedGraphDB {
         Ok(true)
     }
 
+    /// THREAD-sync S1: the whole record, name and description given in clear
+    /// and sealed here with a fresh nonce, the blind index recomputed. An
+    /// empty field is stored empty, with no nonce and no index entry, so a
+    /// thread marker (S6) holds neither its name nor anything derived from it.
+    async fn put_thread(&self, thread: Thread) -> DbResult<()> {
+        let id = thread
+            .id_string()
+            .ok_or_else(|| DbError::Query("put_thread: id unset".into()))?;
+        let mut sealed = thread;
+        sealed.name_token_hashes = self.token_hashes(&sealed.name);
+        sealed.name_nonce = None;
+        sealed.description_nonce = None;
+        if !sealed.name.is_empty() {
+            let (ct, nonce) = self.encrypt_with(&self.threads_key_db, &id, sealed.name.as_bytes()).await?;
+            sealed.name = ct;
+            sealed.name_nonce = Some(nonce);
+        }
+        if !sealed.description.is_empty() {
+            let (ct, nonce) = self.encrypt_with(&self.threads_key_db, &id, sealed.description.as_bytes()).await?;
+            sealed.description = ct;
+            sealed.description_nonce = Some(nonce);
+        }
+        self.inner.put_thread(sealed).await
+    }
+
     async fn create_entity_with_id(&self, entity: Entity) -> DbResult<bool> {
         // Entity has no encrypted fields at this layer — pass through.
         self.inner.create_entity_with_id(entity).await
@@ -1974,10 +2042,180 @@ impl GraphDB for EncryptedGraphDB {
         let convs = self.inner.list_conversations_including_deleted().await?;
         self.decrypt_conversations(convs).await
     }
+
+    // -- Document service support (C-DOC) --
+
+    async fn update_document_fields(&self, id: &str, patch: DocumentPatch) -> DbResult<()> {
+        // Nonces and the title's blind index are this layer's to set: seal the
+        // plaintext title/content first, then hand the inner store ONE
+        // statement carrying ciphertext and nonces together.
+        let mut p = patch;
+        p.title_nonce = None;
+        p.title_token_hashes = None;
+        p.encryption_nonce = None;
+        if let Some(plain) = p.title.take() {
+            let hashes = self.token_hashes(&plain);
+            let (ct, nonce) = self.encrypt_with(&self.key_db, id, plain.as_bytes()).await?;
+            p.title = Some(ct);
+            p.title_nonce = Some(Some(nonce));
+            p.title_token_hashes = Some(hashes);
+        }
+        if let Some(plain) = p.content.take() {
+            let (ct, nonce) = self.encrypt_content(id, &plain).await?;
+            p.content = Some(ct);
+            p.encryption_nonce = Some(Some(nonce));
+        }
+        self.inner.update_document_fields(id, p).await
+    }
+
+    async fn insert_commit(&self, commit: Commit) -> DbResult<Commit> {
+        // `commit.snapshot` arrives in plaintext. Seal it under the document's
+        // key (with its nonces and title blind index, C1), stamp the MAC over
+        // the at-rest fields (AUTOCOMMIT-001), and insert the whole commit in
+        // one statement: no window in which an unsigned commit exists.
+        let doc_id = commit.document_id.clone();
+        let plain_title = commit.snapshot.title.clone();
+        let plain_content = commit.snapshot.content.clone();
+        let mut sealed = commit;
+        sealed.id = None;
+        let (title_ct, title_nonce) =
+            self.encrypt_with(&self.key_db, &doc_id, plain_title.as_bytes()).await?;
+        let (content_ct, content_nonce) = self.encrypt_content(&doc_id, &plain_content).await?;
+        sealed.snapshot.title_token_hashes = self.token_hashes(&plain_title);
+        sealed.snapshot.title = title_ct;
+        sealed.snapshot.title_nonce = Some(title_nonce);
+        sealed.snapshot.content = content_ct;
+        sealed.snapshot.content_nonce = Some(content_nonce);
+        let mac = sovereign_crypto::mac::device_mac(&self.device_key, &Self::commit_mac_bytes(&sealed));
+        sealed.signature = Some(mac);
+        let mut created = self.inner.insert_commit(sealed).await?;
+        // The caller's plaintext view.
+        created.snapshot.title = plain_title;
+        created.snapshot.content = plain_content;
+        created.snapshot.title_nonce = None;
+        created.snapshot.content_nonce = None;
+        created.snapshot.title_token_hashes.clear();
+        Ok(created)
+    }
+
+    async fn delete_document_commits(&self, doc_id: &str) -> DbResult<u64> {
+        self.inner.delete_document_commits(doc_id).await
+    }
+
+    async fn delete_document_relationships(&self, doc_id: &str) -> DbResult<u64> {
+        self.inner.delete_document_relationships(doc_id).await
+    }
+
+    async fn delete_document_suggested_links(&self, doc_id: &str) -> DbResult<u64> {
+        self.inner.delete_document_suggested_links(doc_id).await
+    }
+
+    async fn delete_pii_record(&self, id: &str) -> DbResult<()> {
+        self.inner.delete_pii_record(id).await
+    }
+
+    async fn set_purge_marker(&self, marker: PurgeMarker) -> DbResult<()> {
+        // A marker carries an id and times only: nothing to seal.
+        self.inner.set_purge_marker(marker).await
+    }
+
+    async fn get_purge_marker(&self, document_id: &str) -> DbResult<Option<PurgeMarker>> {
+        self.inner.get_purge_marker(document_id).await
+    }
+
+    async fn list_purge_markers(&self) -> DbResult<Vec<PurgeMarker>> {
+        self.inner.list_purge_markers().await
+    }
+
+    // Store records are sealed (C-DOC adoption step 6, M8; PANDA2's second
+    // position, claude-coord from-windows/0113): the one-time migration's
+    // record says how many documents the persona had, which is owed to whoever
+    // holds the key, not to whoever holds the disk. Unlike a purge marker it is
+    // read only after unlock, so the keys are there.
+    //
+    // Key database: the documents' (`key_db`). The only record today describes
+    // the persona's documents and is written and read only by the document
+    // service, so its key lives and is recovered with the document keys (sealed
+    // under the KEK, reopened by guardian recovery like them). A dedicated key
+    // database would change `EncryptedGraphDB::new` for every host and test;
+    // the entity id `store_record:<key>` cannot collide with a document id
+    // (`document:<id>`).
+
+    async fn get_store_record(&self, key: &str) -> DbResult<Option<String>> {
+        match self.inner.get_store_record_sealed(key).await? {
+            None => Ok(None),
+            // A value in clear below this layer was not written through it
+            // (only the unreleased step-6 build wrote records unsealed). It is
+            // not trusted and reads as absent: the one-time migration then
+            // runs again, which is idempotent, and its record is rewritten
+            // sealed.
+            Some((_, None)) => Ok(None),
+            Some((ciphertext, Some(nonce))) => {
+                let entity = store_record_entity(key);
+                self.decrypt_with(&self.key_db, &entity, &ciphertext, &nonce).await.map(Some)
+            }
+        }
+    }
+
+    async fn put_store_record(&self, key: &str, value: &str) -> DbResult<()> {
+        check_store_record_key(key)?;
+        let entity = store_record_entity(key);
+        let (ciphertext, nonce) = self.encrypt_with(&self.key_db, &entity, value.as_bytes()).await?;
+        self.inner.put_store_record_sealed(key, &ciphertext, &nonce).await
+    }
+
+    async fn put_store_record_sealed(&self, key: &str, ciphertext: &str, nonce: &str) -> DbResult<()> {
+        self.inner.put_store_record_sealed(key, ciphertext, nonce).await
+    }
+
+    async fn get_store_record_sealed(&self, key: &str) -> DbResult<Option<(String, Option<String>)>> {
+        self.inner.get_store_record_sealed(key).await
+    }
+
+    async fn update_conversation_title(&self, id: &str, title: &str) -> DbResult<()> {
+        let (ct, nonce) = self.encrypt_with(&self.conversations_key_db, id, title.as_bytes()).await?;
+        self.inner.set_conversation_title_encryption(id, &ct, &nonce).await
+    }
+
+    async fn remove_contact_address(
+        &self,
+        contact_id: &str,
+        channel: ChannelType,
+        address: &str,
+    ) -> DbResult<Contact> {
+        // ATREST-002: addresses are one sealed Vec; edit the decrypted set and
+        // re-seal it whole (as add_contact_address does).
+        let mut contact = self.get_contact(contact_id).await?;
+        contact.addresses.retain(|a| !(a.channel == channel && a.address == address));
+        self.encrypt_contact_addresses(contact_id, &contact.addresses).await?;
+        Ok(contact)
+    }
+}
+
+/// The key-database entity of a store record (M8).
+fn store_record_entity(key: &str) -> String {
+    format!("store_record:{key}")
+}
+
+/// A store record's key, checked before sealing (lowercase ASCII letters,
+/// digits, `_`), so that no key is minted for a record the store would refuse.
+fn check_store_record_key(key: &str) -> DbResult<()> {
+    if key.is_empty() || !key.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_') {
+        return Err(DbError::Query(format!("invalid store record key: {key:?}")));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    /// A key-database path unique to this process and call. Fixed names in the
+    /// shared temp dir collide between parallel tests and between concurrent
+    /// test runs (their `.tmp` writes race on Windows).
+    fn unique_tmp(name: &str) -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::env::temp_dir().join(format!("{}-{n}-{name}", std::process::id()))
+    }
     use super::*;
     use sovereign_crypto::kek::Kek;
     use sovereign_crypto::key_db::KeyDatabase;
@@ -1987,7 +2225,7 @@ mod tests {
     }
 
     fn test_key_db() -> KeyDatabase {
-        KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-keys.db"))
+        KeyDatabase::new(unique_tmp("test-encrypted-db-keys.db"))
     }
 
     fn test_device_key() -> sovereign_crypto::device_key::DeviceKey {
@@ -2004,15 +2242,14 @@ mod tests {
 
     fn encrypted_over_mock() -> EncryptedGraphDB {
         let kek = test_kek();
-        let n = std::env::temp_dir();
         EncryptedGraphDB {
             inner: Arc::new(crate::mock::MockGraphDB::new()),
-            key_db: Arc::new(RwLock::new(KeyDatabase::new(n.join("p2p-cdwi-doc.db")))),
-            messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(n.join("p2p-cdwi-msg.db")))),
-            threads_key_db: Arc::new(RwLock::new(KeyDatabase::new(n.join("p2p-cdwi-thr.db")))),
-            conversations_key_db: Arc::new(RwLock::new(KeyDatabase::new(n.join("p2p-cdwi-conv.db")))),
-            contacts_key_db: Arc::new(RwLock::new(KeyDatabase::new(n.join("p2p-cdwi-con.db")))),
-            share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(n.join("p2p-cdwi-shr.db")))),
+            key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("p2p-cdwi-doc.db")))),
+            messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("p2p-cdwi-msg.db")))),
+            threads_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("p2p-cdwi-thr.db")))),
+            conversations_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("p2p-cdwi-conv.db")))),
+            contacts_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("p2p-cdwi-con.db")))),
+            share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("p2p-cdwi-shr.db")))),
             kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
             index_key: Arc::new(IndexKey::generate()),
             device_key: Arc::new(test_device_key()),
@@ -2057,11 +2294,11 @@ mod tests {
         let encrypted_db = EncryptedGraphDB {
             inner: Arc::new(MockDb),
             key_db: key_db.clone(),
-            messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-msgkeys.db")))),
-            threads_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-thrkeys-a.db")))),
-            conversations_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-convkeys-a.db")))),
-            contacts_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-conkeys-a.db")))),
-            share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-shrkeys-a.db")))),
+            messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-msgkeys.db")))),
+            threads_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-thrkeys-a.db")))),
+            conversations_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-convkeys-a.db")))),
+            contacts_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-conkeys-a.db")))),
+            share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-shrkeys-a.db")))),
             kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
             index_key: Arc::new(IndexKey::generate()),
             device_key: Arc::new(test_device_key()),
@@ -2085,11 +2322,11 @@ mod tests {
         let encrypted_db = EncryptedGraphDB {
             inner: Arc::new(MockDb),
             key_db,
-            messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-msgkeys2.db")))),
-            threads_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-thrkeys-b.db")))),
-            conversations_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-convkeys-b.db")))),
-            contacts_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-conkeys-b.db")))),
-            share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-shrkeys-b.db")))),
+            messages_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-msgkeys2.db")))),
+            threads_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-thrkeys-b.db")))),
+            conversations_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-convkeys-b.db")))),
+            contacts_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-conkeys-b.db")))),
+            share_records_key_db: Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-shrkeys-b.db")))),
             kek: Arc::new(Kek::from_bytes(*kek.as_bytes())),
             index_key: Arc::new(IndexKey::generate()),
             device_key: Arc::new(test_device_key()),
@@ -2107,11 +2344,11 @@ mod tests {
         let kek2 = Kek::generate();
         let key_db = Arc::new(RwLock::new(test_key_db()));
 
-        let msg_db1 = Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-msgkeys3.db"))));
-        let thr_db1 = Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-thrkeys-c.db"))));
-        let conv_db1 = Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-convkeys-c.db"))));
-        let con_db1 = Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-conkeys-c.db"))));
-        let shr_db1 = Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join("test-encrypted-db-shrkeys-c.db"))));
+        let msg_db1 = Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-msgkeys3.db"))));
+        let thr_db1 = Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-thrkeys-c.db"))));
+        let conv_db1 = Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-convkeys-c.db"))));
+        let con_db1 = Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-conkeys-c.db"))));
+        let shr_db1 = Arc::new(RwLock::new(KeyDatabase::new(unique_tmp("test-encrypted-db-shrkeys-c.db"))));
         let db1 = EncryptedGraphDB {
             inner: Arc::new(MockDb),
             key_db: key_db.clone(),

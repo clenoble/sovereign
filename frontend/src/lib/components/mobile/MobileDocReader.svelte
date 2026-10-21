@@ -3,7 +3,9 @@
 	 *
 	 *  Replaces the desktop floating DocumentPanel on mobile.
 	 *  Swipe-down on the top bar (> 80px travel) closes the reader.
-	 *  Modes: 'edit' (textarea) and 'preview' (rendered markdown).
+	 *  Modes: 'edit' (textarea), 'preview' (rendered markdown) and 'history'
+	 *  (the versions, with "Use this version": the ordinary version restore,
+	 *  C-WIRE 14 — how a change from another device is undone on mobile).
 	 *  Auto-saves 2 s after each edit — same policy as DocumentPanel.
 	 */
 	import { renderMarkdown } from '$lib/utils/markdown';
@@ -13,8 +15,12 @@
 		close,
 		updateBody,
 		updateTitle,
-		setMode
+		setMode,
+		loadCommits,
+		selectCommit,
+		restoreVersion
 	} from '$lib/stores/documents.svelte';
+	import SaveNotice from '../SaveNotice.svelte';
 
 	let { panel }: { panel: OpenPanel } = $props();
 
@@ -76,6 +82,15 @@
 	function toggleMode() {
 		setMode(panel.doc.id, panel.mode === 'edit' ? 'preview' : 'edit');
 	}
+
+	async function toggleHistory() {
+		if (panel.mode === 'history') {
+			setMode(panel.doc.id, 'edit');
+			return;
+		}
+		setMode(panel.doc.id, 'history');
+		await loadCommits(panel.doc.id);
+	}
 </script>
 
 <div
@@ -116,17 +131,58 @@
 				{#if panel.dirty}
 					<span class="dirty-dot" title="Unsaved changes" aria-label="Unsaved changes">&#9679;</span>
 				{/if}
-				<button class="mode-btn" onclick={toggleMode}>
-					{panel.mode === 'edit' ? 'Preview' : 'Edit'}
+				{#if panel.mode !== 'history'}
+					<button class="mode-btn" onclick={toggleMode}>
+						{panel.mode === 'edit' ? 'Preview' : 'Edit'}
+					</button>
+				{/if}
+				<button class="mode-btn" onclick={toggleHistory} aria-pressed={panel.mode === 'history'}>
+					{panel.mode === 'history' ? 'Back' : 'History'}
 				</button>
 				<button class="close-btn" onclick={handleClose} aria-label="Close document">&#10005;</button>
 			</div>
 		</div>
 	</div>
 
+	<SaveNotice {panel} />
+
 	<!-- Document body -->
 	<div class="reader-body">
-		{#if panel.mode === 'preview'}
+		{#if panel.mode === 'history'}
+			<div class="history">
+				{#if panel.commits.length === 0}
+					<p class="history-empty">No saved versions yet.</p>
+				{:else}
+					<ul class="commit-list" aria-label="Versions">
+						{#each panel.commits as commit, i (commit.id)}
+							<li>
+								<button
+									class="commit-item"
+									class:selected={panel.selectedCommit === i}
+									aria-pressed={panel.selectedCommit === i}
+									onclick={() => selectCommit(panel.doc.id, i)}
+								>
+									<span class="commit-msg">{commit.message}</span>
+									<span class="commit-time">{new Date(commit.timestamp).toLocaleString()}</span>
+								</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+				{#if panel.selectedCommit !== null && panel.commits[panel.selectedCommit]}
+					<div class="commit-preview">
+						<h4>{panel.commits[panel.selectedCommit].snapshot_title}</h4>
+						<p>{panel.commits[panel.selectedCommit].snapshot_preview}</p>
+						<button
+							class="use-btn"
+							onclick={() => restoreVersion(panel.doc.id, panel.commits[panel.selectedCommit!].id)}
+						>
+							Use this version
+						</button>
+					</div>
+				{/if}
+			</div>
+		{:else if panel.mode === 'preview'}
 			<div class="preview">{@html renderMarkdown(panel.doc.body ?? '')}</div>
 		{:else}
 			<textarea
@@ -274,4 +330,73 @@
 	.preview :global(pre code) { background: none; padding: 0; }
 	.preview :global(ul), .preview :global(ol) { padding-left: 20px; margin: 6px 0; }
 	.preview :global(a) { color: var(--accent, #f59e0b); }
+
+	/* ── History ─────────────────────────────────────────────── */
+	.history {
+		flex: 1;
+		overflow-y: auto;
+		padding: 12px;
+	}
+	.history-empty {
+		color: var(--text-secondary, #c8c8c8);
+	}
+	.commit-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.commit-item {
+		width: 100%;
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 2px;
+		padding: 10px 12px;
+		min-height: 44px;
+		background: var(--bg-panel, #22222a);
+		color: var(--text-primary, #e0e0e0);
+		border: 1px solid var(--border, #444);
+		border-radius: 8px;
+		text-align: left;
+		font: inherit;
+	}
+	.commit-item.selected {
+		border-color: #6366f1;
+		box-shadow: 0 0 0 2px #6366f1 inset;
+	}
+	.commit-time {
+		font-size: 0.8rem;
+		color: var(--text-secondary, #c8c8c8);
+	}
+	.commit-preview {
+		margin-top: 12px;
+		padding: 12px;
+		border: 1px solid var(--border, #444);
+		border-radius: 8px;
+	}
+	.commit-preview h4 {
+		margin: 0 0 6px;
+	}
+	.commit-preview p {
+		margin: 0 0 10px;
+		white-space: pre-wrap;
+	}
+	/* White on indigo-600 (#4f46e5): 6.3:1. */
+	.use-btn {
+		background: #4f46e5;
+		color: #fff;
+		border: none;
+		border-radius: 8px;
+		padding: 10px 16px;
+		min-height: 44px;
+		font: inherit;
+	}
+	.commit-item:focus-visible,
+	.use-btn:focus-visible {
+		outline: 3px solid #fbbf24;
+		outline-offset: 2px;
+	}
 </style>

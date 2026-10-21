@@ -8,6 +8,9 @@ description = "P2P device sync and Guardian shard transport for Sovereign GE"
 sovereign-core = { workspace = true }
 sovereign-crypto = { workspace = true }
 sovereign-db = { workspace = true }
+# C-WIRE (step 4 of the C-DOC adoption): sync applies documents through the
+# document service. Contract stubs only until step 4 is built.
+sovereign-docs = { path = "../sovereign-docs" }
 async-trait = { workspace = true }
 
 libp2p = { version = "0.56", features = [

@@ -46,7 +46,11 @@ async fn orchestrator_fails_without_model_files() {
 
     // Default AiConfig has empty model paths — should fail to load
     let config = sovereign_core::config::AiConfig::default();
-    let result = sovereign_ai::Orchestrator::new(config, db, tx).await;
+    let paths = sovereign_ai::OrchestratorStatePaths::for_persona(
+        &std::env::temp_dir(),
+        sovereign_core::auth::PersonaKind::Primary,
+    );
+    let result = sovereign_ai::Orchestrator::new(config, db, tx, paths).await;
 
     assert!(result.is_err(), "Orchestrator should fail when model files are missing");
 }

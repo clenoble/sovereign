@@ -58,10 +58,18 @@
 			handleSubmit();
 			return;
 		}
+		// Typing timings are optional (spec ch. 07): an event without a key — what a
+		// system autofill dispatches — is ignored, never recorded as a sample.
+		if (!hasKey(e)) return;
 		keyTimings.set(e.key, Date.now());
 	}
 
+	function hasKey(e: KeyboardEvent): boolean {
+		return typeof e.key === 'string' && e.key.length > 0;
+	}
+
 	function handleKeyup(e: KeyboardEvent) {
+		if (!hasKey(e)) return;
 		const pressTime = keyTimings.get(e.key);
 		if (pressTime) {
 			keystrokes.push({

@@ -13,9 +13,13 @@ pub async fn create_thread(
     description: String,
 ) -> Result<ThreadDto, String> {
     state.require_unlocked(&webview).await?;
-    let thread = Thread::new(name, description);
-    let created = state.db.create_thread(thread).await.str_err()?;
-    let id = created.id.as_ref().map(sovereign_db::schema::thing_to_raw).unwrap_or_default();
+    // Through the one thread-write path, stamped (THREAD-sync S1).
+    let docs = state.docs().await?;
+    let id = docs
+        .thread_create(&name, &description)
+        .await
+        .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?;
+    let created = state.db.get_thread(&id).await.str_err()?;
     Ok(ThreadDto {
         id,
         name: created.name,
@@ -34,11 +38,12 @@ pub async fn update_thread(
     description: Option<String>,
 ) -> Result<ThreadDto, String> {
     state.require_unlocked(&webview).await?;
-    let updated = state
-        .db
-        .update_thread(&id, name.as_deref(), description.as_deref())
+    // Through the one thread-write path, stamped (THREAD-sync S1).
+    let docs = state.docs().await?;
+    docs.thread_update(&id, name.as_deref(), description.as_deref())
         .await
-        .str_err()?;
+        .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?;
+    let updated = state.db.get_thread(&id).await.str_err()?;
     let tid = updated.id.as_ref().map(sovereign_db::schema::thing_to_raw).unwrap_or_default();
     Ok(ThreadDto {
         id: tid,
@@ -48,7 +53,10 @@ pub async fn update_thread(
     })
 }
 
-/// Soft-delete a thread.
+/// Delete a thread (C-DOC adoption step 5, S5-10; Céline, 2026-10-17):
+/// every document still in it goes to the trash, then the thread is deleted
+/// for good — all or nothing. The UI asks first, naming the thread and its
+/// number of documents.
 #[tauri::command]
 pub async fn delete_thread(
     webview: tauri::Webview,
@@ -56,7 +64,8 @@ pub async fn delete_thread(
     id: String,
 ) -> Result<(), String> {
     state.require_unlocked(&webview).await?;
-    state.db.soft_delete_thread(&id).await.str_err()
+    let docs = state.docs().await?;
+    crate::doc_trash::delete_thread_to_trash(&docs, state.db.as_ref(), &id).await.map(|_| ())
 }
 
 /// Move a document to a different thread.

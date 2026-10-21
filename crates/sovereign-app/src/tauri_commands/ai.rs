@@ -96,12 +96,9 @@ pub async fn search_documents(
                 .as_ref()
                 .map(sovereign_db::schema::thing_to_raw)
                 .unwrap_or_default();
-            // Char-safe: a byte slice at 120 panics inside a multibyte character.
-            let snippet = if d.content.chars().count() > 120 {
-                format!("{}...", d.content.chars().take(120).collect::<String>())
-            } else {
-                d.content.clone()
-            };
+            // C-DOC adoption step 1: the snippet is the document's text, not
+            // its stored JSON; char-safe.
+            let snippet = super::documents::text_preview(&d.content, 120);
             SearchHit {
                 id,
                 title: d.title,

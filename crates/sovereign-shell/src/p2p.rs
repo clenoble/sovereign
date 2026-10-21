@@ -135,7 +135,7 @@ impl P2pHandle {
     }
 
     /// Ask the node to restore a peer-overwritten row to its pre-sync value —
-    /// the node holds the key to unseal the `RowRecovery` (peer-review panel).
+    /// the node holds the key to unseal the `RowRecovery` (Previous values).
     /// Returns false if the command channel is full/closed.
     pub(crate) fn restore_row(&self, recovery_id: &str) -> bool {
         self.command_tx
@@ -277,7 +277,43 @@ pub(crate) struct GuardianOfferOut {
     pub(crate) slot_ordinal: usize,
 }
 
+/// The decoy guardian-enrollment offer of a duress session (spec ch. 07,
+/// v2.0.29): built exactly as [`P2pHandle::arm_guardian_offer`] builds a real
+/// one — same offer type, same TTL, a code from the same generator — so the
+/// screen reads the same, but nothing is armed: no share, no enrollment key
+/// derived, nothing sent to the node, nothing written. No guardian can ever
+/// complete it, so the enrollment screen simply waits. Slot 1: a duress
+/// session reads as a persona with no roster yet.
+pub(crate) fn decoy_guardian_offer(
+    owner_peer_id: String,
+    owner_label: String,
+    addrs: Vec<String>,
+) -> GuardianOfferOut {
+    use sovereign_p2p::guardian_enroll::{GuardianEnrollOffer, GUARDIAN_OFFER_TTL_SECONDS};
+
+    let offer = GuardianEnrollOffer::new(owner_peer_id, owner_label, addrs, GUARDIAN_OFFER_TTL_SECONDS);
+    GuardianOfferOut {
+        // A struct of strings and integers always serializes; an empty payload
+        // would only draw an empty QR, never reach the node.
+        qr_payload: offer.encode().unwrap_or_default(),
+        code: sovereign_crypto::pair_payload::generate_pairing_code(),
+        slot_ordinal: 1,
+    }
+}
+
 impl P2pHandle {
+    /// The decoy offer of a duress session, from the same inputs a real offer
+    /// is built from (this node's peer id, device name, routable listen
+    /// addresses). Reads the handle only; arms nothing.
+    pub(crate) fn decoy_guardian_offer(&self) -> GuardianOfferOut {
+        let addrs = self
+            .listen_addrs()
+            .into_iter()
+            .filter(|a| sovereign_p2p::is_routable_listen_addr(a))
+            .collect::<Vec<_>>();
+        decoy_guardian_offer(self.local_peer_id.clone(), self.device_name.clone(), addrs)
+    }
+
     /// Arm an in-person guardian-enrollment offer for the next un-enrolled slot.
     ///
     /// Mirrors the Tauri owner's `begin_guardian_enrollment` and this crate's
@@ -297,15 +333,20 @@ impl P2pHandle {
         rt: &tokio::runtime::Runtime,
         kek: &sovereign_crypto::kek::Kek,
         seed_relays: &[String],
+        persona: Option<sovereign_core::auth::PersonaKind>,
     ) -> Result<GuardianOfferOut, String> {
         use sovereign_crypto::recovery_roster::{GUARDIAN_THRESHOLD, GUARDIAN_TOTAL};
         use sovereign_p2p::guardian_enroll::{
             derive_enroll_key, GuardianEnrollOffer, GUARDIAN_OFFER_TTL_SECONDS,
         };
 
+        // The caller sends a duress session to the decoy offer first; this is
+        // the backstop: no roster is ever created or read under another
+        // persona's keys.
+        let store = crate::crypto::recovery_store_for(persona)
+            .ok_or_else(|| crate::crypto::ENROLL_SYNC_NOT_RUNNING.to_string())?;
         rt.block_on(async {
             // Roster read + reconcile need the KEK (owner-side, login-only).
-            let store = crate::crypto::recovery_store();
             let mut setup = store.load_or_create(kek, &self.account_key)?;
             // Fold in guardians confirmed via GuardianEnrolled events (the
             // translator has no KEK, so it only queued them).
@@ -418,6 +459,9 @@ pub(crate) fn start_p2p_node(
     account_key: Arc<AccountKey>,
     cfg: P2pConfig,
     orch_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
+    docs: Option<Arc<sovereign_docs::DocumentService>>,
+    orch: Arc<tokio::sync::Mutex<Option<Arc<sovereign_ai::Orchestrator>>>>,
+    persona: Option<sovereign_core::auth::PersonaKind>,
 ) -> Result<P2pHandle, String> {
     rt.block_on(async move {
         // Derive the libp2p keypair from the per-device identity key. The same
@@ -459,13 +503,40 @@ pub(crate) fn start_p2p_node(
             crate::crypto::crypto_dir().join("sync_versions.json"),
         );
 
-        let sync_service = Arc::new(SyncService::new(
+        // C-WIRE: documents sync only through the persona's document service,
+        // and every received change goes through the incoming-change analysis
+        // (deterministic checks; the model once the orchestrator is built).
+        let mut sync_service = SyncService::new(
             db,
             local_peer_id.clone(), // P2P-001: version identity = verifiable PeerId
             transport_key,
             keypair.clone(),
             version_store,
-        ));
+        )
+        .with_analysis(Arc::new(sovereign_ai::peer_audit::PeerChangeAnalysis::deterministic()));
+        let mut verdict_docs = None;
+        match docs {
+            Some(docs) => {
+                verdict_docs = Some(docs.clone());
+                sync_service = sync_service.with_documents(docs)
+            }
+            None => eprintln!("no document service: documents will not sync (rows only)"),
+        }
+        let sync_service = Arc::new(sync_service);
+        // The model's verdict on every received change, in the background
+        // (spec v2.0.22): the queue waits until the orchestrator exists
+        // (built on first chat), and sync never waits on it.
+        if let Some(docs) = verdict_docs {
+            let verdicts = sovereign_p2p::wire::ModelVerdicts::spawn(
+                docs,
+                Arc::new(sovereign_ai::peer_audit::OrchestratorJudge::with_lazy_orchestrator(orch)),
+            );
+            let tx = orch_tx.clone();
+            verdicts.set_on_alert(Arc::new(move || {
+                let _ = tx.send(OrchestratorEvent::SyncAlertsChanged);
+            }));
+            sync_service.set_model_verdicts(verdicts);
+        }
         sync_service.set_pair_keys(manager.pair_key_map());
 
         // Channels.
@@ -496,6 +567,7 @@ pub(crate) fn start_p2p_node(
             account_key: account_key.clone(),
             store_key,
             local_peer_id: local_peer_id.clone(),
+            persona,
         };
         tokio::spawn(async move {
             spawn_event_translator(event_rx, ctx).await;
@@ -604,8 +676,6 @@ pub(crate) async fn accept_pairing(
     // literal "duress-fallback-unused": that literal is public in the source,
     // identical across installs, and would let a source-aware adversary unlock
     // the decoy and confirm no real duress persona exists (H-shell1 theme).
-    std::fs::write(crypto_dir.join("salt"), &outcome.secrets.salt)
-        .map_err(|e| format!("write salt: {e}"))?;
     let random_duress;
     let duress = if duress.is_empty() {
         random_duress = sovereign_crypto::random_hex_32();
@@ -621,9 +691,16 @@ pub(crate) async fn accept_pairing(
         &imported_account_key,
     )
     .map_err(|e| format!("auth store: {e}"))?;
+    // Exclusive create (spec ch. 07, *Auth store*, "Created once"): an
+    // existing auth.store is never replaced. Written before the salt, so a
+    // refused write changes no file.
     auth_store
-        .save(&crate::crypto::auth_store_path())
-        .map_err(|e| format!("save auth store: {e}"))?;
+        .save_new(&crate::crypto::auth_store_path())
+        .map_err(crate::crypto::save_new_error)?;
+    // Atomic and owner-only; if a crash loses it, the next start restores it
+    // from auth.store (crypto::load_or_create_salt_in).
+    sovereign_crypto::fs_private::write_private(&crypto_dir.join("salt"), &outcome.secrets.salt)
+        .map_err(|e| format!("write salt: {e}"))?;
 
     // Persist the source as a paired device WITH its per-pair key (P1.4) —
     // encrypted from birth. The source registered OUR final identity during the
@@ -667,6 +744,8 @@ struct TranslatorCtx {
     account_key: Arc<AccountKey>,
     store_key: [u8; 32],
     local_peer_id: String,
+    /// The open persona: the enrollment queue is the primary's only.
+    persona: Option<sovereign_core::auth::PersonaKind>,
 }
 
 /// Translate `P2pEvent`s into `OrchestratorEvent`s for the shell's event drain,
@@ -724,15 +803,19 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
                 eprintln!("Pairing attempt failed: {reason} (offer dead: {offer_dead})");
                 Some(OrchestratorEvent::PairingFailed { reason, offer_dead })
             }
-            P2pEvent::RowsFlaggedForReview { peer_id, count } => {
-                // C2: a peer overwrite was stashed — surface it instead of
-                // leaving it invisible until the review panel is opened.
-                Some(OrchestratorEvent::SyncStatus {
-                    peer_id,
-                    status: format!(
-                        "{count} change(s) from this device stashed for review — press r"
-                    ),
-                })
+            P2pEvent::PeerNeedsUpdate { peer_id } => {
+                // C-WIRE 12: no document is exchanged with a device on an
+                // older build; rows keep syncing. The notice names the device.
+                let device_name = ctx
+                    .pairing_manager
+                    .read()
+                    .await
+                    .list_devices()
+                    .into_iter()
+                    .find(|d| d.peer_id == peer_id)
+                    .map(|d| d.device_name.clone())
+                    .unwrap_or_default();
+                Some(OrchestratorEvent::PeerNeedsUpdate { peer_id, device_name })
             }
             P2pEvent::ListenAddr { address } => {
                 if let Ok(mut addrs) = ctx.listen_addrs.write() {
@@ -780,23 +863,28 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
             // non-secret confirmation (as the mobile host does, sync_startup.rs)
             // and tells the UI thread, which folds it in under the KEK.
             P2pEvent::GuardianEnrolled { guardian_peer_id, guardian_label, shard_id, .. } => {
-                match queue_guardian_enrollment(
-                    &crate::crypto::recovery_store(),
-                    &shard_id,
-                    &guardian_peer_id,
-                    &guardian_label,
-                ) {
-                    Ok(()) => Some(OrchestratorEvent::GuardianEnrolled {
-                        guardian_id: guardian_peer_id,
-                        name: guardian_label,
-                    }),
-                    Err(e) => {
-                        eprintln!("failed to queue guardian enrollment: {e}");
-                        Some(OrchestratorEvent::GuardianDropped {
+                match crate::crypto::recovery_store_for(ctx.persona) {
+                    // A duress session arms no offer and has no queue: an
+                    // enrollment event there records nothing and shows nothing.
+                    None => None,
+                    Some(store) => match queue_guardian_enrollment(
+                        &store,
+                        &shard_id,
+                        &guardian_peer_id,
+                        &guardian_label,
+                    ) {
+                        Ok(()) => Some(OrchestratorEvent::GuardianEnrolled {
                             guardian_id: guardian_peer_id,
-                            reason: format!("the enrollment could not be recorded on this device ({e})"),
-                        })
-                    }
+                            name: guardian_label,
+                        }),
+                        Err(e) => {
+                            eprintln!("failed to queue guardian enrollment: {e}");
+                            Some(OrchestratorEvent::GuardianDropped {
+                                guardian_id: guardian_peer_id,
+                                reason: format!("the enrollment could not be recorded on this device ({e})"),
+                            })
+                        }
+                    },
                 }
             }
             P2pEvent::GuardianEnrollRequested { .. } | P2pEvent::GuardianEnrollFailed { .. } => None,

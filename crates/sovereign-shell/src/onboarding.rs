@@ -597,7 +597,7 @@ fn draw_fields(scene: &mut Scene, shaper: &mut TextShaper, wiz: &OnboardingWizar
         }
         let focused = i == wiz.focus;
         let frr = RoundedRect::from_rect(*fr, 8.0);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, pal().on_accent, None, &frr);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, crate::theme::field_fill(&pal()), None, &frr);
         scene.stroke(
             &Stroke::new(if focused { 1.6 } else { 1.0 }),
             Affine::IDENTITY,

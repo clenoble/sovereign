@@ -110,6 +110,188 @@ pub struct Document {
     /// local model is available (the change is still surfaced, sans verdict).
     #[serde(default)]
     pub peer_review_assessment: Option<String>,
+    // --- Document service (C-DOC, spec ch. 03 / ch. 04) ---
+    // Rows written before the service have none of these: trust then reads
+    // from `is_owned` and provenance as "unrecorded" (serde defaults).
+    /// Trust state: `"owned"`, `"external"` or `"undetermined"`. `None` on rows
+    /// written before the service; `is_owned` is kept in agreement (owned only
+    /// when owned) for the readers that still use it.
+    #[serde(default)]
+    pub trust: Option<String>,
+    /// Where the content came from: `"written"`, `"assistant"`, `"web"`,
+    /// `"import"` or `"peer"`. `None` = unrecorded (rows from before the service).
+    #[serde(default)]
+    pub provenance_kind: Option<String>,
+    /// The URL (web), source path (import) or device (peer) of the provenance.
+    #[serde(default)]
+    pub provenance_detail: Option<String>,
+    /// The user's last explicit trust decision (`set_trust`, here or on a
+    /// paired device): the trust chosen, the device, the time.
+    #[serde(default)]
+    pub trust_decision: Option<String>,
+    #[serde(default)]
+    pub trust_decision_device: Option<String>,
+    #[serde(default)]
+    pub trust_decision_at: Option<DateTime<Utc>>,
+    /// Bumped by the document service on every write of title or content: part
+    /// of the revision a writer must name to save (C-DOC G11).
+    #[serde(default)]
+    pub write_seq: u64,
+    /// Who wrote the current state (`"editor:<session>"`, `"assistant"`,
+    /// `"skill:<name>"`, …): the restore-point rule (C-DOC G4) versions a state
+    /// before anyone else replaces it.
+    #[serde(default)]
+    pub last_writer: Option<String>,
+    // --- Sync wire (C-WIRE, C-DOC G24–G31, step 4) ---
+    // Rows written before step 4 have none of these; the document service
+    // derives a stamp for them on read (from `modified_at`) without writing it.
+    /// Hybrid-logical-clock stamp of the write that produced this state,
+    /// encoded `wall_ms:counter:device`.
+    #[serde(default)]
+    pub stamp: Option<String>,
+    /// The stamp of the state this one replaced.
+    #[serde(default)]
+    pub prev_stamp: Option<String>,
+    /// Earlier stamps of this document (bounded): what this state descends
+    /// from, and concurrent states already kept as versions.
+    #[serde(default)]
+    pub stamp_history: Vec<String>,
+    /// The device on which the current state was written.
+    #[serde(default)]
+    pub author_device: Option<String>,
+    /// The stamp of the last trust decision (`trust_decision_*`).
+    #[serde(default)]
+    pub decision_stamp: Option<String>,
+    /// Concurrent local states this device lost to a remote state with a
+    /// greater stamp, kept as versions and relayed to peers (bounded):
+    /// `stamp<US>commit id`.
+    #[serde(default)]
+    pub kept_versions: Vec<String>,
+    /// An open alert from the incoming-change analysis (C-WIRE 13): the
+    /// device the change came from, what was found (no document text), the
+    /// version before the change, and when.
+    #[serde(default)]
+    pub alert_device: Option<String>,
+    #[serde(default)]
+    pub alert_finding: Option<String>,
+    #[serde(default)]
+    pub alert_previous_version: Option<String>,
+    #[serde(default)]
+    pub alert_raised_at: Option<DateTime<Utc>>,
+    /// A received change still waiting for the model's verdict (C-WIRE 13,
+    /// spec v2.0.22: the model runs in the background, off the sync path).
+    /// JSON: the sending device, the version before the change and the stamp
+    /// of the received state. No document text. Survives a restart, so a
+    /// verdict not reached before the app quits is taken up at next start.
+    #[serde(default)]
+    pub model_check: Option<String>,
+}
+
+/// A partial update of a document row, applied **in one statement**
+/// (`GraphDB::update_document_fields`): every `Some` field is written, every
+/// `None` field is left as it is, and either all of them land or none does
+/// (C-DOC G4: a write lands whole). `Some(None)` clears an optional field.
+///
+/// Under `EncryptedGraphDB`, `title` and `content` are plaintext on the way in
+/// and are sealed (with their nonces and the title's blind index) before the
+/// one statement runs; the nonce and hash fields are set by that layer, never
+/// by callers. No `Debug`: it carries document text.
+#[derive(Clone, Default, Serialize)]
+pub struct DocumentPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_nonce: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_token_hashes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_nonce: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_owned: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_commit: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pii_scanned_at: Option<Option<DateTime<Utc>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_decision: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_decision_device: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_decision_at: Option<Option<DateTime<Utc>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_writer: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_review_pending: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_review_peer: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_review_at: Option<Option<DateTime<Utc>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_review_prior_commit: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_review_assessment: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stamp: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev_stamp: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stamp_history: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author_device: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_stamp: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kept_versions: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alert_device: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alert_finding: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alert_previous_version: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alert_raised_at: Option<Option<DateTime<Utc>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_check: Option<Option<String>>,
+}
+
+/// What stays of a purged document (C-DOC G13, decided by Céline 2026-10-11):
+/// its id and nothing of its content, so that a purge sticks — the document is
+/// never listed, read, restored or brought back by sync. `complete == false`
+/// while the purge is under way: a purge interrupted at any point is finished
+/// by the next run. Stored as `purge_marker:<document key>`. How it travels to
+/// paired devices is open (C-WIRE).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PurgeMarker {
+    pub id: Option<Thing>,
+    pub document_id: String,
+    pub purged_at: DateTime<Utc>,
+    pub complete: bool,
+    /// The stamp of the purge (C-WIRE), encoded as on `Document::stamp`.
+    #[serde(default)]
+    pub stamp: Option<String>,
+    /// The fingerprint of the purged version: a hash of its title and
+    /// content, never the content (C-WIRE *Deletions and purges*). `None` on
+    /// markers written before step 4.
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    /// The id came back as a differing copy (C-WIRE 10): the marker no longer
+    /// applies; kept only so the record of the purge is not silently lost.
+    #[serde(default)]
+    pub revoked: bool,
 }
 
 /// Thread (project/topic grouping)
@@ -138,6 +320,14 @@ pub struct Thread {
     /// `find_thread_by_name`. Empty when name is plaintext.
     #[serde(default)]
     pub name_token_hashes: Vec<String>,
+    /// The hybrid-logical-clock stamp of the thread's current state (its last
+    /// create, rename or deletion, made here or received), as
+    /// `wall_ms:counter:device` (THREAD-sync S1). Written only by the
+    /// document service's thread path; `None` for a row written before
+    /// stamps existed. Travels inside the sealed row (a field with a default,
+    /// C-WIRE).
+    #[serde(default)]
+    pub stamp: Option<String>,
 }
 
 /// Relationship edge between documents
@@ -380,6 +570,25 @@ impl Document {
             peer_review_at: None,
             peer_review_prior_commit: None,
             peer_review_assessment: None,
+            trust: None,
+            provenance_kind: None,
+            provenance_detail: None,
+            trust_decision: None,
+            trust_decision_device: None,
+            trust_decision_at: None,
+            write_seq: 0,
+            last_writer: None,
+            stamp: None,
+            prev_stamp: None,
+            stamp_history: Vec::new(),
+            author_device: None,
+            decision_stamp: None,
+            kept_versions: Vec::new(),
+            alert_device: None,
+            alert_finding: None,
+            alert_previous_version: None,
+            alert_raised_at: None,
+            model_check: None,
         }
     }
 
@@ -434,6 +643,7 @@ impl Thread {
             name_nonce: None,
             description_nonce: None,
             name_token_hashes: Vec::new(),
+            stamp: None,
         }
     }
 

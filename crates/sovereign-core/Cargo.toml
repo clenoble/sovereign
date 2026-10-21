@@ -17,3 +17,6 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 rand = { workspace = true }
 url = { workspace = true } # SSRF guard (net_guard) — URL parse + host classification
+# The stored document format v2: `ContentFields::read_stored` reads every
+# stored form through it (C-DOC adoption step 1). No I/O, no dependencies.
+sovereign-docformat = { path = "../sovereign-docformat" }

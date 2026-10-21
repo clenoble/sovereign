@@ -15,7 +15,8 @@
 //!      re-derive the backup signing pubkey (the A1 origin check) and the
 //!      owner tag (must match the manifest).
 //!   3. fetch ciphertext fragments from hosts until `data_fragments` valid.
-//!   4. finalize: `assemble_snapshot` (A1 gauntlet) → `restore_snapshot`.
+//!   4. finalize: `assemble_snapshot` (A1 gauntlet) → `wire::restore_backup`
+//!      (documents through the document service, onto an empty workspace; rows).
 //!
 //! The pure state transitions (what to request next, when enough is
 //! collected, phase progression) are unit-tested without a network.
@@ -26,7 +27,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sovereign_db::GraphDB;
 
-use crate::backup::{restore_snapshot, BackupGuardianPayload, BackupManifest};
+use crate::backup::{BackupGuardianPayload, BackupManifest, BackupSnapshot};
 use crate::backup_client::{assemble_snapshot, fetch_fragments, list_backups, request_guardian_shard};
 use crate::error::{P2pError, P2pResult};
 
@@ -310,10 +311,18 @@ impl RecoveryState {
     /// Final offline step: re-derive the AccountKey from the passphrase +
     /// recovered salt, verify it reproduces the manifest's owner tag AND
     /// backup signer (A1 origin), assemble+verify+unseal, restore into
-    /// `db`. Sets phase to Installed on success and Failed on assembly
+    /// `db` — the documents through `documents`, the persona's document
+    /// service, and only onto an empty workspace (C-WIRE 17); the rows as
+    /// before. Sets phase to Installed on success and Failed on assembly
     /// failure. A wrong passphrase does NOT fail the recovery — the shards
     /// stay valid and the phase is left untouched so the user can retype.
-    pub async fn finalize(&mut self, db: &dyn GraphDB, passphrase: &[u8]) -> P2pResult<u64> {
+    /// Returns the number of documents and rows restored.
+    pub async fn finalize(
+        &mut self,
+        db: &dyn GraphDB,
+        documents: &sovereign_docs::DocumentService,
+        passphrase: &[u8],
+    ) -> P2pResult<u64> {
         let manifest = self
             .manifest
             .clone()
@@ -353,10 +362,28 @@ impl RecoveryState {
         self.manifest_verified = Some(true);
         self.phase = RecoveryPhase::Verified;
 
-        let written = restore_snapshot(db, &snapshot).await?;
+        let report = crate::wire::restore_backup(documents, db, &snapshot)
+            .await
+            .map_err(|e| P2pError::SyncError(format!("backup restore: {e}")))?;
+        let rows = snapshot_row_count(&snapshot);
+        let written = report.restored.len() as u64 + rows;
         self.phase = RecoveryPhase::Installed;
         Ok(written)
     }
+}
+
+/// The rows a snapshot holds (what a restore onto an empty workspace writes).
+fn snapshot_row_count(s: &BackupSnapshot) -> u64 {
+    (s.threads.len()
+        + s.entities.len()
+        + s.pii_records.len()
+        + s.share_records.len()
+        + s.contacts.len()
+        + s.messages.len()
+        + s.conversations.len()
+        + s.milestones.len()
+        + s.relationships.len()
+        + s.suggested_links.len()) as u64
 }
 
 fn warn_skip(what: &str, who: &str, e: P2pError) {

@@ -45,6 +45,12 @@ ignore = [
     "RUSTSEC-2026-0359",
     "RUSTSEC-2026-0362",
     "RUSTSEC-2026-0363",
+    # wasmtime 44.0.2, accepted 2026-10-21 (Céline) on the same grounds — Cranelift
+    # on aarch64 can jump to a wrong target on a large Wasm `br_table`. Same path,
+    # same HARD PRECONDITION, raised: bump to wasmtime >= 48.0.7 / >= 49.0.4 before
+    # wasm-plugins is wired in. Traced at v0.0.11 rc2 (c1b54f6) on the laptop
+    # (Windows shell) and on WSL (Linux shell, APK): wasmtime is in none of them.
+    "RUSTSEC-2026-0379",
     # quick-xml 0.38.4 / 0.39.4 — quadratic duplicate-attribute check and
     # unbounded namespace allocation (DoS on attacker-controlled XML).
     # 0.38.4: presage -> libsignal-service -> phonenumber, the dormant Signal
@@ -69,4 +75,16 @@ ignore = [
     # rkyv 0.7.46 — in the lockfile only as an optional dependency of
     # rust_decimal whose `rkyv` feature is never enabled: never compiled.
     "RUSTSEC-2026-0235",
+    # zip 0.6.6 — accepted 2026-10-17 (Céline): SUID/SGID kept on extraction,
+    # `extract` following symlinks out of the destination, permissions applied
+    # through symlinks. Reached only through rustpotter -> candle-core 0.2.2, i.e.
+    # sovereign-ai's wake-word feature, in no shipped build; a transitive pin we
+    # cannot bump. Our own zip use (sovereign-import) is on zip 9.0.4 since
+    # eef15a2, which is not affected. HARD PRECONDITION: bump or replace
+    # rustpotter before voice ships; remove these then. An ignore is per ID: if
+    # another path ever brings an affected zip, these lines would hide it —
+    # re-trace with `cargo tree -i zip` at every release.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]

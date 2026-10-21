@@ -7,6 +7,9 @@ description = "Skill manifest parsing, registry, and CoreSkill trait"
 [dependencies]
 sovereign-core = { workspace = true }
 sovereign-db = { workspace = true }
+# The stored document format v2: search, the thread summary and the WASM host
+# read document content through it (C-DOC adoption step 1). No I/O.
+sovereign-docformat = { path = "../sovereign-docformat" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

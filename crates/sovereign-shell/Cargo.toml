@@ -1,6 +1,6 @@
 [package]
 name = "sovereign-shell"
-version = "0.0.10"
+version = "0.0.11"
 edition = "2021"
 publish = false
 
@@ -28,6 +28,13 @@ dev-switches = []
 # Surface backend/P2P logs (sync engine, mDNS, pairing) for debugging — the node
 # logs via `tracing`, dropped without a subscriber. Env-filtered (RUST_LOG).
 tracing-subscriber = { workspace = true }
+# Only to turn on ICU's `logging` feature (parley reaches icu_provider through
+# its segmenter). Without it, a debug build of icu_provider writes its data
+# warnings with `eprintln!` ("ICU4X data error: No segmentation model for
+# language: ja", once per Han run laid out), which no log filter can reach;
+# with it they go through the `log` crate, which tracing-subscriber bridges,
+# and `icu_provider=error` in main.rs drops them.
+icu_provider = { version = "2.1", default-features = false, features = ["logging"] }
 vello = "0.9"
 winit = "0.30"
 pollster = "0.3"
@@ -40,6 +47,12 @@ sovereign-db = { workspace = true, features = ["rocksdb", "encryption"] }
 sovereign-core = { workspace = true }
 # Batch 2d: the 24 built-in skills, run on a document from the context menu.
 sovereign-skills = { workspace = true }
+# The document editor (contract C-TEXT, spec ch. 12): the document window's
+# body, in every build (contract E1-E9, doc/plans/EDITOR-default.md).
+sovereign-editor = { path = "../sovereign-editor" }
+# The document service (C-DOC): document saves, skill write-back and restores
+# go through it (adoption step 2), built at unlock over the encrypted store.
+sovereign-docs = { path = "../sovereign-docs" }
 tokio = { workspace = true }
 
 # Phase 1d.2: in-process AI orchestrator. default-features=false (via workspace)
@@ -50,7 +63,7 @@ tokio = { workspace = true }
 # default-features=false (drops cuda), so encrypted-log must be named explicitly
 # — it does NOT come back via the workspace default. Without it,
 # set_session_log_key does not exist and the log is plaintext.
-sovereign-ai = { workspace = true, features = ["encrypted-log", "llama"] }
+sovereign-ai = { workspace = true, features = ["encrypted-log", "llama", "p2p"] }
 
 # Phase 3: auth (login/onboarding/duress) + the at-rest key stack feeding
 # EncryptedGraphDB. AuthStore, MasterKey/DeviceKey/Kek/AccountKey, KeyDatabase,
@@ -97,3 +110,6 @@ arboard = "3.6"
 # against the in-memory MockGraphDB.
 sovereign-db = { workspace = true, features = ["rocksdb", "encryption", "test-utils"] }
 tempfile = "3"
+# Replays the editor-v2 accessibility updates through the consumer version the
+# Windows adapter uses (accesskit_windows 0.32 -> accesskit_consumer 0.35).
+accesskit_consumer = "0.35"

@@ -201,7 +201,14 @@ impl AccessRecovery {
     /// (RECOVERY-001): the raw shares never touch disk, only their AEAD-sealed
     /// form + a probe. Written owner-only (`write_private`) as defense in depth
     /// on top of the seal.
+    ///
+    /// A recovery that was [cancelled](Self::cancel) is never recreated: a step that
+    /// loaded it before the cancel (a guardian round in flight while the owner logs in)
+    /// gets `Err` from its final save and leaves nothing on disk (finding 8).
     pub fn save(&self, dir: &std::path::Path, seal_key: &[u8; 32]) -> P2pResult<()> {
+        if self.is_cancelled(dir) {
+            return Err(cancelled_error());
+        }
         std::fs::create_dir_all(dir)
             .map_err(|e| P2pError::SyncError(format!("mkdir access-recovery: {e}")))?;
         let shares_json = serde_json::to_vec(&self.shares)
@@ -216,7 +223,23 @@ impl AccessRecovery {
         let json = serde_json::to_vec_pretty(&snapshot)
             .map_err(|e| P2pError::SyncError(format!("serialize access-recovery: {e}")))?;
         sovereign_crypto::fs_private::write_private(&dir.join("access_recovery.json"), &json)
-            .map_err(|e| P2pError::SyncError(format!("write access-recovery: {e}")))
+            .map_err(|e| P2pError::SyncError(format!("write access-recovery: {e}")))?;
+        // Re-check after writing: `cancel` writes its marker before deleting the file,
+        // so either this sees the marker and undoes the write, or the cancel's delete
+        // comes after this write. No interleaving leaves a cancelled recovery on disk.
+        if self.is_cancelled(dir) {
+            let _ = std::fs::remove_file(dir.join("access_recovery.json"));
+            return Err(cancelled_error());
+        }
+        Ok(())
+    }
+
+    /// True iff this recovery (same id and same seal salt) was cancelled on this
+    /// device. A recovery started afterwards has a fresh salt and is not affected.
+    pub fn is_cancelled(&self, dir: &std::path::Path) -> bool {
+        read_cancelled(dir)
+            .iter()
+            .any(|c| c.recovery_id == self.recovery_id && c.seal_salt == self.seal_salt)
     }
 
     /// Load progress **without** the seal key: metadata + phase are readable
@@ -258,9 +281,47 @@ impl AccessRecovery {
         Ok(())
     }
 
+    /// Abandon the recovery in progress on this device (owner login, user cancel, or
+    /// completion). The recovery is first recorded as cancelled, so that a step which
+    /// loaded it earlier cannot bring it back with its save; then the file is deleted.
     pub fn cancel(dir: &std::path::Path) {
+        if let Some(current) = Self::load(dir) {
+            let mut cancelled = read_cancelled(dir);
+            cancelled.push(CancelledRecovery {
+                recovery_id: current.recovery_id,
+                seal_salt: current.seal_salt,
+            });
+            let excess = cancelled.len().saturating_sub(MAX_CANCELLED_REMEMBERED);
+            cancelled.drain(..excess);
+            if let Ok(json) = serde_json::to_vec(&cancelled) {
+                let _ = std::fs::write(dir.join(CANCELLED_FILE), json);
+            }
+        }
         let _ = std::fs::remove_file(dir.join("access_recovery.json"));
     }
+}
+
+/// Recoveries cancelled on this device, remembered so that an in-flight step cannot
+/// recreate them (finding 8). Not secret: an id and a non-secret KDF salt.
+const CANCELLED_FILE: &str = "access_recovery.cancelled.json";
+const MAX_CANCELLED_REMEMBERED: usize = 16;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CancelledRecovery {
+    recovery_id: String,
+    #[serde(default)]
+    seal_salt: Vec<u8>,
+}
+
+fn read_cancelled(dir: &std::path::Path) -> Vec<CancelledRecovery> {
+    std::fs::read(dir.join(CANCELLED_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn cancelled_error() -> P2pError {
+    P2pError::SyncError("access recovery was cancelled on this device".into())
 }
 
 #[cfg(test)]
@@ -454,3 +515,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+#[path = "access_recovery_cancel_tests.rs"]
+mod cancel_tests;

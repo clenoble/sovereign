@@ -49,6 +49,12 @@ pub(crate) struct Palette {
     pub(crate) owned: Color,         // owned provenance (blue)
     pub(crate) accent_warm: Color,   // external provenance (warm red)
     pub(crate) caret: Color,         // text caret
+    // Document text (the document editor and, through `editor_palette`,
+    // the new-thread prompt's field; both in every build). Contrast
+    // checked in editor_v2's tests.
+    pub(crate) link: Color,          // link text in documents
+    pub(crate) selection: Color,     // text selection highlight (opaque)
+    pub(crate) selection_text: Color,// text drawn on the selection
     pub(crate) pin: Color,           // pinned-card marker
     pub(crate) now_line: Color,      // "now" time line
     pub(crate) scrim: Color,         // modal dim (used with .with_alpha)
@@ -90,6 +96,9 @@ impl Palette {
             owned: Color::from_rgb8(90, 159, 212),    // --prov-owned #5a9fd4
             accent_warm: Color::from_rgb8(224, 124, 106), // --prov-external #e07c6a
             caret: Color::from_rgb8(245, 158, 11),
+            link: Color::from_rgb8(122, 178, 230),
+            selection: Color::from_rgb8(90, 159, 212),  // owned blue
+            selection_text: Color::from_rgb8(20, 20, 26),
             pin: Color::from_rgb8(222, 184, 96),
             now_line: Color::from_rgb8(245, 158, 11),
             scrim: Color::from_rgb8(0, 0, 0),
@@ -130,6 +139,9 @@ impl Palette {
             owned: Color::from_rgb8(58, 127, 196),    // --prov-owned #3a7fc4
             accent_warm: Color::from_rgb8(192, 85, 69), // --prov-external #c05545
             caret: Color::from_rgb8(217, 119, 6),
+            link: Color::from_rgb8(31, 95, 170),
+            selection: Color::from_rgb8(95, 145, 205),
+            selection_text: Color::from_rgb8(26, 26, 32),
             pin: Color::from_rgb8(199, 145, 0),
             now_line: Color::from_rgb8(217, 119, 6),
             scrim: Color::from_rgb8(0, 0, 0),
@@ -155,9 +167,41 @@ pub(crate) fn pal() -> Palette {
     *cell().read().unwrap()
 }
 
+/// What a text field is filled with: the palette's input colour (spec ch. 12,
+/// *Onboarding and the auth gate*, "Text fields … are readable in both
+/// themes"). Field text is drawn in `text` on it, at 4.5:1 or more in both
+/// themes (WCAG 1.4.3). Never `on_accent`, which is text on a coloured button:
+/// on rc1 that fill left the dark theme's field text at about 1.2:1.
+pub(crate) fn field_fill(p: &Palette) -> Color {
+    p.input
+}
+
 /// Swap the active palette — the future settings theme hook. Unused today
 /// (only Dark ships), but wired so theming is a settings toggle, not a refactor.
 #[allow(dead_code)]
 pub(crate) fn set_palette(p: Palette) {
     *cell().write().unwrap() = p;
+}
+
+/// The editor's colours from the shell's theme (spec ch. 12, *Theme*): the
+/// document sits on the window body (`panel`), with the theme's text levels,
+/// caret and provenance pair, and its document colours (link, selection).
+/// Contrast (WCAG 2.1 AA) is checked for both themes in the editor's tests
+/// (`app/editor_v2.rs`). Shared by the document editor and the new-thread
+/// prompt's name field.
+pub(crate) fn editor_palette(p: &Palette) -> sovereign_editor::Palette {
+    let mut e = sovereign_editor::Palette::DARK;
+    e.background = p.panel;
+    e.text = p.text;
+    e.muted = p.text_dim;
+    e.link = p.link;
+    e.selection = p.selection;
+    e.selection_text = p.selection_text;
+    e.caret = p.caret;
+    e.placeholder_background = p.panel;
+    e.placeholder_border = p.input_border;
+    e.owned = p.owned;
+    e.external = p.accent_warm;
+    e.undetermined = p.text_dim; // text_faint is under 3:1 on white
+    e
 }

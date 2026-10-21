@@ -125,6 +125,8 @@ of proposed entities) and on mobile.
 **Requirement.** Every content-creation path runs the pipeline before content settles: document
 create, update and import; message ingest on every channel; contact creation and import; the session
 log. After ingest, a body holds tokens, not raw PII values, and its raw form exists only encrypted.
+For documents, **the title, captions and alt texts are ingested as well as the body** (decided
+2026-10-11; ch. 03, *Document service — contract (C-DOC)*, G10), so tokens can appear in them.
 
 **What runs today.**
 

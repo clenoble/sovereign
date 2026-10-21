@@ -142,8 +142,10 @@ the model are not validated against the set of handled actions (see *Action Grav
 
 ### Chat agent loop
 
-**Status:** ✅ Built (code: `crates/sovereign-ai/src/orchestrator.rs`, `tools.rs`,
-`llm/context.rs`, `llm/prompt.rs`).
+**Status:** ✅ Built (code: `crates/sovereign-ai/src/orchestrator.rs`, `chat_trace.rs`,
+`tools.rs`, `llm/context.rs`, `llm/prompt.rs`), the round limit included (`d801a2e`,
+2026-10-18). Not exercised against a real model at the limit: the loop's wiring there is checked
+by compilation and review, the outcome and the trace by tests.
 
 Per message:
 
@@ -156,8 +158,31 @@ Per message:
    identity, verbosity preference, condensed UX rules, workspace context, tool descriptions,
    few-shot examples in the model's tool-call syntax.
 3. Iterate **at most 5 rounds** of generate → tool call → execute → feed result back. One tool
-   call is executed per round. A response with no tool call ends the turn. After 5 rounds the
-   user gets a request to rephrase.
+   call is executed per round. A response with no tool call ends the turn. *(Five stays for now;
+   a setting may come later — Céline, 2026-10-17.)*
+
+**When the turn reaches the round limit** (decided by Céline 2026-10-17 and -18; built
+2026-10-18, `d801a2e`).
+It is not a failure. The turn ends with its explicit outcome (*Action Gravity*, below): it says
+the assistant **stopped after 5 steps without a final answer**, lists what was done in those
+steps (the writes and their results, as for any turn), and **invites the user to rephrase or to
+split the request**. The outcome then **says where the full trace of the turn is**: the thread
+"Assistant traces" and the trace's **exact title** (*Assistant trace — date and time, UTC*).
+**Nothing opens by itself** (Céline, 2026-10-18): the user opens the trace from the canvas when
+they want it.
+
+**The trace is saved at once as a Sovereign document** — encrypted at rest like any document,
+created through the document service so personal-data ingest runs on it — never as a plaintext
+file. Because its text quotes tool results, which can carry external content:
+- it is **never owned**: its trust is *undetermined* and the assistant fences it like external
+  content (*Trust calibration*, ch. 04); its provenance is **the assistant** (ch. 03);
+- it goes to a thread named **"Assistant traces"**, created the first time a trace is saved;
+  the user can delete that thread like any other (its documents go to the trash, ch. 03);
+- it reads in this order: the user's request; for each round, the tool called and its arguments,
+  the result as the model saw it (personal data as type labels, previews truncated), and what came
+  of it (proposed, approved, declined, executed, failed); then why the turn stopped.
+
+If the trace cannot be saved, the outcome says so, with the reason, and names no document.
 
 **Tools.**
 
@@ -176,9 +201,21 @@ naming any other action cannot cause it.
 ## Action Gravity
 
 **Status:** ◐ Partial — levels and gate built. Most Annotate, Transmit and Destruct actions have
-no handler; of Levels 4–5 only thread deletion executes. An unhandled confirmed action is
-currently reported as done (code: `crates/sovereign-core/src/security.rs`,
-`crates/sovereign-ai/src/action_gate.rs`, `orchestrator.rs`).
+no handler; of Levels 4–5 only thread deletion executes. Since v0.0.10 a direct request that
+cannot be carried out is refused or reported as failed; two gaps remain (2026-10-16 review,
+private backlog): **a chat turn is reported as done whatever the agent loop did** (rule below,
+built 2026-10-17, `2492e2a`), and **a direct request's target is resolved by name after
+approval**, so the proposal shows the user's words rather than the exact object and a close name
+can be acted on instead (contract C-HOST, see *Action targets* below) (code:
+`crates/sovereign-core/src/security.rs`, `crates/sovereign-ai/src/action_gate.rs`,
+`orchestrator.rs`).
+
+**A chat turn always ends with an explicit outcome** (Céline, 2026-10-16). Every turn handed to
+the agent loop closes with one outcome the user can read, never a bare "done": the writes that ran
+and their result; that the assistant only answered; or that the turn failed or stopped, with the
+reason — generation failed, a write was declined, a write failed, or the turn was stopped for
+flagged external content. "Done" is said only of a write that succeeded. A turn that ran no write
+is never reported as an executed action.
 
 **Friction scales with irreversibility.** Every action maps to a level fixed in code; neither the
 user nor the model can lower it.
@@ -234,6 +271,48 @@ earlier external content. The native shell (the only desktop UI) asks for the de
 modal. (The frozen Tauri desktop showed approve/reject inline in the chat; it is not shipped.)
 
 *Settles the conflict with Appendix B §2 in its favour for every level but Destruct.*
+
+### Action targets — identity, not position or name
+
+**Status:** ○ Decided 2026-10-16 (Céline), to be built (contract C-HOST). As built, a direct
+request is approved on the user's phrase and its object found by name afterwards; menus and
+confirmations refer to a position or to "the open request" (see the status of *Action Gravity*).
+
+**Principle.** Between a proposal and its execution, every object is referred to by its
+**identity**, never by a position in a list or by a name matched approximately. The confirmation
+the user gives is for one object, and that object is the one acted on. Proposed by the PANDA2
+maille from the 2026-10-16 review; decided with Céline the same day.
+
+**Guarantees (C-HOST, each one a test):**
+
+- **AT1 — Resolved before proposing.** A proposal carries an **action target**: kind, id,
+  displayed title, and the revision seen. A proposal without a resolved target cannot be built:
+  the requirement is in the type, not in a prompt (*Hard barriers*).
+- **AT2 — Ambiguity asks, it never picks.** A name matching exactly (after case and Unicode
+  normalisation) wins over partial matches. Two or more candidates at the same rank: the
+  orchestrator asks which, listing them as in AT5. No match: the request fails and says so.
+- **AT3 — A partial match is always confirmed explicitly.** A target found by partial match never
+  takes silence as consent (*Conversational confirmation*), whatever the level. *(Céline, a.)*
+- **AT4 — Re-checked at execution.** If what the proposal showed has changed since, the action
+  is not executed; it is proposed again. What counts: for **Destruct** (level 5), the target
+  **and everything it contains** — a thread that gained or lost a document since the proposal is
+  proposed again; for the other levels, the target alone (deleted, renamed or edited).
+  *(Céline, b.)* Same rule as a save landing on the revision it read (ch. 03).
+- **AT5 — The confirmation shows the object.** For a document: title, thread, and date of last
+  change (two documents can share a title in one thread; the date tells them apart). For a
+  thread: its name and its number of documents. *(Céline, c.)*
+- **AT6 — Decisions are bound to their proposal.** Each proposal has a request id; a decision
+  applies only to the proposal with that id. The deadline runs from when the proposal was
+  issued, not from when a host displays it.
+- **AT7 — Undo uses the same identity.** Where an action's undo exists (the condition for
+  silence as consent), it addresses the same id.
+- **AT8 — Hosts refer by identity too.** A menu, a list or a drag in any host carries the
+  object's id, never its index in a list that a reload can reorder. This holds on the phone,
+  which has no orchestrator.
+
+**Why it matters beyond the bugs it closes.** Silence as consent (K7) is safe only for an object
+the user could have seen; an injected instruction naming a target can only reach the object the
+user is shown; and Action Gravity grades an action only when its object is known.
 
 ### Trust calibration
 

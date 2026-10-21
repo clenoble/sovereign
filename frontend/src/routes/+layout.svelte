@@ -20,6 +20,8 @@
 	import SignupCapturePrompt from '$lib/components/SignupCapturePrompt.svelte';
 	import AutofillPrompt from '$lib/components/AutofillPrompt.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
+	import UndoToast from '$lib/components/UndoToast.svelte';
+	import MigrationNotice from '$lib/components/MigrationNotice.svelte';
 	import { piiState } from '$lib/stores/pii.svelte';
 	import { listen } from '@tauri-apps/api/event';
 	import type { BrowserFormExtraction } from '$lib/api/commands';
@@ -258,6 +260,8 @@
 			onClose={() => (piiState.autofillExtraction = null)}
 		/>
 		<ContextMenu />
+		<UndoToast />
+		<MigrationNotice />
 		<SettingsPanel />
 	</div>
 {/if}

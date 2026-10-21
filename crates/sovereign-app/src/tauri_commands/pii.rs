@@ -876,7 +876,12 @@ pub async fn resolve_pii_tokens(
                     resolve_raw_original(account_key, enc, nonce).map_err(|e| e.to_string())?
                 }
                 _ => {
-                    let body = extract_document_body(&doc.content);
+                    // C-DOC adoption step 1: the text through the v2 model
+                    // (a v2 document used to reach the resolver as JSON).
+                    // Which token-form text resolves here is still the old
+                    // rule (any token anywhere); the resolver rule via the
+                    // service's `token_status` is C-PII (BACKLOG §4).
+                    let body = sovereign_docformat::plain_text_of(&doc.content);
                     resolve_body(
                         state.db.as_ref() as &dyn GraphDB,
                         account_key,
@@ -931,17 +936,4 @@ pub async fn resolve_pii_tokens(
     _access_level: AccessLevel,
 ) -> Result<ResolvedBodyDto, String> {
     Err("PII resolution requires the encryption feature to be enabled at build time".to_string())
-}
-
-/// Extract the body text from a Document.content JSON blob — same
-/// convention as `pii_sweep::extract_body`. Plain-text imports fall
-/// back to the raw content.
-#[cfg(feature = "encryption")]
-fn extract_document_body(content: &str) -> String {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
-        if let Some(body) = v["body"].as_str() {
-            return body.to_string();
-        }
-    }
-    content.to_string()
 }

@@ -3,9 +3,9 @@
 ///   - receive_shared_content   Save content arriving from OS share sheet
 
 use serde::Deserialize;
-use sovereign_db::GraphDB;
 use tauri::State;
 
+#[cfg(feature = "voice-stt")]
 use crate::err::ToStringErr;
 use crate::tauri_state::{require_main_webview, AppState};
 
@@ -86,10 +86,10 @@ pub async fn receive_shared_content(
         return Err("Shared content too large".into());
     }
 
-    use sovereign_core::content::ContentFields;
-    use sovereign_db::schema::Document;
-    use sovereign_db::schema::thing_to_raw;
-
+    let shared_url = match content.content_type.as_str() {
+        "url" => content.url.clone().filter(|u| !u.is_empty()),
+        _ => None,
+    };
     let title = content.title.unwrap_or_else(|| {
         content
             .url
@@ -112,30 +112,28 @@ pub async fn receive_shared_content(
         _ => content.text.unwrap_or_default(),
     };
 
-    // Create the document (not is_owned — it's incoming external content)
-    let doc = Document::new(title.clone(), thread_id, false);
-    let created = state.db.create_document(doc).await.str_err()?;
-    let doc_id = created
-        .id
-        .as_ref()
-        .map(thing_to_raw)
-        .unwrap_or_default();
-
-    // Save body if non-empty
-    if !body.is_empty() {
-        let fields = ContentFields {
-            body,
-            images: vec![],
-            videos: vec![],
-        };
-        state
-            .db
-            .update_document(&doc_id, Some(&title), Some(&fields.serialize()))
-            .await
-            .str_err()?;
-    }
-
-    Ok(doc_id)
+    // C-DOC adoption step 3: through the document service, in one write (a
+    // version from creation, personal data tokenized). Incoming content from
+    // another app is external, as before: a shared link has provenance web
+    // with its URL; shared text names where it came from as an import source
+    // (the contract has no "shared" provenance).
+    let docs = state.docs().await?;
+    let provenance = match shared_url {
+        Some(url) => sovereign_docs::Provenance::Web { url },
+        None => sovereign_docs::Provenance::Import { source_path: "shared from another app".into() },
+    };
+    let new = sovereign_ai::docs_host::new_document(
+        title,
+        thread_id,
+        body,
+        sovereign_docs::Trust::External,
+        provenance,
+        sovereign_docs::Origin::Editor { session: sovereign_ai::docs_host::new_edit_session() },
+    );
+    let created = sovereign_ai::docs_host::create(&docs, new)
+        .await
+        .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?;
+    Ok(created.id)
 }
 
 // ---------------------------------------------------------------------------

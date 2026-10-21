@@ -61,6 +61,8 @@ interface types {
     record doc-detail {
         title: string,
         thread-id: string,
+        /// The document's text (its text blocks joined by a blank line,
+        /// personal data as [pii:<id>] tokens), whatever its stored form.
         content: string,
     }
 }

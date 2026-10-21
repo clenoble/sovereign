@@ -279,11 +279,16 @@ per-slot verification material in the roster.
 
 ### Owner cancellation of a takeover
 
-**Status:** ◐ Partial — the owner's login is intended to cancel a recovery on the same device;
-cross-device cancellation is specified, not built.
+**Status:** ◐ Partial — the owner's login cancels a recovery on the same device on the desktop
+(since v0.0.10); on the phone it does not reliably yet (2026-10-16 review, private backlog; the
+rule below specified 2026-10-17, to be built). Cross-device cancellation is specified, not built.
 
-A successful login with the real passphrase on a device is intended to clear any recovery in
-progress **on that device**; completion is tracked in the private backlog. The cross-device
+A successful login with the real passphrase on a device **clears any recovery in progress on that
+device**, on every host (desktop and phone): the stored recovery state and the recovery session
+held in memory are both cleared, and a recovery step already running when the login happens
+(a poll for guardian answers, for one) cannot bring the recovery back once it ends. Login in the
+duress persona does not cancel anything (the recovery belongs to the primary persona, ch. 07).
+The cross-device
 half — the owner's login making guardians deny a recovery started elsewhere — needs an
 owner-to-guardian liveness channel and is not built; until then the cross-device case rests on
 notifying every guardian, the 72-hour window and the guardians' deny.

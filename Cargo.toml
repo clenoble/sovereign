@@ -15,6 +15,9 @@ members = [
     "crates/sovereign-relay",
     "crates/sovereign-guardian",
     "crates/sovereign-guardian-app",
+    "crates/sovereign-editor",
+    "crates/sovereign-docformat",
+    "crates/sovereign-docs",
 ]
 
 [workspace.dependencies]

@@ -27,6 +27,8 @@
 	import MobileChatSheet from './MobileChatSheet.svelte';
 	import MobileDocReader from './MobileDocReader.svelte';
 	import SharePickerSheet from './SharePickerSheet.svelte';
+	import SyncAlerts from '../SyncAlerts.svelte';
+	import { reloadSyncAlerts } from '$lib/stores/syncAlerts.svelte';
 
 	let error = $state('');
 
@@ -63,6 +65,8 @@
 			const status = await getStatus();
 			app.orchestratorAvailable = status.orchestrator_available;
 			await canvasLoad();
+			// Alerts on changes from your devices, and previous values (C-WIRE 13).
+			await reloadSyncAlerts();
 
 			const dtos = await listPendingSuggestions();
 			setSuggestions(
@@ -110,6 +114,10 @@
 
 	<Fab />
 	<MobileTaskbar />
+
+	<!-- Alerts on changes from your devices: a banner over the canvas that
+	     opens a sheet; older-version notice (C-WIRE 12–13) -->
+	<SyncAlerts variant="mobile" />
 
 	<!-- Share picker — full-screen sheet when OS share sheet delivers content -->
 	<SharePickerSheet />

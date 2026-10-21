@@ -111,8 +111,12 @@ fn build_prompt(
     let mut remaining = budget_for_docs;
 
     for (id, title) in docs {
+        // C-DOC adoption step 1: the model reads each document's text through
+        // the v2 model, not its stored JSON. Tokens stay `[pii:<id>]`; masking
+        // an unscanned document's raw personal data is C-PII's (it is sent as
+        // it was before this step).
         let content = match db.get_document(id) {
-            Ok((_, _, c)) => c,
+            Ok((_, _, c)) => sovereign_docformat::plain_text_of(&c),
             Err(_) => continue,
         };
         let (snippet, was_truncated) = if content.chars().count() > PER_DOC_CHAR_CAP {
@@ -271,6 +275,33 @@ mod tests {
         assert!(prompt.contains("Second"));
         assert!(prompt.contains("Third"));
         assert!(prompt.contains("alpha content"));
+    }
+
+    /// C-DOC adoption step 1: the prompt carries each document's text for a
+    /// v2 document, a v1 envelope and raw text — never the stored JSON — with
+    /// tokens as tokens.
+    #[test]
+    fn prompt_reads_v2_v1_and_raw_documents_as_text() {
+        let v2 = r#"{"format":"sovereign.doc","v":2,"blocks":[{"type":"text","id":"00000000000000000000000000001c01","text":"v2 text [pii:pii_record:e1]"},{"type":"text","id":"00000000000000000000000000001c02","text":"second block"}]}"#;
+        let v1 = ContentFields { body: "v1 text [pii:pii_record:e1]".into(), ..Default::default() }.serialize();
+        let db = Arc::new(StubDb {
+            thread_id: "thread:t1".into(),
+            docs: vec![
+                ("document:a".into(), "A".into(), v2.into()),
+                ("document:b".into(), "B".into(), v1),
+                ("document:c".into(), "C".into(), "raw text [pii:pii_record:e1]".into()),
+            ],
+        });
+        let llm = Arc::new(StubLlm { response: "s".into(), last_prompt: RefCell::new(None) });
+        let llm_dyn: Arc<dyn SkillLlmAccess> = llm.clone();
+        ThreadSummarySkill
+            .execute("summarize_thread", &make_doc("document:a"), "", &ctx(db, Some(llm_dyn)))
+            .unwrap();
+        let prompt = llm.last_prompt.borrow().clone().unwrap();
+        assert!(prompt.contains("v2 text [pii:pii_record:e1]\n\nsecond block"), "{prompt}");
+        assert!(prompt.contains("v1 text [pii:pii_record:e1]"), "{prompt}");
+        assert!(prompt.contains("raw text [pii:pii_record:e1]"), "{prompt}");
+        assert!(!prompt.contains("sovereign.doc") && !prompt.contains("\"body\""), "{prompt}");
     }
 
     #[test]

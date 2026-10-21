@@ -18,7 +18,7 @@ pub enum Commands {
     /// Launch the GUI (Phase 1b)
     Run,
 
-    /// Create a new document
+    /// Create a new document (asks for the passphrase: written through the encrypted store)
     CreateDoc {
         #[arg(long)]
         title: String,
@@ -40,7 +40,7 @@ pub enum Commands {
         thread_id: Option<String>,
     },
 
-    /// Update a document
+    /// Update a document's title or text (asks for the passphrase; each update is a version)
     UpdateDoc {
         #[arg(long)]
         id: String,
@@ -50,7 +50,7 @@ pub enum Commands {
         content: Option<String>,
     },
 
-    /// Delete a document
+    /// Move a document to the trash (needs the account; purged after 30 days)
     DeleteDoc {
         #[arg(long)]
         id: String,
@@ -85,7 +85,7 @@ pub enum Commands {
         doc_id: String,
     },
 
-    /// Commit a document snapshot
+    /// Refused: versions are made by the document service (each update-doc is one)
     Commit {
         #[arg(long)]
         doc_id: String,

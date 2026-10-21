@@ -1,6 +1,6 @@
 [package]
 name = "sovereign-app"
-version = "0.0.10"
+version = "0.0.11"
 edition = "2021"
 description = "Sovereign GE binary — CLI and GUI entry point"
 
@@ -25,6 +25,12 @@ sovereign-db = { workspace = true }
 sovereign-skills = { workspace = true }
 sovereign-import = { workspace = true }
 sovereign-ai = { workspace = true, default-features = false }
+# The stored document format v2: readers read content through it (C-DOC
+# adoption step 1). No I/O, no dependencies.
+sovereign-docformat = { path = "../sovereign-docformat" }
+# The document service (C-DOC): document saves, skill write-back and restores
+# go through it (adoption step 2), built at login over the encrypted store.
+sovereign-docs = { path = "../sovereign-docs" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }

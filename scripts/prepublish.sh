@@ -18,6 +18,9 @@ trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo; echo "PRE-PUBLISH GATE FAILED at ste
 
 run() { STEP="$1"; shift; echo; echo "=== $STEP"; "$@"; }
 
+# 0: every locked dependency in the registry cache first — the editor's dependency-graph
+# tests run `cargo metadata --offline` on purpose (they must not reach the network).
+run "0/8 cargo fetch --locked" cargo fetch --locked
 run "1/8 cargo check --workspace --exclude sovereign-ai --all-targets" \
     cargo check --workspace --exclude sovereign-ai --all-targets --locked -j "$JOBS"
 run "2/8 cargo check -p sovereign-shell (standalone features)" \
@@ -30,6 +33,17 @@ run "4b/8 cargo test -p sovereign-db --features encryption" \
     cargo test -p sovereign-db --features encryption --locked -j "$JOBS"
 run "5/8 cargo test -p sovereign-ai --no-default-features --features encrypted-log" \
     cargo test -p sovereign-ai --no-default-features --features encrypted-log --locked -j "$JOBS"
+# 5b: guarantees that exist only in release builds (dev switches, the guardian's
+# auto-approve and the release-delay override compiled out, P2P debug logging off
+# by default) — a debug test run only checks their debug half.
+run "5b/8 cargo test --release: backup host release delay" \
+    cargo test --release -p sovereign-p2p --lib release_delay_override_exists_only_in_debug_builds --locked -j "$JOBS"
+run "5b/8 cargo test --release: guardian" \
+    cargo test --release -p sovereign-guardian --locked -j "$JOBS"
+run "5b/8 cargo test --release: shell dev switches and log filter" \
+    cargo test --release -p sovereign-shell dev:: --locked -j "$JOBS"
+run "5b/8 cargo test --release: shell document editor (EDITOR-default E1-E9)" \
+    cargo test --release -p sovereign-shell editor_default_tests --locked -j "$JOBS"
 run "6/8 cargo audit" cargo audit
 
 cd frontend

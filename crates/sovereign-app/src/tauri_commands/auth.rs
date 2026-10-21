@@ -21,6 +21,16 @@ pub(crate) async fn install_session(
     auth_store: &sovereign_crypto::auth::AuthStore,
     password: &[u8],
 ) -> Result<sovereign_crypto::auth::PersonaKind, String> {
+    install_session_inner(state, auth_store, password, true).await
+}
+
+#[cfg(feature = "encryption")]
+async fn install_session_inner(
+    state: &AppState,
+    auth_store: &sovereign_crypto::auth::AuthStore,
+    password: &[u8],
+    start_sync: bool,
+) -> Result<sovereign_crypto::auth::PersonaKind, String> {
     let auth_result = auth_store
         .authenticate(password)
         .map_err(|_| "Invalid password".to_string())?;
@@ -89,7 +99,7 @@ pub(crate) async fn install_session(
                     Ok(ddb) => {
                         // Seed plausible decoy data on first duress login
                         // (seed_duress_db is idempotent — no-op once populated).
-                        if let Err(e) = crate::duress::seed_duress_db(&ddb).await {
+                        if let Err(e) = crate::duress::seed_duress_db(&ddb, &state.config.p2p.device_name).await {
                             tracing::warn!("duress decoy seed failed (continuing): {e}");
                         }
                         std::sync::Arc::new(ddb)
@@ -132,6 +142,21 @@ pub(crate) async fn install_session(
         if elapsed < DB_SETUP_FLOOR {
             tokio::time::sleep(DB_SETUP_FLOOR - elapsed).await;
         }
+        // C-DOC adoption step 2: the document service over this persona's
+        // encrypted store (document saves, skill write-back and restores go
+        // through it). Its personal-data hook needs the account key.
+        let docs = std::sync::Arc::new(sovereign_ai::docs_host::build_document_service(
+            encrypted.clone(),
+            Some(account_key_arc.clone()),
+            state.config.p2p.device_name.clone(),
+        ));
+        *state.docs.write().await = Some(docs.clone());
+        if let Ok(mut sessions) = state.edit_sessions.lock() {
+            sessions.clear();
+        }
+        if let Some(ref orch) = state.orchestrator {
+            orch.set_document_service(docs);
+        }
         state.db.swap(encrypted);
         tracing::info!("EncryptedGraphDB installed for {core_persona:?} persona");
         // Feature 1: retain the KEK so recovery-setup can seal it (+ AccountKey)
@@ -168,6 +193,9 @@ pub(crate) async fn install_session(
             sovereign_p2p::access_recovery::AccessRecovery::cancel(&access_dir);
             tracing::info!("login cancelled an in-progress local access recovery (owner has the passphrase)");
         }
+        // Finding 8: the held recovery secrets (seal key + new passphrase) leave
+        // memory too, whether or not a recovery file was still on disk.
+        state.clear_recovery_session().await;
     }
 
     // 3b. MODELTRUST-002: install the model-integrity unlock key + TOFU store
@@ -226,19 +254,68 @@ pub(crate) async fn install_session(
         }
     }
 
+    // 5b. C-DOC adoption step 6 (M1, M4): the one-time migration to document
+    //     format v2, at every unlock, through the one seam. It runs in the
+    //     background (the login returns without waiting for it) and only once
+    //     per persona's store — the store's own record says so; a later
+    //     unlock finds it complete, or resumes it. Its notice, once, goes to
+    //     the frontend as the `documents-migrated` event. The same call for
+    //     both personas: nothing here tells them apart (M5).
+    if let Some(docs) = state.docs.read().await.clone() {
+        let tx = state.orch_tx.clone();
+        let mut slot = state.migration_task.lock().unwrap_or_else(|e| e.into_inner());
+        sovereign_docs::start_unlock_migration(
+            docs,
+            |task| {
+                if let Some(previous) = slot.replace(tauri::async_runtime::spawn(task)) {
+                    previous.abort();
+                }
+            },
+            move |notice| {
+                let _ = tx.send(sovereign_core::interfaces::OrchestratorEvent::DocumentsMigrated {
+                    text: notice.text(),
+                });
+            },
+        );
+    }
+
     // 6. P2P startup (Phase 3c): bring up the libp2p node, install the
     //    command channel on AppState + orchestrator, load paired
     //    devices, and spawn the event translator. Idempotent — re-login
     //    is a no-op on the second pass. Best-effort: a P2P bring-up
-    //    failure must not fail the login.
+    //    failure must not fail the login. A backup recovery starts it
+    //    itself, after the restore (`install_session_without_sync`).
+    if start_sync {
+        start_sync_now(state).await;
+    }
+
+    Ok(persona)
+}
+
+/// [`install_session`] without starting sync: for a backup recovery, which
+/// restores into the empty workspace first and starts sync after, so a
+/// paired device cannot fill the workspace before the restore (C-WIRE 17:
+/// documents come back only onto an empty workspace; decided by Céline
+/// 2026-10-15).
+#[cfg(feature = "encryption")]
+#[cfg_attr(not(feature = "p2p"), allow(dead_code))] // used by the backup recovery (p2p)
+pub(crate) async fn install_session_without_sync(
+    state: &AppState,
+    auth_store: &sovereign_crypto::auth::AuthStore,
+    password: &[u8],
+) -> Result<sovereign_crypto::auth::PersonaKind, String> {
+    install_session_inner(state, auth_store, password, false).await
+}
+
+/// Starts sync for the unlocked session (best-effort, idempotent).
+#[allow(unused_variables)]
+pub(crate) async fn start_sync_now(state: &AppState) {
     #[cfg(feature = "p2p")]
     {
         if let Err(e) = crate::sync_startup::start_p2p_node(state).await {
             tracing::warn!("P2P startup failed (continuing without sync): {e}");
         }
     }
-
-    Ok(persona)
 }
 
 /// Check whether the user needs onboarding or login.
@@ -402,12 +479,15 @@ pub async fn complete_onboarding(
 ) -> Result<(), String> {
     let profile_dir = &state.profile_dir;
 
-    // IPC-006: this is a BOOTSTRAP (pre-auth) command — without this guard a
-    // pre-login IPC caller could re-onboard with its own password, overwriting
-    // auth.store and locking the real user out of their encrypted data.
-    if profile_dir.join("crypto").join("auth.store").exists() {
-        return Err("Already onboarded — log in instead.".to_string());
-    }
+    // rc2 (spec ch. 07, *Auth store*, "Created once"): account creation is
+    // single-flight. The claim is taken first — before the key derivation and
+    // before any file is written — and held until auth.store is written (to
+    // the end of this command), so a second tap during the derivation is
+    // refused ("Setup is already in progress") instead of replacing the store.
+    // It also carries IPC-006: this is a BOOTSTRAP (pre-auth) command, and an
+    // existing auth.store refuses ("Already onboarded — log in instead"), so a
+    // pre-login IPC caller cannot re-onboard with its own password.
+    let _claim = crate::onboarding_claim::claim(profile_dir).map_err(|e| e.to_string())?;
 
     // Save user profile
     let mut profile = sovereign_core::profile::UserProfile::load(profile_dir)
@@ -447,16 +527,23 @@ pub async fn complete_onboarding(
             &device_id,
         )
         .str_err()?;
-        auth_store
-            .save(&crypto_dir.join("auth.store"))
-            .str_err()?;
+        // Exclusive create: never replaces an existing auth.store (the claim
+        // already refused one; this holds against another process too).
+        // The mode (hard link or in-place) is logged: whether the platform's
+        // sandbox allows hard links is observed on the device, not assumed.
+        let mode = auth_store
+            .save_new(&crypto_dir.join("auth.store"))
+            .map_err(crate::onboarding_claim::save_new_error)?;
+        tracing::info!("auth.store published (onboarding): {mode:?}");
 
         // Persist the MasterKey salt so this device can later generate a
         // pairing QR (generate_pair_qr releases it to the new device). The
         // paired-onboarding path writes this too; first-device onboarding
         // previously omitted it, which broke "Pair a new device". The salt
-        // is not secret — it travels in the pairing offer.
-        std::fs::write(crypto_dir.join("salt"), &salt).str_err()?;
+        // is not secret — it travels in the pairing offer. Written atomically
+        // and owner-only; if a crash loses it, the next start restores it
+        // from auth.store (setup::load_or_create_salt).
+        sovereign_crypto::fs_private::write_private(&crypto_dir.join("salt"), &salt).str_err()?;
 
         // Install the session immediately so the user lands in a fully
         // unlocked state (vault, PII pipeline, encrypted session log).
@@ -478,7 +565,7 @@ pub async fn complete_onboarding(
             );
             match crate::setup::create_db(&duress_config).await {
                 Ok(ddb) => {
-                    if let Err(e) = crate::duress::seed_duress_db(&ddb).await {
+                    if let Err(e) = crate::duress::seed_duress_db(&ddb, &state.config.p2p.device_name).await {
                         tracing::warn!("duress decoy pre-seed at onboarding failed (continuing): {e}");
                     }
                 }
@@ -507,8 +594,10 @@ pub async fn complete_onboarding(
                     .keystrokes
                     .iter()
                     .map(|samples| sovereign_crypto::keystroke::TypingProfile {
+                        // Finding 20: a malformed sample decodes as unusable and is skipped.
                         samples: samples
                             .iter()
+                            .filter(|s| s.is_usable())
                             .map(|s| sovereign_crypto::keystroke::KeystrokeSample {
                                 key: s.key.clone(),
                                 press_ms: s.press_ms,
@@ -536,14 +625,22 @@ pub async fn complete_onboarding(
     // comes up empty and receives its workspace via sync. The paired
     // onboarding flow (complete_onboarding_paired) never seeds.
     if data.seed_sample_data {
-        crate::seed::seed_if_empty(state.db.as_ref())
-            .await
-            .str_err()?;
+        // Documents are created through the document service (C-DOC adoption
+        // step 3), installed by install_session above. Without one (a build
+        // without the encryption feature) there are no sample documents.
+        let docs = state.docs().await;
+        match &docs {
+            Ok(docs) => crate::seed::seed_if_empty(state.db.as_ref(), docs).await.str_err()?,
+            Err(e) => tracing::warn!("sample documents not seeded: {e}"),
+        }
 
         // Orchestrator context: fake "Alex" profile + multi-day session-log
         // history, kept consistent with the DB sample data seeded above.
         // (Previously seeded unconditionally at startup in init_backend.)
-        let orchestrator_profile_dir = profile_dir.join("orchestrator");
+        let orchestrator_profile_dir = sovereign_core::auth::orchestrator_state_dir(
+            &profile_dir,
+            sovereign_core::auth::PersonaKind::Primary,
+        );
         if let Err(e) = crate::seed::seed_profile_and_history(&orchestrator_profile_dir) {
             tracing::warn!("Profile/history seed failed: {e}");
         }
@@ -552,8 +649,8 @@ pub async fn complete_onboarding(
         // can only run on builds with the encryption feature and once
         // install_session has populated AppState.account_key.
         #[cfg(feature = "encryption")]
-        if let Some(ak) = state.account_key().await {
-            crate::seed::seed_pii_if_empty(state.db.as_ref(), &ak)
+        if let (Some(ak), Ok(docs)) = (state.account_key().await, &docs) {
+            crate::seed::seed_pii_if_empty(state.db.as_ref(), docs, &ak)
                 .await
                 .str_err()?;
         }

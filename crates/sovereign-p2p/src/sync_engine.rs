@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::protocol::manifest::{
     DocumentManifestEntry, EntityManifestEntry, PiiRecordManifestEntry, RowManifestEntry,
-    ShareRecordManifestEntry, SyncManifest, ThreadManifestEntry,
+    ShareRecordManifestEntry, SyncManifest, ThreadManifestEntry, ThreadStampEntry,
 };
 use crate::protocol::sync::{SyncConflict, SyncDiff, SyncTable};
 
@@ -173,18 +173,84 @@ where
     diff
 }
 
+/// The thread row diff from the entries alone (no stamps known): the later
+/// `modified_at` is sent to the other side, as before THREAD-sync. The sync
+/// itself uses [`compute_thread_diff_stamped`] (through
+/// [`compute_all_row_diffs`]).
 pub fn compute_thread_diff(
     locals: &[ThreadManifestEntry],
     remotes: &[ThreadManifestEntry],
 ) -> RowDiff {
-    compute_row_diff_generic(
-        locals,
-        remotes,
-        |l| l.thread_id.as_str(),
-        |r| r.thread_id.as_str(),
-        |l| (l.modified_at.as_str(), l.content_hash.as_str()),
-        |r| (r.modified_at.as_str(), r.content_hash.as_str()),
-    )
+    compute_thread_diff_stamped(locals, &[], remotes, &[])
+}
+
+/// The thread row diff (THREAD-sync S2): when two rows differ, the direction
+/// is decided by their stamps — the higher stamp is sent to the other side —,
+/// never by `modified_at`, so two devices always converge. A row without a
+/// stamp (an older build's) is placed at its `modified_at` against a stamped
+/// one (S5); between two rows without one, `modified_at` decides as before. A
+/// tie goes both ways and the receiving side decides
+/// (`DocumentService::thread_apply_remote`).
+pub fn compute_thread_diff_stamped(
+    locals: &[ThreadManifestEntry],
+    local_stamps: &[ThreadStampEntry],
+    remotes: &[ThreadManifestEntry],
+    remote_stamps: &[ThreadStampEntry],
+) -> RowDiff {
+    let local_map: HashMap<&str, &ThreadManifestEntry> = locals.iter().map(|l| (l.thread_id.as_str(), l)).collect();
+    let remote_map: HashMap<&str, &ThreadManifestEntry> = remotes.iter().map(|r| (r.thread_id.as_str(), r)).collect();
+    let stamps = |v: &[ThreadStampEntry]| -> HashMap<String, (i64, u32, String)> {
+        v.iter().map(|e| (e.thread_id.clone(), (e.stamp.wall_ms, e.stamp.counter, e.stamp.device.clone()))).collect()
+    };
+    let (ls, rs) = (stamps(local_stamps), stamps(remote_stamps));
+    let all_ids: HashSet<&str> = local_map.keys().chain(remote_map.keys()).copied().collect();
+    let mut diff = RowDiff::default();
+    for id in all_ids {
+        match (local_map.get(id), remote_map.get(id)) {
+            (None, Some(_)) => diff.need_from_remote.push(id.to_string()),
+            (Some(_), None) => diff.push_to_remote.push(id.to_string()),
+            (Some(l), Some(r)) => {
+                if l.content_hash == r.content_hash {
+                    continue;
+                }
+                match thread_entry_order(l, ls.get(id), r, rs.get(id)) {
+                    std::cmp::Ordering::Less => diff.need_from_remote.push(id.to_string()),
+                    std::cmp::Ordering::Greater => diff.push_to_remote.push(id.to_string()),
+                    std::cmp::Ordering::Equal => {
+                        diff.need_from_remote.push(id.to_string());
+                        diff.push_to_remote.push(id.to_string());
+                    }
+                }
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+    diff
+}
+
+/// How thread entry `l` (stamp `lst`) orders against `r` (stamp `rst`), see
+/// [`compute_thread_diff_stamped`].
+fn thread_entry_order(
+    l: &ThreadManifestEntry,
+    lst: Option<&(i64, u32, String)>,
+    r: &ThreadManifestEntry,
+    rst: Option<&(i64, u32, String)>,
+) -> std::cmp::Ordering {
+    let ms = |e: &ThreadManifestEntry| {
+        chrono::DateTime::parse_from_rfc3339(&e.modified_at).ok().map(|t| t.timestamp_millis())
+    };
+    match (lst, rst) {
+        (Some(a), Some(b)) => a.cmp(b),
+        (Some(a), None) => match ms(r) {
+            Some(b) => a.0.cmp(&b),
+            None => std::cmp::Ordering::Equal,
+        },
+        (None, Some(b)) => match ms(l) {
+            Some(a) => a.cmp(&b.0),
+            None => std::cmp::Ordering::Equal,
+        },
+        (None, None) => l.modified_at.cmp(&r.modified_at),
+    }
 }
 
 pub fn compute_entity_diff(
@@ -257,7 +323,7 @@ pub fn compute_all_row_diffs(
 ) -> HashMap<SyncTable, RowDiff> {
     let mut out = HashMap::new();
 
-    let d = compute_thread_diff(&local.threads, &remote.threads);
+    let d = compute_thread_diff_stamped(&local.threads, &local.thread_stamps, &remote.threads, &remote.thread_stamps);
     if d.has_work() {
         out.insert(SyncTable::Thread, d);
     }

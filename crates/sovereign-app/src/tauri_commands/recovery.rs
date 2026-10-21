@@ -175,6 +175,94 @@ pub async fn cancel_recovery() -> Result<(), String> {
 #[allow(dead_code)] // referenced under cfg(all(p2p, encryption)) only
 pub const WRONG_PASSPHRASE_SENTINEL: &str = "wrong-passphrase:";
 
+/// The order of a backup recovery's last steps (C-WIRE 17, decided by Céline
+/// 2026-10-15): unlock without sync, restore into the empty workspace, and
+/// only then start sync, so no paired device can make the workspace
+/// non-empty before the restore. A failed unlock or restore starts no sync:
+/// the error goes back to the wizard, and sync starts at the next login.
+#[allow(dead_code)] // used under cfg(all(p2p, encryption)) only
+pub(crate) async fn unlock_restore_then_sync<T, U, FU, R, FR, S, FS>(unlock: U, restore: R, start_sync: S) -> Result<T, String>
+where
+    U: FnOnce() -> FU,
+    FU: std::future::Future<Output = Result<(), String>>,
+    R: FnOnce() -> FR,
+    FR: std::future::Future<Output = Result<T, String>>,
+    S: FnOnce() -> FS,
+    FS: std::future::Future<Output = ()>,
+{
+    unlock().await?;
+    let restored = restore().await?;
+    start_sync().await;
+    Ok(restored)
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::unlock_restore_then_sync;
+    use std::sync::{Arc, Mutex};
+
+    fn log() -> Arc<Mutex<Vec<&'static str>>> {
+        Arc::new(Mutex::new(vec![]))
+    }
+
+    #[tokio::test]
+    async fn sync_starts_only_after_the_restore() {
+        let l = log();
+        let (a, b, c) = (l.clone(), l.clone(), l.clone());
+        let out = unlock_restore_then_sync(
+            || async move {
+                a.lock().unwrap().push("unlock");
+                Ok(())
+            },
+            || async move {
+                b.lock().unwrap().push("restore");
+                Ok(7u64)
+            },
+            || async move { c.lock().unwrap().push("sync") },
+        )
+        .await;
+        assert_eq!(out, Ok(7));
+        assert_eq!(*l.lock().unwrap(), vec!["unlock", "restore", "sync"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_restore_starts_no_sync() {
+        let l = log();
+        let (a, b, c) = (l.clone(), l.clone(), l.clone());
+        let out: Result<u64, String> = unlock_restore_then_sync(
+            || async move {
+                a.lock().unwrap().push("unlock");
+                Ok(())
+            },
+            || async move {
+                b.lock().unwrap().push("restore");
+                Err("the workspace is not empty".to_string())
+            },
+            || async move { c.lock().unwrap().push("sync") },
+        )
+        .await;
+        assert!(out.is_err());
+        assert_eq!(*l.lock().unwrap(), vec!["unlock", "restore"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_unlock_restores_nothing_and_starts_no_sync() {
+        let l = log();
+        let (b, c) = (l.clone(), l.clone());
+        let out: Result<u64, String> = unlock_restore_then_sync(
+            || async { Err("Invalid password".to_string()) },
+            || async move {
+                b.lock().unwrap().push("restore");
+                Ok(1)
+            },
+            || async move { c.lock().unwrap().push("sync") },
+        )
+        .await;
+        assert!(out.is_err());
+        assert!(l.lock().unwrap().is_empty());
+    }
+}
+
 /// The install step (contract §2 finalize). Requires a collected recovery
 /// (`ready_to_assemble`). Verifies the passphrase FIRST — a mismatch
 /// returns a [`WRONG_PASSPHRASE_SENTINEL`]-prefixed error and touches
@@ -191,12 +279,16 @@ pub async fn recovery_finalize(
     {
         use crate::err::ToStringErr;
 
-        // Same bootstrap guard as complete_onboarding (IPC-006): a pre-login
-        // IPC caller must not overwrite an existing account.
+        // rc2 (spec ch. 07, *Auth store*, as extended): backup recovery joins
+        // the single-flight claim of account creation — one claim per profile
+        // directory, so a recovery and an onboarding exclude each other. Taken
+        // first, before the passphrase check (which derives a key) and before
+        // any file write, held to the end of this command. It carries the
+        // bootstrap guard of complete_onboarding (IPC-006): an existing
+        // auth.store refuses, so a pre-login IPC caller cannot overwrite it.
+        let _claim =
+            crate::onboarding_claim::claim(&state.profile_dir).map_err(|e| e.to_string())?;
         let crypto_dir = state.profile_dir.join("crypto");
-        if crypto_dir.join("auth.store").exists() {
-            return Err("Already onboarded — log in instead.".to_string());
-        }
 
         let dir = recovery_dir();
         let Some(mut rec) = RecoveryState::load(&dir) else {
@@ -234,23 +326,41 @@ pub async fn recovery_finalize(
             &device_id,
         )
         .str_err()?;
-        auth_store.save(&crypto_dir.join("auth.store")).str_err()?;
-        // Pairing QR needs the MasterKey salt on disk (same as onboarding).
-        std::fs::write(crypto_dir.join("salt"), &salt).str_err()?;
+        // Exclusive create: never replaces an existing auth.store. The mode
+        // (hard link or in-place) is logged, to observe it on the device.
+        let mode = auth_store
+            .save_new(&crypto_dir.join("auth.store"))
+            .map_err(crate::onboarding_claim::save_new_error)?;
+        tracing::info!("auth.store published (backup recovery): {mode:?}");
+        // Pairing QR needs the MasterKey salt on disk (same as onboarding),
+        // written atomically and owner-only.
+        sovereign_crypto::fs_private::write_private(&crypto_dir.join("salt"), &salt).str_err()?;
 
         // Boot profile so the app has one after install.
         let mut profile = sovereign_core::profile::UserProfile::load(&state.profile_dir)
             .unwrap_or_else(|_| sovereign_core::profile::UserProfile::default_new());
         profile.save(&state.profile_dir).str_err()?;
 
-        // 3. Unlock: wires EncryptedGraphDB into state.db before restore.
-        crate::tauri_commands::auth::install_session(&state, &auth_store, passphrase.as_bytes())
-            .await?;
-
-        // 4. Restore through the encrypting handle.
-        rec.finalize(&*state.db, passphrase.as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
+        // 3–4. Unlock (encrypted DB wired into state.db) WITHOUT sync, restore
+        //      through the encrypting handle and the document service
+        //      (C-WIRE 17: documents only onto an empty workspace), and only
+        //      then start sync, so a paired device cannot fill the workspace
+        //      before the restore (decided by Céline 2026-10-15).
+        let st: &crate::tauri_state::AppState = &state;
+        let store = &auth_store;
+        let pass = passphrase.as_bytes();
+        let rec_ref = &mut rec;
+        unlock_restore_then_sync(
+            || async move {
+                crate::tauri_commands::auth::install_session_without_sync(st, store, pass).await.map(|_| ())
+            },
+            || async move {
+                let docs = st.docs().await?;
+                rec_ref.finalize(&*st.db, &docs, pass).await.map_err(|e| e.to_string())
+            },
+            || crate::tauri_commands::auth::start_sync_now(st),
+        )
+        .await?;
         rec.save(&dir).str_err()?;
 
         // 5. Duress decoy pre-seed, best-effort (sidechannel-001 parity
@@ -263,7 +373,7 @@ pub async fn recovery_finalize(
             );
             match crate::setup::create_db(&duress_config).await {
                 Ok(ddb) => {
-                    if let Err(e) = crate::duress::seed_duress_db(&ddb).await {
+                    if let Err(e) = crate::duress::seed_duress_db(&ddb, &state.config.p2p.device_name).await {
                         tracing::warn!("duress decoy pre-seed at recovery failed (continuing): {e}");
                     }
                 }

@@ -2,7 +2,6 @@
 	import { app } from '$lib/stores/app.svelte';
 	import { toggleChat } from '$lib/stores/chat.svelte';
 	import { suggestions, toggleSuggestions } from '$lib/stores/suggestions.svelte';
-	import { peerReviews, togglePeerReviews } from '$lib/stores/peerReviews.svelte';
 	import BubblePreview from './BubblePreview.svelte';
 
 	// Map bubble state to border color
@@ -48,17 +47,6 @@
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<span class="suggestion-badge" onclick={(e) => { e.stopPropagation(); toggleSuggestions(); }}>
 			{suggestions.pending.length}
-		</span>
-	{/if}
-	{#if peerReviews.pending.length > 0}
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<span
-			class="review-badge"
-			title="Synced changes to review"
-			onclick={(e) => { e.stopPropagation(); togglePeerReviews(); }}
-		>
-			{peerReviews.pending.length}
 		</span>
 	{/if}
 </button>
@@ -111,22 +99,4 @@
 		pointer-events: auto;
 	}
 
-	.review-badge {
-		position: absolute;
-		bottom: -2px;
-		right: -2px;
-		min-width: 20px;
-		height: 20px;
-		border-radius: 10px;
-		background: var(--warning, #f59e0b);
-		color: #1a1a1a;
-		font-size: 0.7rem;
-		font-weight: 700;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 0 5px;
-		cursor: pointer;
-		pointer-events: auto;
-	}
 </style>

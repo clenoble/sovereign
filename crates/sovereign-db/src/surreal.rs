@@ -10,10 +10,10 @@ use surrealdb::Surreal;
 
 use crate::error::{DbError, DbResult};
 use crate::schema::{
-    ChannelType, Commit, Contact, Conversation, Document, DocumentSnapshot,
+    ChannelType, Commit, Contact, Conversation, Document, DocumentPatch, DocumentSnapshot,
     Entity, EntityKind, Message, Milestone, PiiRecord, ReadStatus, RelatedTo, RelationType,
-    ReviewState, RowRecovery, ShareRecord, SourceRef, SuggestedLink, SuggestionSource,
-    SuggestionStatus, Thread,
+    PurgeMarker, ReviewState, RowRecovery, ShareRecord, SourceRef, SuggestedLink,
+    SuggestionSource, SuggestionStatus, Thread,
 };
 use crate::traits::GraphDB;
 
@@ -568,6 +568,9 @@ impl GraphDB for SurrealGraphDB {
             thread.description = d.to_string();
         }
         thread.modified_at = Utc::now();
+        // A write outside the stamped path (THREAD-sync S1) leaves no stamp:
+        // the row is then ordered by its `modified_at`, as an older build's.
+        thread.stamp = None;
 
         let updated: Option<Thread> = self.db.update((table, key)).content(thread).await?;
         updated.ok_or_else(|| DbError::Query("Failed to update thread".into()))
@@ -684,7 +687,7 @@ impl GraphDB for SurrealGraphDB {
         let (table, key) = parse_and_validate(id, "thread")?;
         let result: Option<Thread> = self.db
             .update((table, key))
-            .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339() }))
+            .merge(serde_json::json!({ "deleted_at": Utc::now().to_rfc3339(), "stamp": null }))
             .await?;
         if result.is_none() {
             return Err(DbError::NotFound(id.to_string()));
@@ -696,7 +699,7 @@ impl GraphDB for SurrealGraphDB {
         let (table, key) = parse_and_validate(id, "thread")?;
         let updated: Option<Thread> = self.db
             .update((table, key))
-            .merge(serde_json::json!({ "deleted_at": null }))
+            .merge(serde_json::json!({ "deleted_at": null, "stamp": null }))
             .await?;
         updated.ok_or_else(|| DbError::NotFound(id.to_string()))
     }
@@ -922,7 +925,11 @@ impl GraphDB for SurrealGraphDB {
     async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>> {
         let mut result = self
             .db
-            .query("SELECT * FROM suggested_link WHERE status = 'pending' ORDER BY created_at DESC")
+            // C-DOC G13: a link from or to a trashed document leaves the
+            // pending suggestions while it is in the trash (the link is kept).
+            .query(
+                "SELECT * FROM suggested_link WHERE status = 'pending'                  AND in.deleted_at IS NONE AND out.deleted_at IS NONE                  ORDER BY created_at DESC",
+            )
             .await?;
         let links: Vec<SuggestedLink> = result.take(0)?;
         Ok(links)
@@ -1888,6 +1895,23 @@ impl GraphDB for SurrealGraphDB {
         Ok(true)
     }
 
+    async fn put_thread(&self, thread: Thread) -> DbResult<()> {
+        let id = thread
+            .id_string()
+            .ok_or_else(|| DbError::Query("put_thread: id unset".into()))?;
+        let (table, key) = parse_and_validate(&id, "thread")?;
+        let mut payload = thread;
+        payload.id = None;
+        let existing: Option<Thread> = self.db.select((table, key)).await?;
+        let written: Option<Thread> = if existing.is_some() {
+            self.db.update((table, key)).content(payload).await?
+        } else {
+            self.db.create((table, key)).content(payload).await?
+        };
+        written.ok_or_else(|| DbError::Query(format!("put_thread: {id} could not be written")))?;
+        Ok(())
+    }
+
     async fn create_entity_with_id(&self, entity: Entity) -> DbResult<bool> {
         let id = entity
             .id_string()
@@ -2184,6 +2208,168 @@ impl GraphDB for SurrealGraphDB {
         let convs: Vec<Conversation> = result.take(0)?;
         Ok(convs)
     }
+
+    // -- Document service support (C-DOC) ---
+
+    async fn update_document_fields(&self, id: &str, patch: DocumentPatch) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "document")?;
+        // One MERGE statement: every field of the patch lands, or none does.
+        let updated: Option<Document> = self.db.update((table, key)).merge(patch).await?;
+        updated.map(|_| ()).ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn insert_commit(&self, commit: Commit) -> DbResult<Commit> {
+        let mut c = commit;
+        c.id = None;
+        let created: Option<Commit> = self.db.create("commit").content(c).await?;
+        created.ok_or_else(|| DbError::Query("Failed to insert commit".into()))
+    }
+
+    async fn delete_document_commits(&self, doc_id: &str) -> DbResult<u64> {
+        let mut resp = self
+            .db
+            .query("DELETE FROM commit WHERE document_id = $doc_id RETURN BEFORE")
+            .bind(("doc_id", doc_id.to_string()))
+            .await?
+            .check()?;
+        let gone: Vec<Commit> = resp.take(0)?;
+        Ok(gone.len() as u64)
+    }
+
+    async fn delete_document_relationships(&self, doc_id: &str) -> DbResult<u64> {
+        // Record links compare against a Thing, not a bound string (C2).
+        let id = id_to_thing(doc_id);
+        let mut resp = self
+            .db
+            .query("DELETE FROM related_to WHERE in = $id OR out = $id RETURN BEFORE")
+            .bind(("id", id))
+            .await?
+            .check()?;
+        let gone: Vec<RelatedTo> = resp.take(0)?;
+        Ok(gone.len() as u64)
+    }
+
+    async fn delete_document_suggested_links(&self, doc_id: &str) -> DbResult<u64> {
+        let id = id_to_thing(doc_id);
+        let mut resp = self
+            .db
+            .query("DELETE FROM suggested_link WHERE in = $id OR out = $id RETURN BEFORE")
+            .bind(("id", id))
+            .await?
+            .check()?;
+        let gone: Vec<SuggestedLink> = resp.take(0)?;
+        Ok(gone.len() as u64)
+    }
+
+    async fn delete_pii_record(&self, id: &str) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let _: Option<PiiRecord> = self.db.delete((table, key)).await?;
+        Ok(())
+    }
+
+    async fn set_purge_marker(&self, marker: PurgeMarker) -> DbResult<()> {
+        let key = purge_marker_key(&marker.document_id);
+        let mut m = marker;
+        m.id = None;
+        let _: Option<PurgeMarker> = self.db.upsert(("purge_marker", key)).content(m).await?;
+        Ok(())
+    }
+
+    async fn get_purge_marker(&self, document_id: &str) -> DbResult<Option<PurgeMarker>> {
+        let key = purge_marker_key(document_id);
+        let m: Option<PurgeMarker> = self.db.select(("purge_marker", key)).await?;
+        Ok(m)
+    }
+
+    async fn list_purge_markers(&self) -> DbResult<Vec<PurgeMarker>> {
+        let mut result = self.db.query("SELECT * FROM purge_marker").await?;
+        let markers: Vec<PurgeMarker> = result.take(0)?;
+        Ok(markers)
+    }
+
+    async fn get_store_record(&self, key: &str) -> DbResult<Option<String>> {
+        let key = store_record_key(key)?;
+        let r: Option<StoreRecordRow> = self.db.select(("store_record", key)).await?;
+        Ok(r.map(|r| r.value))
+    }
+
+    async fn put_store_record(&self, key: &str, value: &str) -> DbResult<()> {
+        let key = store_record_key(key)?;
+        let _: Option<StoreRecordRow> = self
+            .db
+            .upsert(("store_record", key))
+            .content(StoreRecordRow { value: value.to_string(), value_nonce: None })
+            .await?;
+        Ok(())
+    }
+
+    async fn put_store_record_sealed(&self, key: &str, ciphertext: &str, nonce: &str) -> DbResult<()> {
+        let key = store_record_key(key)?;
+        let _: Option<StoreRecordRow> = self
+            .db
+            .upsert(("store_record", key))
+            .content(StoreRecordRow { value: ciphertext.to_string(), value_nonce: Some(nonce.to_string()) })
+            .await?;
+        Ok(())
+    }
+
+    async fn get_store_record_sealed(&self, key: &str) -> DbResult<Option<(String, Option<String>)>> {
+        let key = store_record_key(key)?;
+        let r: Option<StoreRecordRow> = self.db.select(("store_record", key)).await?;
+        Ok(r.map(|r| (r.value, r.value_nonce)))
+    }
+
+    async fn update_conversation_title(&self, id: &str, title: &str) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "conversation")?;
+        let updated: Option<Conversation> = self
+            .db
+            .update((table, key))
+            .merge(serde_json::json!({ "title": title, "title_nonce": null }))
+            .await?;
+        updated.map(|_| ()).ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn remove_contact_address(
+        &self,
+        contact_id: &str,
+        channel: ChannelType,
+        address: &str,
+    ) -> DbResult<Contact> {
+        let (table, key) = parse_and_validate(contact_id, "contact")?;
+        let current: Option<Contact> = self.db.select((table, key)).await?;
+        let mut contact = current.ok_or_else(|| DbError::NotFound(contact_id.to_string()))?;
+        contact.addresses.retain(|a| !(a.channel == channel && a.address == address));
+        contact.modified_at = Utc::now();
+        let updated: Option<Contact> = self.db.update((table, key)).content(contact).await?;
+        updated.ok_or_else(|| DbError::Query("Failed to remove contact address".into()))
+    }
+}
+
+/// A store record (`store_record:<key>`, `GraphDB::get_store_record`). Sealed
+/// by the encrypted layer (M8): `value` is then the ciphertext and
+/// `value_nonce` its nonce; `None` for a value written in clear.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoreRecordRow {
+    value: String,
+    #[serde(default)]
+    value_nonce: Option<String>,
+}
+
+/// A store record's key, checked: lowercase ASCII letters, digits and `_`.
+fn store_record_key(key: &str) -> DbResult<String> {
+    if key.is_empty() || !key.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_') {
+        return Err(DbError::Query(format!("invalid store record key: {key:?}")));
+    }
+    Ok(key.to_string())
+}
+
+/// The record key of a document's purge marker: the document id's key, so a
+/// marker is found by the document id alone.
+fn purge_marker_key(document_id: &str) -> String {
+    match document_id.split_once(':') {
+        Some(("document", key)) => key.to_string(),
+        _ => document_id.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -2195,6 +2381,36 @@ mod tests {
         db.connect().await.unwrap();
         db.init_schema().await.unwrap();
         db
+    }
+
+    /// A store record (C-DOC adoption step 6): absent until written, replaced
+    /// by a later write, one per key; a key outside `[a-z0-9_]` is refused.
+    #[tokio::test]
+    async fn store_records_are_kept_per_key_and_replaced() {
+        let db = setup_db().await;
+        assert_eq!(db.get_store_record("doc_format_v2_migration").await.unwrap(), None);
+        db.put_store_record("doc_format_v2_migration", r#"{"converted":2}"#).await.unwrap();
+        db.put_store_record("other_record", "x").await.unwrap();
+        db.put_store_record("doc_format_v2_migration", r#"{"converted":3}"#).await.unwrap();
+        assert_eq!(
+            db.get_store_record("doc_format_v2_migration").await.unwrap().as_deref(),
+            Some(r#"{"converted":3}"#)
+        );
+        assert_eq!(db.get_store_record("other_record").await.unwrap().as_deref(), Some("x"));
+        // Sealed (M8): ciphertext and nonce in the row; a clear write replaces
+        // both, so no stale nonce is left beside a clear value.
+        db.put_store_record_sealed("other_record", "Y3Q=", "bm9uY2U=").await.unwrap();
+        assert_eq!(
+            db.get_store_record_sealed("other_record").await.unwrap(),
+            Some(("Y3Q=".to_string(), Some("bm9uY2U=".to_string())))
+        );
+        db.put_store_record("other_record", "x").await.unwrap();
+        assert_eq!(db.get_store_record_sealed("other_record").await.unwrap(), Some(("x".to_string(), None)));
+        assert_eq!(db.get_store_record_sealed("absent").await.unwrap(), None);
+        for bad in ["", "Upper", "a:b", "a-b", "x y"] {
+            assert!(db.put_store_record(bad, "v").await.is_err(), "{bad:?}");
+            assert!(db.get_store_record(bad).await.is_err(), "{bad:?}");
+        }
     }
 
     #[tokio::test]

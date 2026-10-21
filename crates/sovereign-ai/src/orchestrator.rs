@@ -5,7 +5,8 @@ use std::time::Duration;
 use anyhow::Result;
 use sovereign_core::config::AiConfig;
 use sovereign_core::interfaces::{
-    CommitSummary, FeedbackEvent, MilestoneSummary, ModelBackend, OrchestratorEvent,
+    ChatEnd, ChatOutcome, CommitSummary, FeedbackEvent, MilestoneSummary, ModelBackend,
+    OrchestratorEvent, TraceLink, WriteOutcome, WriteResult,
 };
 use sovereign_core::profile::{AdaptiveParams, SuggestionFeedback, UserProfile};
 use sovereign_core::security::{
@@ -28,6 +29,27 @@ enum GatedOutput {
     Aborted,
 }
 
+/// Where the orchestrator keeps its state, given by the host: the directory
+/// holding the session log, user profile and trust state, and the session-log
+/// beacon kept outside it. Each persona has its own (spec ch. 07, *After
+/// login — every persona's state stays its own*); the orchestrator never
+/// computes these paths itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrchestratorStatePaths {
+    pub dir: PathBuf,
+    pub beacon: PathBuf,
+}
+
+impl OrchestratorStatePaths {
+    /// The state paths of `persona` under the data directory `base`.
+    pub fn for_persona(base: &std::path::Path, persona: sovereign_core::auth::PersonaKind) -> Self {
+        Self {
+            dir: sovereign_core::auth::orchestrator_state_dir(base, persona),
+            beacon: sovereign_core::auth::session_log_beacon_path(base, persona),
+        }
+    }
+}
+
 /// Central AI orchestrator. Owns the intent classifier and DB handle.
 /// Receives queries (text from search overlay or voice pipeline),
 /// classifies intent, executes actions, and emits events to the UI.
@@ -48,6 +70,9 @@ pub struct Orchestrator {
     trust: Mutex<TrustTracker>,
     profile: Mutex<UserProfile>,
     profile_dir: PathBuf,
+    /// The persona's session-log beacon, outside `profile_dir`.
+    #[cfg(feature = "encrypted-log")]
+    session_log_beacon: PathBuf,
     model_dir: String,
     n_gpu_layers: i32,
     /// Account key for PII pipeline encryption of session-log content.
@@ -55,6 +80,10 @@ pub struct Orchestrator {
     /// Mutex so the setter can be `&self` (orchestrator lives behind Arc).
     /// User-scoped (same on every paired device) as of v0.0.5.
     pii_account_key: Mutex<Option<Arc<sovereign_crypto::account_key::AccountKey>>>,
+    /// The document service (C-DOC) over the persona's store, installed at
+    /// login by `set_document_service`. Restores go through it (adoption step
+    /// 2: the current state is versioned first); `None` while locked.
+    docs: Mutex<Option<Arc<sovereign_docs::DocumentService>>>,
     /// Channel for queueing P2P commands (e.g. `StartSync`, `PairDevice`)
     /// from intent handlers. `None` until `set_p2p_command_tx` is called
     /// post-login. Wrapped in a Mutex so the setter can be `&self`
@@ -69,11 +98,13 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
-    /// Create a new orchestrator. Loads the 3B router model eagerly.
+    /// Create a new orchestrator. Loads the 3B router model eagerly. Its state
+    /// lives at `paths`, which the host chooses for the open persona.
     pub async fn new(
         config: AiConfig,
         db: Arc<dyn GraphDB>,
         event_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
+        paths: OrchestratorStatePaths,
     ) -> Result<Self> {
         let model_dir = config.model_dir.clone();
         let n_gpu_layers = config.n_gpu_layers;
@@ -81,7 +112,9 @@ impl Orchestrator {
         classifier.load_router().await?;
 
         // Initialize session log + profile directory
-        let profile_dir = sovereign_core::sovereign_dir().join("orchestrator");
+        let OrchestratorStatePaths { dir: profile_dir, beacon } = paths;
+        #[cfg(not(feature = "encrypted-log"))]
+        let _ = beacon;
         let session_log = SessionLogSlot::open(&profile_dir);
 
         // Load persistent user profile
@@ -119,9 +152,12 @@ impl Orchestrator {
             trust: Mutex::new(trust),
             profile: Mutex::new(profile),
             profile_dir,
+            #[cfg(feature = "encrypted-log")]
+            session_log_beacon: beacon,
             model_dir,
             n_gpu_layers,
             pii_account_key: Mutex::new(None),
+            docs: Mutex::new(None),
             #[cfg(feature = "p2p")]
             p2p_command_tx: Mutex::new(None),
             #[cfg(feature = "vision")]
@@ -147,10 +183,13 @@ impl Orchestrator {
             feedback_rx: None,
             trust: Mutex::new(TrustTracker::new()),
             profile: Mutex::new(UserProfile::default_new()),
+            #[cfg(feature = "encrypted-log")]
+            session_log_beacon: profile_dir.with_extension("beacon"),
             profile_dir,
             model_dir: String::new(),
             n_gpu_layers: 0,
             pii_account_key: Mutex::new(None),
+            docs: Mutex::new(None),
             #[cfg(feature = "p2p")]
             p2p_command_tx: Mutex::new(None),
             #[cfg(feature = "vision")]
@@ -244,18 +283,16 @@ impl Orchestrator {
         }
     }
 
-    /// Re-opens the session log in encrypted mode. Each subsequent entry will be
-    /// encrypted with XChaCha20-Poly1305 and hash-chained to the previous entry
-    /// for tamper detection.
-    /// Path of the out-of-dir session-log beacon (sessionlog-genesis-wipe). It
-    /// lives in the crypto dir next to `auth.store`, so wiping the log dir
-    /// (`profile_dir`) doesn't remove it — its presence proves the encrypted
-    /// log previously had content, exposing a genesis wipe.
-    #[cfg(feature = "encrypted-log")]
-    fn session_log_beacon() -> std::path::PathBuf {
-        sovereign_core::sovereign_dir()
-            .join("crypto")
-            .join("session_log.beacon")
+    /// Install the document service (C-DOC adoption step 2): the assistant's
+    /// restore goes through it from now on.
+    pub fn set_document_service(&self, docs: Arc<sovereign_docs::DocumentService>) {
+        if let Ok(mut guard) = self.docs.lock() {
+            *guard = Some(docs);
+        }
+    }
+
+    fn document_service(&self) -> Option<Arc<sovereign_docs::DocumentService>> {
+        self.docs.lock().ok().and_then(|g| g.clone())
     }
 
     /// Install the ACCOUNT key for the trust-state MAC (ai-safety M1) and
@@ -278,8 +315,23 @@ impl Orchestrator {
     /// and the user is told through an `ActionRejected` event.
     #[cfg(feature = "encrypted-log")]
     pub fn set_session_log_key(&self, key: [u8; 32]) {
-        let beacon = Self::session_log_beacon();
-        match self.session_log.install_key(key, Some(&beacon)) {
+        // One-time migration (spec ch. 07, v2.0.29): a log in this directory
+        // that does not verify under `key` is set aside unread, once. Errors
+        // are logged; `install_key` below fails closed on its own.
+        match crate::session_log::set_aside_unverifiable_once(
+            &self.profile_dir,
+            key,
+            Some(&self.session_log_beacon),
+        ) {
+            Ok(crate::session_log::SetAside::MovedTo(_)) => {
+                let _ = self.event_tx.send(session_log_set_aside_notice());
+            }
+            Ok(crate::session_log::SetAside::Nothing) => {}
+            Err(e) => tracing::error!("Session log set-aside check failed: {e}"),
+        }
+        // The out-of-dir beacon (sessionlog-genesis-wipe) given by the host for
+        // this persona: its presence proves the encrypted log had content.
+        match self.session_log.install_key(key, Some(&self.session_log_beacon)) {
             Ok(()) => tracing::info!("Session log encryption enabled"),
             Err(e) => {
                 tracing::error!("Session log could not be opened encrypted; logging stopped: {e}");
@@ -488,7 +540,15 @@ impl Orchestrator {
 
     /// Multi-turn chat agent loop with tool calling and conversation history.
     /// Called from execute_action when the classified intent is "chat" or "unknown".
-    async fn run_chat_agent_loop(&self, message: &str) -> Result<()> {
+    ///
+    /// Returns the turn's explicit outcome (spec ch. 08, *Action Gravity*): every write
+    /// tool it ran or proposed with its result, and how the turn ended.
+    async fn run_chat_agent_loop(&self, message: &str) -> ChatOutcome {
+        let mut writes: Vec<WriteResult> = Vec::new();
+        let mut end = ChatEnd::Completed;
+        // Every round is recorded; the trace is saved only if the turn reaches the round
+        // limit (spec ch. 08, *Chat agent loop*).
+        let mut trace = crate::chat_trace::ChatTrace::new(message);
         // 1. Log user input — pre-tokenized so subsequent
         // load_session_entries calls feed canonical-form chat history
         // into the LLM context.
@@ -580,12 +640,19 @@ impl Orchestrator {
         loop {
             iterations += 1;
             if iterations > Self::MAX_AGENT_ITERATIONS {
-                let fallback =
-                    "I had trouble processing that request. Could you rephrase it?";
-                self.log_chat_response_pii_aware(fallback).await;
-                let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
-                    text: fallback.into(),
-                });
+                // The round limit is a stop, not a failure: say so, save the trace of
+                // the turn, and link it from the outcome (spec ch. 08, *Chat agent loop*).
+                let steps = Self::MAX_AGENT_ITERATIONS;
+                let fallback = format!(
+                    "I stopped after {steps} steps without a final answer. Could you rephrase or split the request?"
+                );
+                self.log_chat_response_pii_aware(&fallback).await;
+                let _ = self.event_tx.send(OrchestratorEvent::ChatResponse { text: fallback });
+                trace.stopped(&format!("stopped after {steps} steps without a final answer"));
+                end = ChatEnd::RoundLimit {
+                    steps: u8::try_from(steps).unwrap_or(u8::MAX),
+                    trace: self.save_trace(&trace).await,
+                };
                 break;
             }
 
@@ -615,6 +682,7 @@ impl Orchestrator {
                     let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
                         text: error_msg,
                     });
+                    end = ChatEnd::GenerationFailed(e.to_string());
                     break;
                 }
             };
@@ -625,7 +693,7 @@ impl Orchestrator {
                 if let Some(call) = calls.first() {
                     tracing::info!("Tool call: {} (iteration {})", call.name, iterations);
 
-                    let tool_output = if crate::tools::is_write_tool(&call.name) {
+                    let (tool_output, came_of_it) = if crate::tools::is_write_tool(&call.name) {
                         // Write tool — gate through action gravity system
                         let level = security::action_level(&call.name);
                         let trusted = {
@@ -665,10 +733,14 @@ impl Orchestrator {
                             && (!action_gate::requires_confirmation(level) || trusted)
                         {
                             // Auto-execute (Observe/Annotate or trusted)
-                            let result = crate::tools::execute_write_tool(call, self.db.as_ref()).await;
+                            let svc = self.document_service();
+                            let result = crate::tools::execute_write_tool(call, self.db.as_ref(), svc.as_deref()).await;
                             if let Some(event) = result.event {
                                 let _ = self.event_tx.send(event);
                             }
+                            let written = write_result(&call.name, result.success, &result.output);
+                            let came_of_it = trace_step_of(&written, false);
+                            writes.push(written);
                             // INJECTION-003: fence write-tool output too. A
                             // created/renamed title echoes back into the loop;
                             // like read results it must re-enter as untrusted
@@ -678,13 +750,13 @@ impl Orchestrator {
                                 .await
                             {
                                 GatedOutput::Content(c) => c,
-                                GatedOutput::Aborted => return self.injection_abort(),
+                                GatedOutput::Aborted => return self.injection_abort(writes),
                             };
                             let (fenced, _) = injection::fence_external(
                                 &format!("{} result", result.tool_name),
                                 &body,
                             );
-                            format!("[{}] {}", result.tool_name, fenced)
+                            (format!("[{}] {}", result.tool_name, fenced), came_of_it)
                         } else {
                             // Propose to user and wait for confirmation
                             let proposal = security::ProposedAction {
@@ -733,10 +805,16 @@ impl Orchestrator {
                                     let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
                                         BubbleVisualState::Executing,
                                     ));
-                                    let result = crate::tools::execute_write_tool(call, self.db.as_ref()).await;
+                                    let svc = self.document_service();
+                                    let result =
+                                        crate::tools::execute_write_tool(call, self.db.as_ref(), svc.as_deref()).await;
                                     if let Some(event) = result.event {
                                         let _ = self.event_tx.send(event);
                                     }
+                                    let written =
+                                        write_result(&call.name, result.success, &result.output);
+                                    let came_of_it = trace_step_of(&written, true);
+                                    writes.push(written);
                                     let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
                                         BubbleVisualState::ProcessingOwned,
                                     ));
@@ -748,13 +826,13 @@ impl Orchestrator {
                                         .await
                                     {
                                         GatedOutput::Content(c) => c,
-                                        GatedOutput::Aborted => return self.injection_abort(),
+                                        GatedOutput::Aborted => return self.injection_abort(writes),
                                     };
                                     let (fenced, _) = injection::fence_external(
                                         &format!("{} result", result.tool_name),
                                         &body,
                                     );
-                                    format!("[{}] {}", result.tool_name, fenced)
+                                    (format!("[{}] {}", result.tool_name, fenced), came_of_it)
                                 }
                                 ActionDecision::Reject(reason) => {
                                     if let Ok(mut trust) = self.trust.lock() {
@@ -769,7 +847,14 @@ impl Orchestrator {
                                     let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
                                         BubbleVisualState::ProcessingOwned,
                                     ));
-                                    format!("[{}] Action rejected by user: {}", call.name, reason)
+                                    writes.push(WriteResult {
+                                        tool: call.name.clone(),
+                                        outcome: WriteOutcome::Declined,
+                                    });
+                                    (
+                                        format!("[{}] Action rejected by user: {}", call.name, reason),
+                                        crate::chat_trace::TraceStep::Declined,
+                                    )
                                 }
                             }
                         }
@@ -802,14 +887,26 @@ impl Orchestrator {
                             .await
                         {
                             GatedOutput::Content(c) => c,
-                            GatedOutput::Aborted => return self.injection_abort(),
+                            GatedOutput::Aborted => return self.injection_abort(writes),
                         };
                         let (fenced, _) = injection::fence_external(
                             &format!("{} result", result.tool_name),
                             &body,
                         );
-                        format!("[{}] {}", result.tool_name, fenced)
+                        (
+                            format!("[{}] {}", result.tool_name, fenced),
+                            crate::chat_trace::TraceStep::Executed,
+                        )
                     };
+
+                    // Record the round as the model will see it: the tool result is
+                    // kept exactly as it is fed back (fenced, filtered if the user chose).
+                    trace.push_round(crate::chat_trace::TraceRound {
+                        tool: call.name.clone(),
+                        arguments: call.arguments.to_string(),
+                        result_seen: tool_output.clone(),
+                        came_of_it,
+                    });
 
                     // Append assistant turn (tool call) and tool result to history
                     turns.push(crate::llm::context::ChatTurn {
@@ -852,7 +949,7 @@ impl Orchestrator {
             .event_tx
             .send(OrchestratorEvent::BubbleState(BubbleVisualState::Idle));
 
-        Ok(())
+        ChatOutcome { writes, end }
     }
 
     /// Run PII ingest over a session-log text (user input or chat
@@ -1007,9 +1104,27 @@ impl Orchestrator {
         InjectionDecision::Redact
     }
 
+    /// Save the trace of a turn that reached the round limit as a never-owned document
+    /// (spec ch. 08, *Chat agent loop*). Without a document service, or when the save
+    /// fails, the outcome says why and names no document.
+    async fn save_trace(&self, trace: &crate::chat_trace::ChatTrace) -> TraceLink {
+        let Some(docs) = self.document_service() else {
+            return TraceLink::NotSaved { reason: "document service unavailable".into() };
+        };
+        match crate::chat_trace::save_chat_trace(&docs, self.db.as_ref(), trace).await {
+            Ok(crate::chat_trace::SavedTrace { doc_id, title }) => {
+                TraceLink::Saved { doc_id, title }
+            }
+            Err(e) => {
+                tracing::warn!("Chat trace not saved: {e}");
+                TraceLink::NotSaved { reason: e.to_string() }
+            }
+        }
+    }
+
     /// Common handling when the user aborts the turn on a detected injection in
     /// tool output: tell them, reset the bubble, and end the turn cleanly.
-    fn injection_abort(&self) -> Result<()> {
+    fn injection_abort(&self, writes: Vec<WriteResult>) -> ChatOutcome {
         let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
             text: "⚠ Stopped this turn — you chose to abort on a detected injection in tool output."
                 .into(),
@@ -1017,7 +1132,7 @@ impl Orchestrator {
         let _ = self
             .event_tx
             .send(OrchestratorEvent::BubbleState(BubbleVisualState::Idle));
-        Ok(())
+        ChatOutcome { writes, end: ChatEnd::StoppedForInjection }
     }
 
     /// Emit `proposal` and wait for the user's decision (120s timeout).
@@ -1127,10 +1242,14 @@ impl Orchestrator {
             }
             "create_thread" => {
                 let name = target.unwrap_or("New Thread").to_string();
-                let thread = Thread::new(name.clone(), String::new());
-                match self.db.create_thread(thread).await {
-                    Ok(created) => {
-                        let tid = created.id_string().unwrap_or_default();
+                // Through the one thread-write path, stamped (THREAD-sync S1);
+                // without a document service nothing is written.
+                let created = match self.document_service() {
+                    Some(svc) => svc.thread_create(&name, "").await.map_err(|e| sovereign_docs_message(&e)),
+                    None => Err("the workspace is locked; nothing was created".to_string()),
+                };
+                match created {
+                    Ok(tid) => {
                         tracing::info!("Thread created: {} ({})", name, tid);
                         self.log_action("create_thread", &format!("{} ({})", name, tid));
                         let _ = self.event_tx.send(OrchestratorEvent::ThreadCreated {
@@ -1146,8 +1265,15 @@ impl Orchestrator {
                     let (old_name, new_name) = parse_rename_target(target);
                     if let Some(thread) = self.db.find_thread_by_name(&old_name).await? {
                         if let Some(tid) = thread.id_string() {
-                            match self.db.update_thread(&tid, Some(&new_name), None).await {
-                                Ok(_) => {
+                            let renamed = match self.document_service() {
+                                Some(svc) => svc
+                                    .thread_update(&tid, Some(&new_name), None)
+                                    .await
+                                    .map_err(|e| sovereign_docs_message(&e)),
+                                None => Err("the workspace is locked; nothing was renamed".to_string()),
+                            };
+                            match renamed {
+                                Ok(()) => {
                                     tracing::info!(
                                         "Thread renamed: {} → {}",
                                         old_name,
@@ -1175,9 +1301,24 @@ impl Orchestrator {
                 if let Some(target) = target {
                     if let Some(thread) = self.db.find_thread_by_name(target).await? {
                         if let Some(tid) = thread.id_string() {
-                            match self.db.soft_delete_thread(&tid).await {
-                                Ok(()) => {
-                                    tracing::info!("Thread soft-deleted: {} ({})", target, tid);
+                            // C-DOC adoption step 5, S5-10 (Céline, 2026-10-17):
+                            // every document still in the thread goes to the
+                            // trash, then the thread is deleted — all or
+                            // nothing, through the one host path.
+                            let deleted = match self.document_service() {
+                                Some(svc) => sovereign_docs::delete_thread_to_trash(&svc, self.db.as_ref(), &tid)
+                                    .await
+                                    .map_err(|e| e.message),
+                                None => Err("the workspace is locked; nothing was deleted".to_string()),
+                            };
+                            match deleted {
+                                Ok(report) => {
+                                    tracing::info!(
+                                        "Thread deleted: {} ({}), {} document(s) moved to the trash",
+                                        target,
+                                        tid,
+                                        report.trashed.len()
+                                    );
                                     let _ =
                                         self.event_tx.send(OrchestratorEvent::ThreadDeleted {
                                             thread_id: tid,
@@ -1296,8 +1437,12 @@ impl Orchestrator {
                             // PII-001: backstop token resolution with a regex pass
                             // so raw structured PII (e.g. AVS) the scan missed can't
                             // reach the summarizer.
+                            // C-DOC adoption step 1: the summarizer reads the
+                            // document's text through the v2 model, not its
+                            // stored JSON (same composition as the
+                            // `get_document` tool, which tests it).
                             let resolved = crate::pii::resolve::resolve_to_preview_redacted(
-                                &doc.content,
+                                &sovereign_docformat::plain_text_of(&doc.content),
                                 &records,
                                 crate::pii::Locale::Swiss,
                             );
@@ -1463,7 +1608,18 @@ impl Orchestrator {
                     if let (Some(tt), Some(st)) = (target_thread, source_thread) {
                         let target_id = tt.id_string().unwrap_or_default();
                         let source_id = st.id_string().unwrap_or_default();
-                        match self.db.merge_threads(&target_id, &source_id).await {
+                        // Every document moves through the document service
+                        // and the source is deleted through the one
+                        // thread-write path (THREAD-sync S1).
+                        let merged = match self.document_service() {
+                            Some(svc) => svc
+                                .thread_merge(&target_id, &source_id)
+                                .await
+                                .map(|_| ())
+                                .map_err(|e| sovereign_docs_message(&e)),
+                            None => Err("the workspace is locked; nothing was merged".to_string()),
+                        };
+                        match merged {
                             Ok(()) => {
                                 tracing::info!(
                                     "Threads merged: {} ← {}",
@@ -1500,12 +1656,16 @@ impl Orchestrator {
                         new_name
                     };
                     if let Some(thread) = self.db.find_thread_by_name(&thread_name).await? {
-                        if let Some(tid) = thread.id_string() {
+                        if thread.id_string().is_some() {
                             // For now, split with no specific doc_ids — the user will
-                            // refine via UI. Create empty thread as a target.
-                            match self.db.split_thread(&tid, &[], &new_name).await {
-                                Ok(created) => {
-                                    let new_tid = created.id_string().unwrap_or_default();
+                            // refine via UI. Create empty thread as a target,
+                            // through the one thread-write path (THREAD-sync S1).
+                            let split = match self.document_service() {
+                                Some(svc) => svc.thread_create(&new_name, "").await.map_err(|e| sovereign_docs_message(&e)),
+                                None => Err("the workspace is locked; nothing was split".to_string()),
+                            };
+                            match split {
+                                Ok(new_tid) => {
                                     tracing::info!("Thread split: {} → {}", thread_name, new_name);
                                     self.log_action(
                                         "split_thread",
@@ -1563,13 +1723,7 @@ impl Orchestrator {
             "create_milestone" => {
                 if let Some(target) = target {
                     // Parse "title on/for thread_name" or just use default thread
-                    let (title, thread_name) = if let Some(idx) = target.to_lowercase().find(" on ") {
-                        (target[..idx].trim().to_string(), target[idx + 4..].trim().to_string())
-                    } else if let Some(idx) = target.to_lowercase().find(" for ") {
-                        (target[..idx].trim().to_string(), target[idx + 5..].trim().to_string())
-                    } else {
-                        (target.to_string(), String::new())
-                    };
+                    let (title, thread_name) = parse_milestone_target(target);
 
                     let thread = if thread_name.is_empty() {
                         self.db.list_threads().await?.into_iter().next()
@@ -1708,14 +1862,23 @@ impl Orchestrator {
                     .and_then(|t| t.id_string())
                     .unwrap_or_default();
 
-                let doc = sovereign_db::schema::Document::new(
+                // C-DOC adoption step 3: through the document service, as the
+                // assistant's create tool does (owned, provenance assistant).
+                let new = crate::docs_host::new_document(
                     title.clone(),
                     thread_id.clone(),
-                    true,
+                    "",
+                    sovereign_docs::Trust::Owned,
+                    sovereign_docs::Provenance::Assistant,
+                    sovereign_docs::Origin::Assistant,
                 );
-                match self.db.create_document(doc).await {
+                let created = match self.document_service() {
+                    Some(svc) => crate::docs_host::create(&svc, new).await.map_err(|e| sovereign_docs_message(&e)),
+                    None => Err("the workspace is locked".to_string()),
+                };
+                match created {
                     Ok(created) => {
-                        let doc_id = created.id_string().unwrap_or_default();
+                        let doc_id = created.id;
                         tracing::info!("Document created: {} ({})", title, doc_id);
                         self.log_action("create_document", &format!("{} ({})", title, doc_id));
                         let _ = self.event_tx.send(OrchestratorEvent::DocumentCreated {
@@ -1733,52 +1896,41 @@ impl Orchestrator {
                     let docs = self.db.search_documents_by_title(&doc_name).await?;
                     if let Some(doc) = docs.first() {
                         if let Some(doc_id) = doc.id_string() {
-                            if commit_ref.starts_with("commit:") {
-                                match self.db.restore_document(&doc_id, &commit_ref).await {
-                                    Ok(_) => {
-                                        tracing::info!(
-                                            "Restored {} to {}",
-                                            doc_name,
-                                            commit_ref
-                                        );
-                                        self.log_action(
-                                            "restore",
-                                            &format!("{} to {}", doc_name, commit_ref),
-                                        );
-                                        let _ = self.event_tx.send(
-                                            OrchestratorEvent::DocumentOpened { doc_id },
-                                        );
-                                    }
-                                    Err(e) => success = self.report_action_failure("Restore failed", &e),
-                                }
-                            } else {
-                                let commits =
-                                    self.db.list_document_commits(&doc_id).await?;
-                                if commits.len() >= 2 {
-                                    let prev = commits[1].id_string().unwrap_or_default();
-                                    match self.db.restore_document(&doc_id, &prev).await {
-                                        Ok(_) => {
-                                            tracing::info!(
-                                                "Restored {} to previous version",
-                                                doc_name
-                                            );
-                                            self.log_action(
-                                                "restore",
-                                                &format!("{} to previous", doc_name),
-                                            );
-                                            let _ = self.event_tx.send(
-                                                OrchestratorEvent::DocumentOpened { doc_id },
-                                            );
-                                        }
-                                        Err(e) => success = self.report_action_failure("Restore failed", &e),
-                                    }
-                                } else {
+                            // C-DOC adoption step 2: through the document
+                            // service — the current state becomes a version
+                            // first, the restored state a new version.
+                            let svc = self.document_service();
+                            let picked: Result<String, String> = match &svc {
+                                None => Err("the workspace is locked".into()),
+                                Some(_) if commit_ref.starts_with("commit:") => Ok(commit_ref.clone()),
+                                Some(svc) => match svc.versions(&doc_id).await {
+                                    // Newest first: [1] is the version before the latest.
+                                    Ok(v) if v.len() >= 2 => Ok(v[1].commit_id.clone()),
                                     // M7: restoring with no previous version did
                                     // nothing — say so instead of reporting success.
-                                    success = self.report_action_failure(
-                                        "Restore failed",
-                                        &format!("'{doc_name}' has no previous version to restore"),
-                                    );
+                                    Ok(_) => Err(format!("'{doc_name}' has no previous version to restore")),
+                                    Err(e) => Err(sovereign_docs_message(&e)),
+                                },
+                            };
+                            match (svc, picked) {
+                                (Some(svc), Ok(commit)) => match svc.restore_version(&doc_id, &commit).await {
+                                    Ok(_) => {
+                                        let what = if commit_ref.starts_with("commit:") {
+                                            commit.clone()
+                                        } else {
+                                            "previous".to_string()
+                                        };
+                                        tracing::info!("Restored {} to {}", doc_name, what);
+                                        self.log_action("restore", &format!("{} to {}", doc_name, what));
+                                        let _ = self.event_tx.send(OrchestratorEvent::DocumentOpened { doc_id });
+                                    }
+                                    Err(e) => {
+                                        success = self.report_action_failure("Restore failed", &sovereign_docs_message(&e))
+                                    }
+                                },
+                                (_, Err(why)) => success = self.report_action_failure("Restore failed", &why),
+                                (None, Ok(_)) => {
+                                    success = self.report_action_failure("Restore failed", &"the workspace is locked")
                                 }
                             }
                         } else {
@@ -1813,8 +1965,12 @@ impl Orchestrator {
                 // ActionExecuted is emitted once by the tail below.
             }
             "chat" | "unknown" => {
-                // Delegate to the agent loop which handles context, tools, and history
-                self.run_chat_agent_loop(query).await?;
+                // Delegate to the agent loop which handles context, tools, and history.
+                // A chat turn ends with its explicit outcome, never with ActionExecuted
+                // (spec ch. 08: a turn that ran no write is not an executed action).
+                let outcome = self.run_chat_agent_loop(query).await;
+                let _ = self.event_tx.send(OrchestratorEvent::ChatTurnEnded { outcome });
+                return Ok(());
             }
             _ => {
                 // Lot 0.7: no handler. handle_query refuses these before the
@@ -1857,26 +2013,20 @@ impl Orchestrator {
         Ok(result)
     }
 
+    /// The incoming-change analysis with the router model (C-WIRE 13, run in
+    /// the background, spec v2.0.22): the deterministic checks, enriched by
+    /// the model's verdict. The model can only raise the risk
+    /// (`audit_peer_change`). Waits on the classifier like any model use.
+    pub async fn audit_change(&self, prior: &str, incoming: &str) -> crate::peer_audit::PeerChangeVerdict {
+        let classifier = self.classifier.lock().await;
+        crate::peer_audit::audit_peer_change(Some(&classifier.router), Some(&*classifier.formatter), prior, incoming).await
+    }
+
     /// Run one memory consolidation cycle: find related document pairs and
     /// create AI-suggested links. Only runs when the system is idle.
     ///
     /// Uses adaptive gating from the user profile — if the user consistently
     /// dismisses consolidation suggestions, they are shown less often.
-    /// Audit pending peer-synced changes (p2p-no-per-doc-authz), filling each
-    /// review's assessment. Uses the router model when available; degrades to
-    /// the deterministic heuristic otherwise (the audit never blocks on the
-    /// model). Returns the number of reviews audited. Call after a sync round.
-    pub async fn audit_peer_reviews(&self) -> Result<usize> {
-        let classifier = self.classifier.lock().await;
-        let n = crate::peer_audit::audit_pending_reviews(
-            self.db.as_ref(),
-            Some(&classifier.router),
-            Some(&*classifier.formatter),
-        )
-        .await;
-        Ok(n)
-    }
-
     pub async fn consolidate_memory(&self) -> Result<()> {
         // Check adaptive gating
         {
@@ -2131,6 +2281,18 @@ fn session_log_off_notice(reason: &str) -> OrchestratorEvent {
     }
 }
 
+/// Told once, when the migration set an unverifiable log aside. Same event as
+/// [`session_log_off_notice`], which both hosts render in the chat.
+#[cfg(feature = "encrypted-log")]
+fn session_log_set_aside_notice() -> OrchestratorEvent {
+    OrchestratorEvent::ActionRejected {
+        action: "session log".into(),
+        reason: "An earlier conversation log could not be verified and was set aside; \
+                 a new log has started."
+            .into(),
+    }
+}
+
 /// Format a tool call proposal into a human-readable description.
 fn format_tool_proposal(name: &str, args: &serde_json::Value) -> String {
     match name {
@@ -2184,7 +2346,7 @@ fn format_confirmation_message(name: &str, args: &serde_json::Value) -> String {
 /// Parse "X to Y" from a rename target string.
 /// Returns (old_name, new_name). Falls back to (target, target) if no " to " found.
 fn parse_rename_target(target: &str) -> (String, String) {
-    if let Some(idx) = target.to_lowercase().find(" to ") {
+    if let Some(idx) = find_ascii_ci(target, " to ") {
         let old = target[..idx].trim().to_string();
         let new = target[idx + 4..].trim().to_string();
         (old, new)
@@ -2193,10 +2355,77 @@ fn parse_rename_target(target: &str) -> (String, String) {
     }
 }
 
+/// The result of a write tool the chat loop ran, for the turn's outcome (finding 14). A
+/// failure keeps the tool's own message as its reason, reduced to its first line and
+/// bounded so the one-line summary stays readable.
+fn write_result(tool: &str, success: bool, output: &str) -> WriteResult {
+    let outcome = if success {
+        WriteOutcome::Succeeded
+    } else {
+        let first = output.lines().next().unwrap_or("").trim();
+        let mut reason: String = first.chars().take(160).collect();
+        if reason.len() < first.len() {
+            reason.push('…');
+        }
+        if reason.is_empty() {
+            reason = "no reason given".into();
+        }
+        WriteOutcome::Failed(reason)
+    };
+    WriteResult { tool: tool.to_string(), outcome }
+}
+
+/// What came of a write, for the turn's trace (spec ch. 08, *Chat agent loop*): a success
+/// is "approved" when the user confirmed it and "executed" when it ran without a proposal;
+/// a failure keeps the same reason as the turn's outcome.
+fn trace_step_of(write: &WriteResult, approved: bool) -> crate::chat_trace::TraceStep {
+    use crate::chat_trace::TraceStep;
+    match &write.outcome {
+        WriteOutcome::Succeeded if approved => TraceStep::Approved,
+        WriteOutcome::Succeeded => TraceStep::Executed,
+        WriteOutcome::Failed(reason) => TraceStep::Failed(reason.clone()),
+        WriteOutcome::Declined => TraceStep::Declined,
+    }
+}
+
+/// Byte index of the first ASCII-case-insensitive occurrence of `needle` in `hay`
+/// (finding 15). The index is found in the *original* string, never in a lowercased copy,
+/// whose byte lengths differ ("İ" grows, the Kelvin sign shrinks). `needle` must be ASCII:
+/// an ASCII byte never occurs inside a multi-byte UTF-8 sequence, so the match starts and
+/// ends at char boundaries and slicing `hay` there cannot panic.
+fn find_ascii_ci(hay: &str, needle: &str) -> Option<usize> {
+    debug_assert!(needle.is_ascii());
+    let n = needle.len();
+    if n == 0 || hay.len() < n {
+        return None;
+    }
+    hay.as_bytes()
+        .windows(n)
+        .position(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+/// Parse "title on thread" or "title for thread" from a milestone target string
+/// (" on " is looked for first). Returns (title, thread_name); thread_name is empty when
+/// neither separator is present.
+fn parse_milestone_target(target: &str) -> (String, String) {
+    if let Some(idx) = find_ascii_ci(target, " on ") {
+        (target[..idx].trim().to_string(), target[idx + 4..].trim().to_string())
+    } else if let Some(idx) = find_ascii_ci(target, " for ") {
+        (target[..idx].trim().to_string(), target[idx + 5..].trim().to_string())
+    } else {
+        (target.to_string(), String::new())
+    }
+}
+
+/// A refused document operation, said to the user (C-DOC adoption step 2).
+fn sovereign_docs_message(e: &sovereign_docs::DocError) -> String {
+    crate::docs_host::doc_error_message(e)
+}
+
 /// Parse "DocTitle to ThreadName" from a move target string.
 /// Returns (doc_name, thread_name).
 fn parse_move_target(target: &str) -> (String, String) {
-    if let Some(idx) = target.to_lowercase().find(" to ") {
+    if let Some(idx) = find_ascii_ci(target, " to ") {
         let doc = target[..idx].trim().to_string();
         let thread = target[idx + 4..].trim().to_string();
         (doc, thread)
@@ -2498,6 +2727,37 @@ mod tests {
             );
             assert_eq!(executed(&evs), vec![false], "{action} must not report success");
         }
+    }
+
+    /// C-DOC adoption step 2: the assistant's restore goes through the
+    /// document service — the current state becomes a version before the
+    /// previous one comes back; without a service (locked) nothing happens.
+    #[tokio::test]
+    async fn restore_goes_through_the_document_service() {
+        use crate::docs_host::testing::{account_key, encrypted_memory_store};
+        let store = encrypted_memory_store("orch-restore").await;
+        let (tx, events) = std::sync::mpsc::channel();
+        let dir = make_test_dir(&format!("orch_restore_{}", std::process::id()));
+        let orch = Orchestrator::for_test(store.clone() as Arc<dyn GraphDB>, tx, dir);
+        let mut d = sovereign_db::schema::Document::new("Notes".into(), "thread:t".into(), true);
+        d.content = "first".into();
+        let id = store.create_document(d).await.unwrap().id_string().unwrap();
+        store.commit_document(&id, "one").await.unwrap();
+        store.update_document(&id, None, Some("second")).await.unwrap();
+        store.commit_document(&id, "two").await.unwrap();
+        store.update_document(&id, None, Some("third, never versioned")).await.unwrap();
+
+        orch.execute_action("restore", Some("Notes"), "q").await.unwrap();
+        assert_eq!(executed(&drain_events(&events)), vec![false], "locked: no service, no restore");
+        assert_eq!(store.get_document(&id).await.unwrap().content, "third, never versioned");
+
+        let docs = Arc::new(crate::docs_host::build_document_service(store.clone(), Some(account_key()), "t".into()));
+        orch.set_document_service(docs.clone());
+        orch.execute_action("restore", Some("Notes"), "q").await.unwrap();
+        assert_eq!(executed(&drain_events(&events)), vec![true]);
+        assert_eq!(docs.read(&id).await.unwrap().plain_text(), "first", "the version before the latest");
+        let commits = store.list_document_commits(&id).await.unwrap();
+        assert!(commits.iter().any(|c| c.snapshot.content == "third, never versioned"), "current state versioned first");
     }
 
     /// Invariant: an action whose target is missing or not found never
@@ -2803,3 +3063,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+#[path = "orchestrator_unicode_tests.rs"]
+mod unicode_target_tests;
+
+// C-DOC adoption step 5, S5-10 (the assistant's delete_thread), written
+// before the code by another author.
+#[cfg(test)]
+#[path = "orchestrator_step5_tests.rs"]
+mod step5_thread_tests;

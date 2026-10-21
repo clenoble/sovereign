@@ -43,6 +43,17 @@ pub struct ActionExecutedPayload {
     pub success: bool,
 }
 
+/// A chat turn's explicit outcome (spec ch. 08), as the one line the UI shows.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatTurnEndedPayload {
+    pub summary: String,
+    /// The saved trace of a turn that reached the round limit, if any (spec ch. 08,
+    /// *Chat agent loop*). Nothing opens it by itself (v2.0.39).
+    pub trace_doc_id: Option<String>,
+    /// That trace's exact title, which the summary names (thread "Assistant traces").
+    pub trace_title: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ActionRejectedPayload {
     pub action: String,
@@ -188,6 +199,21 @@ pub struct SyncStatusPayload {
     pub status: String,
 }
 
+/// A paired device runs an older version (C-WIRE 12).
+#[derive(Debug, Clone, Serialize)]
+pub struct PeerNeedsUpdatePayload {
+    pub peer_id: String,
+    /// Empty when the device is not in the paired list.
+    pub device_name: String,
+}
+
+/// The one-time migration to document format v2 completed in this persona's
+/// store (C-DOC adoption step 6, M2): the notice's text, shown once.
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentsMigratedPayload {
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncConflictPayload {
     pub doc_id: String,
@@ -248,6 +274,17 @@ pub fn spawn_event_forwarder(
                     let _ = app_handle.emit(
                         "action-executed",
                         ActionExecutedPayload { action, success },
+                    );
+                }
+
+                OrchestratorEvent::ChatTurnEnded { outcome } => {
+                    let _ = app_handle.emit(
+                        "chat-turn-ended",
+                        ChatTurnEndedPayload {
+                            summary: outcome.summary_line(),
+                            trace_doc_id: outcome.trace_doc_id().map(str::to_string),
+                            trace_title: outcome.trace_title().map(str::to_string),
+                        },
                     );
                 }
 
@@ -473,6 +510,19 @@ pub fn spawn_event_forwarder(
                         "pairing-failed",
                         PairingFailedPayload { reason, offer_dead },
                     );
+                }
+                OrchestratorEvent::PeerNeedsUpdate { peer_id, device_name } => {
+                    let _ = app_handle.emit(
+                        "peer-needs-update",
+                        PeerNeedsUpdatePayload { peer_id, device_name },
+                    );
+                }
+                OrchestratorEvent::SyncAlertsChanged => {
+                    let _ = app_handle.emit("sync-alerts-changed", ());
+                }
+                // C-DOC adoption step 6 (M2): the one-time migration's notice.
+                OrchestratorEvent::DocumentsMigrated { text } => {
+                    let _ = app_handle.emit("documents-migrated", DocumentsMigratedPayload { text });
                 }
 
                 // All other events: log but don't emit

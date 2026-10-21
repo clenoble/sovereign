@@ -24,6 +24,83 @@ use sovereign_p2p::protocol::SovereignRequest;
 use sovereign_p2p::{P2pCommand, P2pConfig, P2pEvent, SovereignNode, SyncService};
 use tokio::sync::mpsc;
 
+/// A fresh, empty workspace to restore into: an encrypted in-memory store
+/// and its document service (C-WIRE 17: documents come back through the
+/// service, only onto an empty workspace).
+async fn fresh_workspace(tag: &str) -> (Arc<sovereign_db::encrypted::EncryptedGraphDB>, sovereign_docs::DocumentService) {
+    use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
+    let raw = Arc::new(SurrealGraphDB::new(StorageMode::Memory).await.unwrap());
+    raw.connect().await.unwrap();
+    raw.init_schema().await.unwrap();
+    // A counter keeps names unique when two stacks are built in the same clock tick:
+    // stacks sharing a name share key-database files and their `.tmp` writes race.
+    let u = format!(
+        "{}-{}-{}-{tag}",
+        std::process::id(),
+        { static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0); SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) },
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    );
+    let kdb = |s: &str| {
+        Arc::new(tokio::sync::RwLock::new(sovereign_crypto::key_db::KeyDatabase::new(
+            std::env::temp_dir().join(format!("sovereign-e2e-restore-{u}-{s}.db")),
+        )))
+    };
+    let mk = sovereign_crypto::master_key::MasterKey::generate();
+    let edb = Arc::new(sovereign_db::encrypted::EncryptedGraphDB::new(
+        raw as Arc<dyn GraphDB>,
+        kdb("doc"),
+        kdb("msg"),
+        kdb("thr"),
+        kdb("conv"),
+        kdb("con"),
+        kdb("shr"),
+        Arc::new(sovereign_crypto::kek::Kek::generate()),
+        Arc::new(sovereign_crypto::index_key::IndexKey::generate()),
+        Arc::new(sovereign_crypto::device_key::DeviceKey::derive(&mk, tag).unwrap()),
+    ));
+    let docs = sovereign_ai_free_service(edb.clone());
+    (edb, docs)
+}
+
+/// The document service over `edb` with neutral host parts.
+fn sovereign_ai_free_service(edb: Arc<sovereign_db::encrypted::EncryptedGraphDB>) -> sovereign_docs::DocumentService {
+    struct Clock;
+    impl sovereign_docs::Clock for Clock {
+        fn now(&self) -> chrono::DateTime<chrono::Utc> {
+            chrono::Utc::now()
+        }
+    }
+    struct NoEvents;
+    impl sovereign_docs::DocumentEvents for NoEvents {
+        fn emit(&self, _e: sovereign_docs::DocumentChanged) {}
+    }
+    struct NoMedia;
+    impl sovereign_docs::MediaFiles for NoMedia {
+        fn sha256(&self, _p: &str) -> Option<String> {
+            None
+        }
+    }
+    struct PassThrough;
+    #[async_trait::async_trait]
+    impl sovereign_docs::PiiIngest for PassThrough {
+        async fn ingest(
+            &self,
+            r: sovereign_docs::IngestRequest,
+        ) -> Result<Vec<sovereign_docs::IngestedItem>, sovereign_docs::PiiError> {
+            Ok(r.items.into_iter().map(|i| sovereign_docs::IngestedItem { field: i.field, text: i.text }).collect())
+        }
+    }
+    sovereign_docs::DocumentService::new(sovereign_docs::ServiceDeps {
+        store: edb,
+        commit_policy: Arc::new(sovereign_docs::DefaultCommitPolicy::default()),
+        pii: Arc::new(PassThrough),
+        media: Arc::new(NoMedia),
+        clock: Arc::new(Clock),
+        events: Arc::new(NoEvents),
+        device: "restored".into(),
+    })
+}
+
 fn keypair_from_seed(seed: &[u8; 32]) -> libp2p::identity::Keypair {
     libp2p::identity::Keypair::ed25519_from_bytes(*seed).expect("seed is 32 bytes")
 }
@@ -53,7 +130,8 @@ async fn spawn_node(device_id: &str, seed: [u8; 32], with_host: bool) -> Harness
 
     let (host, host_dir) = if with_host {
         let dir = std::env::temp_dir().join(format!(
-            "sovereign-e2e-backup-{device_id}-{}",
+            "sovereign-e2e-backup-{device_id}-{}-{}",
+            { static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0); SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) },
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -407,17 +485,21 @@ async fn backup_place_and_total_loss_recovery() {
     let snapshot =
         sovereign_p2p::backup_client::assemble_snapshot(&manifest, &fragments, &payloads, None)
             .unwrap();
-    let fresh = MockGraphDB::new();
-    let written = backup::restore_snapshot(&fresh, &snapshot).await.unwrap();
-    assert!(written >= 3);
+    // C-WIRE 17: documents come back through the document service, onto an
+    // empty workspace; rows as before.
+    let (fresh, fresh_docs) = fresh_workspace("restore").await;
+    let report = sovereign_p2p::wire::restore_backup(&fresh_docs, fresh.as_ref(), &snapshot).await.unwrap();
+    assert_eq!(report.restored.len(), 1);
 
     let docs = fresh.list_documents(None).await.unwrap();
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].title, "Precious");
-    assert_eq!(docs[0].content, r#"{"body":"do not lose this","images":[]}"#);
+    let id = docs[0].id_string().unwrap();
+    assert_eq!(fresh_docs.read(&id).await.unwrap().plain_text(), "do not lose this", "text restored (now v2)");
     assert_eq!(docs[0].id_string(), doc.id_string(), "origin ids preserved");
     assert_eq!(fresh.list_contacts().await.unwrap().len(), 1);
     assert_eq!(fresh.list_threads().await.unwrap().len(), 1);
+    let _ = backup::restore_snapshot; // rows-only restore, used by restore_backup
 
     // Cleanup host dirs.
     for h in [&h1, &h2] {
@@ -654,9 +736,9 @@ async fn recovery_engine_drives_total_loss_to_installed() {
     assert_eq!(rec.phase, RecoveryPhase::Assembling);
 
     // Wrong passphrase: retryable — recovery must survive the typo.
-    let fresh = MockGraphDB::new();
+    let (fresh, fresh_docs) = fresh_workspace("finalize").await;
     let err = rec
-        .finalize(&fresh, b"tea horse battery staple")
+        .finalize(fresh.as_ref(), &fresh_docs, b"tea horse battery staple")
         .await
         .expect_err("wrong passphrase must not finalize");
     assert!(err.to_string().contains("wrong passphrase"), "got: {err}");
@@ -666,7 +748,7 @@ async fn recovery_engine_drives_total_loss_to_installed() {
     assert!(rec.passphrase_matches(passphrase).unwrap());
 
     // Right passphrase: A1-verified assembly + restore.
-    let written = rec.finalize(&fresh, passphrase).await.unwrap();
+    let written = rec.finalize(fresh.as_ref(), &fresh_docs, passphrase).await.unwrap();
     assert!(written >= 3, "restored {written} rows");
     assert_eq!(rec.phase, RecoveryPhase::Installed);
     assert_eq!(rec.manifest_verified, Some(true));

@@ -25,8 +25,13 @@
 //! - **Timestamps preserved** — file mtime/btime → `modified_at`/`created_at`,
 //!   so the archive lands across the timeline instead of piling on "now".
 //! - **Folder → lane** — each file's containing folder becomes its thread.
-//! - **Owned** — imported docs are the user's own content (`is_owned = true`),
-//!   control-plane, never fenced.
+//! - **Undetermined** — imported docs are neither assumed the user's own nor
+//!   assumed external: their trust is *undetermined*, treated as external
+//!   (injection-fenced) until she adopts them (spec ch. 04, *Ownership is not
+//!   decided at landing*; C-DOC adoption step 3 — they used to land owned).
+//! - **Through the document service** — every document is created by
+//!   `sovereign_docs` (C-DOC): format v2, a version from creation,
+//!   personal-data ingest, provenance *import* with the file's path.
 //! - **Originals untouched** — the engine only reads.
 //! - **Idempotent (increment-1 form)** — threads are reused by name and a file
 //!   whose title already exists in its target thread is skipped, so a re-run
@@ -37,8 +42,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use sovereign_db::schema::{Document, Thread};
 use sovereign_db::GraphDB;
+use sovereign_docs::{DocumentService, NewContent, NewDocument, Origin, Provenance, Trust};
 
 // ── Configuration ────────────────────────────────────────────────────────
 
@@ -108,11 +113,13 @@ const TEXT_EXTS: &[&str] = &[
 /// Source-code, stylesheet, config, data-serialization, and build extensions —
 /// **SKIPPED entirely** (not imported, not even stubbed).
 ///
-/// SECURITY (not just tidiness): imported documents are `is_owned = true` —
-/// owned, trusted, control-plane, never injection-fenced. Importing executable
-/// or source content would auto-trust it, so a script or component carrying a
-/// prompt-injection payload would be read as the user's own words. Céline's
-/// rule: **just docs, no code.** Anything here is dropped from the corpus.
+/// SECURITY (not just tidiness): imported documents used to land owned —
+/// trusted, control-plane, never injection-fenced — so importing executable or
+/// source content would have auto-trusted it, and a script or component
+/// carrying a prompt-injection payload would have been read as the user's own
+/// words. They land undetermined (fenced) since C-DOC adoption step 3, but an
+/// adoption would still trust them whole. Céline's rule stands: **just docs,
+/// no code.** Anything here is dropped from the corpus.
 const CODE_EXTS: &[&str] = &[
     // scripts / source
     "rs", "py", "js", "mjs", "cjs", "jsx", "ts", "tsx", "sh", "bash", "zsh",
@@ -580,21 +587,22 @@ pub fn render_manifest(m: &Manifest) -> String {
         }
     }
 
-    // IMPORT-002 — informed-consent warning. Imported files stay is_owned=true:
-    // forcing a migrating user to re-own a corpus one file at a time is a worse
-    // harm than the injection risk (decision 2026-07-18), so the burden shifts to
-    // the user. Owned content is NOT injection-fenced when the AI reads it, so
-    // make that legible on every plan — dry-run and execute both render this.
+    // IMPORT-002 — informed-consent notice, rendered on every plan (dry-run and
+    // execute). Imported files used to be stored owned (decision 2026-07-18:
+    // re-owning a corpus one file at a time judged the worse harm). Spec ch. 04
+    // (decided 2026-10-10) replaced that: landing decides nothing, so imported
+    // content is *undetermined* — fenced like external content until the user
+    // adopts it (C-DOC adoption step 3). The per-folder declaration at dry-run
+    // that would settle it in one gesture is specified, not built.
     let _ = writeln!(out);
-    let _ = writeln!(out, "⚠  TRUST — imported files are stored as OWNED content");
-    let _ = writeln!(out, "   Everything imported here becomes your own (control-plane) content. When");
-    let _ = writeln!(out, "   the AI reads or summarizes an owned document it treats it as trusted and");
-    let _ = writeln!(out, "   does NOT screen it for prompt-injection. A file authored by someone else —");
-    let _ = writeln!(out, "   a saved web page, a shared PDF or Office doc, a downloaded note — can");
-    let _ = writeln!(out, "   carry hidden instructions that steer the model (what it selects, how it");
-    let _ = writeln!(out, "   responds, jailbreak attempts) as if they were your own commands.");
-    let _ = writeln!(out, "   Import only what you trust — you remain responsible for what lands in");
-    let _ = writeln!(out, "   your workspace.");
+    let _ = writeln!(out, "⚠  TRUST — imported files are stored as UNDETERMINED content");
+    let _ = writeln!(out, "   Nothing imported here is assumed to be your own words. Until you adopt a");
+    let _ = writeln!(out, "   document, the AI treats it like external content: it reads it as data,");
+    let _ = writeln!(out, "   screened for prompt-injection, never as your instructions. A file authored");
+    let _ = writeln!(out, "   by someone else — a saved web page, a shared PDF or Office doc, a");
+    let _ = writeln!(out, "   downloaded note — can carry hidden instructions; adopting it makes them");
+    let _ = writeln!(out, "   read as your own. Adopt only what you wrote or trust — you remain");
+    let _ = writeln!(out, "   responsible for what you adopt.");
     out
 }
 
@@ -773,7 +781,9 @@ fn pptx_text(path: &Path) -> Option<String> {
             break; // IMPORT-001: cap slide count (many-entry bomb)
         }
         if let Ok(e) = zip.by_index(i) {
-            let name = e.name();
+            // zip 9: an entry name that does not decode is an error; such an entry
+            // could not be read back by name below anyway, so it is skipped.
+            let Ok(name) = e.name() else { continue };
             if name.starts_with("ppt/slides/slide")
                 && name.ends_with(".xml")
                 && !name.contains("_rels")
@@ -813,10 +823,13 @@ fn slide_number(name: &str) -> u32 {
         .unwrap_or(0)
 }
 
-/// Execute a [`Manifest`] against `db`: create/reuse threads, then create the
-/// planned documents with their original timestamps. Idempotent by title
-/// within a thread (increment-1 form).
-pub async fn execute(db: &dyn GraphDB, m: &Manifest) -> Result<ImportOutcome> {
+/// Execute a [`Manifest`]: create/reuse threads in `db`, then create the
+/// planned documents through the document service `docs` (over the same
+/// persona's store) with their original timestamps — trust undetermined,
+/// provenance import with the file's path, a version from creation,
+/// personal-data ingest. Idempotent by title within a thread (increment-1
+/// form).
+pub async fn execute(db: &dyn GraphDB, docs: &DocumentService, m: &Manifest) -> Result<ImportOutcome> {
     let mut outcome = ImportOutcome::default();
 
     // 1. Resolve every thread name → id, reusing an existing thread of that
@@ -830,12 +843,13 @@ pub async fn execute(db: &dyn GraphDB, m: &Manifest) -> Result<ImportOutcome> {
                 t.id_string().unwrap_or_default()
             }
             None => {
-                let created = db
-                    .create_thread(Thread::new(name.clone(), String::new()))
+                // Through the one thread-write path, stamped (THREAD-sync S1).
+                let created = docs
+                    .thread_create(name, "")
                     .await
                     .with_context(|| format!("create thread {name}"))?;
                 outcome.threads_created += 1;
-                created.id_string().unwrap_or_default()
+                created
             }
         };
         thread_ids.insert(name.clone(), id);
@@ -844,10 +858,10 @@ pub async fn execute(db: &dyn GraphDB, m: &Manifest) -> Result<ImportOutcome> {
     // 2. Per thread, the set of existing doc titles — the idempotency guard.
     let mut existing_titles: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
     for (name, id) in &thread_ids {
-        let docs = db.list_documents(Some(id)).await.unwrap_or_default();
+        let listed = docs.list(Some(id)).await.unwrap_or_default();
         existing_titles.insert(
             name.clone(),
-            docs.into_iter().map(|d| d.title).collect(),
+            listed.into_iter().map(|d| d.title).collect(),
         );
     }
 
@@ -884,12 +898,19 @@ pub async fn execute(db: &dyn GraphDB, m: &Manifest) -> Result<ImportOutcome> {
             _ => continue,
         };
 
-        let mut doc = Document::new(f.title.clone(), thread_id.clone(), true);
-        doc.content = content;
-        // Land across the timeline at the file's real dates, not "now".
-        doc.created_at = f.created;
-        doc.modified_at = f.modified;
-        db.create_document(doc)
+        let new = NewDocument {
+            title: f.title.clone(),
+            thread_id: thread_id.clone(),
+            content: NewContent::Text(content),
+            // Ch. 04: landing decides nothing — undetermined until adopted.
+            trust: Trust::Undetermined,
+            provenance: Provenance::Import { source_path: f.path.display().to_string() },
+            origin: Origin::Import,
+            // Land across the timeline at the file's real dates, not "now".
+            created_at: Some(f.created),
+            modified_at: Some(f.modified),
+        };
+        docs.create(new)
             .await
             .with_context(|| format!("create document {}", f.rel_path.display()))?;
 
@@ -918,7 +939,6 @@ fn read_text(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sovereign_db::surreal::{StorageMode, SurrealGraphDB};
 
     fn write(dir: &Path, rel: &str, contents: &[u8]) {
         let p = dir.join(rel);
@@ -951,11 +971,53 @@ mod tests {
           <w:p><w:r><w:t xml:space="preserve">unknits and </w:t><w:t>reknits.</w:t></w:r></w:p>
         </w:body></w:document>"#;
 
-    async fn fresh_db() -> SurrealGraphDB {
-        let db = SurrealGraphDB::new(StorageMode::Memory).await.unwrap();
-        db.connect().await.unwrap();
-        db.init_schema().await.unwrap();
-        db
+    /// An encrypted in-memory store and the document service over it (what
+    /// the CLI gives `execute`). Derefs to the store.
+    struct TestDb {
+        store: std::sync::Arc<sovereign_db::encrypted::EncryptedGraphDB>,
+        docs: DocumentService,
+    }
+
+    impl std::ops::Deref for TestDb {
+        type Target = sovereign_db::encrypted::EncryptedGraphDB;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+
+    async fn fresh_db() -> TestDb {
+        use sovereign_ai::docs_host::{build_document_service, testing};
+        let store = testing::encrypted_memory_store("import").await;
+        let docs = build_document_service(store.clone(), Some(testing::account_key()), "test".into());
+        TestDb { store, docs }
+    }
+
+    /// C-DOC adoption step 3: every imported document is created through the
+    /// document service — undetermined, provenance import with its path, one
+    /// version from creation, at the file's own times.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn imported_documents_land_undetermined_through_the_service() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, "notes/plan.md", b"# Plan\nreal content");
+        let m = plan(root, &ImportOptions::default()).unwrap();
+        let db = fresh_db().await;
+        execute(&*db, &db.docs, &m).await.unwrap();
+
+        let listed = db.docs.list(None).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        let view = db.docs.read(&listed[0].id).await.unwrap();
+        assert_eq!(view.trust, Trust::Undetermined);
+        assert!(view.trust.is_fenced(), "undetermined is fenced until adopted");
+        match &view.provenance {
+            Provenance::Import { source_path } => assert!(source_path.ends_with("plan.md"), "{source_path}"),
+            other => panic!("provenance {other:?}"),
+        }
+        assert_eq!(view.plain_text(), "# Plan\nreal content");
+        assert_eq!(db.docs.versions(&listed[0].id).await.unwrap().len(), 1, "a version from creation");
+        let f = &m.files.iter().find(|f| f.title == "plan").unwrap();
+        assert_eq!(view.modified_at, f.modified, "the file's own time");
+        assert!(!db.get_document(&listed[0].id).await.unwrap().is_owned);
     }
 
     #[test]
@@ -1000,7 +1062,7 @@ mod tests {
 
     #[test]
     fn code_and_config_are_never_imported() {
-        // Security: imported docs are is_owned=true (trusted, unfenced), so
+        // Security: an imported doc, once adopted, is trusted whole, so
         // source/config content must not be imported at all — not as text,
         // not as a stub.
         let tmp = tempfile::tempdir().unwrap();
@@ -1086,7 +1148,7 @@ mod tests {
 
         let m = plan(root, &ImportOptions::default()).unwrap();
         let db = fresh_db().await;
-        let out = execute(&db, &m).await.unwrap();
+        let out = execute(&*db, &db.docs, &m).await.unwrap();
 
         assert_eq!(out.threads_created, 1);
         assert_eq!(out.docs_created, 2);
@@ -1124,7 +1186,7 @@ mod tests {
 
         let m = plan(root, &ImportOptions::default()).unwrap();
         let db = fresh_db().await;
-        let out = execute(&db, &m).await.unwrap();
+        let out = execute(&*db, &db.docs, &m).await.unwrap();
         assert_eq!(out.docs_created, 1);
         assert_eq!(out.stubs_created, 0, "html extracted to real content, not a stub");
 
@@ -1163,7 +1225,7 @@ mod tests {
         let m = plan(root, &ImportOptions::default()).unwrap();
         assert_eq!(m.files[0].disposition, Disposition::Import(Tier::Extract));
         let db = fresh_db().await;
-        let out = execute(&db, &m).await.unwrap();
+        let out = execute(&*db, &db.docs, &m).await.unwrap();
         assert_eq!(out.docs_created, 1);
         assert_eq!(out.stubs_created, 0, "a real docx extracts to content, not a stub");
 
@@ -1182,7 +1244,7 @@ mod tests {
         let m = plan(root, &ImportOptions::default()).unwrap();
         assert_eq!(m.files[0].disposition, Disposition::Import(Tier::Extract));
         let db = fresh_db().await;
-        let out = execute(&db, &m).await.unwrap();
+        let out = execute(&*db, &db.docs, &m).await.unwrap();
         assert_eq!(out.docs_created, 1);
         assert_eq!(out.stubs_created, 1, "a corrupt docx degrades to a stub, never an error");
         let docs = db.list_documents(None).await.unwrap();
@@ -1204,7 +1266,7 @@ mod tests {
             "pdf is planned as Extract"
         );
         let db = fresh_db().await;
-        let out = execute(&db, &m).await.unwrap();
+        let out = execute(&*db, &db.docs, &m).await.unwrap();
         assert_eq!(out.docs_created, 1);
         assert_eq!(out.stubs_created, 1, "degraded to a stub");
 
@@ -1222,13 +1284,13 @@ mod tests {
         let m = plan(root, &ImportOptions::default()).unwrap();
         let db = fresh_db().await;
 
-        let first = execute(&db, &m).await.unwrap();
+        let first = execute(&*db, &db.docs, &m).await.unwrap();
         assert_eq!(first.docs_created, 2);
         assert_eq!(first.threads_created, 1);
 
         // Re-run the SAME manifest: threads reused, docs skipped as existing,
         // nothing duplicated.
-        let second = execute(&db, &m).await.unwrap();
+        let second = execute(&*db, &db.docs, &m).await.unwrap();
         assert_eq!(second.docs_created, 0);
         assert_eq!(second.threads_created, 0);
         assert_eq!(second.threads_reused, 1);
@@ -1257,7 +1319,7 @@ mod tests {
         assert!(titles.contains("Fig 1 \u{00b7} Guidelines"));
 
         let db = fresh_db().await;
-        let out = execute(&db, &m).await.unwrap();
+        let out = execute(&*db, &db.docs, &m).await.unwrap();
         assert_eq!(out.docs_created, 3, "all three distinct docs land");
         assert_eq!(out.docs_skipped_existing, 0, "no false skip");
         assert!(out.skipped_paths.is_empty());
@@ -1275,7 +1337,7 @@ mod tests {
 
         let m = plan(root, &ImportOptions::default()).unwrap();
         let db = fresh_db().await;
-        let out = execute(&db, &m).await.unwrap();
+        let out = execute(&*db, &db.docs, &m).await.unwrap();
         assert_eq!(out.docs_created, 1, "one card for the format-variants");
         assert_eq!(out.docs_skipped_existing, 2);
         assert_eq!(out.skipped_paths.len(), 2, "the dropped variants are surfaced");
@@ -1307,23 +1369,23 @@ mod tests {
         assert_eq!(m.threads, vec!["Archive".to_string()]);
 
         let db = fresh_db().await;
-        let out = execute(&db, &m).await.unwrap();
+        let out = execute(&*db, &db.docs, &m).await.unwrap();
         assert_eq!(out.threads_created, 1);
         assert_eq!(out.docs_created, 2);
     }
 
     #[test]
-    fn manifest_render_carries_the_owned_trust_warning() {
+    fn manifest_render_carries_the_trust_notice() {
         // IMPORT-002: every plan (dry-run AND execute both call render_manifest)
         // must carry the informed-consent trust notice — imported files are
-        // is_owned=true and therefore not injection-fenced when the AI reads them.
-        // Guard it so the warning can't be silently dropped.
+        // undetermined (fenced) until adopted, and adopting one trusts it.
+        // Guard it so the notice can't be silently dropped.
         let tmp = tempfile::tempdir().unwrap();
         write(tmp.path(), "notes/plan.md", b"# Plan\nreal content");
         let m = plan(tmp.path(), &ImportOptions::default()).unwrap();
         let rendered = render_manifest(&m);
         assert!(rendered.contains("TRUST"), "trust header missing: {rendered}");
-        assert!(rendered.contains("OWNED"), "owned-content warning missing: {rendered}");
+        assert!(rendered.contains("UNDETERMINED"), "undetermined-content notice missing: {rendered}");
         assert!(
             rendered.to_lowercase().contains("prompt-injection"),
             "injection risk not spelled out: {rendered}"

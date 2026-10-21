@@ -2,7 +2,6 @@ use anyhow::Result;
 use rand::{Rng, RngExt};
 use sovereign_db::schema::{
     ChannelAddress, ChannelType, Contact, Conversation, Document, Message, MessageDirection,
-    Thread,
 };
 use sovereign_db::surreal::SurrealGraphDB;
 use sovereign_db::GraphDB;
@@ -23,8 +22,10 @@ fn past_ts(max_days: i64) -> chrono::DateTime<chrono::Utc> {
 
 /// Seed the duress persona database with plausible but innocuous data.
 /// Called when the duress password is used and the duress DB is empty.
+/// `device` is this device's name, the one the persona's document service
+/// stamps with (the decoy's thread stamps carry it, as a real workspace's do).
 #[allow(dead_code)]
-pub async fn seed_duress_db(db: &SurrealGraphDB) -> Result<()> {
+pub async fn seed_duress_db(db: &SurrealGraphDB, device: &str) -> Result<()> {
     let threads = db.list_threads().await?;
     if !threads.is_empty() {
         return Ok(());
@@ -40,16 +41,11 @@ pub async fn seed_duress_db(db: &SurrealGraphDB) -> Result<()> {
         ("Recipes", "Cooking and meal planning"),
     ];
 
-    let mut thread_ids = Vec::new();
-    for (name, desc) in &thread_defs {
-        let t = Thread::new(name.to_string(), desc.to_string());
-        let created = db.create_thread(t).await?;
-        thread_ids.push(
-            created
-                .id_string()
-                .ok_or_else(|| anyhow::anyhow!("Thread missing ID"))?,
-        );
-    }
+    // Stamped, through the one thread-write path (THREAD-sync S1): the decoy
+    // is seeded before its first unlock, so before its document service.
+    let thread_ids = sovereign_docs::seed_threads(db, &thread_defs, device, chrono::Utc::now())
+        .await
+        .map_err(|e| anyhow::anyhow!("seed decoy threads: {e}"))?;
 
     // ── Documents ────────────────────────────────────────────────
 
@@ -98,7 +94,13 @@ pub async fn seed_duress_db(db: &SurrealGraphDB) -> Result<()> {
 
     for (title, body, thread_idx) in &docs {
         let mut doc = Document::new(title.to_string(), thread_ids[*thread_idx].clone(), true);
-        doc.content = body.to_string();
+        // In document format v2 (C-DOC adoption step 6, M5): the decoy holds
+        // no legacy rows, so its first unlock has nothing to migrate and shows
+        // no notice — as a real persona created after the update. The block
+        // id is derived from a fresh random seed, so it differs per install
+        // (as the service's are, from a random document id).
+        let seed = sovereign_docformat::BlockId::random().to_hex();
+        doc.content = sovereign_docformat::DocumentV2::from_text(body, &seed).to_json_string();
         // Spread over the past ~6 months so the decoy reads as lived-in and
         // differs per install (see past_ts).
         let ts = past_ts(180);

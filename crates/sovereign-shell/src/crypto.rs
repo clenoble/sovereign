@@ -3,7 +3,7 @@
 //! stack from the passphrase, build the EncryptedGraphDB decorator (fail-CLOSED),
 //! and isolate the duress persona onto a separate DB + key files (CRYPTO-001).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sovereign_db::traits::GraphDB;
@@ -26,6 +26,56 @@ pub(crate) fn crypto_dir() -> PathBuf {
 /// so both read the same roster.
 pub(crate) fn recovery_store() -> sovereign_crypto::recovery_store::RecoveryStore {
     sovereign_crypto::recovery_store::RecoveryStore::new(crypto_dir())
+}
+
+/// The recovery store as seen by the open persona — the only way to reach it
+/// after login. Guardian access recovery belongs to the primary persona (and
+/// to a session with no persona, the no-auth bypass, which had it before);
+/// a duress session gets `None` and treats it as "no roster here", so it
+/// never reads or writes the primary's roster, bundle or enrollment queue
+/// (spec ch. 07, *After login — every persona's state stays its own*).
+pub(crate) fn recovery_store_for(
+    persona: Option<CorePersona>,
+) -> Option<sovereign_crypto::recovery_store::RecoveryStore> {
+    match persona {
+        None | Some(CorePersona::Primary) => Some(recovery_store()),
+        Some(CorePersona::Duress) => None,
+    }
+}
+
+/// Notice shown when guardian enrollment is asked for without the KEK.
+pub(crate) const ENROLL_NEEDS_LOGIN: &str = "Log in first — the guardian roster is encrypted.";
+/// Notice shown when guardian enrollment (or pairing, sync) needs the P2P node
+/// and it is not running.
+pub(crate) const ENROLL_SYNC_NOT_RUNNING: &str = "Sync isn't running. Log in to start the P2P node.";
+
+/// Which guardian enrollment this session runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnrollMode {
+    /// A real offer: a share armed on the node, the roster updated.
+    Real,
+    /// The ordinary enrollment screen with an offer that is never armed: it
+    /// waits for a guardian forever.
+    Decoy,
+}
+
+/// Which path `open_guardian_enroll` (and the `g` key) takes, after the
+/// ordinary login and sync checks. Guardian recovery is the primary's: a
+/// duress session gets the decoy enrollment (spec ch. 07, v2.0.29).
+pub(crate) fn guardian_enroll_mode(persona: Option<CorePersona>) -> EnrollMode {
+    match persona {
+        None | Some(CorePersona::Primary) => EnrollMode::Real,
+        Some(CorePersona::Duress) => EnrollMode::Decoy,
+    }
+}
+
+/// Where the open persona's orchestrator state lives (session log, profile,
+/// trust state, beacon). `None` (no-auth bypass) is the primary's, as before.
+pub(crate) fn orchestrator_state_paths(persona: Option<CorePersona>) -> sovereign_ai::OrchestratorStatePaths {
+    sovereign_ai::OrchestratorStatePaths::for_persona(
+        &sovereign_core::sovereign_dir(),
+        persona.unwrap_or(CorePersona::Primary),
+    )
 }
 pub(crate) fn auth_store_path() -> PathBuf {
     crypto_dir().join("auth.store")
@@ -80,17 +130,32 @@ pub(crate) fn persona_model_tofu_path(persona: CorePersona) -> PathBuf {
     }
 }
 
+/// The salt of this profile, from `crypto_dir()` (see [`load_or_create_salt_in`]).
 pub(crate) fn load_or_create_salt() -> anyhow::Result<Vec<u8>> {
-    let dir = crypto_dir();
-    std::fs::create_dir_all(&dir)?;
-    let p = dir.join("salt");
+    load_or_create_salt_in(&crypto_dir())
+}
+
+/// The salt file in `crypto_dir`: read as is if present; if it is missing
+/// beside an `auth.store` (a crash between the two writes, rc2 Q2), restored
+/// from the store's own salt, so the pairing offer and the backup manifest
+/// keep carrying the account's salt; minted only when neither exists (32
+/// random bytes as 64 hex characters, the shell's format). Written with
+/// `write_private` (atomic, owner-only). An `auth.store` that cannot be read
+/// is an error, never a reason to mint a salt that is not the account's.
+pub(crate) fn load_or_create_salt_in(crypto_dir: &Path) -> anyhow::Result<Vec<u8>> {
+    std::fs::create_dir_all(crypto_dir)?;
+    let p = crypto_dir.join("salt");
     if p.exists() {
-        Ok(std::fs::read(&p)?)
-    } else {
-        let s = sovereign_crypto::random_hex_32().into_bytes();
-        sovereign_crypto::fs_private::write_private(&p, &s)?;
-        Ok(s)
+        return Ok(std::fs::read(&p)?);
     }
+    let store_path = crypto_dir.join("auth.store");
+    let s = if store_path.exists() {
+        AuthStore::load(&store_path)?.salt
+    } else {
+        sovereign_crypto::random_hex_32().into_bytes()
+    };
+    sovereign_crypto::fs_private::write_private(&p, &s)?;
+    Ok(s)
 }
 pub(crate) fn load_or_create_device_id() -> anyhow::Result<String> {
     let dir = crypto_dir();
@@ -106,12 +171,27 @@ pub(crate) fn load_or_create_device_id() -> anyhow::Result<String> {
 }
 
 /// Onboarding: create the two-persona AuthStore and persist it (+ salt/device_id).
+/// The write is an exclusive create (spec ch. 07, *Auth store*, "Created
+/// once"): an existing auth.store is never replaced; the call fails with
+/// [`save_new_error`]'s message instead.
 pub(crate) fn create_auth_store(primary: &[u8], duress: &[u8]) -> anyhow::Result<AuthStore> {
     let salt = load_or_create_salt()?;
     let device_id = load_or_create_device_id()?;
     let store = AuthStore::create(primary, duress, &salt, &device_id)?;
-    store.save(&auth_store_path())?;
+    store
+        .save_new(&auth_store_path())
+        .map_err(|e| anyhow::anyhow!(save_new_error(e)))?;
     Ok(store)
+}
+
+/// The message for a failed first write of auth.store: a refusal because the
+/// file exists says "Already onboarded — log in instead" (the spec's sentence);
+/// any other failure says what it was.
+pub(crate) fn save_new_error(e: sovereign_crypto::CryptoError) -> String {
+    match e {
+        sovereign_crypto::CryptoError::AlreadyExists(_) => "Already onboarded — log in instead".to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// Build the EncryptedGraphDB decorator around `raw_db` using the persona's
@@ -187,7 +267,7 @@ pub(crate) async fn recover_and_install(
     new_passphrase: &[u8],
 ) -> anyhow::Result<(
     CorePersona,
-    Arc<dyn GraphDB>,
+    Arc<sovereign_db::encrypted::EncryptedGraphDB>,
     Arc<sovereign_crypto::account_key::AccountKey>,
     Arc<sovereign_crypto::device_key::DeviceKey>,
     Arc<sovereign_crypto::kek::Kek>,
@@ -235,7 +315,8 @@ pub(crate) async fn recover_and_install(
 }
 
 /// Authenticate + install the at-rest encryption for the matching persona.
-/// Returns the persona, the live EncryptedGraphDB (over the persona's raw DB),
+/// Returns the persona, the live EncryptedGraphDB (over the persona's raw DB;
+/// typed, so the document service can be built over it — C-DOC adoption step 2),
 /// the AccountKey (vault-secret encryption), and the DeviceKey (the P2P identity
 /// key — derives the libp2p keypair + the paired-store key).
 /// Fail-CLOSED: a wrong password or an encryption-install error returns Err.
@@ -244,7 +325,7 @@ pub(crate) async fn install_session(
     password: &[u8],
 ) -> anyhow::Result<(
     CorePersona,
-    Arc<dyn GraphDB>,
+    Arc<sovereign_db::encrypted::EncryptedGraphDB>,
     Arc<sovereign_crypto::account_key::AccountKey>,
     Arc<sovereign_crypto::device_key::DeviceKey>,
     Arc<sovereign_crypto::kek::Kek>,
@@ -267,9 +348,13 @@ pub(crate) async fn install_session(
     let encrypted = build_encrypted_db(raw, device_key.clone(), kek.clone(), persona)?;
     Ok((
         persona,
-        encrypted as Arc<dyn GraphDB>,
+        encrypted,
         account_key,
         device_key,
         kek,
     ))
 }
+
+#[cfg(test)]
+#[path = "crypto_persona_tests.rs"]
+mod crypto_persona_tests;

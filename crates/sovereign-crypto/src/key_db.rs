@@ -130,6 +130,14 @@ impl KeyDatabase {
         self.entries.contains_key(doc_id)
     }
 
+    /// Forget every key of a document (crypto-shredding, C-DOC G13: a purged
+    /// document's ciphertext, wherever a copy survives, can no longer be
+    /// opened). Returns whether there was one. The caller persists with
+    /// [`save`](Self::save).
+    pub fn remove(&mut self, doc_id: &str) -> bool {
+        self.entries.remove(doc_id).is_some()
+    }
+
     /// Number of documents with stored keys.
     pub fn len(&self) -> usize {
         self.entries.len()

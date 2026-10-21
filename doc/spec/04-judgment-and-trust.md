@@ -95,6 +95,31 @@ chapter.
 **On the canvas (ch. 12)**, the halo follows the trust state, with a third visual for
 undetermined.
 
+**Decided (Céline, 2026-10-15) — defaults at creation and adoption gestures.**
+- **What the user writes inside Sovereign from scratch is owned by default**: a new document, a
+  journal entry, a copy of her own document, what the assistant writes at her request.
+- **What comes from outside lands undetermined or external**: an import (file or bulk) and what a
+  skill draws from an external file land **undetermined**; a web page or shared web content lands
+  **external**. Nothing from outside is ever created owned.
+- **Adoption gestures**, each an explicit user decision recorded on every document it touches (the
+  trust decision of ch. 03, C-DOC, which travels with sync):
+  - one document;
+  - every document of a thread;
+  - every document of one import (the documents whose provenance names that import's folder);
+  - a selection made in bulk;
+  - **by date**: every undetermined document whose original creation date, or last modification
+    date, is older than a date the user chooses (for example, more than five years old).
+  - **Thread, import and date gestures take undetermined documents only**; an external document
+    (web, shared web) is adopted only when the user picks it herself — one document, or an
+    explicit selection — so adopting a thread never silently moves fenced web pages into the
+    trusted plane.
+- **Two guards on every bulk gesture.** A preview first — how many documents, and which — before
+  anything changes. And the gesture applies to the documents selected *now*; it never becomes a
+  standing rule for a thread, a folder or a date range (the same rule as *Inheritance in depth
+  only, never in time*, below). **A date is not proof of authorship**: a file's dates come from
+  wherever it came from, and an archive can carry any date its sender chose; adopting by date is
+  a convenience for a corpus the user knows, and the preview says so.
+
 `is_owned` today is set at construction, and **no update path can mark a document external afterwards**: `update_document` takes title and content only, and the one ownership setter, `adopt_document`, only sets it to owned (ch. 03). `update_entity`, by contrast, does take `is_owned` — the general mutability exists for entities and not for documents, which is a gap, not a doctrine. Bulk import sets it `true` for everything, inferring the content's provenance from its container: true of the *file*, false of the *content*. A folder of saved articles, a mail export, someone else's document all land *owned, trusted, control-plane, never injection-fenced* — and it is the fence that protects against external content. `just docs, no code` excludes executables; it does not exclude hostile prose.
 
 **Neither `true` nor `false` is an acceptable default**: `false` would make the halo lie in the other direction and treat the user's own corpus as foreign. Both values are wrong for part of any real batch, which is the argument for posting neither.

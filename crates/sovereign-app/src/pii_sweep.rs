@@ -68,7 +68,13 @@ pub async fn run_sweep_cycle(
                     Some(s) => s,
                     None => continue,
                 };
-                let body = extract_body(&doc.content);
+                let Some(body) = sweep_body(&doc.content) else {
+                    // A v2 (or newer, or unreadable) document: `replace_body`
+                    // below only knows the v1 envelope and would corrupt it.
+                    // The sweep is C-PII's to redo (K10: detect, no rewrite).
+                    tracing::debug!("PII sweep: document {id} is not v1; skipped");
+                    continue;
+                };
                 match ingest_document_body(&db, account_key.as_ref(), &id, &body).await {
                     Ok(Some(canonical)) => {
                         // Body changed — persist the canonical form.
@@ -184,15 +190,18 @@ async fn ingest_document_body(
     }
 }
 
-/// Extract the body text from a Document.content JSON blob. Mirrors
-/// the parsing logic in consolidation.rs::extract_body.
-fn extract_body(content: &str) -> String {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
-        if let Some(body) = v["body"].as_str() {
-            return body.to_string();
+/// The body to scan, read through the v2 model (C-DOC adoption step 1; the
+/// hand-rolled envelope parse is gone): a v1 envelope's body, raw text
+/// whole, the empty string. `None` for the forms `replace_body` cannot write
+/// back (v2, a newer format, unreadable content).
+fn sweep_body(content: &str) -> Option<String> {
+    use sovereign_docformat::{DocumentV2, SourceForm};
+    match DocumentV2::read(content) {
+        Ok((doc, SourceForm::V1Envelope | SourceForm::RawText | SourceForm::Empty)) => {
+            Some(doc.plain_text())
         }
+        _ => None,
     }
-    content.to_string()
 }
 
 /// Rewrite the `body` field of a Document.content JSON blob, preserving
@@ -220,15 +229,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_body_from_json() {
+    fn sweep_body_from_json() {
         let content = r#"{"body":"hello","images":[]}"#;
-        assert_eq!(extract_body(content), "hello");
+        assert_eq!(sweep_body(content).as_deref(), Some("hello"));
     }
 
     #[test]
-    fn extract_body_falls_back_to_raw() {
+    fn sweep_body_falls_back_to_raw() {
         // Plain text (e.g. an imported markdown file) — just returned as-is.
-        assert_eq!(extract_body("plain markdown"), "plain markdown");
+        assert_eq!(sweep_body("plain markdown").as_deref(), Some("plain markdown"));
+    }
+
+    #[test]
+    fn sweep_body_skips_v2() {
+        let v2 = r#"{"format":"sovereign.doc","v":2,"blocks":[{"type":"text","id":"00000000000000000000000000000d01","text":"x"}]}"#;
+        assert_eq!(sweep_body(v2), None);
     }
 
     #[test]

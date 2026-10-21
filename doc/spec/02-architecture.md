@@ -63,6 +63,8 @@ the graph is embedded SurrealDB; skills are compiled Rust plus a WASM Component 
 | `sovereign-p2p` | libp2p node: pairing, encrypted sync, peer review, guardian enrollment, access-recovery driver, guardian-side release gate (ch. 05, ch. 06). |
 | `sovereign-comms` | Email (IMAP/SMTP), Signal, WhatsApp types — dormant since v0.0.9 (ch. 13). |
 | `sovereign-import` | Stub-first bulk import engine and its CLI (ch. 03). |
+| `sovereign-docs` | ○ The document service (contract C-DOC, ch. 03): the one door for creating, reading, saving, deleting, restoring and purging documents. Contract and test suite only (2026-10-10); not built. |
+| `sovereign-docformat` | ○ The stored document format v2 (C-ENC, ch. 03), with no I/O, so the editor can use it without storage crates. API only (2026-10-10); the editor's provisional model moves here when built. |
 | `sovereign-relay` | Deployable relay and seed node with a store-and-forward mailbox; sees only ciphertext and routing metadata (ch. 05). |
 | `sovereign-guardian` | Guardian-side engine: holds friends' Recovery Key shares, answers heartbeats, approves recovery (ch. 06). |
 | `sovereign-guardian-app` | The friend-side desktop application (Tauri) wrapping `sovereign-guardian` (ch. 06). |

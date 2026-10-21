@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::error::DbResult;
+use crate::error::DbError;
 use crate::schema::{
-    ChannelType, Commit, Contact, Conversation, Document, Entity, EntityKind, Message, Milestone,
-    PiiRecord, ReadStatus, RelatedTo, RelationType, ReviewState, RowRecovery, ShareRecord,
+    ChannelType, Commit, Contact, Conversation, Document, DocumentPatch, Entity, EntityKind,
+    Message, Milestone, PiiRecord, PurgeMarker, ReadStatus, RelatedTo, RelationType, ReviewState, RowRecovery, ShareRecord,
     SourceRef, SuggestedLink, SuggestionSource, SuggestionStatus, Thread,
 };
 
@@ -213,7 +214,9 @@ pub trait GraphDB: Send + Sync {
         source: SuggestionSource,
     ) -> DbResult<SuggestedLink>;
 
-    /// List all pending (unresolved) suggested links.
+    /// List all pending (unresolved) suggested links, except those from or to
+    /// a document in the trash (C-DOC G13: a trashed document leaves the
+    /// pending suggestions until it is restored; the links themselves are kept).
     async fn list_pending_suggestions(&self) -> DbResult<Vec<SuggestedLink>>;
 
     /// List all suggested links for a specific document (any status).
@@ -761,5 +764,164 @@ pub trait GraphDB: Send + Sync {
     }
     async fn list_conversations_including_deleted(&self) -> DbResult<Vec<Conversation>> {
         self.list_conversations(None).await
+    }
+
+    // -- Document service support (C-DOC, lot 2b) --
+    //
+    // What the document service (`sovereign-docs`) needs that the methods
+    // above cannot give: a write that lands whole, a commit inserted fully
+    // formed (signed) in one statement, the pieces of a purge, and the purge
+    // marker. Defaults refuse, so test stubs keep compiling; the real
+    // backends (Surreal, Encrypted, Layered) implement them.
+
+    /// Writes the `Some` fields of `patch` to document `id` **in one
+    /// statement**: all of them land or none does. `NotFound` if there is no
+    /// such row (never creates one).
+    async fn update_document_fields(&self, id: &str, patch: DocumentPatch) -> DbResult<()> {
+        let _ = (id, patch);
+        Err(DbError::Query("update_document_fields: not supported by this store".into()))
+    }
+
+    /// Inserts a commit exactly as given (snapshot, parent, message, time,
+    /// signature) in one statement, under a fresh id. Unlike
+    /// `commit_document` it neither reads the document nor moves its
+    /// `head_commit`: the caller does that with the document write.
+    async fn insert_commit(&self, commit: Commit) -> DbResult<Commit> {
+        let _ = commit;
+        Err(DbError::Query("insert_commit: not supported by this store".into()))
+    }
+
+    /// Hard-deletes every commit of a document. Returns how many.
+    async fn delete_document_commits(&self, doc_id: &str) -> DbResult<u64> {
+        let _ = doc_id;
+        Err(DbError::Query("delete_document_commits: not supported by this store".into()))
+    }
+
+    /// Hard-deletes every `related_to` edge from or to a document. Returns how many.
+    async fn delete_document_relationships(&self, doc_id: &str) -> DbResult<u64> {
+        let _ = doc_id;
+        Err(DbError::Query("delete_document_relationships: not supported by this store".into()))
+    }
+
+    /// Hard-deletes every suggested link from or to a document, any status.
+    /// Returns how many.
+    async fn delete_document_suggested_links(&self, doc_id: &str) -> DbResult<u64> {
+        let _ = doc_id;
+        Err(DbError::Query("delete_document_suggested_links: not supported by this store".into()))
+    }
+
+    /// Hard-deletes a personal-data record (a purge removing a discovered
+    /// record left with no source). Unlike `soft_delete_pii_record`, nothing
+    /// remains.
+    async fn delete_pii_record(&self, id: &str) -> DbResult<()> {
+        let _ = id;
+        Err(DbError::Query("delete_pii_record: not supported by this store".into()))
+    }
+
+    /// Writes (creates or replaces) the purge marker of `marker.document_id`.
+    async fn set_purge_marker(&self, marker: PurgeMarker) -> DbResult<()> {
+        let _ = marker;
+        Err(DbError::Query("set_purge_marker: not supported by this store".into()))
+    }
+
+    /// The purge marker of a document id, if it was purged (or is being purged).
+    async fn get_purge_marker(&self, document_id: &str) -> DbResult<Option<PurgeMarker>> {
+        let _ = document_id;
+        Err(DbError::Query("get_purge_marker: not supported by this store".into()))
+    }
+
+    /// Every purge marker.
+    async fn list_purge_markers(&self) -> DbResult<Vec<PurgeMarker>> {
+        Err(DbError::Query("list_purge_markers: not supported by this store".into()))
+    }
+
+    // -- The store's own records (C-DOC adoption step 6) --
+    //
+    // A small named value kept **in this store**, about this store: the
+    // one-time migration's completion record (its counts and whether its
+    // notice was shown, `sovereign-docs/src/unlock_migration.rs`). It lives
+    // in the persona's store, so each persona has its own and nothing outside
+    // the store says which persona it is (M5). It never syncs and is never
+    // backed up: it describes this copy of the store, not its documents.
+    // `key` is lowercase ASCII letters, digits and `_`.
+
+    /// The value recorded under `key`, if any.
+    async fn get_store_record(&self, key: &str) -> DbResult<Option<String>> {
+        let _ = key;
+        Err(DbError::Query("get_store_record: not supported by this store".into()))
+    }
+
+    /// Records `value` under `key`, replacing any earlier value, in one
+    /// statement.
+    async fn put_store_record(&self, key: &str, value: &str) -> DbResult<()> {
+        let _ = (key, value);
+        Err(DbError::Query("put_store_record: not supported by this store".into()))
+    }
+
+    /// Internal setter for a **sealed** store record (M8): the encrypted layer
+    /// stores the value's ciphertext and its nonce, replacing any earlier
+    /// value, in one statement. Below that layer the row holds no readable
+    /// value.
+    async fn put_store_record_sealed(&self, key: &str, ciphertext: &str, nonce: &str) -> DbResult<()> {
+        let _ = (key, ciphertext, nonce);
+        Err(DbError::Query("put_store_record_sealed: not supported by this store".into()))
+    }
+
+    /// The row of a store record as stored: its value (the ciphertext when
+    /// sealed) and the nonce, `None` for a value written in clear.
+    async fn get_store_record_sealed(&self, key: &str) -> DbResult<Option<(String, Option<String>)>> {
+        let _ = key;
+        Err(DbError::Query("get_store_record_sealed: not supported by this store".into()))
+    }
+
+    // -- The one thread-write path (THREAD-sync S1) --
+
+    /// Writes thread `thread.id`'s whole record as given — name, description,
+    /// times, deleted state, stamp — replacing the record if there is one,
+    /// creating it under that id if not. Only the document service's thread
+    /// path (`sovereign-docs/src/threads.rs`) calls it: every thread write
+    /// there is stamped. On `EncryptedGraphDB` the name and description are
+    /// given in clear and sealed (an empty field is stored empty, with no
+    /// nonce and no blind index: a thread marker keeps no name on disk).
+    ///
+    /// The default composes the existing writers (delete, then an
+    /// id-preserving insert), so a store that forwards only those keeps
+    /// working; the real backends replace the record in one statement.
+    async fn put_thread(&self, thread: Thread) -> DbResult<()> {
+        let id = thread
+            .id_string()
+            .ok_or_else(|| DbError::Query("put_thread: id unset".into()))?;
+        match self.get_thread(&id).await {
+            Ok(_) => self.delete_thread(&id).await?,
+            Err(DbError::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+        if self.create_thread_with_id(thread).await? {
+            Ok(())
+        } else {
+            Err(DbError::Query(format!("put_thread: {id} could not be written")))
+        }
+    }
+
+    // -- Row semantics sync needs (C-WIRE guarantee 15) --
+
+    /// Replace a conversation's title (sync applies a peer's title change;
+    /// a restore puts a previous title back). Encrypted at rest under the
+    /// encrypted layer.
+    async fn update_conversation_title(&self, id: &str, title: &str) -> DbResult<()> {
+        let _ = (id, title);
+        Err(DbError::Query("update_conversation_title: not supported by this store".into()))
+    }
+
+    /// Remove one address (by channel and address) from a contact. A missing
+    /// address is not an error. Returns the contact as it is after.
+    async fn remove_contact_address(
+        &self,
+        contact_id: &str,
+        channel: ChannelType,
+        address: &str,
+    ) -> DbResult<Contact> {
+        let _ = (contact_id, channel, address);
+        Err(DbError::Query("remove_contact_address: not supported by this store".into()))
     }
 }

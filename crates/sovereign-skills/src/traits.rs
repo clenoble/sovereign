@@ -34,9 +34,13 @@ pub enum SkillOutput {
 /// Narrow DB interface exposed to skills.
 /// Skills never see the full database — only this subset.
 pub trait SkillDbAccess: Send + Sync {
-    /// Search documents matching query. Returns (id, title, snippet).
+    /// Search documents matching query, on their text (title or text read
+    /// through the v2 model). Returns (id, title, snippet of the text).
     fn search_documents(&self, query: &str) -> anyhow::Result<Vec<(String, String, String)>>;
-    /// Get a single document by ID. Returns (title, thread_id, content).
+    /// Get a single document by ID. Returns (title, thread_id, content) with
+    /// `content` in its **stored** form (v2, v1 envelope or raw text): a copy
+    /// (duplicate) needs the bytes. A reader reads it with
+    /// `sovereign_docformat` (`plain_text_of`), never by parsing it.
     fn get_document(&self, id: &str) -> anyhow::Result<(String, String, String)>;
     /// List documents, optionally filtered by thread. Returns (id, title).
     fn list_documents(&self, thread_id: Option<&str>) -> anyhow::Result<Vec<(String, String)>>;

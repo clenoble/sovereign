@@ -4,14 +4,18 @@
 	 *  Opened by long-press on the LaneHeader name (or by passing
 	 *  `open={true}`). Tapping a row sets the active lane and closes.
 	 */
-	import { canvas, mobileCanvas, setLaneIndex } from '$lib/stores/canvas.svelte';
+	import { canvas, mobileCanvas, mobileLanes, laneIdOf, setLaneIndex } from '$lib/stores/canvas.svelte';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
+
+	// The lanes include the fallback lane ("Unfiled") when a document needs it (S5-12 W3).
+	let lanes = $derived(mobileLanes());
 
 	let docCountByThread = $derived.by(() => {
 		const counts = new Map<string, number>();
 		for (const d of canvas.documents) {
-			counts.set(d.thread_id, (counts.get(d.thread_id) ?? 0) + 1);
+			const lane = laneIdOf(d);
+			counts.set(lane, (counts.get(lane) ?? 0) + 1);
 		}
 		return counts;
 	});
@@ -52,11 +56,11 @@
 				<button class="close" onclick={close} aria-label="Close">×</button>
 			</header>
 
-			{#if canvas.threads.length === 0}
+			{#if lanes.length === 0}
 				<div class="empty">No lanes yet — tap + to create one.</div>
 			{:else}
 				<ul class="lane-list">
-					{#each canvas.threads as thread, i (thread.id)}
+					{#each lanes as thread, i (thread.id)}
 						{@const count = docCountByThread.get(thread.id) ?? 0}
 						<li>
 							<button

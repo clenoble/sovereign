@@ -228,9 +228,13 @@ pub async fn migrate_to_account_key(
     // 4. Session log: rename old file to start fresh under the new key.
     //    Cheaper than re-encrypting line-by-line; one device's session
     //    log history is acceptable to lose on the migration boundary.
-    let session_log = profile_dir.join("orchestrator").join("session_log.jsonl");
+    let orchestrator_dir = sovereign_core::auth::orchestrator_state_dir(
+        &profile_dir,
+        sovereign_core::auth::PersonaKind::Primary,
+    );
+    let session_log = orchestrator_dir.join("session_log.jsonl");
     if session_log.exists() {
-        let backup = profile_dir.join("orchestrator").join("session_log.v0.4.bak");
+        let backup = orchestrator_dir.join("session_log.v0.4.bak");
         match std::fs::rename(&session_log, &backup) {
             Ok(()) => {
                 report.session_log_renamed = true;

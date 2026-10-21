@@ -1,22 +1,136 @@
 use anyhow::Result;
 use sovereign_core::config::AppConfig;
-use sovereign_db::schema::{thing_to_raw, Document, RelationType, Thread};
+use sovereign_db::schema::{thing_to_raw, RelationType};
 use sovereign_db::GraphDB;
+use sovereign_docs::DocumentService;
 
 use crate::setup::create_db;
 
+// ── Document writes (C-DOC adoption step 3) ──────────────────────────────
+//
+// The CLI writes documents through the document service, like every other
+// host: format v2, versions, personal-data ingest, trust and provenance. The
+// service only exists over the persona's encrypted store, so these commands
+// authenticate first (the passphrase prompt the import already had) — they
+// used to write plaintext rows into the raw database.
+
+/// Creates an empty document; prints its id. `is_owned`: the user's own
+/// (provenance written) or external (provenance import, from the command
+/// line).
 pub async fn create_doc(
     config: &AppConfig,
     title: String,
     thread_id: String,
     is_owned: bool,
 ) -> Result<()> {
-    let db = create_db(config).await?;
-    let doc = Document::new(title, thread_id, is_owned);
-    let created = db.create_document(doc).await?;
-    let id = created.id_string().unwrap_or_default();
+    let (_db, docs) = open_primary_documents(config, "create a document").await?;
+    let id = create_doc_with(&docs, title, thread_id, is_owned).await?;
     println!("{id}");
     Ok(())
+}
+
+/// [`create_doc`] over an open service.
+pub async fn create_doc_with(docs: &DocumentService, title: String, thread_id: String, is_owned: bool) -> Result<String> {
+    let new = if is_owned {
+        sovereign_ai::docs_host::new_user_document(title, thread_id, "")
+    } else {
+        sovereign_ai::docs_host::new_document(
+            title,
+            thread_id,
+            "",
+            sovereign_docs::Trust::External,
+            sovereign_docs::Provenance::Import { source_path: "command line".into() },
+            sovereign_docs::Origin::Editor { session: sovereign_ai::docs_host::new_edit_session() },
+        )
+    };
+    let created = sovereign_ai::docs_host::create(docs, new)
+        .await
+        .map_err(|e| anyhow::anyhow!(sovereign_ai::docs_host::doc_error_message(&e)))?;
+    Ok(created.id)
+}
+
+/// Changes a document's title and/or text (a text-only write: refused for a
+/// document with several text blocks). An explicit save: it is a version.
+pub async fn update_doc(
+    config: &AppConfig,
+    id: String,
+    title: Option<String>,
+    content: Option<String>,
+) -> Result<()> {
+    let (_db, docs) = open_primary_documents(config, "update a document").await?;
+    update_doc_with(&docs, &id, title, content).await?;
+    let view = docs.read(&id).await.map_err(|e| anyhow::anyhow!(sovereign_ai::docs_host::doc_error_message(&e)))?;
+    println!("{id}\t{}", view.title);
+    println!("{}", view.plain_text());
+    Ok(())
+}
+
+/// [`update_doc`] over an open service.
+pub async fn update_doc_with(
+    docs: &DocumentService,
+    id: &str,
+    title: Option<String>,
+    content: Option<String>,
+) -> Result<sovereign_docs::SaveOutcome> {
+    let msg = |e: sovereign_docs::DocError| anyhow::anyhow!(sovereign_ai::docs_host::doc_error_message(&e));
+    let base = docs.read(id).await.map_err(msg)?.revision;
+    let session = sovereign_ai::docs_host::new_edit_session();
+    let edit = sovereign_docs::Edit {
+        base,
+        title,
+        content: content.map(sovereign_docs::EditContent::PlainText),
+        origin: sovereign_docs::Origin::Editor { session },
+        explicit: true,
+        pasted_tokens: vec![],
+    };
+    let out = docs.save(id, edit).await.map_err(msg)?;
+    docs.end_session(id, session).await.map_err(msg)?;
+    Ok(out)
+}
+
+/// The primary persona's encrypted store and document service, after the
+/// passphrase (the duress passphrase is refused: these commands target the
+/// primary workspace).
+#[cfg(feature = "encryption")]
+async fn open_primary_documents(
+    config: &AppConfig,
+    what: &str,
+) -> Result<(std::sync::Arc<sovereign_db::encrypted::EncryptedGraphDB>, DocumentService)> {
+    use sovereign_crypto::auth::{AuthStore, PersonaKind};
+
+    let auth_path = crate::setup::crypto_dir().join("auth.store");
+    if !auth_path.exists() {
+        anyhow::bail!("no account found ({}). Onboard in the app first.", auth_path.display());
+    }
+    let store = AuthStore::load(&auth_path)?;
+    let pass = rpassword::prompt_password(format!("Sovereign passphrase to {what} (or Ctrl-C to cancel): "))?;
+    let auth = store
+        .authenticate(pass.as_bytes())
+        .map_err(|_| anyhow::anyhow!("authentication failed"))?;
+    if matches!(auth.persona, PersonaKind::Duress) {
+        anyhow::bail!("this command targets your primary workspace — use your primary password");
+    }
+    let device_key = std::sync::Arc::new(auth.device_key);
+    let kek = std::sync::Arc::new(auth.kek);
+    if let Err(e) = crate::setup::complete_auth(auth.persona, &device_key, &kek) {
+        tracing::warn!("complete_auth side-effect failed: {e}");
+    }
+    let raw: std::sync::Arc<dyn GraphDB> = std::sync::Arc::new(create_db(config).await?);
+    let db = crate::setup::build_encrypted_db(raw, device_key, kek, sovereign_core::auth::PersonaKind::Primary)?;
+    let docs = sovereign_ai::docs_host::build_document_service(
+        db.clone(),
+        Some(std::sync::Arc::new(auth.account_key)),
+        config.p2p.device_name.clone(),
+    );
+    Ok((db, docs))
+}
+
+#[cfg(not(feature = "encryption"))]
+async fn open_primary_documents(
+    _config: &AppConfig,
+    what: &str,
+) -> Result<(std::sync::Arc<sovereign_db::encrypted::EncryptedGraphDB>, DocumentService)> {
+    anyhow::bail!("to {what}, the CLI needs the encryption feature (documents are written through the encrypted store)")
 }
 
 pub async fn get_doc(config: &AppConfig, id: String) -> Result<()> {
@@ -37,24 +151,27 @@ pub async fn list_docs(config: &AppConfig, thread_id: Option<String>) -> Result<
     Ok(())
 }
 
-pub async fn update_doc(
-    config: &AppConfig,
-    id: String,
-    title: Option<String>,
-    content: Option<String>,
-) -> Result<()> {
-    let db = create_db(config).await?;
-    let updated = db
-        .update_document(&id, title.as_deref(), content.as_deref())
-        .await?;
-    println!("{}", serde_json::to_string_pretty(&updated)?);
+/// Moves a document to the trash through an open service (C-DOC adoption
+/// step 5, S5-2: `delete-doc` trashes, nothing is hard-deleted). A document
+/// already in the trash, purged or unknown is refused, and nothing changes.
+pub async fn delete_doc_with(docs: &DocumentService, id: &str) -> Result<()> {
+    let message = |e: sovereign_docs::DocError| anyhow::anyhow!(sovereign_ai::docs_host::doc_error_message(&e));
+    let view = docs.read(id).await.map_err(message)?;
+    if view.trashed_at.is_some() {
+        anyhow::bail!("{id} is already in the trash; nothing was changed");
+    }
+    docs.trash(id).await.map_err(message)?;
     Ok(())
 }
 
+/// `delete-doc`: moves a document to the trash (recoverable until the 30-day
+/// purge). Needs the account, like every document write of the CLI: the trash
+/// is the document service's, and the service only exists over the encrypted
+/// store (S5-2).
 pub async fn delete_doc(config: &AppConfig, id: String) -> Result<()> {
-    let db = create_db(config).await?;
-    db.delete_document(&id).await?;
-    println!("Deleted {id}");
+    let (_db, docs) = open_primary_documents(config, "delete a document").await?;
+    delete_doc_with(&docs, &id).await?;
+    println!("Moved {id} to the trash (recoverable for 30 days)");
     Ok(())
 }
 
@@ -63,10 +180,14 @@ pub async fn create_thread(
     name: String,
     description: String,
 ) -> Result<()> {
-    let db = create_db(config).await?;
-    let thread = Thread::new(name, description);
-    let created = db.create_thread(thread).await?;
-    let id = created.id_string().unwrap_or_default();
+    // Through the one thread-write path, stamped (THREAD-sync S1): like every
+    // document write of the CLI, it needs the account (the service exists
+    // only over the encrypted store).
+    let (_db, docs) = open_primary_documents(config, "create a thread").await?;
+    let id = docs
+        .thread_create(&name, &description)
+        .await
+        .map_err(|e| anyhow::anyhow!(sovereign_ai::docs_host::doc_error_message(&e)))?;
     println!("{id}");
     Ok(())
 }
@@ -118,12 +239,14 @@ pub async fn list_relationships(config: &AppConfig, doc_id: String) -> Result<()
     Ok(())
 }
 
-pub async fn commit_doc(config: &AppConfig, doc_id: String, message: String) -> Result<()> {
-    let db = create_db(config).await?;
-    let commit = db.commit_document(&doc_id, &message).await?;
-    let id = commit.id.map(|t| thing_to_raw(&t)).unwrap_or_default();
-    println!("{id} ({})", commit.snapshot.title);
-    Ok(())
+/// Refused (C-DOC adoption step 3): versions are made by the document
+/// service — at creation, at every `update-doc` (an explicit save), and by
+/// amount of change in the editors — never on request with a free message.
+pub async fn commit_doc(_config: &AppConfig, doc_id: String, _message: String) -> Result<()> {
+    anyhow::bail!(
+        "versions of {doc_id} are made by the document service (each `update-doc` is one); \
+         `commit` no longer writes one — `list-commits` shows them"
+    )
 }
 
 pub async fn list_commits(config: &AppConfig, doc_id: String) -> Result<()> {
@@ -268,59 +391,34 @@ pub fn import_dry_run(dir: &std::path::Path, single_thread: Option<String>) -> R
 }
 
 /// Execute the import against the PRIMARY persona's encrypted workspace.
-/// Authenticates (prompts for the passphrase), builds the same
-/// `EncryptedGraphDB` the app uses, and lands the corpus encrypted at rest.
+/// Authenticates (prompts for the passphrase; the duress passphrase is
+/// refused rather than landing the corpus in the decoy), builds the same
+/// `EncryptedGraphDB` the app uses, and creates every document through the
+/// document service (C-DOC adoption step 3): encrypted at rest, a version
+/// from creation, personal data tokenized, trust **undetermined**.
 #[cfg(feature = "encryption")]
 pub async fn import_execute(
     config: &AppConfig,
     dir: &std::path::Path,
     single_thread: Option<String>,
 ) -> Result<()> {
-    use sovereign_crypto::auth::{AuthStore, PersonaKind};
-
     let opts = import_options(single_thread);
     let manifest = sovereign_import::plan(dir, &opts)?;
     // Show the plan first, then act on it.
     print!("{}", sovereign_import::render_manifest(&manifest));
 
-    let auth_path = crate::setup::crypto_dir().join("auth.store");
-    if !auth_path.exists() {
-        anyhow::bail!(
-            "no account found ({}). Onboard in the app first, then re-run import.",
-            auth_path.display()
-        );
-    }
-    let store = AuthStore::load(&auth_path)?;
     // IMPORT-002: the passphrase entry is the affirmative consent. Restate the
     // trust boundary right before it so the choice is informed, not buried above.
     println!(
-        "\n⚠  Proceeding imports the document(s) above as OWNED (trusted) content — see the trust notice."
+        "\n⚠  Proceeding imports the document(s) above as UNDETERMINED content (treated as external \
+         until you adopt them) — see the trust notice."
     );
-    let pass = rpassword::prompt_password("Sovereign passphrase (or Ctrl-C to cancel): ")?;
-    let auth = store
-        .authenticate(pass.as_bytes())
-        .map_err(|_| anyhow::anyhow!("authentication failed"))?;
+    let (db, docs) = open_primary_documents(config, "import").await?;
 
-    // Import targets the primary workspace. If the duress password was
-    // entered, refuse rather than silently land the corpus in the decoy.
-    let core_persona = match auth.persona {
-        PersonaKind::Primary => sovereign_core::auth::PersonaKind::Primary,
-        PersonaKind::Duress => {
-            anyhow::bail!("import targets your primary workspace — use your primary password");
-        }
-    };
-
-    // Side effects (key DB load), then the full 6-key EncryptedGraphDB the app
-    // reads from — so imported docs land encrypted and visible in the UI.
-    let device_key = std::sync::Arc::new(auth.device_key);
-    let kek = std::sync::Arc::new(auth.kek);
-    if let Err(e) = crate::setup::complete_auth(auth.persona, &device_key, &kek) {
-        tracing::warn!("complete_auth side-effect failed: {e}");
-    }
-    let raw: std::sync::Arc<dyn GraphDB> = std::sync::Arc::new(create_db(config).await?);
-    let db = crate::setup::build_encrypted_db(raw, device_key, kek, core_persona)?;
-
-    let outcome = sovereign_import::execute(db.as_ref(), &manifest).await?;
+    let outcome = sovereign_import::execute(db.as_ref(), &docs, &manifest).await?;
+    // The raw body of the last documents created (the hook preserves each one
+    // at the next write; nothing writes after the last).
+    sovereign_ai::docs_host::flush_raw_bodies_of(db.as_ref()).await;
     println!(
         "\nImported: {} document(s) ({} stub), {} thread(s) created, {} reused, {} skipped (already present).",
         outcome.docs_created,
@@ -351,16 +449,36 @@ mod tests {
         config
     }
 
+    /// C-DOC adoption step 3: the CLI creates and updates through the document
+    /// service — owned/written or external/import, a version from creation,
+    /// and every update an explicit save (a version).
     #[tokio::test]
-    async fn create_doc_succeeds() {
+    async fn create_and_update_doc_go_through_the_service() {
+        use sovereign_ai::docs_host::{build_document_service, testing};
+        let store = testing::encrypted_memory_store("cli-create").await;
+        let docs = build_document_service(store, Some(testing::account_key()), "cli".into());
+
+        let id = create_doc_with(&docs, "Test Title".into(), "thread:t".into(), true).await.unwrap();
+        let view = docs.read(&id).await.unwrap();
+        assert_eq!(view.trust, sovereign_docs::Trust::Owned);
+        assert_eq!(view.provenance, sovereign_docs::Provenance::Written);
+        assert_eq!(docs.versions(&id).await.unwrap().len(), 1);
+
+        let ext = create_doc_with(&docs, "Other".into(), "thread:t".into(), false).await.unwrap();
+        assert_eq!(docs.read(&ext).await.unwrap().trust, sovereign_docs::Trust::External);
+
+        let out = update_doc_with(&docs, &id, Some("New title".into()), Some("Some text".into())).await.unwrap();
+        assert!(out.changed && out.version.is_some(), "an update is a version");
+        let view = docs.read(&id).await.unwrap();
+        assert_eq!((view.title.as_str(), view.plain_text().as_str()), ("New title", "Some text"));
+        assert_eq!(docs.versions(&id).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn commit_is_refused() {
         let config = test_config();
-        let result = create_doc(
-            &config,
-            "Test Title".into(),
-            "thread:t".into(),
-            true,
-        ).await;
-        assert!(result.is_ok());
+        let result = commit_doc(&config, "document:x".into(), "msg".into()).await;
+        assert!(result.unwrap_err().to_string().contains("document service"));
     }
 
     #[tokio::test]
@@ -370,11 +488,46 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// Points `SOVEREIGN_DATA_DIR` at a temporary directory of this test
+    /// process (once, before any lookup), and checks no account is there: the
+    /// CLI looks for the account in `<data dir>/crypto`, and a test that
+    /// reached a real one would wait for its passphrase.
+    fn isolated_data_dir() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let dir = std::env::temp_dir().join(format!("sovereign-cli-unit-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::env::set_var("SOVEREIGN_DATA_DIR", &dir);
+        });
+        assert!(
+            !crate::setup::crypto_dir().join("auth.store").exists(),
+            "the test data directory holds an account: refusing to run (it would ask for a passphrase)"
+        );
+    }
+
+    /// THREAD-sync S1: `create-thread` writes through the stamped thread path,
+    /// so, like `create-doc`, it needs the account. Without one it refuses and
+    /// writes nothing; with the service (over an encrypted store, as the
+    /// document commands are tested) the thread is created, stamped, and
+    /// listed. (Migrated by the THREAD-sync test author: it used to create
+    /// through the plain store.)
     #[tokio::test]
     async fn create_and_list_threads() {
+        isolated_data_dir();
         let config = test_config();
-        assert!(create_thread(&config, "MyThread".into(), "desc".into()).await.is_ok());
+        let err = create_thread(&config, "MyThread".into(), "desc".into()).await.unwrap_err();
+        assert!(err.to_string().contains("no account found"), "{err}");
         assert!(list_threads(&config).await.is_ok());
+
+        use sovereign_ai::docs_host::{build_document_service, testing};
+        let store = testing::encrypted_memory_store("cli-thread").await;
+        let docs = build_document_service(store.clone(), Some(testing::account_key()), "cli".into());
+        let id = docs.thread_create("MyThread", "desc").await.unwrap();
+        let listed = store.list_threads().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!((listed[0].name.as_str(), listed[0].description.as_str()), ("MyThread", "desc"));
+        assert_eq!(listed[0].id_string().as_deref(), Some(id.as_str()));
+        assert!(docs.thread_stamp(&id).await.unwrap().is_some(), "stamped");
     }
 
     #[tokio::test]
@@ -411,14 +564,6 @@ mod tests {
             "NotAType".into(),
             0.5,
         ).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn commit_nonexistent_doc_fails() {
-        let config = test_config();
-        // Each in-memory DB is isolated, so committing a non-existent doc should fail
-        let result = commit_doc(&config, "document:nonexistent".into(), "msg".into()).await;
         assert!(result.is_err());
     }
 

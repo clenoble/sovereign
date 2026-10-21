@@ -234,6 +234,28 @@ impl AuthStore {
         Ok(())
     }
 
+    /// Save to disk as JSON **only if `path` does not exist** — the first
+    /// write of `auth.store` (spec ch. 07, *Auth store*, "Created once, never
+    /// replaced by account creation"). An existing file, whatever it holds, is
+    /// refused with an error and left byte-identical; no temp file is left
+    /// behind. Same owner-only permissions as [`AuthStore::save`]. Publishing
+    /// goes through a temp sibling and a no-replace hard link, so a crash
+    /// cannot leave a half-written store (see `fs_private::write_private_new`)
+    /// — or, where hard links are refused, by an exclusive in-place write. The
+    /// returned [`NewWrite`](crate::fs_private::NewWrite) says which, for the
+    /// caller to log.
+    pub fn save_new(&self, path: &std::path::Path) -> CryptoResult<crate::fs_private::NewWrite> {
+        let json = serde_json::to_vec_pretty(self)
+            .map_err(|e| CryptoError::Serialization(e.to_string()))?;
+        crate::fs_private::write_private_new(path, json).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                CryptoError::AlreadyExists(path.display().to_string())
+            } else {
+                CryptoError::KeyDbIo(e.to_string())
+            }
+        })
+    }
+
     /// Load from disk.
     pub fn load(path: &std::path::Path) -> CryptoResult<Self> {
         let bytes = std::fs::read(path).map_err(|e| CryptoError::KeyDbIo(e.to_string()))?;

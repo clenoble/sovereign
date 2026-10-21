@@ -17,6 +17,7 @@ pub mod protocol;
 pub mod sync_engine;
 pub mod sync_service;
 pub mod version_store;
+pub mod wire;
 
 pub use backup_host::BackupHost;
 pub use config::{ConnectivityState, P2pConfig};

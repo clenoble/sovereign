@@ -142,13 +142,36 @@ pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
         crate::setup::crypto_dir().join("sync_versions.json"),
     );
 
-    let sync_service = Arc::new(SyncService::new(
+    // C-WIRE: documents sync only through the persona's document service
+    // (installed by login before this runs), and every received change goes
+    // through the incoming-change analysis: the deterministic checks during
+    // sync; the router model's verdict afterwards, in the background, where
+    // an orchestrator is loaded (spec v2.0.22: sync never waits on the model).
+    let mut sync_service = SyncService::new(
         db_dyn,
         local_peer_id.clone(), // P2P-001: version identity = verifiable PeerId
         transport_key,
         keypair.clone(),
         version_store,
-    ));
+    )
+    .with_analysis(Arc::new(sovereign_ai::peer_audit::PeerChangeAnalysis::deterministic()));
+    let docs = state.docs.read().await.clone();
+    match docs.clone() {
+        Some(docs) => sync_service = sync_service.with_documents(docs),
+        None => tracing::warn!("no document service: documents will not sync (rows only)"),
+    }
+    let sync_service = Arc::new(sync_service);
+    if let (Some(docs), Some(orch)) = (docs, state.orchestrator.clone()) {
+        let verdicts = sovereign_p2p::wire::ModelVerdicts::spawn(
+            docs,
+            Arc::new(sovereign_ai::peer_audit::OrchestratorJudge::with_orchestrator(orch)),
+        );
+        let tx = state.orch_tx.clone();
+        verdicts.set_on_alert(Arc::new(move || {
+            let _ = tx.send(OrchestratorEvent::SyncAlertsChanged);
+        }));
+        sync_service.set_model_verdicts(verdicts);
+    }
     sync_service.set_pair_keys(manager.pair_key_map());
 
     // Channels.
@@ -367,13 +390,19 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
                 );
                 Some(OrchestratorEvent::PairingFailed { reason, offer_dead })
             }
-            P2pEvent::RowsFlaggedForReview { peer_id, count } => {
-                // C2: a peer overwrite was stashed — surface it instead of
-                // leaving it invisible until the review panel is opened.
-                Some(OrchestratorEvent::SyncStatus {
-                    peer_id,
-                    status: format!("{count} change(s) stashed for review"),
-                })
+            P2pEvent::PeerNeedsUpdate { peer_id } => {
+                // C-WIRE 12: no document is exchanged with a device on an
+                // older build; rows keep syncing. The notice names the device.
+                let device_name = match ctx.pairing_manager.read().await.as_ref() {
+                    Some(m) => m
+                        .list_devices()
+                        .into_iter()
+                        .find(|d| d.peer_id == peer_id)
+                        .map(|d| d.device_name.clone())
+                        .unwrap_or_default(),
+                    None => String::new(),
+                };
+                Some(OrchestratorEvent::PeerNeedsUpdate { peer_id, device_name })
             }
             P2pEvent::ListenAddr { address } => {
                 let mut addrs = ctx

@@ -1,18 +1,25 @@
-//! Lot 0 — the shell's document writes, kept out of `app.rs` so their
-//! invariants can be tested against a `GraphDB` without a window.
+//! The shell's document writes, kept out of `app.rs` so their invariants can
+//! be tested against a real store without a window. Since C-DOC adoption
+//! step 2 they go through the document service (`sovereign-docs`): every save
+//! writes the v2 format, runs personal-data ingest, and never replaces a state
+//! someone else wrote without a version of it.
 //!
-//! Three rules live here:
-//! - **A skill never writes an empty body over a non-empty document**, and never
-//!   writes back a document whose stored content it could not read
-//!   ([`skill_write_verdict`]). Lot 0.1, review `06-skills-comms.md` N1.
-//! - **A skill overwrite always has a restore point**: a document with no commit
-//!   yet (bulk-imported, freshly synced) is committed as-is before the skill's
-//!   version lands ([`apply_skill_update`]).
-//! - **A write error is never reported as success**: every helper returns the
-//!   database error to the caller, which surfaces it (lot 0.3).
+//! The rules that live here:
+//! - **A skill never writes an empty text over a non-empty document**, never
+//!   writes back a change to images or videos (until C-SKILL), and never
+//!   collapses a document of several text blocks
+//!   (`sovereign_ai::docs_host::skill_output_edit`; the service refuses the
+//!   last). Lot 0.1, review `06-skills-comms.md` N1.
+//! - **A skill's write has a restore point**: the service versions the prior
+//!   state first and the skill's result after (`apply_skill_output`, G7).
+//! - **A write error is never reported as success** (lot 0.3): every helper
+//!   returns the refusal to the caller, which surfaces it.
 
+use sovereign_ai::docs_host::{skill_output_edit, view_fields};
 use sovereign_core::content::ContentFields;
+#[cfg(test)] // the tests' store calls; production writes go through the service
 use sovereign_db::traits::GraphDB;
+use sovereign_docs::{DocumentService, Revision};
 use sovereign_skills::SkillRegistry;
 
 /// Skill actions the Skills menu must never offer. The shell runs a menu entry
@@ -45,102 +52,58 @@ pub(crate) fn menu_skill_entries(registry: &SkillRegistry) -> Vec<(usize, String
         .collect()
 }
 
-/// What a skill receives for a stored document, and whether that is a faithful
-/// reading of it.
+/// What a skill receives for a stored document, read through the service:
+/// the text blocks as the body (tokens as `[pii:<id>]`), image and video
+/// blocks as media — whatever the stored form — and the revision the skill's
+/// write-back is based on.
 pub(crate) struct SkillInput {
+    pub(crate) title: String,
     pub(crate) fields: ContentFields,
-    /// False when the stored content is non-empty but is not a readable content
-    /// envelope — today `ContentFields::parse` then hands the skill an empty
-    /// body (raw shell-editor text, bulk-imported markdown).
-    pub(crate) faithful: bool,
+    pub(crate) revision: Revision,
 }
 
-/// Parse stored content for a skill.
-///
-/// TRACK A SEAM: `ContentFields::parse` is becoming tolerant (a bare string is
-/// read as the body) with a way to tell whether it fell back to raw text. When
-/// that lands, `faithful` should come from that API instead of the local
-/// envelope check below; the rest of the guard does not change.
-pub(crate) fn skill_input(stored: &str) -> SkillInput {
-    // Track A's tolerant read never returns an empty body for raw text, but a
-    // skill's ContentUpdate is written back as the envelope, and the shell
-    // still displays `content` raw — so a raw document stays refused until the
-    // v2 document format and its migration land (spec ch. 03, decision K1).
-    let (fields, kind) = ContentFields::parse_with_kind(stored);
-    let faithful = stored.trim().is_empty() || kind != sovereign_core::content::ContentKind::Raw;
-    SkillInput { fields, faithful }
+pub(crate) async fn skill_input(docs: &DocumentService, doc_id: &str) -> Result<SkillInput, String> {
+    let view = docs.read(doc_id).await.map_err(|e| format!("Couldn't read the document: {e}"))?;
+    Ok(SkillInput { title: view.title.clone(), fields: view_fields(&view), revision: view.revision })
 }
 
-/// Decide whether a skill's `ContentUpdate` may be written over the stored
-/// document. `Err` carries the user-facing reason; nothing is written then.
-pub(crate) fn skill_write_verdict(
-    stored: &str,
-    input: &SkillInput,
-    output: &ContentFields,
-) -> Result<(), &'static str> {
-    if !input.faithful {
-        return Err("This document isn't in the format skills can read yet, so the skill saw an \
-                    empty document. Nothing was changed.");
-    }
-    if input.fields.body.is_empty() && !stored.trim().is_empty() {
-        return Err("The skill received an empty body for a document that isn't empty. \
-                    Nothing was changed.");
-    }
-    if !input.fields.body.is_empty() && output.body.trim().is_empty() {
-        return Err("The skill would have replaced the document's text with nothing. \
-                    Nothing was changed.");
-    }
-    Ok(())
-}
-
-/// The result of a skill write that reached the database.
+/// What a skill's write-back did.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SkillApplied {
-    /// Written and snapshotted.
-    Committed,
-    /// Written, but the post-write snapshot failed — the prior state is still
-    /// in history (restore point), the new state is not.
-    WrittenNotSnapshotted(String),
+    /// Written: the prior state and the result are both in History.
+    Written,
+    /// The skill returned the document unchanged: nothing written.
+    Unchanged,
 }
 
-/// Write a skill's new content, making sure a restore point exists first.
-///
-/// A document with no commit (`head_commit` None) is committed as it stands
-/// before anything is overwritten; if that snapshot fails, nothing is written.
+/// Write a skill's `ContentUpdate` back through the service. `Err` carries the
+/// user-facing reason; nothing is written then.
 pub(crate) async fn apply_skill_update(
-    db: &dyn GraphDB,
+    docs: &DocumentService,
     doc_id: &str,
-    new_content: &str,
+    input: &SkillInput,
+    output: &ContentFields,
     skill_name: &str,
 ) -> Result<SkillApplied, String> {
-    let doc = db
-        .get_document(doc_id)
+    let Some(edit) = skill_output_edit(&input.fields, output)? else { return Ok(SkillApplied::Unchanged) };
+    let out = docs
+        .apply_skill_output(doc_id, input.revision.clone(), skill_name, edit)
         .await
-        .map_err(|e| format!("Couldn't read the document: {e}. Nothing was changed."))?;
-    if doc.head_commit.is_none() {
-        db.commit_document(doc_id, &format!("Before skill: {skill_name}"))
-            .await
-            .map_err(|e| {
-                format!("Couldn't save a restore point first ({e}). Nothing was changed.")
-            })?;
-    }
-    db.update_document(doc_id, None, Some(new_content))
-        .await
-        .map_err(|e| format!("Couldn't write the document: {e}. Nothing was changed."))?;
-    match db.commit_document(doc_id, &format!("Skill: {skill_name}")).await {
-        Ok(_) => Ok(SkillApplied::Committed),
-        Err(e) => Ok(SkillApplied::WrittenNotSnapshotted(e.to_string())),
-    }
+        .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?;
+    Ok(if out.changed { SkillApplied::Written } else { SkillApplied::Unchanged })
 }
 
-/// Delete a document from the canvas — reversibly (lot 0.4).
+/// The canvas delete as it was before C-DOC adoption step 5 (lot 0.4): a soft
+/// delete straight on the store.
 ///
-/// Soft delete stamps `deleted_at`: the document leaves every listing, sync
-/// carries the deletion as a tombstone instead of re-pushing the row from a
-/// paired device, and `restore_soft_deleted_document` brings it back. This is
-/// the reversible default pending Céline's decision K3 (gated soft delete +
-/// purge, or an explicit permanent delete beside it). The shell never
-/// hard-deletes a document.
+/// **No longer called by the shell.** Since step 5 the canvas delete moves the
+/// document to the trash through the document service
+/// (`card_menu::trash_target`, called by `App::trash_document`; S5-1: no
+/// production code outside `sovereign-db` and `sovereign-docs` deletes around
+/// the service). This function is kept, compiled for tests only, because the
+/// two lot-0.4 tests below call it and an implementer may not edit existing
+/// tests; whether to remove them is the reviewer's call.
+#[cfg(test)]
 pub(crate) async fn delete_document_reversibly(
     db: &dyn GraphDB,
     doc_id: &str,
@@ -148,34 +111,20 @@ pub(crate) async fn delete_document_reversibly(
     db.soft_delete_document(doc_id).await
 }
 
-/// The result of saving a doc window's edit buffer (lot 0.3).
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum SaveOutcome {
-    /// Written and snapshotted into History.
-    Saved,
-    /// Written, but the History snapshot failed.
-    SavedNotSnapshotted(String),
-    /// Nothing was written — the edits must stay open in the window.
-    NotSaved(String),
-}
-
-/// Persist an edited body and snapshot it into version history.
-pub(crate) async fn save_body(db: &dyn GraphDB, doc_id: &str, body: &str) -> SaveOutcome {
-    if let Err(e) = db.update_document(doc_id, None, Some(body)).await {
-        return SaveOutcome::NotSaved(e.to_string());
-    }
-    match db.commit_document(doc_id, "Saved edit").await {
-        Ok(_) => SaveOutcome::Saved,
-        Err(e) => SaveOutcome::SavedNotSnapshotted(e.to_string()),
-    }
-}
+// The document window's saves are the editor's (`app/editor_v2.rs`,
+// `save_request`): the plain text window and its text save were removed with
+// it (contract E2, `doc/plans/EDITOR-default.md`).
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sovereign_db::mock::MockGraphDB;
+    use sovereign_ai::docs_host::testing::{account_key, encrypted_memory_store};
+    use sovereign_ai::docs_host::build_document_service;
+    use sovereign_docs::EditContent;
+    use sovereign_db::encrypted::EncryptedGraphDB;
     use sovereign_db::schema::Document;
     use sovereign_skills::{traits::SkillOutput, SkillContext, SkillDocument};
+    use std::sync::Arc;
 
     fn rt() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
@@ -187,6 +136,28 @@ mod tests {
 
     fn envelope(body: &str) -> String {
         ContentFields { body: body.into(), ..Default::default() }.serialize()
+    }
+
+    const V2_DOC: &str = r#"{"format":"sovereign.doc","v":2,"blocks":[{"type":"text","id":"00000000000000000000000000000c01","text":"one two [pii:pii_record:e1]"},{"type":"image","id":"00000000000000000000000000000c02","ref":{"path":"/i.png"},"alt":"a","caption":"cap"},{"type":"text","id":"00000000000000000000000000000c03","text":"three"}]}"#;
+    const V2_ONE_TEXT: &str = r#"{"format":"sovereign.doc","v":2,"blocks":[{"type":"text","id":"00000000000000000000000000000d01","text":"only text"},{"type":"image","id":"00000000000000000000000000000d02","ref":{"path":"/i.png"},"alt":"a","caption":"cap"}]}"#;
+
+    async fn fixture(tag: &str) -> (Arc<EncryptedGraphDB>, DocumentService) {
+        let store = encrypted_memory_store(tag).await;
+        let docs = build_document_service(store.clone(), Some(account_key()), "test".into());
+        (store, docs)
+    }
+
+    /// A row as writers before the service left it: content written directly,
+    /// no version.
+    async fn legacy(store: &EncryptedGraphDB, content: &str) -> String {
+        let mut d = Document::new("Doc".into(), "thread:1".into(), true);
+        d.content = content.into();
+        store.create_document(d).await.unwrap().id_string().unwrap()
+    }
+
+    fn stored_is_v2(content: &str) -> bool {
+        let v: serde_json::Value = serde_json::from_str(content).unwrap();
+        v["format"] == "sovereign.doc" && v["v"] == 2
     }
 
     #[test]
@@ -204,108 +175,154 @@ mod tests {
     }
 
     /// The invariant, over every built-in skill's menu action, as the shell runs
-    /// it (empty params): whatever the skill returns, the guard never lets an
-    /// empty body replace a non-empty one, and never writes back a document the
-    /// skill could not read. Holds whether or not the menu hides an action.
+    /// it (empty params): whatever the skill returns, what reaches the service
+    /// never empties a non-empty text, never drops or adds media, and is always
+    /// text (never a collapsed structure).
     #[test]
     fn a_skill_never_writes_an_empty_body_over_a_non_empty_document() {
-        let reg = registry();
-        let docs = [
-            "plain text body, written by the shell editor".to_string(),
-            "# Imported\n\nSome **markdown** from a bulk import.".to_string(),
-            envelope("an envelope body with an email a@b.example and 4111 1111 1111 1111"),
-            "{not quite json".to_string(),
-        ];
-        for stored in &docs {
-            let input = skill_input(stored);
-            for s in reg.all_skills() {
-                let granted = s.required_capabilities().into_iter().collect();
-                let ctx = SkillContext { granted, db: None, llm: None };
-                for (action, _) in s.actions() {
-                    let doc = SkillDocument {
-                        id: "document:1".into(),
-                        title: "T".into(),
-                        content: input.fields.clone(),
-                    };
-                    let Ok(SkillOutput::ContentUpdate(out)) =
-                        reg.execute_skill(s.name(), &action, &doc, "", &ctx)
-                    else {
-                        continue;
-                    };
-                    if skill_write_verdict(stored, &input, &out).is_ok() {
-                        assert!(input.faithful, "{} {action} wrote over unreadable content", s.name());
-                        assert!(
-                            !(out.body.trim().is_empty() && !stored.trim().is_empty()),
-                            "{} {action} emptied {stored:?}",
-                            s.name()
-                        );
+        rt().block_on(async {
+            let (store, docs) = fixture("menu").await;
+            let reg = registry();
+            let forms = [
+                "plain text body, written by the shell editor".to_string(),
+                "# Imported\n\nSome **markdown** from a bulk import.".to_string(),
+                envelope("an envelope body with an email a@b.example and 4111 1111 1111 1111"),
+                V2_DOC.to_string(),
+            ];
+            for stored in &forms {
+                let id = legacy(&store, stored).await;
+                let input = skill_input(&docs, &id).await.unwrap();
+                for s in reg.all_skills() {
+                    let granted = s.required_capabilities().into_iter().collect();
+                    let ctx = SkillContext { granted, db: None, llm: None };
+                    for (action, _) in s.actions() {
+                        let doc = SkillDocument { id: id.clone(), title: "T".into(), content: input.fields.clone() };
+                        let Ok(SkillOutput::ContentUpdate(out)) = reg.execute_skill(s.name(), &action, &doc, "", &ctx)
+                        else {
+                            continue;
+                        };
+                        if let Ok(Some(edit)) = skill_output_edit(&input.fields, &out) {
+                            let EditContent::PlainText(t) = edit else { panic!("{} {action}: not text", s.name()) };
+                            assert!(
+                                !(t.trim().is_empty() && !input.fields.body.trim().is_empty()),
+                                "{} {action} emptied {stored:?}",
+                                s.name()
+                            );
+                            assert_eq!(out.images, input.fields.images);
+                            assert_eq!(out.videos, input.fields.videos);
+                        }
                     }
                 }
             }
-        }
+        });
     }
 
+    /// A skill reads a v2 document, a v1 envelope and raw text as their text
+    /// (never the stored JSON), tokens kept as tokens.
     #[test]
-    fn verdict_refuses_raw_content_and_emptied_bodies_and_allows_real_edits() {
-        let raw = "raw shell text";
-        let input = skill_input(raw);
-        assert!(!input.faithful);
-        let out = ContentFields { body: "anything".into(), ..Default::default() };
-        assert!(skill_write_verdict(raw, &input, &out).is_err());
-
-        let env = envelope("hello");
-        let input = skill_input(&env);
-        assert!(input.faithful);
-        let emptied = ContentFields::default();
-        assert!(skill_write_verdict(&env, &input, &emptied).is_err());
-        let edited = ContentFields { body: "HELLO".into(), ..Default::default() };
-        assert!(skill_write_verdict(&env, &input, &edited).is_ok());
-
-        // An empty document may receive content.
-        let input = skill_input("");
-        assert!(skill_write_verdict("", &input, &edited).is_ok());
-    }
-
-    #[test]
-    fn a_document_without_history_gets_a_restore_point_before_a_skill_overwrite() {
+    fn a_skill_reads_v2_v1_and_raw_documents_as_text() {
         rt().block_on(async {
-            let db = MockGraphDB::new();
-            let mut doc = Document::new("Imported".into(), "thread:1".into(), true);
-            doc.content = envelope("original");
-            let doc = db.create_document(doc).await.unwrap();
-            let id = doc.id_string().unwrap();
-            assert!(db.get_document(&id).await.unwrap().head_commit.is_none());
+            let (store, docs) = fixture("read").await;
+            let reg = registry();
+            let ctx = |s: &str| SkillContext {
+                granted: reg.find_skill(s).unwrap().required_capabilities().into_iter().collect(),
+                db: None,
+                llm: None,
+            };
+            let cases = [
+                (V2_DOC.to_string(), "one two [pii:pii_record:e1]\n\nthree"),
+                (envelope("one two [pii:pii_record:e1]"), "one two [pii:pii_record:e1]"),
+                ("one two [pii:pii_record:e1]".to_string(), "one two [pii:pii_record:e1]"),
+            ];
+            for (stored, text) in &cases {
+                let id = legacy(&store, stored).await;
+                let input = skill_input(&docs, &id).await.unwrap();
+                assert_eq!(&input.fields.body, text, "{stored:?}");
+                let doc = SkillDocument { id, title: "T".into(), content: input.fields.clone() };
+                match reg.execute_skill("plaintext-export", "export", &doc, "", &ctx("plaintext-export")) {
+                    Ok(SkillOutput::File { data, .. }) => {
+                        let out = String::from_utf8(data).unwrap();
+                        assert!(out.contains("[pii:pii_record:e1]"), "{out:?}");
+                        assert!(!out.contains("sovereign.doc") && !out.contains("\"body\""), "{out:?}");
+                    }
+                    other => panic!("plaintext-export: {:?}", other.map(|_| ())),
+                }
+                match reg.execute_skill("word-count", "count", &doc, "", &ctx("word-count")) {
+                    Ok(SkillOutput::StructuredData { json, .. }) => {
+                        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+                        assert_eq!(v["words"], text.split_whitespace().count(), "{stored:?}");
+                    }
+                    other => panic!("word-count: {:?}", other.map(|_| ())),
+                }
+            }
+        });
+    }
 
-            let out = apply_skill_update(&db, &id, &envelope("changed"), "redactor").await;
-            assert_eq!(out, Ok(SkillApplied::Committed));
+    /// Adoption step 2: a skill's output is written through the service — raw
+    /// text and v1 envelopes (refused or envelope-only before) end as v2, the
+    /// prior state is versioned first and the result after, media kept; a v2
+    /// document with one text block takes the output in that block; a v2
+    /// document with several text blocks is refused, nothing written.
+    #[test]
+    fn a_skill_output_is_written_through_the_service() {
+        rt().block_on(async {
+            let (store, docs) = fixture("write").await;
+            for stored in ["raw shell text".to_string(), envelope("enveloped"), V2_ONE_TEXT.to_string()] {
+                let id = legacy(&store, &stored).await;
+                let input = skill_input(&docs, &id).await.unwrap();
+                let mut out = input.fields.clone();
+                out.body = input.fields.body.to_uppercase();
+                assert_eq!(apply_skill_update(&docs, &id, &input, &out, "upper").await, Ok(SkillApplied::Written));
+                let row = store.get_document(&id).await.unwrap();
+                assert!(stored_is_v2(&row.content), "{}", row.content);
+                let after = docs.read(&id).await.unwrap();
+                assert_eq!(after.plain_text(), input.fields.body.to_uppercase());
+                assert_eq!(view_fields(&after).images, input.fields.images, "media kept");
+                let commits = store.list_document_commits(&id).await.unwrap();
+                assert!(commits.iter().any(|c| c.snapshot.content == stored), "prior state versioned: {stored}");
+                assert!(commits.iter().any(|c| c.message.contains("upper")), "the result is a version");
+            }
 
-            let commits = db.list_document_commits(&id).await.unwrap();
-            assert_eq!(commits.len(), 2, "restore point + skill commit");
-            let restore = commits.iter().find(|c| c.message.starts_with("Before skill")).unwrap();
-            assert_eq!(restore.snapshot.content, envelope("original"));
-            assert_eq!(db.get_document(&id).await.unwrap().content, envelope("changed"));
+            let id = legacy(&store, V2_DOC).await;
+            let input = skill_input(&docs, &id).await.unwrap();
+            let out = ContentFields { body: "rewritten".into(), ..input.fields.clone() };
+            let err = apply_skill_update(&docs, &id, &input, &out, "upper").await.unwrap_err();
+            assert!(err.contains("2 blocks of text"), "{err}");
+            assert_eq!(store.get_document(&id).await.unwrap().content, V2_DOC, "nothing written");
         });
     }
 
     #[test]
-    fn a_document_with_history_is_not_snapshotted_twice() {
+    fn a_skill_never_empties_a_document_or_changes_its_media() {
         rt().block_on(async {
-            let db = MockGraphDB::new();
-            let mut doc = Document::new("Doc".into(), "thread:1".into(), true);
-            doc.content = envelope("v1");
-            let id = db.create_document(doc).await.unwrap().id_string().unwrap();
-            db.commit_document(&id, "Saved edit").await.unwrap();
-            apply_skill_update(&db, &id, &envelope("v2"), "redactor").await.unwrap();
-            assert_eq!(db.list_document_commits(&id).await.unwrap().len(), 2);
+            let (store, docs) = fixture("guard").await;
+            let id = legacy(&store, V2_ONE_TEXT).await;
+            let input = skill_input(&docs, &id).await.unwrap();
+            let emptied = ContentFields { body: String::new(), ..input.fields.clone() };
+            assert!(apply_skill_update(&docs, &id, &input, &emptied, "s").await.is_err());
+            let no_media = ContentFields { body: "x".into(), ..Default::default() };
+            assert!(apply_skill_update(&docs, &id, &input, &no_media, "s").await.is_err());
+            assert_eq!(store.get_document(&id).await.unwrap().content, V2_ONE_TEXT);
+            // An empty document may receive text.
+            let empty = legacy(&store, "").await;
+            let input = skill_input(&docs, &empty).await.unwrap();
+            let out = ContentFields { body: "new".into(), ..Default::default() };
+            assert_eq!(apply_skill_update(&docs, &empty, &input, &out, "s").await, Ok(SkillApplied::Written));
         });
     }
 
+    /// A skill's write based on a state another writer replaced is refused.
     #[test]
-    fn a_failed_skill_write_is_an_error_not_a_success() {
+    fn a_stale_skill_write_is_refused() {
         rt().block_on(async {
-            let db = MockGraphDB::new();
-            let r = apply_skill_update(&db, "document:missing", &envelope("x"), "redactor").await;
-            assert!(r.is_err());
+            let (store, docs) = fixture("stale").await;
+            let id = legacy(&store, "start").await;
+            let input = skill_input(&docs, &id).await.unwrap();
+            store.update_document(&id, None, Some("changed by sync")).await.unwrap();
+            let out = ContentFields { body: "START".into(), ..Default::default() };
+            let err = apply_skill_update(&docs, &id, &input, &out, "upper").await.unwrap_err();
+            assert!(err.contains("changed elsewhere"), "{err}");
+            assert_eq!(docs.read(&id).await.unwrap().plain_text(), "changed by sync");
         });
     }
 
@@ -346,32 +363,6 @@ mod tests {
             db.connect().await.unwrap();
             db.init_schema().await.unwrap();
             assert!(delete_document_reversibly(&db, "document:nope").await.is_err());
-        });
-    }
-
-    #[test]
-    fn a_save_is_written_and_snapshotted() {
-        rt().block_on(async {
-            let db = MockGraphDB::new();
-            let id = db
-                .create_document(Document::new("D".into(), "thread:1".into(), true))
-                .await
-                .unwrap()
-                .id_string()
-                .unwrap();
-            assert_eq!(save_body(&db, &id, "typed text").await, SaveOutcome::Saved);
-            assert_eq!(db.get_document(&id).await.unwrap().content, "typed text");
-            assert_eq!(db.list_document_commits(&id).await.unwrap().len(), 1);
-        });
-    }
-
-    /// Lot 0.3: a write error is never reported as success.
-    #[test]
-    fn a_write_error_is_never_reported_as_success() {
-        rt().block_on(async {
-            let db = MockGraphDB::new();
-            let out = save_body(&db, "document:gone", "typed text").await;
-            assert!(matches!(out, SaveOutcome::NotSaved(_)), "{out:?}");
         });
     }
 }

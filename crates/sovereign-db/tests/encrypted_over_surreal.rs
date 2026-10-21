@@ -42,7 +42,10 @@ fn uniq(tag: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    format!("{}-{nanos}-{tag}", std::process::id())
+    // The counter keeps names unique within one clock tick (parallel tests).
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("{}-{n}-{nanos}-{tag}", std::process::id())
 }
 
 /// An `EncryptedGraphDB` over a fresh in-memory `SurrealGraphDB`, plus the raw
@@ -476,4 +479,238 @@ async fn one_undecryptable_row_does_not_brick_lists() {
         "healthy documents must still list when a sibling row is corrupt (DB-M1)"
     );
     let _ = victim_id; // the corrupt row may be skipped or returned degraded — but never sink the list
+}
+
+// ------------------------------------------- document service support ----
+// The store calls the document service (C-DOC, lot 2b) is built on.
+
+use sovereign_db::encrypted::CommitIntegrity;
+use sovereign_db::schema::{raw_to_thing, Commit, DocumentPatch, DocumentSnapshot, PurgeMarker};
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_document_fields_writes_sealed_fields_in_one_statement_and_clears() {
+    let (raw, edb) = build("doc-fields").await;
+    let created = create_doc(&edb, "Old title", "old body").await;
+    let id = created.id_string().unwrap();
+    edb.update_document_fields(&id, DocumentPatch {
+        deleted_at: Some(Some("2026-10-10T12:00:00+00:00".into())),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let when = chrono::Utc::now();
+    edb.update_document_fields(&id, DocumentPatch {
+        title: Some("New title".into()),
+        content: Some("new body".into()),
+        modified_at: Some(when),
+        deleted_at: Some(None),
+        trust: Some("undetermined".into()),
+        is_owned: Some(false),
+        write_seq: Some(7),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let got = edb.get_document(&id).await.unwrap();
+    assert_eq!((got.title.as_str(), got.content.as_str()), ("New title", "new body"));
+    assert_eq!(got.modified_at, when);
+    assert!(got.deleted_at.is_none(), "Some(None) clears the field");
+    assert_eq!(got.trust.as_deref(), Some("undetermined"));
+    assert!(!got.is_owned);
+    assert_eq!(got.write_seq, 7);
+    assert_eq!(got.thread_id, "thread:test", "fields not in the patch are left as they are");
+    // Sealed at rest, nonces paired.
+    let at_rest = raw.get_document(&id).await.unwrap();
+    assert!(!at_rest.title.contains("New title") && !at_rest.content.contains("new body"));
+    assert!(at_rest.title_nonce.is_some() && at_rest.encryption_nonce.is_some());
+    // Listed again (out of the trash).
+    assert!(edb.list_documents(None).await.unwrap().iter().any(|d| d.id_string().as_deref() == Some(id.as_str())));
+    // No such row: an error, never a new row.
+    assert!(edb.update_document_fields("document:nosuch", DocumentPatch::default()).await.is_err());
+    assert!(raw.get_document("document:nosuch").await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn insert_commit_is_sealed_and_signed_and_integrity_is_reported() {
+    let (raw, edb) = build("insert-commit").await;
+    let created = create_doc(&edb, "T", "body").await;
+    let id = created.id_string().unwrap();
+    let c = edb
+        .insert_commit(Commit {
+            id: None,
+            document_id: id.clone(),
+            parent_commit: None,
+            message: "a version".into(),
+            timestamp: chrono::Utc::now(),
+            snapshot: DocumentSnapshot {
+                document_id: id.clone(),
+                title: "Snap title".into(),
+                content: "snap body".into(),
+                thread_id: "thread:test".into(),
+                content_nonce: None,
+                title_nonce: None,
+                title_token_hashes: vec![],
+                deleted_at: None,
+            },
+            signature: None,
+        })
+        .await
+        .unwrap();
+    let cid = c.id_string().unwrap();
+    assert_eq!(c.snapshot.content, "snap body", "the caller gets plaintext back");
+    let at_rest = raw.get_commit(&cid).await.unwrap();
+    assert!(at_rest.signature.is_some(), "signed in the same statement");
+    assert!(!at_rest.snapshot.content.contains("snap body"));
+    let (got, integrity) = edb.get_commit_checked(&cid).await.unwrap();
+    assert_eq!(integrity, CommitIntegrity::Verified);
+    assert_eq!((got.snapshot.title.as_str(), got.snapshot.content.as_str()), ("Snap title", "snap body"));
+    // Unsigned (made below the layer) and tampered commits are told apart.
+    let legacy = raw.commit_document(&id, "pre-MAC").await.unwrap().id_string().unwrap();
+    raw.set_commit_signature(&cid, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").await.unwrap();
+    let listed = edb.list_document_commits_checked(&id).await.unwrap();
+    let of = |want: &str| listed.iter().find(|(c, _)| c.id_string().as_deref() == Some(want)).unwrap().1;
+    assert_eq!(of(&legacy), CommitIntegrity::Unsigned);
+    assert_eq!(of(&cid), CommitIntegrity::Invalid);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_with_id_lands_sealed_in_one_insert() {
+    let (raw, edb) = build("create-with-id").await;
+    let mut d = Document::new("Synced".into(), "thread:test".into(), false);
+    d.id = raw_to_thing("document:fixed1");
+    d.content = "synced body".into();
+    assert!(edb.create_document_with_id(d.clone()).await.unwrap());
+    assert!(!edb.create_document_with_id(d).await.unwrap(), "idempotent");
+    let at_rest = raw.get_document("document:fixed1").await.unwrap();
+    assert!(at_rest.title_nonce.is_some() && at_rest.encryption_nonce.is_some());
+    assert!(!at_rest.content.contains("synced body"));
+    let got = edb.get_document("document:fixed1").await.unwrap();
+    assert_eq!((got.title.as_str(), got.content.as_str()), ("Synced", "synced body"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn purge_pieces_remove_commits_edges_links_and_the_key() {
+    let (raw, edb) = build("purge-pieces").await;
+    let a = create_doc(&edb, "A", "a").await.id_string().unwrap();
+    let b = create_doc(&edb, "B", "b").await.id_string().unwrap();
+    edb.commit_document(&a, "one").await.unwrap();
+    edb.commit_document(&a, "two").await.unwrap();
+    edb.commit_document(&b, "b one").await.unwrap();
+    edb.create_relationship(&a, &b, RelationType::References, 0.5).await.unwrap();
+    edb.create_relationship(&b, &a, RelationType::Supports, 0.5).await.unwrap();
+    edb.create_suggested_link(&a, &b, RelationType::Continues, 0.8, "r", SuggestionSource::Consolidation)
+        .await
+        .unwrap();
+
+    // A trashed document's links leave the pending suggestions, and come back.
+    edb.soft_delete_document(&a).await.unwrap();
+    assert!(edb.list_pending_suggestions().await.unwrap().is_empty());
+    edb.restore_soft_deleted_document(&a).await.unwrap();
+    assert_eq!(edb.list_pending_suggestions().await.unwrap().len(), 1);
+
+    assert_eq!(edb.delete_document_commits(&a).await.unwrap(), 2);
+    assert_eq!(edb.delete_document_relationships(&a).await.unwrap(), 2);
+    assert_eq!(edb.delete_document_suggested_links(&a).await.unwrap(), 1);
+    assert!(raw.list_document_commits(&a).await.unwrap().is_empty());
+    assert_eq!(raw.list_document_commits(&b).await.unwrap().len(), 1, "the neighbour keeps its history");
+    assert!(raw.list_all_relationships().await.unwrap().is_empty());
+    assert!(raw.list_all_suggested_links().await.unwrap().is_empty());
+    assert_eq!(edb.delete_document_commits(&a).await.unwrap(), 0, "idempotent");
+
+    // Crypto-shredding.
+    assert!(edb.shred_document_key(&a).await.unwrap());
+    assert!(edb.get_document(&a).await.is_err(), "the row can no longer be opened");
+    assert!(!edb.shred_document_key(&a).await.unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn purge_marker_round_trip() {
+    let (_raw, edb) = build("purge-marker").await;
+    assert!(edb.get_purge_marker("document:gone").await.unwrap().is_none());
+    let at = chrono::Utc::now();
+    let m = |complete| PurgeMarker { id: None, document_id: "document:gone".into(), purged_at: at, complete, stamp: None, fingerprint: None, revoked: false };
+    edb.set_purge_marker(m(false)).await.unwrap();
+    edb.set_purge_marker(m(true)).await.unwrap();
+    let got = edb.get_purge_marker("document:gone").await.unwrap().unwrap();
+    assert!(got.complete);
+    assert_eq!(got.document_id, "document:gone");
+    assert_eq!(edb.list_purge_markers().await.unwrap().len(), 1, "one marker per document");
+}
+
+// ------------------------------------------------- M8: the store record --
+//
+// C-DOC adoption step 6, **M8 — the store record is sealed at rest**
+// (`doc/plans/C-DOC-adoption.md`; PANDA2's second position, claude-coord
+// from-windows/0113). The one-time migration's record holds counts about the
+// persona's content (`converted: 412` says how many documents the user had):
+// through `EncryptedGraphDB`, `put_store_record` leaves no readable value in
+// the raw store, and `get_store_record` through the same layer gives the value
+// back. The record is read only after unlock, so this is about the disk, not
+// about reading before unlock. Written before the code by the step-6 test
+// author; the implementer does not edit these tests.
+
+/// A record like the migration's, with values no other row would hold. The
+/// counts are long on purpose: a sealed value encoded in base64 or hex must
+/// not contain them by chance (a 2- or 3-digit number would, every few runs).
+const M8_KEY: &str = "doc_format_v2_migration";
+const M8_VALUE: &str = r#"{"converted":4127391,"not_converted":3790253,"complete":true,"shown":false}"#;
+const M8_COUNTS: [&str; 2] = ["4127391", "3790253"];
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m8_the_store_record_is_sealed_at_rest_and_round_trips() {
+    let (raw, edb) = build("m8-sealed").await;
+    edb.put_store_record(M8_KEY, M8_VALUE).await.expect("put through the encrypted layer");
+
+    // At rest: whatever the raw store holds under the key, it is not the value.
+    let at_rest = raw.get_store_record(M8_KEY).await.expect("raw read");
+    if let Some(v) = &at_rest {
+        assert_ne!(v, M8_VALUE, "the record is stored as written: not sealed");
+        for readable in [M8_COUNTS[0], M8_COUNTS[1], "converted", "shown", "complete"] {
+            assert!(!v.contains(readable), "the raw store holds `{readable}` in the record: not sealed");
+        }
+    }
+
+    // Through the layer: the same string back, and an overwrite too.
+    assert_eq!(edb.get_store_record(M8_KEY).await.unwrap().as_deref(), Some(M8_VALUE), "round trip");
+    let second = r#"{"converted":4127391,"not_converted":3790253,"complete":true,"shown":true}"#;
+    edb.put_store_record(M8_KEY, second).await.expect("overwrite");
+    assert_eq!(edb.get_store_record(M8_KEY).await.unwrap().as_deref(), Some(second), "overwrite round trip");
+    if let Some(v) = raw.get_store_record(M8_KEY).await.unwrap() {
+        assert!(!v.contains(M8_COUNTS[0]) && !v.contains("shown"), "the overwrite is sealed too");
+    }
+    assert_eq!(edb.get_store_record("absent_key").await.unwrap(), None, "an absent record is None");
+}
+
+/// Another encrypted layer, with other keys (another persona's), over the same
+/// raw store cannot read the record back as plaintext.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m8_other_keys_cannot_read_the_store_record() {
+    let (raw, edb) = build("m8-owner").await;
+    edb.put_store_record(M8_KEY, M8_VALUE).await.unwrap();
+
+    let u = uniq("m8-other");
+    let kdb = |suffix: &str| {
+        Arc::new(RwLock::new(KeyDatabase::new(std::env::temp_dir().join(format!("sovereign-it-{u}-{suffix}-keys.db")))))
+    };
+    let mk = MasterKey::from_passphrase(b"another", b"pepper").unwrap();
+    let other = EncryptedGraphDB::new(
+        raw.clone() as Arc<dyn GraphDB>,
+        kdb("doc"),
+        kdb("msg"),
+        kdb("thr"),
+        kdb("conv"),
+        kdb("con"),
+        kdb("shr"),
+        Arc::new(Kek::generate()),
+        Arc::new(IndexKey::generate()),
+        Arc::new(DeviceKey::derive(&mk, "other-device").unwrap()),
+    );
+    match other.get_store_record(M8_KEY).await {
+        Err(_) => {}
+        Ok(None) => {}
+        Ok(Some(v)) => {
+            assert_ne!(v, M8_VALUE, "another persona's keys read the record");
+            assert!(!v.contains(M8_COUNTS[0]), "another persona's keys read the count");
+        }
+    }
 }
