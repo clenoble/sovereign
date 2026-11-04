@@ -66,11 +66,19 @@ pub struct CompletePairedOnboardingInput {
     /// existing device's passphrase is fine — it only protects the
     /// wrapping of the imported AccountKey on this device.
     pub password: String,
+    /// v0.0.12 lot 1, P3: the second entry of each value typed twice; see
+    /// `OnboardingData`. Checked before the claim and the handshake.
+    #[serde(default)]
+    pub password_confirm: Option<String>,
     pub duress_password: Option<String>,
+    #[serde(default)]
+    pub duress_confirm: Option<String>,
     /// Standard onboarding inputs.
     pub nickname: Option<String>,
     pub bubble_style: Option<String>,
     pub canary_phrase: Option<String>,
+    #[serde(default)]
+    pub canary_confirm: Option<String>,
     pub seed_sample_data: bool,
 }
 
@@ -207,24 +215,40 @@ pub async fn consume_pair_qr_preview(
 /// New device: full onboarding via the P3.1 interactive handshake.
 /// Scans the offer, proves the typed pairing code online to the source
 /// device, receives salt + AccountKey, derives + confirms this device's
-/// final identity, then persists salt + device_id + auth.store under the
-/// user's local passphrase and writes the onboarding_done marker. After
-/// this returns Ok, the next `validate_password` unlocks the imported
-/// AccountKey and the user lands in a fully synced workspace.
+/// final identity, records the source device, then persists auth.store +
+/// salt under the user's local passphrase and writes the onboarding_done
+/// marker. After this returns Ok, the next `validate_password` unlocks the
+/// imported AccountKey and the user lands in a fully synced workspace.
 ///
-/// Idempotency: refuses to run if `onboarding_done` already exists, to
-/// avoid clobbering a working install.
+/// v0.0.12 lot 1: the confirmations and duress ≠ password are checked before
+/// anything (P3, P4); the source's record is written before auth.store and
+/// its failure fails the setup (P2c); once auth.store is written a failed
+/// step reports the setup `incomplete` instead of an error (P2b).
+///
+/// Idempotency: the claim refuses once `auth.store` exists ("Already
+/// onboarded — log in instead"), so a working install is never clobbered.
 #[tauri::command]
 pub async fn complete_onboarding_paired(
     state: State<'_, AppState>,
     input: CompletePairedOnboardingInput,
-) -> Result<(), String> {
+) -> Result<crate::tauri_commands::OnboardingOutcome, String> {
     #[cfg(feature = "p2p")]
     {
         use sovereign_crypto::device_key::DeviceKey;
         use sovereign_crypto::master_key::MasterKey;
 
         let profile_dir = &state.profile_dir;
+
+        // v0.0.12 lot 1, P3/P4: before the claim, the handshake, and any
+        // derivation or write.
+        crate::tauri_commands::auth::check_typed_twice(
+            Some(input.password.as_str()),
+            input.password_confirm.as_deref(),
+            input.duress_password.as_deref(),
+            input.duress_confirm.as_deref(),
+            input.canary_phrase.as_deref(),
+            input.canary_confirm.as_deref(),
+        )?;
 
         // rc2 (spec ch. 07, *Auth store*, "Created once"): the single-flight
         // claim, taken first — before the pairing handshake (which derives the
@@ -235,11 +259,12 @@ pub async fn complete_onboarding_paired(
         // pre-login race can leave auth.store without it); without that an
         // unauthenticated IPC caller could OVERWRITE the victim's auth.store
         // with an attacker-supplied QR / password / AccountKey.
+        //
+        // v0.0.12 lot 1, P1: the claim is the only gate. The former refusal
+        // on an existing `onboarding_done` marker is gone: without
+        // `auth.store` the app now shows the wizard whatever the marker says,
+        // and a stale marker must not block the pairing it offers.
         let _claim = crate::onboarding_claim::claim(profile_dir).map_err(|e| e.to_string())?;
-
-        if profile_dir.join("onboarding_done").exists() {
-            return Err("onboarding already complete on this device".to_string());
-        }
 
         // 1. Decode the scanned offer (plaintext — the QR carries no
         //    secrets since P3.1) and mint this device's id up front.
@@ -293,13 +318,43 @@ pub async fn complete_onboarding_paired(
             .ok_or_else(|| "handshake finished without deriving an identity".to_string())?;
         let imported_account_key = AccountKey::from_bytes(outcome.secrets.account_key_bytes);
 
-        // 3. Persist the AuthStore with the imported AccountKey wrapped
+        // 3. Persist the source as a paired device WITH its per-pair key
+        //    (P1.4) — the handshake gave us everything to compute it, so
+        //    the store is encrypted from birth (no plaintext bootstrap).
+        //    The source registered OUR final identity during PairComplete.
+        //    v0.0.12 lot 1, P2c: written BEFORE auth.store, and its failure
+        //    fails the setup (auth.store not written yet), so an account that
+        //    opens is one that knows its source. A fresh manager replaces any
+        //    record a previous attempt left (`add_device` keys by peer id; the
+        //    file is rewritten whole), so pairing again after a failure leaves
+        //    only the new record.
+        let store_key = sovereign_p2p::pairing::derive_store_key(&device_key);
+        let pair_key = imported_account_key
+            .derive_pair_key(&outcome.final_peer_id, &offer.source_peer_id);
+        let mut manager = sovereign_p2p::pairing::PairingManager::new(
+            crypto_dir.join("paired_devices.json"),
+        );
+        manager.add_device(sovereign_p2p::pairing::PairedDevice::with_key(
+            offer.source_peer_id.clone(),
+            outcome.secrets.source_device_name.clone(),
+            pair_key,
+        ));
+        manager
+            .save(&store_key)
+            .map_err(|e| format!("Could not record the source device: {e}"))?;
+
+        // 4. Persist the AuthStore with the imported AccountKey wrapped
         //    under the new local passphrase's DeviceKey, then the salt (in
-        //    that order, so a refused exclusive write changes no file).
-        // Duress optional → RANDOM unreachable decoy, never the shared
-        // source-visible literal (H-shell1 theme; matches the wizard).
+        //    that order, so a refused exclusive write changes no account
+        //    file). Duress optional → RANDOM unreachable decoy, never the
+        //    shared source-visible literal (H-shell1 theme; matches the
+        //    wizard); an empty duress password counts as none.
         let random_duress = sovereign_crypto::random_hex_32();
-        let duress = input.duress_password.as_deref().unwrap_or(&random_duress);
+        let duress = input
+            .duress_password
+            .as_deref()
+            .filter(|d| !d.is_empty())
+            .unwrap_or(&random_duress);
         let auth_store = AuthStore::create_with_imported_account_key(
             input.password.as_bytes(),
             duress.as_bytes(),
@@ -314,10 +369,25 @@ pub async fn complete_onboarding_paired(
             .save_new(&crypto_dir.join("auth.store"))
             .map_err(crate::onboarding_claim::save_new_error)?;
         tracing::info!("auth.store published (paired onboarding): {mode:?}");
-        sovereign_crypto::fs_private::write_private(&crypto_dir.join("salt"), &outcome.secrets.salt)
-            .str_err()?;
 
-        // 4. Save user profile (nickname, bubble_style, theme — same as
+        // P2b: the account exists from here on; a failed step makes the
+        // setup incomplete (logged), and the marker is then not written.
+        fn step(failed: &mut Vec<&'static str>, name: &'static str, result: Result<(), String>) {
+            if let Err(e) = result {
+                tracing::warn!("paired setup step '{name}' failed after auth.store was written (setup incomplete): {e}");
+                failed.push(name);
+            }
+        }
+        let mut failed: Vec<&'static str> = Vec::new();
+
+        step(
+            &mut failed,
+            "salt",
+            sovereign_crypto::fs_private::write_private(&crypto_dir.join("salt"), &outcome.secrets.salt)
+                .str_err(),
+        );
+
+        // 5. Save user profile (nickname, bubble_style, theme — same as
         //    fresh onboarding).
         let mut profile = sovereign_core::profile::UserProfile::load(profile_dir)
             .unwrap_or_else(|_| sovereign_core::profile::UserProfile::default_new());
@@ -331,53 +401,40 @@ pub async fn complete_onboarding_paired(
         if let Ok(theme_guard) = state.theme.lock() {
             profile.theme = theme_guard.clone();
         }
-        profile.save(profile_dir).str_err()?;
+        step(&mut failed, "profile", profile.save(profile_dir).str_err());
 
-        // 5. Optional canary phrase — same shape as fresh onboarding.
+        // 6. Optional canary phrase — same shape as fresh onboarding. A failed
+        //    authentication is a failed step (before, it was skipped silently).
         if let Some(ref phrase) = input.canary_phrase {
-            if let Ok(auth_result) = auth_store.authenticate(input.password.as_bytes()) {
-                let canary = sovereign_crypto::canary::CanaryStore::encrypt(
-                    phrase,
-                    auth_result.kek.as_bytes(),
-                )
-                .str_err()?;
-                canary
-                    .save(&crypto_dir.join("canary.store"))
-                    .str_err()?;
-            }
+            let saved = auth_store
+                .authenticate(input.password.as_bytes())
+                .and_then(|auth_result| {
+                    sovereign_crypto::canary::CanaryStore::encrypt(phrase, auth_result.kek.as_bytes())
+                })
+                .and_then(|canary| canary.save(&crypto_dir.join("canary.store")))
+                .str_err();
+            step(&mut failed, "safety phrase", saved);
         }
 
-        // 6. Don't seed sample data on a paired device — its real data
+        // 7. Don't seed sample data on a paired device — its real data
         //    arrives through sync. The flag is accepted for API symmetry
         //    but ignored.
         let _ = input.seed_sample_data;
 
-        // 7. Persist the source as a paired device WITH its per-pair key
-        //    (P1.4) — the handshake gave us everything to compute it, so
-        //    the store is encrypted from birth (no plaintext bootstrap).
-        //    The source registered OUR final identity during PairComplete.
-        let store_key = sovereign_p2p::pairing::derive_store_key(&device_key);
-        let pair_key = imported_account_key
-            .derive_pair_key(&outcome.final_peer_id, &offer.source_peer_id);
-        let mut manager = sovereign_p2p::pairing::PairingManager::new(
-            crypto_dir.join("paired_devices.json"),
-        );
-        manager.add_device(sovereign_p2p::pairing::PairedDevice::with_key(
-            offer.source_peer_id.clone(),
-            outcome.secrets.source_device_name.clone(),
-            pair_key,
-        ));
-        if let Err(e) = manager.save(&store_key) {
-            tracing::warn!("Failed to persist paired_devices.json: {e}");
+        // 8. Mark onboarding_done — only when every step succeeded (P2: the
+        //    marker's absence beside auth.store is what the first login's
+        //    notice reads, and that login writes it).
+        if failed.is_empty() {
+            let marker = std::fs::write(profile_dir.join("onboarding_done"), "1").str_err();
+            step(&mut failed, "marker", marker);
         }
-
-        // 8. Mark onboarding_done.
-        std::fs::write(profile_dir.join("onboarding_done"), "1").str_err()?;
+        let incomplete = !failed.is_empty();
         tracing::info!(
-            "Paired onboarding complete (source: {})",
+            "Paired onboarding {} (source: {})",
+            if incomplete { "incomplete" } else { "complete" },
             outcome.secrets.source_device_name
         );
-        return Ok(());
+        return Ok(crate::tauri_commands::OnboardingOutcome { incomplete });
     }
     #[allow(unreachable_code)]
     {
@@ -509,6 +566,11 @@ pub struct P2pSettingsDto {
     pub wifi_only: bool,
     /// Whether the node is actually running this session.
     pub running: bool,
+    /// True while the node runs without the DNS transport (no system
+    /// resolver config, as on Android) — v0.0.12 item 12, P4: Settings →
+    /// Devices says the phone cannot look up names: it syncs on the local
+    /// network and with addresses given by IP.
+    pub without_dns: bool,
 }
 
 /// Read-only view of the P2P configuration for the Settings → Devices
@@ -529,6 +591,7 @@ pub async fn get_p2p_settings(
             enable_mdns: state.config.p2p.enable_mdns,
             wifi_only: state.config.p2p.wifi_only,
             running: state.p2p_command_tx().await.is_some(),
+            without_dns: state.p2p_without_dns().await,
         });
     }
     #[allow(unreachable_code)]
@@ -541,6 +604,7 @@ pub async fn get_p2p_settings(
             enable_mdns: false,
             wifi_only: false,
             running: false,
+            without_dns: false,
         })
     }
 }

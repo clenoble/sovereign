@@ -148,6 +148,13 @@ async fn w3_the_canvas_draws_a_waiting_document_in_the_fallback_lane() {
     for gone in ["Old drafts", "Notes"] {
         assert!(!lane_names.iter().any(|n| n == gone), "no lane for the deleted thread {gone}");
     }
+    // v0.0.12 lanes lot, N3 (added by the lot's test author): one lane per
+    // live thread, then the fallback lane after them — and nothing else.
+    assert_eq!(
+        lane_names,
+        vec!["Keep".to_string(), crate::canvas::FALLBACK_LANE_NAME.to_string()],
+        "Keep's lane, then the fallback lane"
+    );
 }
 
 // -------------------------------------------------------------------- W5 --

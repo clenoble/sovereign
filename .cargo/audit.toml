@@ -87,4 +87,42 @@ ignore = [
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
+    # zstd 0.13.3 (stream data leaking into the next stream on a reused context) and
+    # zstd-safe 7.2.4 (uninitialised memory on a failed legacy-frame decompression;
+    # Seekable::decompress setting a Vec length past its capacity) — accepted
+    # 2026-10-28 (Céline). In the lockfile only, through wasmtime-internal-cache 44,
+    # whose cache feature no build enables: `cargo tree -i zstd` and
+    # `cargo tree -i zstd-safe` (--target all -e all) match no package on PANDA2,
+    # 2026-10-28. The fixes (zstd >= 0.14.3, zstd-safe >= 8.2.0) are major versions
+    # wasmtime 44 does not accept. zstd-sys, which rocksdb does link, is on 2.1.2
+    # (RUSTSEC-2026-0410 fixed). Re-trace both at every release; drop these with the
+    # wasmtime bump the HARD PRECONDITION above already requires.
+    "RUSTSEC-2026-0391",
+    "RUSTSEC-2026-0398",
+    "RUSTSEC-2026-0403",
+
+    # ── Accepted 2026-11-04 (Céline), found by the rc2 Linux gate (WSL 0034).
+    # wasmtime 44.0.2 — unchecked memory in a borrowed-resource transfer. Same path,
+    # same HARD PRECONDITION, raised: bump to wasmtime >= 48.0.8 / >= 49.0.5 / >= 50.0.1
+    # before wasm-plugins is wired in. `cargo tree -i wasmtime -e all --target all`
+    # matches no package (WSL and PANDA2, 2026-11-04).
+    "RUSTSEC-2026-0424",
+    # zip 0.6.6 — `extract` aborts on a symlink entry. Same path as the zip ignores
+    # above (rustpotter -> candle-core 0.2.2), same HARD PRECONDITION. `cargo tree -i
+    # zip@0.6.6 -e all --target all` matches no package (WSL and PANDA2, 2026-11-04).
+    "RUSTSEC-2026-0429",
+    # libz-sys 1.1.29 — its build script prints the build's environment, secrets
+    # included, into target/, but only when built with cc >= 1.6.0 on a Unix host.
+    # The lock has one cc, 1.2.63, so the leak is not triggered. The fix (1.1.31, of
+    # 2026-10-28) is held back by Céline's two-week rule on new versions. Bump it, and
+    # drop this line, from 2026-11-11. Re-check before any `cargo update` that moves
+    # cc to 1.6 or later.
+    "RUSTSEC-2026-0418",
+    # pulldown-cmark 0.13.5 — quadratic parsing of nested image wikilinks, only with
+    # Options::ENABLE_WIKILINKS (or Options::all()). Our two parsers
+    # (sovereign-skills html_export.rs l. 58, plaintext_export.rs l. 57) start from
+    # Options::empty() and add tables, strikethrough, tasklists, footnotes: never
+    # wikilinks. The fix (0.13.6, of 2026-10-30) is held back by the same rule. Bump
+    # it, and drop this line, from 2026-11-13.
+    "RUSTSEC-2026-0433",
 ]

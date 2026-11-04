@@ -14,7 +14,15 @@ pub struct AsyncLlmBackend {
     inner: Arc<Mutex<Option<LlamaCppBackend>>>,
     n_ctx: u32,
     sampling: Arc<Mutex<SamplingConfig>>,
+    /// Test-only seam: a scripted model answering `generate` in place of
+    /// llama.cpp (prompt, max_tokens) → text. Never compiled outside tests.
+    #[cfg(test)]
+    fake: Option<FakeGenerate>,
 }
+
+/// Test-only seam: the function a fake backend answers `generate` with.
+#[cfg(test)]
+pub(crate) type FakeGenerate = Arc<dyn Fn(&str, u32) -> Result<String> + Send + Sync>;
 
 impl AsyncLlmBackend {
     pub fn new(n_ctx: u32) -> Self {
@@ -22,7 +30,24 @@ impl AsyncLlmBackend {
             inner: Arc::new(Mutex::new(None)),
             n_ctx,
             sampling: Arc::new(Mutex::new(SamplingConfig::default())),
+            #[cfg(test)]
+            fake: None,
         }
+    }
+
+    /// Test-only seam: a backend with window `n_ctx` whose `generate` is
+    /// answered by `fake` (no model is loaded or needed).
+    #[cfg(test)]
+    pub(crate) fn fake(n_ctx: u32, fake: FakeGenerate) -> Self {
+        let mut b = Self::new(n_ctx);
+        b.fake = Some(fake);
+        b
+    }
+
+    /// The model's context window, in tokens (`AiConfig::n_ctx`): what one
+    /// call's prompt and answer budget must fit in (v0.0.12 item 13).
+    pub fn n_ctx(&self) -> u32 {
+        self.n_ctx
     }
 
     /// Update the sampling config (e.g. after a model hot-swap).
@@ -65,6 +90,10 @@ impl ModelBackend for AsyncLlmBackend {
     }
 
     async fn generate(&self, prompt: &str, max_tokens: u32) -> Result<String> {
+        #[cfg(test)]
+        if let Some(fake) = &self.fake {
+            return fake(prompt, max_tokens);
+        }
         let inner = self.inner.clone();
         let sampling = self.sampling.clone();
         let prompt = prompt.to_string();

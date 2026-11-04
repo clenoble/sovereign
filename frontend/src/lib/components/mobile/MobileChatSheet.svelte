@@ -22,6 +22,7 @@
 	import { chatMessage } from '$lib/api/commands';
 	import { invoke } from '@tauri-apps/api/core';
 	import { renderMarkdown } from '$lib/utils/markdown';
+	import { trackChatAnnouncements } from '$lib/utils/chatAnnouncer.svelte';
 	import { hapticForLevel, hapticSuccess, hapticLight } from '$lib/api/haptics';
 	import BottomSheet from './BottomSheet.svelte';
 
@@ -39,6 +40,10 @@
 	let audioStream: MediaStream | null = null;
 
 	let messages = $derived(recentMessages());
+
+	// v0.0.12, F-a11y, F2: new assistant and system messages, for the polite
+	// region below (the person's own are not read out again).
+	const announcer = trackChatAnnouncements();
 
 	// Auto-scroll to bottom when messages arrive
 	$effect(() => {
@@ -258,7 +263,8 @@
 			</div>
 		{:else}
 			<!-- ── Partial / Full: scrollable message history ── -->
-			<div class="messages" bind:this={messagesEl}>
+			<!-- v0.0.12, F-a11y, F2: the conversation, named; not live, the region below speaks. -->
+			<div class="messages" bind:this={messagesEl} role="log" aria-label="Conversation" aria-live="off">
 				{#each messages as msg, i}
 					<div
 						class="message {msg.role} {provenanceClass(msg.text)}"
@@ -334,7 +340,28 @@
 	{/snippet}
 </BottomSheet>
 
+<!-- v0.0.12, F-a11y, F2: outside the detent branch (and the sheet), so the
+     first message, which arrives in peek, is announced too. -->
+<div class="sr-only" aria-live="polite">
+	{#key announcer.seq}
+		{#if announcer.announcement}<p>{announcer.announcement}</p>{/if}
+	{/key}
+</div>
+
 <style>
+	/* Visually hidden, still read by screen readers (v0.0.12, F-a11y, F2). */
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
 	/* ── Peek row ─────────────────────────────────────────────── */
 	.peek-row {
 		display: flex;

@@ -115,6 +115,37 @@ pub fn install_recovered_auth_store(
     account_key: &AccountKey,
     new_passphrase: &[u8],
 ) -> Result<AuthStore, String> {
+    install_recovered(crypto_dir, kek, account_key, new_passphrase).map(|(store, _)| store)
+}
+
+/// [`install_recovered_auth_store`], also returning the recovered account's
+/// duress persona's device identity (v0.0.12 item 22, D6): the libp2p peer id
+/// of the device key its random duress passphrase derives, which only this
+/// function holds. For a host that pre-seeds the duress decoy, stamped with
+/// that id. `None` if it cannot be derived (the store is installed anyway).
+pub fn install_recovered_auth_store_with_duress_identity(
+    crypto_dir: &Path,
+    kek: &Kek,
+    account_key: &AccountKey,
+    new_passphrase: &[u8],
+) -> Result<(AuthStore, Option<String>), String> {
+    let (store, mut duress) = install_recovered(crypto_dir, kek, account_key, new_passphrase)?;
+    let identity = store
+        .authenticate(duress.as_bytes())
+        .ok()
+        .filter(|a| matches!(a.persona, crate::auth::PersonaKind::Duress))
+        .and_then(|a| crate::peer_identity::peer_id(&a.device_key).ok());
+    zeroize::Zeroize::zeroize(&mut duress);
+    Ok((store, identity))
+}
+
+/// The installation, returning the store and its random duress passphrase.
+fn install_recovered(
+    crypto_dir: &Path,
+    kek: &Kek,
+    account_key: &AccountKey,
+    new_passphrase: &[u8],
+) -> Result<(AuthStore, String), String> {
     // (1) Verify BEFORE touching auth.store. Do not reorder.
     verify_content_key_stores(crypto_dir, kek)?;
 
@@ -141,7 +172,7 @@ pub fn install_recovered_auth_store(
         .map_err(|e| format!("save auth.store: {e}"))?;
     crate::fs_private::write_private(&crypto_dir.join("salt"), &salt)
         .map_err(|e| format!("write salt: {e}"))?;
-    Ok(store)
+    Ok((store, random_duress))
 }
 
 /// Non-secret pointer the recovering (pre-login) device reads to reach the

@@ -19,6 +19,9 @@ mod step5_tests;
 // S5-12: documents whose thread was deleted (the phone's commands and their
 // layer).
 mod doc_orphans;
+// v0.0.12 item 7 V2b: the documents the one-time conversion could not read
+// (the phone's command and its layer).
+mod doc_unreadable;
 // The S5-12 tests of that layer, written before the code; the implementer
 // does not edit them.
 #[cfg(test)]
@@ -36,11 +39,36 @@ mod step6_tests;
 mod onboarding_claim_tests;
 #[cfg(test)]
 mod onboarding_order_tests;
+// v0.0.12 lot 1, item 4 (P1–P4 on the phone, `doc/plans/V0012-lot1.md`):
+// tests written before the code, by another author; the implementer does not
+// edit them. They run the commands on a Tauri mock app.
+#[cfg(all(test, feature = "encryption"))]
+mod lot1_onboarding_tests;
+// v0.0.12 item 22 (a device's identity in its stamps is its peer id,
+// `doc/plans/V0012-item22-device-identity.md`): tests written before the
+// code, by another author; the implementer does not edit them. The commands
+// run as in `lot1_onboarding_tests` (whose harness they share); the behaviour
+// tests need the `p2p` feature (the peer id is derived by `sovereign-p2p`).
+#[cfg(all(test, feature = "encryption"))]
+mod item22_identity_tests;
 // rc2, the laptop's second position (Q1: save_new's mode logged; Q2: the salt
 // written atomically): source scans, written before the code; the implementer
 // does not edit them.
 #[cfg(test)]
 mod rc2_second_position_tests;
+// v0.0.12 item 9 (`doc/plans/V0012-item9-act-on-what-was-shown.md`, T1–T3 on
+// the phone's layer): tests written before the code, by another author; the
+// implementer does not edit them. Needs the seams named at the top of the
+// file, so it does not compile until they exist.
+#[cfg(test)]
+mod item9_tests;
+// v0.0.12 item 7 V2b (`doc/plans/V0012-item7-v2b-app-list.md`, B2: the app
+// lists the documents it could not read): tests written before the code, by
+// another author; the implementer does not edit them. Needs the seams named
+// at the top of the file (`crate::doc_unreadable`), so it does not compile
+// until they exist.
+#[cfg(all(test, feature = "encryption"))]
+mod item7_v2b_tests;
 // rc2: the single-flight claim taken by every first write of auth.store
 // (onboarding fresh or paired, backup recovery).
 pub(crate) mod onboarding_claim;
@@ -314,6 +342,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             doc_orphans::commands::list_orphaned_documents,
             doc_orphans::commands::resolve_orphan,
             doc_orphans::commands::resolve_orphans_of_thread,
+            // Documents the conversion could not read (v0.0.12 item 7 V2b)
+            doc_unreadable::commands::list_unreadable_documents,
             tauri_commands::documents::list_commits,
             tauri_commands::documents::restore_commit,
             tauri_commands::documents::list_skills_for_doc,
@@ -1186,6 +1216,7 @@ mod ipc_classification_guard {
         "list_orphaned_documents",
         "resolve_orphan",
         "resolve_orphans_of_thread",
+        "list_unreadable_documents",
         "list_commits",
         "restore_commit",
         "list_skills_for_doc",
@@ -1306,6 +1337,7 @@ mod ipc_classification_guard {
         "list_orphaned_documents",
         "resolve_orphan",
         "resolve_orphans_of_thread",
+        "list_unreadable_documents",
         "list_commits",
         "restore_commit",
         "list_skills_for_doc",

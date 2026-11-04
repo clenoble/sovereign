@@ -84,6 +84,44 @@ pub(crate) fn auth_store_exists() -> bool {
     auth_store_path().exists()
 }
 
+/// v0.0.12 items 18+20, B5b: the setup-complete marker. Written last by the
+/// wizard's setup, and by a join or a recovery, which rebuild an account; an
+/// `auth.store` without it, beside the setup-started record below, is a
+/// setup that was interrupted, said once at the next login. The same file as
+/// the Tauri hosts' (lot 1, P2): the profile directory is the data directory
+/// on every host.
+pub(crate) fn setup_marker_path() -> PathBuf {
+    sovereign_core::sovereign_dir().join("onboarding_done")
+}
+pub(crate) fn setup_complete() -> bool {
+    setup_marker_path().exists()
+}
+/// Writes the marker, which supersedes the setup-started record (removed).
+pub(crate) fn mark_setup_complete() -> std::io::Result<()> {
+    std::fs::create_dir_all(sovereign_core::sovereign_dir())?;
+    std::fs::write(setup_marker_path(), "1")?;
+    match std::fs::remove_file(setup_started_path()) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// B5b as amended (ff959de): the setup-started record, written by the
+/// wizard's setup just before `auth.store`. The desktop wrote no marker
+/// before this build, so a store without the marker is an interrupted setup
+/// only when this record is there too; with neither, the account predates
+/// the marker and gets it silently at its login.
+pub(crate) fn setup_started_path() -> PathBuf {
+    sovereign_core::sovereign_dir().join("onboarding_started")
+}
+pub(crate) fn setup_started() -> bool {
+    setup_started_path().exists()
+}
+pub(crate) fn mark_setup_started() -> std::io::Result<()> {
+    std::fs::create_dir_all(sovereign_core::sovereign_dir())?;
+    std::fs::write(setup_started_path(), "1")
+}
+
 pub(crate) fn map_persona(p: CryptoPersona) -> CorePersona {
     match p {
         CryptoPersona::Primary => CorePersona::Primary,

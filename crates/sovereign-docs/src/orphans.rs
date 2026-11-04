@@ -182,6 +182,54 @@ impl DocumentService {
         self.resolve_locked(&ids, target).await
     }
 
+    /// The group action on what the group showed (v0.0.12 item 9, T2): the
+    /// same way out for those of `shown` (the ids the group listed when it
+    /// was drawn) that still wait in the deleted thread `deleted_thread_id`,
+    /// under one write lock. A document that joined the group after it was
+    /// drawn is not in `shown` and keeps waiting; a shown one no longer
+    /// waiting (moved, trashed or purged meanwhile) is left alone.
+    ///
+    /// The target is checked first, as in
+    /// [`DocumentService::resolve_orphans_of_thread`] (a refused target
+    /// changes nothing). **[choice]** With none of `shown` still waiting it
+    /// does nothing — no thread is created for nobody — and answers zero
+    /// documents, not a refusal.
+    pub async fn resolve_orphans_shown(
+        &self,
+        deleted_thread_id: &str,
+        shown: &[DocId],
+        resolution: OrphanResolution,
+    ) -> Result<OrphanResolved, DocError> {
+        let _w = self.write_lock.lock().await;
+        let target = self.check_target(&resolution).await?;
+        let deleted = self.deleted_threads().await?;
+        let mut ids: Vec<String> = Vec::new();
+        // A thread no longer deleted (brought back meanwhile): nothing waits in it.
+        if deleted.contains_key(deleted_thread_id) {
+            for id in shown {
+                if ids.contains(id) {
+                    continue;
+                }
+                let waiting = match self.load(id).await {
+                    Ok(d) => d.deleted_at.is_none() && d.thread_id == deleted_thread_id,
+                    Err(DocError::NotFound(_)) | Err(DocError::Purged(_)) => false,
+                    Err(e) => return Err(e),
+                };
+                if waiting {
+                    ids.push(id.clone());
+                }
+            }
+        }
+        if ids.is_empty() {
+            let thread_id = match target {
+                Target::Thread(t) => Some(t),
+                Target::New(_) | Target::Trash => None,
+            };
+            return Ok(OrphanResolved { documents: Vec::new(), thread_id });
+        }
+        self.resolve_locked(&ids, target).await
+    }
+
     /// Checks a resolution's target before anything is written.
     async fn check_target(&self, resolution: &OrphanResolution) -> Result<Target, DocError> {
         match resolution {

@@ -174,6 +174,13 @@ impl SessionLog {
     /// The verification [`open_encrypted`](Self::open_encrypted) runs before
     /// it appends: `Some(reason)` when the log must not be opened under `key`.
     /// Read-only — it never writes, rotates or re-anchors anything.
+    ///
+    /// This is the one definition of an unverifiable log (v0.0.12 item 10,
+    /// [`quarantine_unverifiable`]): the hash chain over the file's lines
+    /// (reordered entries; a plaintext line after encryption began,
+    /// SESSIONLOG-002), every encrypted entry decrypting under `key`, and the
+    /// MAC'd anchor (truncation, forgery, deletion: SESSIONLOG-001/003) with
+    /// the out-of-dir beacon (genesis wipe).
     #[cfg(feature = "encrypted-log")]
     fn tamper_on_open(
         path: &Path,
@@ -181,20 +188,29 @@ impl SessionLog {
         key: &[u8; 32],
         beacon: Option<&Path>,
     ) -> Option<String> {
-        match crate::encrypted_log::read_chain_anchor(anchor_path, key) {
-            crate::encrypted_log::AnchorStatus::Valid { count, head } => {
-                crate::encrypted_log::check_no_truncation(&Self::read_all_lines(path), count, &head)
+        use crate::encrypted_log;
+        let lines = Self::read_all_lines(path);
+        if let Err(e) = encrypted_log::verify_chain(&lines) {
+            return Some(format!("hash chain broken: {e}"));
+        }
+        if lines
+            .iter()
+            .filter(|l| encrypted_log::is_encrypted_line(l))
+            .any(|l| encrypted_log::decrypt_entry(l, key).is_err())
+        {
+            return Some("an encrypted entry does not decrypt under this key".into());
+        }
+        match encrypted_log::read_chain_anchor(anchor_path, key) {
+            encrypted_log::AnchorStatus::Valid { count, head } => {
+                encrypted_log::check_no_truncation(&lines, count, &head)
                     .err()
                     .map(|e| format!("anchor/file mismatch: {e}"))
             }
-            crate::encrypted_log::AnchorStatus::Forged => {
+            encrypted_log::AnchorStatus::Forged => {
                 Some("anchor MAC invalid (forged/corrupt)".into())
             }
-            crate::encrypted_log::AnchorStatus::Missing => {
-                if Self::read_all_lines(path)
-                    .iter()
-                    .any(|l| crate::encrypted_log::is_encrypted_line(l))
-                {
+            encrypted_log::AnchorStatus::Missing => {
+                if lines.iter().any(|l| encrypted_log::is_encrypted_line(l)) {
                     Some("anchor missing but encrypted entries exist (deleted anchor)".into())
                 } else if beacon.map(|b| b.exists()).unwrap_or(false) {
                     // sessionlog-genesis-wipe: the log AND its anchor are both
@@ -505,12 +521,23 @@ impl SessionLog {
 /// `install_key` succeeds. The caller tells the user (decision K4: stop
 /// logging and say so).
 pub struct SessionLogSlot {
-    dir: PathBuf,
+    /// Where the log lives and the key it was opened under, read together so
+    /// a read never pairs one persona's directory with another's key.
+    at: std::sync::Mutex<SlotAt>,
     log: std::sync::Mutex<Option<SessionLog>>,
-    #[cfg(feature = "encrypted-log")]
-    key: std::sync::Mutex<Option<[u8; 32]>>,
     /// Set by a failed encrypted open; cleared by a successful one.
     disabled: std::sync::atomic::AtomicBool,
+    /// Bumped each time the slot is pointed at a directory
+    /// ([`point_at`](Self::point_at)): a read that straddles the move returns
+    /// nothing rather than one persona's history to the next.
+    generation: std::sync::atomic::AtomicU64,
+}
+
+/// The slot's directory and key.
+struct SlotAt {
+    dir: PathBuf,
+    #[cfg(feature = "encrypted-log")]
+    key: Option<[u8; 32]>,
 }
 
 impl SessionLogSlot {
@@ -525,17 +552,23 @@ impl SessionLogSlot {
             }
         };
         Self {
-            dir: dir.to_path_buf(),
+            at: std::sync::Mutex::new(SlotAt {
+                dir: dir.to_path_buf(),
+                #[cfg(feature = "encrypted-log")]
+                key: None,
+            }),
             log: std::sync::Mutex::new(log),
-            #[cfg(feature = "encrypted-log")]
-            key: std::sync::Mutex::new(None),
             disabled: std::sync::atomic::AtomicBool::new(false),
+            generation: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
     /// The directory holding the log.
-    pub fn dir(&self) -> &Path {
-        &self.dir
+    pub fn dir(&self) -> PathBuf {
+        match self.at.lock() {
+            Ok(at) => at.dir.clone(),
+            Err(poisoned) => poisoned.into_inner().dir.clone(),
+        }
     }
 
     /// True after a failed encrypted open: logging is off for this session.
@@ -555,9 +588,33 @@ impl SessionLogSlot {
         }
     }
 
-    /// Switch to the encrypted log under `key`. On failure the slot turns
-    /// logging OFF (the plaintext log is closed and never reopened) and the
-    /// reason is returned for the caller to surface.
+    /// Point the slot at the log in `dir` (v0.0.12 item 10, L6: a host whose
+    /// one orchestrator serves each persona that logs in). The log open until
+    /// now is closed, unwritten, and its key forgotten; logging is off until
+    /// [`install_key`](Self::install_key) opens the log in `dir`. Nothing at
+    /// the previous directory is touched, and no read returns its history
+    /// from now on.
+    #[cfg(feature = "encrypted-log")]
+    pub fn point_at(&self, dir: &Path) {
+        self.disabled.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Lock order, everywhere: `log`, then `at`.
+        let mut guard = match self.log.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = None;
+        let mut at = match self.at.lock() {
+            Ok(a) => a,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        at.dir = dir.to_path_buf();
+        at.key = None;
+    }
+
+    /// Switch to the encrypted log under `key`, in the slot's directory. On
+    /// failure the slot turns logging OFF (the plaintext log is closed and
+    /// never reopened) and the reason is returned for the caller to surface.
     #[cfg(feature = "encrypted-log")]
     pub fn install_key(&self, key: [u8; 32], beacon: Option<&Path>) -> Result<()> {
         // Hold the log lock across the open so no plaintext line can slip in
@@ -566,23 +623,38 @@ impl SessionLogSlot {
             .log
             .lock()
             .map_err(|_| anyhow::anyhow!("session log lock poisoned"))?;
-        match SessionLog::open_encrypted(&self.dir, key, beacon) {
+        let mut at = self
+            .at
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session log lock poisoned"))?;
+        match SessionLog::open_encrypted(&at.dir, key, beacon) {
             Ok(log) => {
                 *guard = Some(log);
-                if let Ok(mut k) = self.key.lock() {
-                    *k = Some(key);
-                }
+                at.key = Some(key);
                 self.disabled.store(false, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
             }
             Err(e) => {
                 self.disabled.store(true, std::sync::atomic::Ordering::SeqCst);
                 *guard = None;
-                if let Ok(mut k) = self.key.lock() {
-                    *k = None;
-                }
+                at.key = None;
                 Err(e)
             }
+        }
+    }
+
+    /// Turn logging OFF for this session without trying to open the log —
+    /// the state a failed [`install_key`](Self::install_key) leaves: no line
+    /// is written, in clear or otherwise, and no history is read back. Used
+    /// when an unverifiable log could not be quarantined (v0.0.12 item 10).
+    #[cfg(feature = "encrypted-log")]
+    pub fn turn_off(&self) {
+        self.disabled.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut guard) = self.log.lock() {
+            *guard = None;
+        }
+        if let Ok(mut at) = self.at.lock() {
+            at.key = None;
         }
     }
 
@@ -593,88 +665,76 @@ impl SessionLogSlot {
         if self.is_disabled() {
             return Vec::new();
         }
+        let generation = self.generation.load(std::sync::atomic::Ordering::SeqCst);
+        let Ok(at) = self.at.lock() else {
+            return Vec::new();
+        };
+        let dir = at.dir.clone();
         #[cfg(feature = "encrypted-log")]
+        let key = at.key;
+        drop(at);
+        #[cfg(feature = "encrypted-log")]
+        let entries = match key {
+            Some(key) => SessionLog::load_recent_encrypted(&dir, max_entries, &key),
+            None => SessionLog::load_recent(&dir, max_entries),
+        };
+        #[cfg(not(feature = "encrypted-log"))]
+        let entries = SessionLog::load_recent(&dir, max_entries);
+        // The slot was turned off, or pointed elsewhere, while reading.
+        if self.is_disabled()
+            || self.generation.load(std::sync::atomic::Ordering::SeqCst) != generation
         {
-            let key = self.key.lock().ok().and_then(|g| *g);
-            if let Some(key) = key {
-                return SessionLog::load_recent_encrypted(&self.dir, max_entries, &key);
-            }
+            return Vec::new();
         }
-        SessionLog::load_recent(&self.dir, max_entries)
+        entries
     }
 }
 
-/// Marker left in a persona's log directory once
-/// [`set_aside_unverifiable_once`] has run there, so it never acts twice.
-#[cfg(feature = "encrypted-log")]
-pub const SET_ASIDE_MARKER: &str = "session_log.layout-v2";
-
-/// What [`set_aside_unverifiable_once`] did.
-#[cfg(feature = "encrypted-log")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SetAside {
-    /// Nothing was moved: already done, no log, or the log verifies.
-    Nothing,
-    /// The log did not verify and was moved, unread, into this directory.
-    MovedTo(PathBuf),
-}
-
-/// One-time migration of the log directory shared by both personas before
-/// the per-persona layout (spec ch. 07, *After login*, *Migration*, v2.0.29).
+/// Quarantine of an unverifiable conversation log (v0.0.12 item 10; spec
+/// ch. 08 *Session log*). Runs at every log-key install, before
+/// [`SessionLogSlot::install_key`].
 ///
 /// If the log in `dir` does not verify under `key` — the check
-/// [`SessionLog::open_encrypted`] runs, plus every encrypted entry decrypting
-/// under `key` — its files (log, anchor, rotated logs) and the `beacon` are
-/// moved, unread and unchanged, into a new `set-aside-<UTC time>` directory
-/// inside `dir`, which no read path ever opens; the log then starts empty.
-/// Nothing is deleted. In every case a marker ([`SET_ASIDE_MARKER`]) is left
-/// in `dir`, and once it exists this function does nothing: a log that fails
-/// to verify afterwards fails closed, as before (SESSIONLOG-001), so the rule
-/// can never hide later tampering.
+/// [`SessionLog::open_encrypted`] runs: hash chain, every encrypted entry
+/// decrypting under `key`, anchor, genesis beacon — its files (log, anchor,
+/// rotated logs) and the `beacon`, under its own name, are moved, unread and
+/// unchanged, into a new `quarantine-<UTC time>` directory inside `dir`,
+/// which no read path ever opens. Nothing is deleted. Returns that
+/// directory, or `None` when the log verifies or is missing.
+///
+/// The conversation log is a prompt-injection surface (SESSIONLOG-001 to
+/// 003), so there is no other path: no marker, no one-time rule. If a move
+/// fails, the error is returned; what remains in place still fails the same
+/// check (the beacon is moved last, so while it stays an emptied directory
+/// reads as a genesis wipe), so `install_key` fails closed, and the next
+/// install tries again.
 #[cfg(feature = "encrypted-log")]
-pub fn set_aside_unverifiable_once(
+pub fn quarantine_unverifiable(
     dir: &Path,
     key: [u8; 32],
     beacon: Option<&Path>,
-) -> Result<SetAside> {
-    use crate::encrypted_log;
-
-    let marker = dir.join(SET_ASIDE_MARKER);
-    if marker.exists() {
-        return Ok(SetAside::Nothing);
-    }
+) -> Result<Option<PathBuf>> {
     let log_path = dir.join("session_log.jsonl");
     let anchor_path = dir.join("session_log.anchor");
-    let lines = SessionLog::read_all_lines(&log_path);
-    let has_content = !lines.is_empty() || anchor_path.exists();
-    let verifies = !has_content
-        || (SessionLog::tamper_on_open(&log_path, &anchor_path, &key, beacon).is_none()
-            && lines
-                .iter()
-                .filter(|l| encrypted_log::is_encrypted_line(l))
-                .all(|l| encrypted_log::decrypt_entry(l, &key).is_ok()));
-    drop(lines);
-
-    if verifies {
-        write_set_aside_marker(&marker)?;
-        return Ok(SetAside::Nothing);
-    }
+    let Some(reason) = SessionLog::tamper_on_open(&log_path, &anchor_path, &key, beacon) else {
+        return Ok(None);
+    };
 
     let stamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let mut aside = dir.join(format!("set-aside-{stamp}"));
+    let mut quarantine = dir.join(format!("quarantine-{stamp}"));
     let mut n = 1;
-    while aside.exists() {
-        aside = dir.join(format!("set-aside-{stamp}-{n}"));
+    while quarantine.exists() {
+        quarantine = dir.join(format!("quarantine-{stamp}-{n}"));
         n += 1;
     }
-    fs::create_dir_all(&aside)?;
+    fs::create_dir_all(&quarantine)?;
 
     let mut names = vec!["session_log.jsonl".to_string(), "session_log.anchor".to_string()];
     names.extend((1..=MAX_ROTATED).map(|i| format!("session_log.{i}.jsonl")));
     for name in &names {
         let from = dir.join(name);
         if from.exists() {
-            move_file(&from, &aside.join(name))?;
+            move_file(&from, &quarantine.join(name))?;
         }
     }
     // The beacon goes with the log it vouched for: left behind, it would make
@@ -685,25 +745,15 @@ pub fn set_aside_unverifiable_once(
                 .file_name()
                 .map(|n| n.to_os_string())
                 .unwrap_or_else(|| "session_log.beacon".into());
-            move_file(b, &aside.join(name))?;
+            move_file(b, &quarantine.join(name))?;
         }
     }
 
-    write_set_aside_marker(&marker)?;
     tracing::warn!(
-        "Session log did not verify; set aside unread in {}",
-        aside.display()
+        "Session log did not verify ({reason}); quarantined unread in {}",
+        quarantine.display()
     );
-    Ok(SetAside::MovedTo(aside))
-}
-
-#[cfg(feature = "encrypted-log")]
-fn write_set_aside_marker(marker: &Path) -> Result<()> {
-    if let Some(parent) = marker.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(marker, b"1\n")?;
-    Ok(())
+    Ok(Some(quarantine))
 }
 
 /// Rename, or copy then remove when the two paths are on different volumes.
@@ -1389,6 +1439,3 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "encrypted-log"))]
-#[path = "session_log_setaside_tests.rs"]
-mod setaside_tests;

@@ -18,6 +18,17 @@
 		return () => clearTimeout(timer);
 	});
 
+	// So does "Already in the trash" (no Undo: v0.0.12 item 9, T3).
+	$effect(() => {
+		const n = undo.info;
+		if (!n) return;
+		const left = Math.max(0, n.shownAt + UNDO_WINDOW_MS - Date.now());
+		const timer = setTimeout(() => {
+			if (undo.info === n) undo.info = null;
+		}, left);
+		return () => clearTimeout(timer);
+	});
+
 	async function onUndo() {
 		if (await undoDelete()) {
 			canvasRefresh().catch(() => {});
@@ -29,6 +40,11 @@
 	<div class="toast" role="status">
 		<span>{undo.notice.text}</span>
 		<button class="undo" onclick={onUndo}>Undo</button>
+	</div>
+{:else if undo.info}
+	<div class="toast" role="status">
+		<span>{undo.info.text}</span>
+		<button class="undo" onclick={() => (undo.info = null)} aria-label="Dismiss">×</button>
 	</div>
 {:else if undo.error}
 	<div class="toast error" role="alert">

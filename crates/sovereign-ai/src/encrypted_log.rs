@@ -51,18 +51,34 @@ pub fn encrypt_entry(
     Ok((line, hash))
 }
 
+/// What kind of JSON error a line raised, and nothing else (v0.0.12 item 10,
+/// L7). A `serde_json` message can quote the value it refused ("invalid
+/// type: string \"…\""), or a field name, and that value is bytes of the
+/// log file: an attacker's text, which must reach no log line and no notice.
+fn parse_error_kind(e: &serde_json::Error) -> &'static str {
+    match e.classify() {
+        serde_json::error::Category::Io => "read error",
+        serde_json::error::Category::Syntax => "not valid JSON",
+        serde_json::error::Category::Data => "unexpected field or value",
+        serde_json::error::Category::Eof => "line ends early",
+    }
+}
+
 /// Decrypt an encrypted line and return the plaintext JSON string.
+///
+/// Its errors carry no bytes of the line (v0.0.12 item 10, L7): the read
+/// path logs them, so each says what failed, with at most a length.
 pub fn decrypt_entry(line: &str, key: &[u8; 32]) -> Result<String> {
-    let envelope: Envelope =
-        serde_json::from_str(line).map_err(|e| anyhow::anyhow!("envelope parse: {e}"))?;
+    let envelope: Envelope = serde_json::from_str(line)
+        .map_err(|e| anyhow::anyhow!("envelope parse: {}", parse_error_kind(&e)))?;
 
     if envelope.v != 1 {
-        bail!("unsupported envelope version: {}", envelope.v);
+        bail!("unsupported envelope version");
     }
 
     let nonce_bytes = B64
         .decode(&envelope.nonce)
-        .map_err(|e| anyhow::anyhow!("nonce decode: {e}"))?;
+        .map_err(|_| anyhow::anyhow!("nonce decode: not valid base64"))?;
     if nonce_bytes.len() != aead::NONCE_SIZE {
         bail!(
             "invalid nonce length: expected {}, got {}",
@@ -75,12 +91,12 @@ pub fn decrypt_entry(line: &str, key: &[u8; 32]) -> Result<String> {
 
     let ciphertext = B64
         .decode(&envelope.ct)
-        .map_err(|e| anyhow::anyhow!("ciphertext decode: {e}"))?;
+        .map_err(|_| anyhow::anyhow!("ciphertext decode: not valid base64"))?;
 
     let plaintext = aead::decrypt(&ciphertext, &nonce, key)
         .map_err(|e| anyhow::anyhow!("session log decrypt: {e}"))?;
 
-    String::from_utf8(plaintext).map_err(|e| anyhow::anyhow!("utf8: {e}"))
+    String::from_utf8(plaintext).map_err(|_| anyhow::anyhow!("decrypted entry is not UTF-8"))
 }
 
 /// Check whether a line looks like an encrypted envelope (has `v`, `prev`, `nonce`, `ct` fields).
@@ -96,6 +112,11 @@ pub fn is_encrypted_line(line: &str) -> bool {
 /// Verify hash-chain integrity across a slice of raw lines (no decryption needed).
 ///
 /// Returns `Ok(())` if the chain is valid, or an error describing the first break.
+///
+/// Never panics on any content, and its error carries no bytes of the file,
+/// at most a line number and a length (v0.0.12 item 10, L7): it runs at every
+/// login, on a file anyone who can write the folder controls, and its message
+/// reaches the quarantine's log line and the "could not be opened" notice.
 pub fn verify_chain(lines: &[String]) -> Result<()> {
     let mut expected_prev = GENESIS_HASH.to_string();
     let mut seen_encrypted = false;
@@ -123,13 +144,14 @@ pub fn verify_chain(lines: &[String]) -> Result<()> {
 
         seen_encrypted = true;
         let envelope: Envelope = serde_json::from_str(line)
-            .map_err(|e| anyhow::anyhow!("line {i}: envelope parse: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("line {i}: envelope parse: {}", parse_error_kind(&e)))?;
 
+        // L7: no slicing of `prev` (a cut inside a multi-byte character
+        // panicked, at every login), and none of its bytes in the message.
         if envelope.prev != expected_prev {
             bail!(
-                "chain break at line {i}: expected prev={}, got prev={}",
-                &expected_prev[..16],
-                &envelope.prev[..16.min(envelope.prev.len())]
+                "chain break at line {i}: prev ({} bytes) is not the previous line's hash",
+                envelope.prev.len()
             );
         }
 

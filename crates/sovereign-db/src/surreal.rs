@@ -219,6 +219,31 @@ impl GraphDB for SurrealGraphDB {
         Ok(docs)
     }
 
+    async fn document_title_candidates(&self, title: &str) -> DbResult<Vec<Document>> {
+        let t = title.trim().to_string();
+        let mut result = self
+            .db
+            .query("SELECT * FROM document WHERE deleted_at IS NONE AND string::lowercase(title) CONTAINS string::lowercase($t) ORDER BY created_at DESC")
+            .bind(("t", t))
+            .await?;
+        let docs: Vec<Document> = result.take(0)?;
+        Ok(docs)
+    }
+
+    async fn document_title_candidates_by_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Document>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let hashes_vec: Vec<String> = hashes.to_vec();
+        let mut result = self
+            .db
+            .query("SELECT * FROM document WHERE deleted_at IS NONE AND title_token_hashes CONTAINSALL $hashes ORDER BY created_at DESC")
+            .bind(("hashes", hashes_vec))
+            .await?;
+        let docs: Vec<Document> = result.take(0)?;
+        Ok(docs)
+    }
+
     async fn set_document_title_encryption(
         &self,
         id: &str,
@@ -518,6 +543,31 @@ impl GraphDB for SurrealGraphDB {
             .await?;
         let threads: Vec<Thread> = result.take(0)?;
         Ok(threads.into_iter().next())
+    }
+
+    async fn thread_name_candidates(&self, name: &str) -> DbResult<Vec<Thread>> {
+        let n = name.trim().to_string();
+        let mut result = self
+            .db
+            .query("SELECT * FROM thread WHERE deleted_at IS NONE AND string::lowercase(name) CONTAINS string::lowercase($n) ORDER BY created_at ASC")
+            .bind(("n", n))
+            .await?;
+        let threads: Vec<Thread> = result.take(0)?;
+        Ok(threads)
+    }
+
+    async fn thread_name_candidates_by_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Thread>> {
+        if hashes.is_empty() {
+            return Ok(vec![]);
+        }
+        let hashes_vec: Vec<String> = hashes.to_vec();
+        let mut result = self
+            .db
+            .query("SELECT * FROM thread WHERE deleted_at IS NONE AND name_token_hashes CONTAINSALL $hashes ORDER BY created_at ASC")
+            .bind(("hashes", hashes_vec))
+            .await?;
+        let threads: Vec<Thread> = result.take(0)?;
+        Ok(threads)
     }
 
     async fn set_thread_encryption(

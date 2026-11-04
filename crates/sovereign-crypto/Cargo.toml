@@ -20,6 +20,10 @@ chrono = { workspace = true }
 argon2 = "0.5"
 # A1 (backup plan): Ed25519 manifest signing, seed-derived from AccountKey.
 ed25519-dalek = { version = "2.2", features = ["zeroize"] }
+# v0.0.12 item 22: the device's libp2p peer id, derived here so every host
+# (with or without `sovereign-p2p`) stamps with the id the P2P node announces.
+# The same crate `libp2p 0.56` re-exports as `libp2p::identity`.
+libp2p-identity = { version = "0.2.14", features = ["ed25519", "peerid"] }
 
 [dependencies.blahaj]
 version = "0.6"

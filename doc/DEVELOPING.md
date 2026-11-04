@@ -56,6 +56,11 @@ the MSVC `bin/Hostx64/x64` directory to `PATH` (and set `LIB` / `INCLUDE` for th
 Build on the native filesystem, not a network mount. Use `-j 4` (or `-j 2`) so WSL does not run
 out of memory. `rm -rf` a target directory before copying into it.
 
+**Running the desktop shell on Linux under X11** needs `libxkbcommon-x11` (`libxkbcommon-x11-0` on
+Debian and Ubuntu). Without it the shell panics at start, while Wayland runs. Found on WSLg with
+`WAYLAND_DISPLAY` unset (WSL, claude-coord 0028, 2026-10-28). Users need it too: the release notes
+say so.
+
 ### Feature notes
 
 - **`sovereign-ai` defaults to `cuda`.** Without a CUDA toolkit build it with

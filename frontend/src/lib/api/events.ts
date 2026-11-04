@@ -31,7 +31,8 @@ import {
 	onPeerNeedsUpdate,
 	onSyncRoundCompleted,
 	onSyncRoundStarted,
-	reloadSyncAlerts
+	reloadSyncAlerts,
+	reloadUnreadable
 } from '$lib/stores/syncAlerts.svelte';
 import { showMigrationNotice } from '$lib/stores/migrationNotice.svelte';
 import type { PendingShare } from '$lib/stores/app.svelte';
@@ -54,6 +55,8 @@ interface ActionProposedPayload {
 interface ActionExecutedPayload {
 	action: string;
 	success: boolean;
+	/** The action's outcome, as the one line to show (only a real change is said as done). */
+	summary: string;
 }
 /** A chat turn's explicit outcome (spec ch. 08), as the one line to show. */
 interface ChatTurnEndedPayload {
@@ -76,6 +79,30 @@ interface SkillResultPayload {
 	action: string;
 	kind: string;
 	data: string;
+}
+
+/**
+ * The chat text of a summary's `data` (`produce_summary`: `{doc_title,
+ * summary, parts}`), the same as the desktop's: title and summary unchanged,
+ * the part count only for more than one (`parts` missing or not a number
+ * counts as 1). Unreadable data gives one plain line, never the raw text
+ * (V0012-rc2-summary-shown, R3, R4).
+ */
+function summaryMessage(data: string): string {
+	let v: unknown;
+	try {
+		v = JSON.parse(data);
+	} catch {
+		v = null;
+	}
+	const o = (v ?? {}) as Record<string, unknown>;
+	if (typeof o.doc_title !== 'string' || typeof o.summary !== 'string') {
+		return 'The summary could not be shown.';
+	}
+	const n = typeof o.parts === 'number' ? o.parts : 1;
+	return n > 1
+		? `Summary of '${o.doc_title}' (${n} parts):\n${o.summary}`
+		: `Summary of '${o.doc_title}':\n${o.summary}`;
 }
 interface DocumentCreatedPayload {
 	doc_id: string;
@@ -226,10 +253,7 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 
 	unlisteners.push(
 		await listen<ActionExecutedPayload>('action-executed', (e) => {
-			const msg = e.payload.success
-				? `Done: ${e.payload.action}`
-				: `Failed: ${e.payload.action}`;
-			pushSystem(msg);
+			pushSystem(e.payload.summary);
 			app.pendingAction = null;
 		})
 	);
@@ -259,6 +283,12 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 
 	unlisteners.push(
 		await listen<SkillResultPayload>('skill-result', (e) => {
+			// v0.0.12 rc2 (V0012-rc2-summary-shown, R3, R4): a summary is shown as
+			// text, as on the desktop; other kinds stay as they were.
+			if (e.payload.kind === 'summary') {
+				pushAssistant(summaryMessage(e.payload.data));
+				return;
+			}
 			pushSystem(`Skill "${e.payload.skill}": ${e.payload.data}`);
 		})
 	);
@@ -483,6 +513,9 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	unlisteners.push(
 		await listen<{ text: string }>('documents-migrated', (e) => {
 			showMigrationNotice(e.payload.text);
+			// v0.0.12 item 7 V2b, B5: a retry may have emptied the list of
+			// documents that could not be read.
+			void reloadUnreadable();
 		})
 	);
 	unlisteners.push(

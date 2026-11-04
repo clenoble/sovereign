@@ -25,9 +25,10 @@ use sovereign_core::interfaces::OrchestratorEvent;
 use sovereign_core::profile::{BubbleStyle, UserProfile};
 use sovereign_core::security::{ActionDecision, ActionLevel, InjectionDecision, ProposedAction};
 use sovereign_core::auth::PersonaKind as CorePersona;
-use sovereign_crypto::auth::{AuthStore, PasswordPolicy};
+use sovereign_crypto::auth::PasswordPolicy;
 
 use crate::camera::Camera;
+use crate::chat_field::{ChatField, FieldStep};
 
 /// The document editor in the doc window — the only document editor, in every
 /// build (contract E1–E9, `doc/plans/EDITOR-default.md`).
@@ -40,22 +41,151 @@ pub(crate) mod editor_v2;
 #[cfg(test)]
 #[path = "editor_default_tests.rs"]
 mod editor_default_tests;
+// v0.0.12 lot 1 (History restore H1/H3–H5, Discard after a cancelled quit
+// D1–D3, `doc/plans/V0012-lot1.md`): tests written before the code, by
+// another author; the implementer does not edit them. A child of `app` for
+// the same reason as `editor_default_tests`.
+#[cfg(test)]
+#[path = "lot1_tests.rs"]
+mod lot1_tests;
+// v0.0.12 items 18 and 20 (the locked screens off the UI thread and saying
+// what they show, `doc/plans/V0012-items18-20-first-run.md`): tests written
+// before the code, by another author; the implementer does not edit them. A
+// child of `app` for the same reason as `editor_default_tests`.
+#[cfg(test)]
+#[path = "first_run_tests.rs"]
+mod first_run_tests;
+// Item 18's worker (B1–B4) with a fake derivation that waits: needs the seams
+// named at the top of the file (`crate::auth_work`, `App::auth_work`,
+// `App::locked_key`), so it does not compile until they exist.
+#[cfg(test)]
+#[path = "first_run_worker_tests.rs"]
+mod first_run_worker_tests;
+// v0.0.12 lanes lot (items 15, 16, 1b: moves through the stamped path, one
+// lane per thread, raw ids, `doc/plans/V0012-lot-lanes.md`): tests written
+// before the code, by another author; the implementer does not edit them. A
+// child of `app` for the same reason as `editor_default_tests`. The first
+// uses only what exists today; the second names the API the lot adds (see
+// its header), so it does not compile until that API exists.
+#[cfg(test)]
+#[path = "lanes_tests.rs"]
+mod lanes_tests;
+#[cfg(test)]
+#[path = "lanes_api_tests.rs"]
+mod lanes_api_tests;
+// v0.0.12 items 14 and 19 (devices have names, History says them,
+// `doc/plans/V0012-items14-19-devices.md`): tests written before the code, by
+// another author; the implementer does not edit them. Needs the seams named
+// at the top of the file, so it does not compile until they exist.
+#[cfg(test)]
+#[path = "device_names_tests.rs"]
+mod device_names_tests;
+// v0.0.12 item 9 (trash and orphan actions act on what was shown, Delete says
+// what it did, "Restore into…" offers every thread,
+// `doc/plans/V0012-item9-act-on-what-was-shown.md`): tests written before the
+// code, by another author; the implementer does not edit them. A child of
+// `app` for the same reason as `editor_default_tests`. The first uses only
+// what exists today; the second names the API the item adds (see its header),
+// so it does not compile until that API exists.
+#[cfg(test)]
+#[path = "item9_tests.rs"]
+mod item9_tests;
+#[cfg(test)]
+#[path = "item9_api_tests.rs"]
+mod item9_api_tests;
+// v0.0.12 item 8 (the clipboard forgets at quit and at a store change; no raw
+// token where a title is shown, `doc/plans/V0012-item8-clipboard-labels.md`):
+// tests written before the code, by another author; the implementer does not
+// edit them. The first uses only what exists today; the second needs the seam
+// named at its top, so it does not compile until it exists.
+#[cfg(test)]
+#[path = "clipboard_forget_tests.rs"]
+mod clipboard_forget_tests;
+#[cfg(test)]
+#[path = "clipboard_field_tests.rs"]
+mod clipboard_field_tests;
+// v0.0.12 item 22 (a device's identity in its stamps is its peer id,
+// `doc/plans/V0012-item22-device-identity.md`): tests written before the
+// code, by another author; the implementer does not edit them. A child of
+// `app` to drive the unlock's `install_document_service` on a real `App`.
+#[cfg(test)]
+#[path = "item22_identity_tests.rs"]
+mod item22_identity_tests;
+// v0.0.12 item 7 (the one-time conversion counts and lists what it cannot
+// decrypt, retries after a version change, does not freeze saves,
+// `doc/plans/V0012-item7-conversion.md`): tests written before the code, by
+// another author; the implementer does not edit them. A child of `app` to
+// drive the unlock, the Alerts window and the open editors on a real `App`.
+// The second names the API the item adds (`DocumentService::with_build_version`),
+// so it does not compile until that API exists.
+#[cfg(test)]
+#[path = "item7_tests.rs"]
+mod item7_tests;
+#[cfg(test)]
+#[path = "item7_api_tests.rs"]
+mod item7_api_tests;
+// v0.0.12, no OpenGL backend on Windows (`doc/plans/V0012-no-gl-windows.md`,
+// W1–W4, W6): tests written before the code, by another author; the
+// implementer does not edit them. Needs the seam named at the top of the file
+// (`crate::gpu`), so it does not compile until it exists.
+#[cfg(test)]
+#[path = "no_gl_windows_tests.rs"]
+mod no_gl_windows_tests;
+// v0.0.12 item 22, PANDA2's second position (suggestion 2): the fail-closed
+// branch of `install_document_service`, exercised. Tests written before the
+// seams, by another author; the implementer does not edit them. Needs
+// `App::test_identity_fallback` and the orchestrator seams named at the top
+// of the file, so it does not compile until they exist.
+#[cfg(test)]
+#[path = "item22_fail_closed_tests.rs"]
+mod item22_fail_closed_tests;
+// v0.0.12 rc2, a summary is shown (`doc/plans/V0012-rc2-summary-shown.md`,
+// R1, R2, R4): tests written before the code, by another author; the
+// implementer does not edit them. A child of `app` to feed the orchestrator
+// channel and drain it in a frame, on a real `App`.
+#[cfg(test)]
+#[path = "summary_shown_tests.rs"]
+mod summary_shown_tests;
+// v0.0.12 rc2, each setup step is announced when it opens
+// (`doc/plans/V0012-rc2-setup-step-announced.md`, N1–N5): tests written
+// before the code, by another author; the implementer does not edit them. A
+// child of `app` to drive the wizard's own navigation and read
+// `build_a11y_tree` on a real `App`.
+#[cfg(test)]
+#[path = "setup_step_announced_tests.rs"]
+mod setup_step_announced_tests;
+// v0.0.12 rc2, the desktop's texts reach the screen reader and "show" is
+// reachable without a mouse (`doc/plans/V0012-rc2-labels-spoken.md`, L1–L5):
+// tests written before the code, by another author; the implementer does not
+// edit them. A child of `app` to drive the wizard, the forms' keys, the
+// screen reader's actions and `build_a11y_tree` on a real `App`.
+#[cfg(test)]
+#[path = "labels_spoken_tests.rs"]
+mod labels_spoken_tests;
+// Tests build `App`s on parallel threads; production builds one, on the main
+// thread. NVIDIA's WGL driver faults (STATUS_ACCESS_VIOLATION in
+// `ChoosePixelFormat`, `nvoglv64.dll`) when two wgpu GL instances are created
+// at once, so test builds serialise the creation (claude-coord 0145; ~8 % of
+// parallel `first_run_tests::a` runs crashed without it, 0/40 with it).
+#[cfg(test)]
+static TEST_WGPU_INSTANCE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 use crate::canvas::{
-    draw_axis, draw_links, draw_minimap_world, lane_color, lane_label_rect, load_workspace, make_cards, make_links,
-    make_minimap, open_db, parallelogram, x_of_ts, Card, Lcg, AXIS_H, BOTTOM_CHROME,
-    CARD_H, CARD_W, DECK_PEEK, LANES, LANE_H, PAD, STATUS_H, WORLD_PER_DAY,
+    draw_axis, draw_links, draw_minimap_world, hue_color, lane_colors, lane_label_rect, lanes_between, lanes_fit,
+    lanes_stop, load_workspace_full, make_cards, make_links, make_minimap, open_db, parallelogram, x_of_ts, Card,
+    LaneKind, LaneMap, Lcg, AXIS_H, BOTTOM_CHROME, CARD_H, CARD_W, DECK_PEEK, LANE_H, PAD, STATUS_H, WORLD_PER_DAY,
 };
-use crate::crypto::{auth_store_exists, auth_store_path, create_auth_store, install_session};
+use crate::auth_work::{AuthDone, AuthJob, AuthWork, Session, SetupFailed};
+use crate::crypto::auth_store_exists;
 // Used only by the dev probes (lot 0.5: absent from release builds).
 #[cfg(any(debug_assertions, feature = "dev-switches"))]
 use crate::canvas::open_db_at;
 #[cfg(any(debug_assertions, feature = "dev-switches"))]
-use crate::crypto::{build_encrypted_db, map_persona, persona_raw_db_path};
+use crate::crypto::{build_encrypted_db, create_auth_store, install_session, map_persona, persona_raw_db_path};
 use crate::panels::{
     auth_layout, auth_reveal_btn, browser_chrome, chat_split, device_forget_btn, devices_pair_btn, devices_panel,
     devices_sync_btn, draw_auth, draw_browser, draw_chat, draw_devices,
     draw_alerts, draw_doc_window, draw_history, draw_inbox, draw_models, draw_pii, draw_previous_values, draw_search,
-    draw_settings, hist_restore_rect, hist_split, load_alerts, load_history, load_inbox, load_pii, load_previous_values,
+    draw_settings, hist_restore_rect, hist_split, load_alerts_as, load_history, load_inbox, load_pii, load_previous_values,
     alert_row_buttons, alerts_list_vp, model_row_buttons, previous_value_buttons, synthetic_inbox,
     pii_row_buttons, search_split, settings_tab_rects, window_chrome, AuthForm, BrowserPanel, ChatMsg,
     ChatPanel, CommsForm, DeviceRow, DevicesPanel, DocBtn, DocWindow, HistoryPanel, Inbox, ModelBtn,
@@ -164,6 +294,25 @@ fn app_window_icon() -> Option<winit::window::Icon> {
 /// available width instead of a fixed cap).
 const AVATAR_CAP: usize = 6;
 
+/// The document service's identity when a test fixture opens a store without
+/// a device key (v0.0.12 item 22). Test builds only: no unlock does that —
+/// login, setup and recovery set the key first — and a production build
+/// installs no document service rather than stamp with a shared word.
+#[cfg(test)]
+const NO_DEVICE_KEY_IDENTITY: &str = "no-device-key";
+
+/// The notice when this device's identity cannot be had, so no document
+/// service is installed (v0.0.12 item 22, fail closed).
+const IDENTITY_UNAVAILABLE: &str = "Your documents could not be opened: this device's identity could not be \
+derived. Restart Sovereign; if it persists, report it.";
+
+/// The notice when a document's versions cannot be read (lot 1a, H3): plain
+/// words, no store text, no id.
+const HISTORY_UNREADABLE: (&str, &str) = (
+    "History not opened",
+    "This document\u{2019}s history could not be read. Nothing was changed; try again in a moment.",
+);
+
 /// A contact shown as an avatar in the taskbar (loaded once with the workspace
 /// so the per-frame draw needs no DB access / decryption).
 pub(crate) struct TaskbarContact {
@@ -190,19 +339,24 @@ struct TbItem {
     active: bool,  // launcher whose window is currently open
 }
 
-/// Stable lane-palette index for a contact id (FNV-1a mod LANES) — same id maps
-/// to the same hue across sessions. Pure, so it's unit-tested directly.
+/// The number of hues contact avatars are coloured with (the lanes' palette
+/// of 12, `canvas::hue_color`; its own constant, not a lane count: v0.0.12
+/// lanes lot, N1).
+const AVATAR_HUES: usize = 12;
+
+/// Stable palette index for a contact id (FNV-1a mod [`AVATAR_HUES`]) — same
+/// id maps to the same hue across sessions. Pure, so it's unit-tested directly.
 pub(crate) fn avatar_hue_index(seed: &str) -> usize {
     let mut h: u32 = 2166136261;
     for b in seed.bytes() {
         h = (h ^ b as u32).wrapping_mul(16777619);
     }
-    (h as usize) % LANES
+    (h as usize) % AVATAR_HUES
 }
 
 /// A stable per-contact avatar color (muted lane-palette hue).
 fn avatar_color(seed: &str) -> Color {
-    lane_color(avatar_hue_index(seed))
+    hue_color(avatar_hue_index(seed))
 }
 
 /// Rows for Settings -> Recovery, from the roster read.
@@ -363,7 +517,7 @@ fn short_date(rfc3339: &str) -> String {
 pub(crate) fn build_taskbar_contacts(raw: &[sovereign_db::schema::Contact]) -> Vec<TaskbarContact> {
     raw.iter()
         .map(|c| {
-            let id = c.id.as_ref().map(|i| i.to_string()).unwrap_or_default();
+            let id = c.id_string().unwrap_or_default();
             let name_ok = c.name_nonce.is_none() && !c.name.is_empty();
             let label = if name_ok { c.name.clone() } else { crate::panels::short_id(&id) };
             let initial = label.chars().find(|ch| ch.is_alphanumeric()).unwrap_or('?').to_ascii_uppercase();
@@ -406,6 +560,12 @@ pub(crate) struct ContextMenu {
     target: CtxTarget,
     anchor: Point,
 }
+
+/// B5b (v0.0.12 items 18+20): the notice after the first login over an
+/// `auth.store` whose setup did not finish — lot 1's P2, with the desktop's
+/// list of what the wizard saves after the store.
+const INTERRUPTED_SETUP: &str = "Setup was interrupted before it finished. Your account works; \
+your profile, safety phrase and sample documents may not have been saved.";
 
 /// A transient result popup (e.g. a skill's output or error), centered and
 /// dismissed by the next click / Esc. Text is pre-shaped (no shaper at draw time).
@@ -467,6 +627,22 @@ pub(crate) fn unsaved_prompt_geom(w: f64, h: f64) -> (Rect, Rect, Rect, Rect) {
     let discard = Rect::new(save.x0 - 10.0 - bw, by0, save.x0 - 10.0, by0 + bh);
     let cancel = Rect::new(discard.x0 - 10.0 - bw, by0, discard.x0 - 10.0, by0 + bh);
     (panel, save, discard, cancel)
+}
+
+/// The chat text of a summary event's `data` (`produce_summary`:
+/// `{doc_title, summary, parts}`): the title and the summary unchanged, the
+/// part count only when there were more than one (`parts` missing or not a
+/// number counts as 1). Unreadable data gives one plain line, never the raw
+/// text (V0012-rc2-summary-shown, R1, R4).
+fn summary_message(data: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(data).unwrap_or(serde_json::Value::Null);
+    let (Some(title), Some(summary)) = (v["doc_title"].as_str(), v["summary"].as_str()) else {
+        return "The summary could not be shown.".into();
+    };
+    match v["parts"].as_u64() {
+        Some(n) if n > 1 => format!("Summary of '{title}' ({n} parts):\n{summary}"),
+        _ => format!("Summary of '{title}':\n{summary}"),
+    }
 }
 
 /// Gravity color for an action level (badge + accent): green→amber→orange→red.
@@ -540,9 +716,18 @@ impl accesskit::ActivationHandler for A11yActivation {
         None
     }
 }
-struct A11yAction;
+/// The accessibility ids of the lane labels' buttons (THREAD-name R4): this
+/// bit, and a hash of the thread's raw id below it (N5,
+/// `lane_rename::label_node_id`).
+const LANE_LABEL_NS: u64 = 1 << 59;
+
+/// The screen reader's actions, from the adapter's thread to the UI thread:
+/// `App::about_to_wait` drains them into `App::a11y_action`.
+struct A11yAction(mpsc::Sender<accesskit::ActionRequest>);
 impl accesskit::ActionHandler for A11yAction {
-    fn do_action(&mut self, _request: accesskit::ActionRequest) {}
+    fn do_action(&mut self, request: accesskit::ActionRequest) {
+        let _ = self.0.send(request);
+    }
 }
 struct A11yDeactivation;
 impl accesskit::DeactivationHandler for A11yDeactivation {
@@ -570,6 +755,11 @@ pub(crate) struct App {
     pub(crate) world_w: f64,
     pub(crate) time_ref: i64, // unix time at world-X = 0 (calibrates the time ruler)
     pub(crate) lane_names: Vec<String>, // per-lane thread name (index = lane)
+    /// The one lane mapping (v0.0.12 lanes lot, N1): a thread's lane, a
+    /// lane's thread or Unfiled. Every lane use reads it.
+    pub(crate) lanes: LaneMap,
+    /// Each lane's colour (index = lane; N7, `canvas::lane_colors`).
+    pub(crate) lane_colors: Vec<Color>,
     // Bottom taskbar: contact avatars (loaded once with the workspace, so the
     // per-frame draw needs no DB / decryption). Pinned-doc pills read `self.cards`
     // directly each frame.
@@ -632,6 +822,13 @@ pub(crate) struct App {
     // The DeviceKey (post-login) — the P2P identity key: derives the libp2p
     // keypair + the paired-store key. None in no-auth.
     pub(crate) device_key: Option<Arc<sovereign_crypto::device_key::DeviceKey>>,
+    /// Whether `stamp_identity` falls back to the test-only identity when
+    /// there is no device key or the derivation fails (v0.0.12 item 22).
+    /// `true` by default (`App::new`), so the fixtures that build a store
+    /// without a key keep working; `false` takes the production branch (fail
+    /// closed: no document service, a notice).
+    #[cfg(test)]
+    pub(crate) test_identity_fallback: bool,
     // The content KEK (post-login) — roots the at-rest content chain, and seals
     // the F1 guardian roster. Kept for Settings -> Recovery to read the roster.
     // None in no-auth, so that tab reports "unavailable" rather than "not set
@@ -642,6 +839,14 @@ pub(crate) struct App {
     // Devices window.
     pub(crate) p2p: Option<crate::p2p::P2pHandle>,
     pub(crate) p2p_config: sovereign_core::config::P2pConfig,
+    /// This device's name (v0.0.12 item 19, N1): the workspace's own file,
+    /// read at start, else the config's. What Settings → Devices shows, and
+    /// what this device sends at pairing and in a guardian offer. **Not** the
+    /// document service's device identity (N1b): since v0.0.12 item 22 that
+    /// is this persona's libp2p peer id (`App::stamp_identity`), never a name.
+    pub(crate) device_name: String,
+    /// The Rename field of Settings → Devices, while open (N3, N5).
+    pub(crate) device_rename: Option<crate::device_rename::DeviceRename>,
     pub(crate) sync_status: Vec<(String, String)>, // (peer_id, last status line)
     /// The open alerts' notices (C-WIRE 13), newest first: shown in the status
     /// bar and to the screen reader until dismissed in the Alerts window.
@@ -659,6 +864,9 @@ pub(crate) struct App {
     pub(crate) pair_tx: mpsc::Sender<Result<(), String>>,
     pub(crate) pair_rx: mpsc::Receiver<Result<(), String>>,
     pub(crate) pending_join_password: Option<String>,
+    /// The join form's device name (N2), cleaned; saved once the handshake
+    /// succeeds. `None`: blank, the default.
+    pub(crate) pending_join_name: Option<String>,
     // The just-paired peer (id + dial hints from the offer) so the first sync
     // can direct-dial right after pairing — no wait for mDNS discovery.
     pub(crate) pending_join_peer: Option<(String, Vec<String>)>,
@@ -726,6 +934,9 @@ pub(crate) struct App {
     pub(crate) orphan_prompt_target: Option<crate::orphans_ui::OrphanTarget>,
     /// How many documents whose thread was deleted wait (the status line, W5).
     pub(crate) orphan_count: usize,
+    /// How many documents the one-time conversion could not read (listed in
+    /// the Alerts window, v0.0.12 item 7, V2).
+    pub(crate) unreadable_count: usize,
     /// The notice after a one-click delete, with its Undo (S5-8).
     pub(crate) delete_notice: Option<crate::delete_notice::DeleteNotice>,
     pub(crate) orch: Arc<tokio::sync::Mutex<Option<Arc<Orchestrator>>>>,
@@ -748,6 +959,14 @@ pub(crate) struct App {
     // First-device onboarding wizard. When Some (and locked), it renders instead
     // of the plain auth form; login + paired-join still go through `auth_form`.
     pub(crate) wizard: Option<crate::onboarding::OnboardingWizard>,
+    /// v0.0.12 item 18: the locked screens' key derivations (setup, unlock,
+    /// recovery's new password), run on a worker thread — the real ones, or
+    /// a test's.
+    pub(crate) auth_work: Arc<dyn AuthWork>,
+    /// The derivation in flight, if any (B3: one at a time). Its result is
+    /// applied while drawing a frame (`auth_drain`); meanwhile the locked
+    /// screens are inert and show its status line (B2).
+    pub(crate) auth_job: Option<crate::auth_work::Running>,
     pub(crate) persona: Option<CorePersona>,
     // DPI + accessibility. Everything is laid out in LOGICAL px; the scene is
     // scaled by `scale * ui_scale` when rendered to the physical surface. `scale`
@@ -783,6 +1002,21 @@ pub(crate) struct App {
     /// The focus of the last tree `build_a11y_tree` built: the editor's
     /// updates of the same frame fall back to it (`a11y_frame_updates`).
     pub(crate) a11y_root_focus: accesskit::NodeId,
+    /// The locked screen's show/hide node in the last tree built, which a
+    /// screen reader's Click toggles (v0.0.12 rc2, V0012-rc2-labels-spoken, L4).
+    pub(crate) a11y_show_node: Option<accesskit::NodeId>,
+    /// The screen reader's action requests (the adapter's `A11yAction` holds
+    /// the sender), drained on the UI thread by `about_to_wait`.
+    pub(crate) a11y_tx: mpsc::Sender<accesskit::ActionRequest>,
+    pub(crate) a11y_rx: mpsc::Receiver<accesskit::ActionRequest>,
+    /// The thread whose lane label holds the accessibility focus, after a
+    /// screen reader's Focus action on it (N8); cleared by a key or a press.
+    pub(crate) a11y_label_focus: Option<String>,
+    /// Test seam (v0.0.12 lanes lot tests, `lanes_tests.rs`): the window size
+    /// (logical px) a headless `App` reports from `win_size`, which otherwise
+    /// has no window to ask. Never set outside tests.
+    #[cfg(test)]
+    pub(crate) test_view: Option<(f64, f64)>,
 }
 
 /// Everything a freshly-built shell orchestrator MUST have wired before it
@@ -851,12 +1085,13 @@ impl App {
         let bypass = crate::dev::flag("SHELL_NO_AUTH");
         #[allow(clippy::type_complexity)]
         let now_ts = chrono::Utc::now().timestamp();
-        let (db, cards, links, world_w, lane_names, time_ref, source, locked, auth_form, persona): (
+        let (db, cards, links, world_w, lane_names, lanes, time_ref, source, locked, auth_form, persona): (
             Option<Arc<dyn GraphDB>>,
             Vec<Card>,
             Vec<(u32, u32)>,
             f64,
             Vec<String>,
+            LaneMap,
             i64,
             &str,
             bool,
@@ -864,32 +1099,50 @@ impl App {
             Option<CorePersona>,
         ) = if bypass {
             let db: Option<Arc<dyn GraphDB>> = rt.block_on(open_db());
-            let loaded = db.as_ref().and_then(|d| rt.block_on(load_workspace(d, &mut shaper)));
-            let (c, l, w, ln, rf, s) = match loaded {
-                Some((c, l, w, ln, rf)) => (c, l, w, ln, rf, "real workspace (no-auth)"),
+            let loaded = db.as_ref().and_then(|d| rt.block_on(load_workspace_full(d, None, &mut shaper)));
+            let (c, l, w, ln, lm, rf, s) = match loaded {
+                Some(ws) => (ws.cards, ws.links, ws.world_w, ws.lane_names, ws.lanes, ws.ref_ts, "real workspace (no-auth)"),
                 None => {
                     let n: usize =
                         crate::dev::var("SPIKE_CARDS").and_then(|s| s.parse().ok()).unwrap_or(5_000);
                     // Synthetic data is spread over a realistic time span ending at
-                    // "now", so the calibrated ruler shows believable dates.
+                    // "now", so the calibrated ruler shows believable dates; its
+                    // threads are as many as the synthetic workspace has.
+                    let synthetic_threads: usize =
+                        crate::dev::var("SPIKE_THREADS").and_then(|s| s.parse().ok()).unwrap_or(12);
                     let span_days = 120.0_f64;
                     let world_w = span_days * WORLD_PER_DAY;
                     let rf = now_ts - (span_days * 86_400.0) as i64;
                     let mut rng = Lcg(0x9E3779B97F4A7C15);
-                    let c = make_cards(n, world_w, &mut rng, &mut shaper);
+                    let c = make_cards(n, world_w, synthetic_threads, &mut rng, &mut shaper);
                     let l = make_links(&c, &mut rng);
-                    let ln = (0..LANES).map(|i| format!("Thread {}", i + 1)).collect();
-                    (c, l, world_w, ln, rf, "synthetic (no-auth)")
+                    let ln = (1..=synthetic_threads).map(|i| format!("Thread {i}")).collect();
+                    let lm = LaneMap::new((1..=synthetic_threads).map(|i| format!("thread:synthetic{i}")).collect());
+                    (c, l, world_w, ln, lm, rf, "synthetic (no-auth)")
                 }
             };
             // persona = None in no-auth: the DB is RAW (not encrypted), so the
             // status bar / settings honestly show "no-auth / raw".
-            (db, c, l, w, ln, rf, s, false, AuthForm::login(), None)
+            (db, c, l, w, ln, lm, rf, s, false, AuthForm::login(), None)
         } else {
-            let form = if auth_store_exists() { AuthForm::login() } else { AuthForm::onboarding() };
-            (None, Vec::new(), Vec::new(), 2000.0, Vec::new(), now_ts - 7 * 86_400, "locked", true, form, None)
+            // Without auth.store, the first frame shows the setup wizard
+            // (`ensure_wizard`); the form is the login (or, later, the join).
+            (
+                None,
+                Vec::new(),
+                Vec::new(),
+                2000.0,
+                Vec::new(),
+                LaneMap::default(),
+                now_ts - 7 * 86_400,
+                "locked",
+                true,
+                AuthForm::login(),
+                None,
+            )
         };
-        let minimap = make_minimap(&cards, world_w);
+        let minimap = make_minimap(&cards, world_w, lanes.len());
+        let lane_colors = lane_colors(&lanes);
         let contacts = db
             .as_ref()
             .map(|d| build_taskbar_contacts(&rt.block_on(d.list_contacts()).unwrap_or_default()))
@@ -902,6 +1155,8 @@ impl App {
         let mut ai_config = app_config.ai;
         ai_config.n_gpu_layers = 0;
         let p2p_config = app_config.p2p;
+        // v0.0.12 item 19, N1: this device's name, read at start.
+        let device_name = crate::device_name::resolve(&p2p_config.device_name);
         let (orch_tx, orch_rx) = mpsc::channel::<OrchestratorEvent>();
         let (decision_tx, decision_rx) = tokio::sync::mpsc::channel::<ActionDecision>(8);
         let (injection_decision_tx, injection_decision_rx) =
@@ -913,18 +1168,31 @@ impl App {
             mpsc::channel::<Result<Option<crate::recovery::RecoveryStatus>, String>>();
 
         println!(
-            "sovereign-shell: {} cards ({} links) [{source}], {LANES} lanes. {}",
+            "sovereign-shell: {} cards ({} links) [{source}], {} lanes. {}",
             cards.len(),
             links.len(),
-            if locked { "locked — auth gate" } else { "drag=pan, scroll=zoom, c=chat, i=inbox, s=settings" }
+            lanes.len(),
+            if locked {
+                "locked — auth gate"
+            } else {
+                "drag=pan, wheel=scroll, ctrl+wheel=zoom, c=chat, i=inbox, s=settings"
+            }
         );
+        let (a11y_tx, a11y_rx) = mpsc::channel::<accesskit::ActionRequest>();
         // Initial framing: day-grained zoom (0.6), positioned so "now" sits near
         // the right edge — the most recent activity is on screen. (No window yet,
         // so use the configured initial inner width.)
         let init_zoom = 0.6;
         let init_offset_x = (1180.0 - 280.0) - x_of_ts(now_ts, time_ref) * init_zoom;
+        let auth_work: Arc<dyn AuthWork> = Arc::new(crate::auth_work::RealAuthWork::new(rt.handle().clone()));
         Self {
-            context: RenderContext::new(),
+            context: {
+                // Only the creation needs the lock; drops can overlap.
+                #[cfg(test)]
+                let _init = TEST_WGPU_INSTANCE_INIT.lock().unwrap_or_else(|e| e.into_inner());
+                // No GL on Windows (v0.0.12, W1, W4).
+                crate::gpu::render_context()
+            },
             renderers: Vec::new(),
             state: RenderState::Suspended(None),
             scene: Scene::new(),
@@ -934,6 +1202,8 @@ impl App {
             world_w,
             time_ref,
             lane_names,
+            lanes,
+            lane_colors,
             contacts,
             shaper,
             cam: Camera { offset_x: init_offset_x, offset_y: AXIS_H + 16.0, zoom: init_zoom },
@@ -974,6 +1244,8 @@ impl App {
             email_password: None,
             account_key: None,
             device_key: None,
+            #[cfg(test)]
+            test_identity_fallback: true,
             kek: None,
             docs: None,
             purge_task: None,
@@ -983,9 +1255,12 @@ impl App {
             orphan_modal: None,
             orphan_prompt_target: None,
             orphan_count: 0,
+            unreadable_count: 0,
             delete_notice: None,
             p2p: None,
             p2p_config,
+            device_name,
+            device_rename: None,
             sync_status: Vec::new(),
             alert_notices: Vec::new(),
             older_peers: Vec::new(),
@@ -994,6 +1269,7 @@ impl App {
             pair_tx,
             pair_rx,
             pending_join_password: None,
+            pending_join_name: None,
             pending_join_peer: None,
             comms_tx,
             comms_rx,
@@ -1022,6 +1298,8 @@ impl App {
             // step (screenshot debug); real onboarding auto-starts it (see update).
             debug_wizard: crate::dev::var("SHELL_OPEN_WIZARD").and_then(|s| s.parse().ok()),
             wizard: None,
+            auth_work,
+            auth_job: None,
             rt,
             db,
             orch: Arc::new(tokio::sync::Mutex::new(None)),
@@ -1053,6 +1331,12 @@ impl App {
             framed: Scene::new(),
             adapter: None,
             a11y_root_focus: accesskit::NodeId(0),
+            a11y_show_node: None,
+            a11y_tx,
+            a11y_rx,
+            a11y_label_focus: None,
+            #[cfg(test)]
+            test_view: None,
         }
     }
 
@@ -1071,24 +1355,35 @@ impl App {
             self.auth_form.busy = false;
             match r {
                 Ok(()) => {
-                    if let Some(pw) = self.pending_join_password.take() {
-                        self.try_login(pw); // unlocks + start_p2p
+                    // The join wrote this device's account: its setup is
+                    // complete (B5b; no "interrupted" notice at its login).
+                    if let Err(e) = crate::crypto::mark_setup_complete() {
+                        eprintln!("sovereign-shell: could not write the setup marker after the join: {e}");
                     }
-                    // Kick the first sync immediately, direct-dialing the source
-                    // peer from the offer — don't wait for mDNS discovery.
-                    if let Some((peer_id, addrs)) = self.pending_join_peer.take() {
-                        if let Some(h) = &self.p2p {
-                            h.pair_sync(&self.rt, peer_id, addrs);
-                        }
+                    // v0.0.12 item 19, N2: the name typed in the join form
+                    // is saved with it (blank: the default stays).
+                    if let Some(name) = self.pending_join_name.take() {
+                        self.set_this_device_name(&name);
+                    }
+                    // Unlocks off the UI thread; `unlock_done` then starts P2P
+                    // and kicks the first sync with `pending_join_peer`.
+                    if let Some(pw) = self.pending_join_password.take() {
+                        self.try_login(pw);
                     }
                 }
                 Err(e) => {
                     self.pending_join_password = None;
+                    self.pending_join_name = None;
                     self.pending_join_peer = None;
                     self.auth_form.error = Some(e);
                 }
             }
         }
+
+        // v0.0.12 item 18: a key derivation that ended on its worker (setup,
+        // unlock, recovery) — applied here, on the UI thread, before the
+        // locked early-return below.
+        self.auth_drain();
 
         // F1 Surface 2: apply completed poll rounds + run the auto-cadence. Runs
         // while locked (recovery is pre-login), before the early-return below.
@@ -1124,16 +1419,24 @@ impl App {
             if let Some(mut field) = self.lane_rename.take() {
                 field.close();
             }
+            // And the Rename field of Settings → Devices (v0.0.12 item 19).
+            if let Some(mut field) = self.device_rename.take() {
+                field.close();
+            }
             self.ensure_wizard();
+            // B2: a derivation's status line, on the form that started it
+            // (recovery's is drawn by its own overlay).
+            let status = self.auth_job.as_ref().map(|j| j.job).filter(|j| *j != AuthJob::Recover).map(AuthJob::status);
             if let Some(wiz) = &self.wizard {
-                crate::onboarding::draw_onboarding(&mut self.scene, &mut self.shaper, wiz, w, h);
+                crate::onboarding::draw_onboarding(&mut self.scene, &mut self.shaper, wiz, status, w, h);
             } else {
                 self.auth_form.ensure_shaped(&mut self.shaper);
-                draw_auth(&mut self.scene, &self.auth_form, w, h);
+                let status = status.map(|s| self.shaper.shape(s, 424.0, 13.0));
+                draw_auth(&mut self.scene, &self.auth_form, status.as_ref(), w, h);
                 // F1 Surface 2: offer recovery on the LOGIN screen only, and
                 // only when this device can actually do it (holds a card +
-                // bundle). Not during onboarding or a device-join.
-                if self.recovery_available && !self.auth_form.onboarding && !self.auth_form.joining {
+                // bundle). Not during a device-join.
+                if self.recovery_available && !self.auth_form.joining {
                     let r = crate::panels::recovery_link_rect(w, h, self.auth_form.fields.len());
                     let l = self.shaper.shape("Forgot your password?  Recover with guardians", r.width() as f32, 13.0);
                     crate::text::draw_text(&mut self.scene, &l, Affine::translate((r.x0, r.y0)), Color::from_rgb8(120, 200, 235));
@@ -1170,8 +1473,21 @@ impl App {
                         Some(InjectionPrompt { source, severity, indicators, preview });
                     self.injection_slot.open(Instant::now());
                 }
-                OrchestratorEvent::ActionExecuted { action, success } => {
-                    self.push_chat_msg(format!("{} {action}", if success { "\u{2713} Done:" } else { "\u{2717} Failed:" }));
+                // v0.0.12 rc2 (V0012-rc2-summary-shown, R1, R2, R4): a summary is shown as
+                // one assistant message, opening the chat if none is open (never toggling an
+                // open one closed). Other skill results (`model_list`, `model_swapped`) stay
+                // unshown: the outcome line already says what they carry.
+                OrchestratorEvent::SkillResult { kind, data, .. } if kind == "summary" => {
+                    if self.window_index_of(WindowKind::Chat).is_none() {
+                        self.focus_or_toggle(WindowKind::Chat);
+                    }
+                    self.push_chat_msg(summary_message(&data));
+                }
+                // An executed action shows its own outcome line (v0.0.12 item 11): only a
+                // real change is shown as one; the shell composes no outcome word itself.
+                OrchestratorEvent::ActionExecuted { success, outcome, .. } => {
+                    self.push_chat_msg(outcome.summary_line());
+                    // Reloaded as before on any action that did what was asked.
                     if success {
                         reload = true;
                     }
@@ -1248,7 +1564,12 @@ impl App {
                 OrchestratorEvent::DeviceDiscovered { .. } => self.refresh_devices_windows(),
                 OrchestratorEvent::SyncAlertsChanged => alerts_changed = true,
                 // C-DOC adoption step 6 (M2): the one-time migration's notice.
-                OrchestratorEvent::DocumentsMigrated { text } => self.set_notice("Document format", &text),
+                OrchestratorEvent::DocumentsMigrated { text } => {
+                    self.set_notice("Document format", &text);
+                    // v0.0.12 item 7, V2: the conversion's list of documents
+                    // that could not be read may have changed.
+                    alerts_changed = true;
+                }
                 OrchestratorEvent::PeerNeedsUpdate { peer_id, device_name } => {
                     self.note_older_peer(peer_id, device_name);
                     self.refresh_devices_windows();
@@ -1405,7 +1726,9 @@ impl App {
             let mut c = ChatPanel::new();
             match crate::dev::var("SHELL_OPEN_CHAT").as_deref() {
                 Some("typing") => {
-                    c.input = "How does the spatial canvas decide thread lanes?".to_string();
+                    c.input.event(sovereign_editor::input::InputEvent::Text(
+                        "How does the spatial canvas decide thread lanes?".to_string(),
+                    ));
                 }
                 // Headless verification of the pending affordances.
                 Some("loading") => {
@@ -1432,7 +1755,10 @@ impl App {
         }
         if self.debug_search {
             let mut sp = SearchPanel::new();
-            sp.query = crate::dev::var("SHELL_OPEN_SEARCH").unwrap_or_default();
+            let q = crate::dev::var("SHELL_OPEN_SEARCH").unwrap_or_default();
+            if !q.is_empty() {
+                sp.query.event(sovereign_editor::input::InputEvent::Text(q));
+            }
             let bounds = self.next_bounds(WindowKind::Search);
             self.windows.push(Window { content: WindowContent::Search(sp), bounds });
             self.update_search_all();
@@ -1536,38 +1862,38 @@ impl App {
 
         let z = self.cam.zoom;
 
+        // The lanes with a pixel between the time ruler and the window's
+        // bottom: only they are drawn (N8) — their bands, their cards, their
+        // labels. (The accessibility tree keeps every lane, `build_a11y_tree`.)
+        let seen = lanes_between(&self.cam, self.lanes.len(), AXIS_H, h);
+
         // Lane backgrounds.
-        for lane in 0..LANES {
+        for lane in seen.clone() {
             let y = self.cam.w2s_y(lane as f64 * LANE_H);
             let lane_h = LANE_H * z;
-            if y + lane_h < AXIS_H || y > h {
-                continue;
-            }
             // Base alternating shade + a subtle tint of the lane's thread color
             // (lane = color; card border = provenance).
             let base = if lane % 2 == 0 { pal().lane_even } else { pal().lane_odd };
             let rect = Rect::new(0.0, y, w, y + lane_h);
             self.scene.fill(Fill::NonZero, Affine::IDENTITY, base, None, &rect);
-            self.scene.fill(Fill::NonZero, Affine::IDENTITY, lane_color(lane).with_alpha(0.06), None, &rect);
+            self.scene.fill(Fill::NonZero, Affine::IDENTITY, self.lane_color(lane).with_alpha(0.06), None, &rect);
         }
 
-        // While dragging a card, highlight the lane under the cursor — but only
-        // when it has a (named) thread, since that's the only valid drop target
-        // (the document would move to that thread).
-        if self.card_drag.is_some() {
+        // While dragging a card, highlight the lane under the cursor — only
+        // where a drop does something (N3: never over the Unfiled lane), the
+        // lane whose thread the drop would move the document to.
+        if self.card_drag.is_some() && self.drop_target_thread(self.cursor.1).is_some() {
             if let Some(lane) = self.lane_at_y(self.cursor.1) {
-                if self.lane_names.get(lane).is_some_and(|n| !n.is_empty()) {
-                    let y = self.cam.w2s_y(lane as f64 * LANE_H);
-                    let rect = Rect::new(0.0, y, w, y + LANE_H * z);
-                    self.scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(120, 170, 230).with_alpha(0.14), None, &rect);
-                    self.scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, Color::from_rgb8(130, 180, 235).with_alpha(0.6), None, &rect);
-                }
+                let y = self.cam.w2s_y(lane as f64 * LANE_H);
+                let rect = Rect::new(0.0, y, w, y + LANE_H * z);
+                self.scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(120, 170, 230).with_alpha(0.14), None, &rect);
+                self.scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, Color::from_rgb8(130, 180, 235).with_alpha(0.6), None, &rect);
             }
         }
 
         // Cross-thread links (behind cards), only when readable.
         self.last_links = if z >= 0.15 {
-            draw_links(&mut self.scene, &self.cards, &self.links, &self.cam, w)
+            draw_links(&mut self.scene, &self.cards, &self.links, &self.lane_colors, &self.cam, w, h)
         } else {
             0
         };
@@ -1598,7 +1924,7 @@ impl App {
             if role.hidden {
                 continue;
             }
-            if card.x + CARD_W < vx0 || card.x > vx1 {
+            if !seen.contains(&card.lane) || card.x + CARD_W < vx0 || card.x > vx1 {
                 continue;
             }
             // Peek offset is world px (scales with zoom) → * z into screen space.
@@ -1693,23 +2019,19 @@ impl App {
         // hit-testing shares: the renamable ones (a live thread's) are kept for
         // the double-click that opens the rename field (THREAD-name R1).
         self.label_rects.clear();
-        for lane in 0..LANES {
+        for lane in seen {
             let name = self.lane_names.get(lane).cloned().unwrap_or_default();
             if name.is_empty() {
                 continue;
             }
             let y = self.cam.w2s_y(lane as f64 * LANE_H);
-            let lane_h = LANE_H * z;
-            if y + lane_h < AXIS_H || y > h {
-                continue;
-            }
             let label = self.shaper.shape(&name, 220.0, 12.0);
             let rect = lane_label_rect(y, label.width() as f64);
             if self.lane_labels.iter().any(|l| l.lane == lane) {
                 self.label_rects.push((lane, rect));
             }
             let pill = RoundedRect::from_rect(rect, 5.0);
-            self.scene.fill(Fill::NonZero, Affine::IDENTITY, lane_color(lane).with_alpha(0.92), None, &pill);
+            self.scene.fill(Fill::NonZero, Affine::IDENTITY, self.lane_color(lane).with_alpha(0.92), None, &pill);
             let (tx, ty) = crate::canvas::LANE_LABEL_TEXT_INSET;
             crate::text::draw_text(&mut self.scene, &label, Affine::translate((rect.x0 + tx, rect.y0 + ty)), pal().on_accent);
         }
@@ -1728,7 +2050,7 @@ impl App {
 
         // Time axis (top) + minimap (corner).
         draw_axis(&mut self.scene, &mut self.shaper, &self.cam, w, self.time_ref);
-        draw_minimap_world(&mut self.scene, &self.minimap, &self.cam, self.world_w, w, h);
+        draw_minimap_world(&mut self.scene, &self.minimap, &self.lane_colors, &self.cam, self.world_w, w, h);
 
         // Fanned-open deck overlay: lifted above the canvas, tethered to real time.
         self.draw_deck_fan(w, h);
@@ -1738,6 +2060,7 @@ impl App {
         // Floating windows, bottom→top so the focused (last) one paints on top.
         // `self.windows[i]` and `self.shaper` are disjoint fields, so we can
         // borrow both: shape/clamp against the window's body, then draw.
+        let total = self.scale * self.ui_scale;
         for i in 0..self.windows.len() {
             let bounds = self.windows[i].bounds;
             let body = window_chrome(bounds).2;
@@ -1764,6 +2087,7 @@ impl App {
                 WindowContent::Chat(chat) => {
                     let msg_h = chat_split(body).0.height();
                     chat.ensure_shaped(&mut self.shaper, body_w);
+                    chat.input.set_scale(total);
                     let max_scroll = (chat.content_h() - msg_h).max(0.0);
                     chat.scroll = chat.scroll.clamp(0.0, max_scroll);
                 }
@@ -1775,6 +2099,7 @@ impl App {
                 WindowContent::Search(sp) => {
                     let results_h = search_split(body).1.height();
                     sp.ensure_shaped(&mut self.shaper, body_w);
+                    sp.query.set_scale(total);
                     sp.scroll = sp.scroll.clamp(0.0, (sp.content_h() - results_h).max(0.0));
                 }
                 WindowContent::History(hp) => {
@@ -1810,7 +2135,7 @@ impl App {
                     pv.scroll = pv.scroll.clamp(0.0, (pv.content_h() - list_h).max(0.0));
                 }
             }
-            match &self.windows[i].content {
+            match &mut self.windows[i].content {
                 WindowContent::Doc(win) => draw_doc_window(&mut self.scene, win, bounds),
                 WindowContent::Inbox(ib) => draw_inbox(&mut self.scene, ib, bounds),
                 WindowContent::Chat(chat) => draw_chat(&mut self.scene, chat, bounds),
@@ -1859,6 +2184,24 @@ impl App {
             if let Some(field) = self.lane_rename.as_mut() {
                 field.set_scale(total);
                 field.draw(&mut self.scene, label, w, h);
+            }
+        }
+        // The Rename field of Settings → Devices (N3, N5), over the name it
+        // renames; it closes with the window that showed it.
+        if self.device_rename.is_some() {
+            match self.device_rename_anchor() {
+                Some(anchor) => {
+                    let total = self.scale * self.ui_scale;
+                    if let Some(field) = self.device_rename.as_mut() {
+                        field.set_scale(total);
+                        field.draw(&mut self.scene, &mut self.shaper, anchor, w, h);
+                    }
+                }
+                None => {
+                    if let Some(mut field) = self.device_rename.take() {
+                        field.close();
+                    }
+                }
             }
         }
         // The input method follows the prompt's field, else the focused editor.
@@ -2070,10 +2413,10 @@ impl App {
             self.bring_to_front(idx);
             return;
         }
-        // The stored title, raw: the editor's title field shows its own
-        // placeholder for an empty one (T10).
-        let title = self.cards[card_idx].title.clone();
-        let Some(pane) = self.v2_open(&id, &title) else { return };
+        // The editor opens on the stored title, read from the store (`v2_open`;
+        // the card shows its tokens labelled, L2): its title field shows its
+        // own placeholder for an empty one (T10).
+        let Some(pane) = self.v2_open(&id) else { return };
         let bounds = self.next_bounds(WindowKind::Doc);
         let inner_w = window_chrome(bounds).2.width();
         let mut dw = DocWindow::new(&self.cards[card_idx], &mut self.shaper, inner_w);
@@ -2081,11 +2424,10 @@ impl App {
         self.windows.push(Window { content: WindowContent::Doc(dw), bounds });
     }
 
-    /// Bottom status bar: persona, counts, at-rest state, zoom, key hints.
-    fn draw_status_bar(&mut self, w: f64, h: f64) {
-        let y0 = h - STATUS_H;
-        self.scene.fill(Fill::NonZero, Affine::IDENTITY, pal().input, None, &Rect::new(0.0, y0, w, h));
-        self.scene.fill(Fill::NonZero, Affine::IDENTITY, pal().divider, None, &Rect::new(0.0, y0, w, y0 + 1.0));
+    /// The status bar's text (after its notice): persona, counts — the live
+    /// threads, one lane each (N5; the Unfiled lane is not a thread) — the
+    /// at-rest state, the zoom and the key hints.
+    pub(crate) fn status_text(&self) -> String {
         // H-shell1: a duress session must be indistinguishable from a primary
         // one to an over-the-shoulder adversary — NEVER label it "duress" on
         // screen. Both unlocked personas render "primary".
@@ -2093,13 +2435,21 @@ impl App {
             Some(_) => "primary",
             None => "no-auth",
         };
-        let threads = self.lane_names.iter().filter(|s| !s.is_empty()).count();
+        let threads = self.lanes.thread_count();
         let at_rest = if self.persona.is_some() { "encrypted" } else { "raw" };
-        let text = format!(
-            "{persona}  \u{00b7}  {} docs  \u{00b7}  {threads} threads  \u{00b7}  {at_rest}  \u{00b7}  zoom {:.0}%  \u{00b7}  c chat \u{00b7} i inbox \u{00b7} m models \u{00b7} p pii \u{00b7} a alerts \u{00b7} v previous values \u{00b7} b browser \u{00b7} d devices \u{00b7} s settings \u{00b7} arrows pan",
+        format!(
+            "{persona}  \u{00b7}  {} docs  \u{00b7}  {threads} threads  \u{00b7}  {at_rest}  \u{00b7}  zoom {:.0}%  \u{00b7}  c chat \u{00b7} i inbox \u{00b7} m models \u{00b7} p pii \u{00b7} a alerts \u{00b7} v previous values \u{00b7} b browser \u{00b7} d devices \u{00b7} s settings \u{00b7} arrows pan \u{00b7} wheel scroll \u{00b7} ctrl+wheel zoom",
             self.cards.len(),
             self.cam.zoom * 100.0,
-        );
+        )
+    }
+
+    /// Bottom status bar: persona, counts, at-rest state, zoom, key hints.
+    fn draw_status_bar(&mut self, w: f64, h: f64) {
+        let y0 = h - STATUS_H;
+        self.scene.fill(Fill::NonZero, Affine::IDENTITY, pal().input, None, &Rect::new(0.0, y0, w, h));
+        self.scene.fill(Fill::NonZero, Affine::IDENTITY, pal().divider, None, &Rect::new(0.0, y0, w, y0 + 1.0));
+        let text = self.status_text();
         // C-WIRE 13 / 12: a notice, left, on amber with dark text (well above
         // 4.5:1); a click opens what it is about. The key hints follow it.
         let mut x = 12.0;
@@ -2256,29 +2606,148 @@ impl App {
         (Point::new(w * 0.5, h - BOTTOM_CHROME - 20.0 - r), r)
     }
 
-    /// Lanes that actually carry a name (the ones drawn).
-    fn active_lane_count(&self) -> usize {
-        self.lane_names.iter().filter(|s| !s.is_empty()).count().max(1)
+    /// The lanes that exist (the threads' and Unfiled), at least one for the
+    /// framing arithmetic.
+    fn framed_lane_count(&self) -> usize {
+        self.lanes.len().max(1)
     }
 
     /// Vertical offset that centers the lane block in the canvas area (between the
-    /// top time-axis and the bottom chrome) for a given zoom.
+    /// top time-axis and the bottom chrome) for a given zoom; a block taller
+    /// than the canvas starts at its top.
     fn centered_offset_y(&self, h: f64, zoom: f64) -> f64 {
         let usable = (h - AXIS_H - BOTTOM_CHROME).max(120.0);
-        let lanes_h = self.active_lane_count() as f64 * LANE_H * zoom;
+        let lanes_h = self.framed_lane_count() as f64 * LANE_H * zoom;
         AXIS_H + ((usable - lanes_h) * 0.5).max(0.0)
     }
 
-    /// The "home" view: fit the active lanes to ~3/4 of the canvas height (and
-    /// center them vertically), with "now" at the horizontal center.
-    fn frame_now(&mut self) {
+    /// The "home" view: fit the lanes that exist (N6) to ~3/4 of the canvas
+    /// height (and center them vertically), with "now" at the horizontal
+    /// center. The zoom does not go below 0.08 (a lane stays ~8 px high): a
+    /// workspace with more lanes than fit at that zoom shows its first lanes,
+    /// from the top, and scrolls (N4). The stop applies.
+    pub(crate) fn frame_now(&mut self) {
         let (w, h) = self.win_size().unwrap_or((1180.0, 760.0));
         let usable = (h - AXIS_H - BOTTOM_CHROME).max(120.0);
-        let n = self.active_lane_count() as f64;
+        let n = self.framed_lane_count() as f64;
         let zoom = (usable * 0.75 / (n * LANE_H)).clamp(0.08, 1.0);
         let offset_x = w * 0.5 - x_of_ts(chrono::Utc::now().timestamp(), self.time_ref) * zoom;
         let offset_y = self.centered_offset_y(h, zoom);
         self.cam = Camera { offset_x, offset_y, zoom };
+        self.apply_lane_stop();
+    }
+
+    // ---- Scrolling the lanes (v0.0.12 lanes lot, N4) -----------------------
+
+    /// Screen px the canvas moves per wheel line (vertically or in time).
+    const WHEEL_LINE_PX: f64 = 48.0;
+
+    /// The canvas window's height (logical px), for the stop: the window's,
+    /// else the configured initial size.
+    fn view_h(&self) -> f64 {
+        self.win_size().map(|(_, h)| h).unwrap_or(760.0)
+    }
+
+    /// Applies the stop (N4) to the camera: the first lane never below the
+    /// canvas top, the last never above the canvas bottom; every lane inside
+    /// the canvas when they all fit (`canvas::lanes_stop`). Every vertical
+    /// movement ends here: wheel, drag, arrows, zoom, home, fit, resize, focus.
+    fn apply_lane_stop(&mut self) {
+        let lanes = self.lanes.len();
+        if lanes == 0 {
+            return;
+        }
+        let h = self.view_h();
+        self.cam.offset_y = lanes_stop(self.cam.offset_y, lanes, self.cam.zoom, h);
+    }
+
+    /// Moves the lanes vertically by `dy` screen px (positive: down, earlier
+    /// lanes come into view), within the stop. When every lane fits, there is
+    /// no vertical scroll at all (N4).
+    fn scroll_lanes(&mut self, dy: f64) {
+        let h = self.view_h();
+        if !lanes_fit(self.lanes.len(), self.cam.zoom, h) {
+            self.cam.offset_y += dy;
+        }
+        self.apply_lane_stop();
+    }
+
+    /// Zooms by `factor` about the screen point `(cx, cy)`, then the stop.
+    fn zoom_canvas(&mut self, cx: f64, cy: f64, factor: f64) {
+        self.cam.zoom_toward(cx, cy, factor);
+        self.apply_lane_stop();
+    }
+
+    /// The wheel over the canvas (no modal, not the taskbar, no window), in
+    /// lines (winit's sign: `lines_y > 0` is the wheel turned up, `lines_x > 0`
+    /// a swipe to the right), at `self.cursor` (N4):
+    /// - Ctrl+wheel zooms about the cursor;
+    /// - Shift+wheel scrolls in time (turned down: later, to the right);
+    /// - a horizontal delta scrolls in time directly;
+    /// - the wheel scrolls the lanes (turned down: later lanes come up),
+    ///   within the stop.
+    pub(crate) fn canvas_wheel(&mut self, lines_x: f64, lines_y: f64, mods: winit::keyboard::ModifiersState) {
+        if mods.control_key() {
+            let lines = if lines_y != 0.0 { lines_y } else { lines_x };
+            let factor = (1.0 + lines * 0.12).clamp(0.2, 5.0);
+            let (cx, cy) = self.cursor;
+            self.zoom_canvas(cx, cy, factor);
+            return;
+        }
+        let (time, lanes) = if mods.shift_key() { (lines_x + lines_y, 0.0) } else { (lines_x, lines_y) };
+        if time != 0.0 {
+            self.cam.offset_x += time * Self::WHEEL_LINE_PX;
+        }
+        if lanes != 0.0 {
+            self.scroll_lanes(lanes * Self::WHEEL_LINE_PX);
+        }
+    }
+
+    /// A drag of the canvas by the pointer's movement `(dx, dy)` (logical
+    /// px): time moves as the pointer does, the lanes within the stop (N4).
+    pub(crate) fn canvas_drag(&mut self, dx: f64, dy: f64) {
+        self.cam.offset_x += dx;
+        self.scroll_lanes(dy);
+    }
+
+    /// The canvas's keyboard navigation when no window is open (WCAG 2.1.1):
+    /// arrows pan (the vertical ones within the stop), `=`/`+` and `-`/`_`
+    /// zoom about the centre, `h` home, `f` fit.
+    pub(crate) fn canvas_key(&mut self, key: &Key) {
+        const STEP: f64 = 60.0;
+        let (vw, vh) = self.win_size().unwrap_or((1600.0, 1000.0));
+        match key {
+            Key::Named(NamedKey::ArrowLeft) => self.cam.offset_x += STEP,
+            Key::Named(NamedKey::ArrowRight) => self.cam.offset_x -= STEP,
+            Key::Named(NamedKey::ArrowUp) => self.scroll_lanes(STEP),
+            Key::Named(NamedKey::ArrowDown) => self.scroll_lanes(-STEP),
+            Key::Character(s) if s == "=" || s == "+" => self.zoom_canvas(vw * 0.5, vh * 0.5, 1.15),
+            Key::Character(s) if s == "-" || s == "_" => self.zoom_canvas(vw * 0.5, vh * 0.5, 0.87),
+            Key::Character(s) if s.eq_ignore_ascii_case("h") => self.frame_now(),
+            Key::Character(s) if s.eq_ignore_ascii_case("f") => self.frame_fit(),
+            _ => {}
+        }
+    }
+
+    /// After the window was resized (`win_size` gives the new size): the stop
+    /// again, for the new canvas height (N4).
+    pub(crate) fn view_resized(&mut self) {
+        self.apply_lane_stop();
+    }
+
+    /// Scrolls the fewest pixels that bring lane `lane` whole into the canvas
+    /// (N8: a focused off-screen label), within the stop.
+    fn scroll_lane_into_view(&mut self, lane: usize) {
+        let h = self.view_h();
+        let (top, bottom) = (AXIS_H, h - BOTTOM_CHROME);
+        let y0 = self.cam.w2s_y(lane as f64 * LANE_H);
+        let y1 = self.cam.w2s_y((lane + 1) as f64 * LANE_H);
+        if y0 < top {
+            self.cam.offset_y += top - y0;
+        } else if y1 > bottom {
+            self.cam.offset_y -= y1 - bottom;
+        }
+        self.apply_lane_stop();
     }
 
     /// Re-frame to fit ALL documents in view (zoom out as needed; never zooms IN
@@ -2300,6 +2769,7 @@ impl App {
         let offset_x = left - min_x * zoom;
         let offset_y = self.centered_offset_y(h, zoom);
         self.cam = Camera { offset_x, offset_y, zoom };
+        self.apply_lane_stop();
     }
 
     /// Draw the bottom-center "+" button (a brand-accent disc with a plus glyph).
@@ -2468,9 +2938,12 @@ impl App {
         let target = if let Some(menu) = card_menu {
             CtxTarget::Card(menu)
         } else {
+            // The lane under the cursor, by the one mapping (N1); above the
+            // first lane the first, below the last the last.
             let world_y = (p.y - self.cam.offset_y) / self.cam.zoom;
             let lane = (world_y / LANE_H).floor();
-            let lane = if lane < 0.0 { 0 } else { (lane as usize).min(LANES - 1) };
+            let last = self.lanes.len().saturating_sub(1);
+            let lane = if lane < 0.0 { 0 } else { (lane as usize).min(last) };
             CtxTarget::Canvas(lane)
         };
         self.ctx_menu = Some(ContextMenu { target, anchor: p });
@@ -2501,10 +2974,15 @@ impl App {
                     ("Delete".to_string(), CtxAction::Delete, true),
                 ]
             }
-            CtxTarget::Canvas(lane) => vec![
-                ("New lane".to_string(), CtxAction::NewThread, false),
-                ("New document".to_string(), CtxAction::NewDocument(*lane), false),
-            ],
+            // "New document" only on a thread's lane (N3: not on Unfiled, nor
+            // with no thread at all), for the thread the lane shows (N2).
+            CtxTarget::Canvas(lane) => {
+                let mut rows = vec![("New lane".to_string(), CtxAction::NewThread, false)];
+                if self.lanes.thread_of_lane(*lane).is_some() {
+                    rows.push(("New document".to_string(), CtxAction::NewDocument(*lane), false));
+                }
+                rows
+            }
         }
     }
 
@@ -2930,12 +3408,22 @@ impl App {
             self.set_notice("Not deleted", "This document has unsaved edits. Save them first.");
             return;
         }
-        if let Err(msg) = self.rt.block_on(crate::card_menu::trash_target(&docs, id)) {
-            self.set_notice("Not deleted", &msg);
-            // The card may be stale (the document went elsewhere): redraw
-            // from the store.
-            self.load_workspace_now();
-            return;
+        match self.rt.block_on(crate::card_menu::trash_target_outcome(&docs, id)) {
+            Ok(sovereign_docs::TrashOutcome::Trashed) => {}
+            // v0.0.12 item 9, T3: a deletion made elsewhere is not this
+            // Delete's, so there is no Undo for it.
+            Ok(sovereign_docs::TrashOutcome::AlreadyInTrash) => {
+                self.set_notice("Already in the trash", crate::card_menu::ALREADY_IN_TRASH);
+                self.load_workspace_now();
+                return;
+            }
+            Err(msg) => {
+                self.set_notice("Not deleted", &msg);
+                // The card may be stale (the document went elsewhere): redraw
+                // from the store.
+                self.load_workspace_now();
+                return;
+            }
         }
         self.windows.retain(|win| !matches!(&win.content, WindowContent::Doc(d) if d.doc_id == id));
         self.load_workspace_now();
@@ -3034,10 +3522,12 @@ impl App {
         }
     }
 
-    /// The modal that asks which (existing) thread to restore into.
+    /// The modal that asks which (existing) thread to restore into: every
+    /// live thread, in the lanes' order (v0.0.12 item 9, T4); a thread not
+    /// drawn as a lane comes after, in the store's order.
     fn open_thread_chooser(&mut self, target: crate::trash_ui::RestoreTarget, title: String) {
         let Some(db) = self.db.clone() else { return };
-        let threads: Vec<(String, String)> = self
+        let mut threads: Vec<(String, String)> = self
             .rt
             .block_on(db.list_threads())
             .unwrap_or_default()
@@ -3045,48 +3535,84 @@ impl App {
             .filter(|t| t.deleted_at.is_none())
             .filter_map(|t| t.id_string().map(|id| (id, t.name)))
             .collect();
-        self.trash_modal = Some(crate::trash_ui::TrashModal::ChooseThread { target, title, threads });
+        let lanes = self.lanes.thread_ids();
+        // A stable sort: the lanes' order first, the rest as listed.
+        threads.sort_by_key(|(id, _)| lanes.iter().position(|l| l == id).unwrap_or(usize::MAX));
+        self.trash_modal = Some(crate::trash_ui::TrashModal::choose_thread(target, title, threads));
     }
 
-    /// A click while a trash modal is open: it consumes every click.
-    fn handle_trash_modal_click(&mut self, p: Point, w: f64, h: f64) {
-        use crate::trash_ui::{modal_hit, ModalHit, RestoreTarget, TrashModal};
-        let Some(modal) = self.trash_modal.as_ref() else { return };
-        let hit = modal_hit(modal, w, h, p);
+    /// A key while a trash modal is open (it owns the keyboard; v0.0.12 item
+    /// 9, T4): in the thread chooser, Up / Down / Page Up / Page Down / Home /
+    /// End move the chosen thread, Enter restores into it; Esc cancels either
+    /// modal.
+    pub(crate) fn trash_modal_key(&mut self, key: &Key) {
+        use crate::trash_ui::ModalKey;
+        let Some(step) = self.trash_modal.as_mut().map(|m| m.key(key)) else { return };
+        match step {
+            ModalKey::Open => {}
+            ModalKey::Cancel => self.cancel_trash_modal_inner(),
+            ModalKey::Choose(i) => self.restore_into_chosen(i),
+        }
+    }
+
+    /// The wheel over the open trash modal: the thread chooser's list
+    /// scrolls by `lines` rows (positive: up).
+    pub(crate) fn trash_modal_scroll(&mut self, lines: i64) {
+        if let Some(m) = self.trash_modal.as_mut() {
+            m.scroll(lines);
+        }
+    }
+
+    /// Restores what the chooser is for into its thread `i` (a click on a
+    /// row, or Enter); the chooser closes.
+    fn restore_into_chosen(&mut self, i: usize) {
+        use crate::trash_ui::{RestoreTarget, TrashModal};
         let (Some(docs), Some(db)) = (self.docs.clone(), self.db.clone()) else {
             self.trash_modal = None;
             return;
         };
-        match (self.trash_modal.take(), hit) {
-            (Some(TrashModal::ChooseThread { target, threads, .. }), ModalHit::Thread(i)) => {
-                let Some((into, name)) = threads.get(i).cloned() else { return };
-                let Some(mut view) = self.trash.take() else { return };
-                let now = chrono::Utc::now();
-                let r = match &target {
-                    RestoreTarget::One(id) => self.rt.block_on(view.restore_into(&docs, db.as_ref(), id, &into, now)).map(|()| 1),
-                    RestoreTarget::Group(tid) => self.rt.block_on(view.restore_group_into(&docs, db.as_ref(), tid, &into, now)),
-                };
-                self.trash = Some(view);
-                match r {
-                    Ok(n) => {
-                        self.load_workspace_now();
-                        if n != 1 {
-                            self.set_notice("Restored", &format!("{n} documents are back, in \u{201c}{name}\u{201d}."));
-                        }
-                    }
-                    Err(msg) => self.set_notice("Not restored", &msg),
+        let Some(TrashModal::ChooseThread { target, threads, .. }) = self.trash_modal.take() else { return };
+        let Some((into, name)) = threads.get(i).cloned() else { return };
+        let Some(mut view) = self.trash.take() else { return };
+        let now = chrono::Utc::now();
+        let r = match &target {
+            RestoreTarget::One(id) => self.rt.block_on(view.restore_into(&docs, db.as_ref(), id, &into, now)).map(|()| 1),
+            RestoreTarget::Group(tid) => self.rt.block_on(view.restore_group_into(&docs, db.as_ref(), tid, &into, now)),
+        };
+        self.trash = Some(view);
+        match r {
+            Ok(n) => {
+                self.load_workspace_now();
+                if n != 1 {
+                    self.set_notice("Restored", &format!("{n} documents are back, in \u{201c}{name}\u{201d}."));
                 }
-                self.rebuild_settings_windows();
+            }
+            Err(msg) => self.set_notice("Not restored", &msg),
+        }
+        self.rebuild_settings_windows();
+    }
+
+    /// A click while a trash modal is open: it consumes every click.
+    fn handle_trash_modal_click(&mut self, p: Point, w: f64, h: f64) {
+        use crate::trash_ui::{modal_hit, ModalHit, TrashModal};
+        let Some(modal) = self.trash_modal.as_ref() else { return };
+        let hit = modal_hit(modal, w, h, p);
+        let (Some(docs), Some(_)) = (self.docs.clone(), self.db.as_ref()) else {
+            self.trash_modal = None;
+            return;
+        };
+        match (self.trash_modal.take(), hit) {
+            (Some(modal @ TrashModal::ChooseThread { .. }), ModalHit::Thread(i)) => {
+                // The row drawn there, scrolled or not (`Thread(i)` indexes the threads).
+                self.trash_modal = Some(modal);
+                self.restore_into_chosen(i);
             }
             (Some(TrashModal::ConfirmEmpty { .. }), ModalHit::Confirm) => {
                 let Some(mut view) = self.trash.take() else { return };
-                let r = self.rt.block_on(view.confirm_empty(&docs));
+                let r = self.rt.block_on(view.confirm_empty_report(&docs));
                 self.trash = Some(view);
                 match r {
-                    Ok(n) => self.set_notice(
-                        "Trash emptied",
-                        &format!("{n} document{} deleted for good.", if n == 1 { " was" } else { "s were" }),
-                    ),
+                    Ok(e) => self.set_notice("Trash emptied", &crate::trash::emptied_message(e)),
                     Err(msg) => self.set_notice("Trash not emptied", &msg),
                 }
                 self.rebuild_settings_windows();
@@ -3110,6 +3636,9 @@ impl App {
     fn open_new_thread_prompt(&mut self) {
         self.ctx_menu = None;
         if let Some(mut field) = self.lane_rename.take() {
+            field.close();
+        }
+        if let Some(mut field) = self.device_rename.take() {
             field.close();
         }
         self.orphan_prompt_target = None;
@@ -3172,6 +3701,9 @@ impl App {
         self.ctx_menu = None;
         if let Some(mut prompt) = self.new_thread_prompt.take() {
             prompt.close();
+        }
+        if let Some(mut field) = self.device_rename.take() {
+            field.close();
         }
         self.orphan_prompt_target = None;
         let clipboard = Box::new(crate::clip::FieldClipboard::default());
@@ -3260,6 +3792,175 @@ impl App {
             && self.nothing_above_fields()
     }
 
+    /// Whether the Rename field of Settings → Devices is open with nothing
+    /// drawn above it that takes input first (v0.0.12 item 19).
+    fn device_rename_on_top(&self) -> bool {
+        self.device_rename.is_some()
+            && self.new_thread_prompt.is_none()
+            && self.lane_rename.is_none()
+            && self.orphan_modal.is_none()
+            && self.nothing_above_fields()
+    }
+
+    /// The current name of what `target` renames: this device's name (N3),
+    /// or the name this device holds for a paired device (N5).
+    fn device_rename_current(&self, target: &crate::device_rename::RenameTarget) -> Option<String> {
+        match target {
+            crate::device_rename::RenameTarget::ThisDevice => Some(self.device_name.clone()),
+            crate::device_rename::RenameTarget::Paired(peer_id) => self.device_names().get(peer_id).cloned(),
+        }
+    }
+
+    /// What a Rename action of Settings → Devices does (a click on it): opens
+    /// the field holding the target's current name (N3, N5). A paired device
+    /// no longer in the list opens nothing, and a notice says so.
+    pub(crate) fn open_device_rename(&mut self, target: crate::device_rename::RenameTarget) {
+        let Some(current) = self.device_rename_current(&target) else {
+            self.set_notice("Device not renamed", "This device is no longer paired.");
+            return;
+        };
+        self.ctx_menu = None;
+        if let Some(mut prompt) = self.new_thread_prompt.take() {
+            prompt.close();
+        }
+        if let Some(mut field) = self.lane_rename.take() {
+            field.close();
+        }
+        self.orphan_prompt_target = None;
+        let clipboard = Box::new(crate::clip::FieldClipboard::default());
+        self.device_rename =
+            Some(crate::device_rename::DeviceRename::open(target, &current, sovereign_editor::Fonts::System, clipboard));
+        // Laid out at once: a release right after the click must find the
+        // field under it.
+        let total = self.scale * self.ui_scale;
+        if let (Some(anchor), Some((w, h))) = (self.device_rename_anchor(), self.win_size()) {
+            if let Some(field) = self.device_rename.as_mut() {
+                field.set_scale(total);
+                field.layout(anchor, w, h);
+            }
+        }
+    }
+
+    /// The keyboard while the Rename field is open, as `window_event` routes
+    /// it: Enter saves and closes, Escape cancels and closes, a blank entry is
+    /// refused with a message and the field stays open. Whether a field was
+    /// open to take the key.
+    pub(crate) fn device_rename_key(
+        &mut self,
+        key: &winit::keyboard::Key,
+        text: Option<&str>,
+        mods: sovereign_editor::input::Modifiers,
+    ) -> bool {
+        let Some(step) = self.device_rename.as_mut().map(|f| f.key(key, text, mods)) else { return false };
+        self.device_rename_step(step);
+        true
+    }
+
+    /// The field's answer: Save closes it and saves the name; Cancel closes it.
+    fn device_rename_step(&mut self, step: crate::device_rename::RenameStep) {
+        use crate::device_rename::{RenameStep, RenameTarget};
+        match step {
+            RenameStep::Open => {}
+            RenameStep::Cancel => {
+                if let Some(mut field) = self.device_rename.take() {
+                    field.close();
+                }
+            }
+            RenameStep::Save { target, name } => {
+                if let Some(mut field) = self.device_rename.take() {
+                    field.close();
+                }
+                match target {
+                    RenameTarget::ThisDevice => self.set_this_device_name(&name),
+                    RenameTarget::Paired(peer_id) => self.rename_paired_device(&peer_id, &name),
+                }
+            }
+        }
+    }
+
+    /// N3 (and N2 at a join): `name` (already cleaned) becomes this device's
+    /// name — saved at once in its workspace file (N1), and what the node
+    /// sends from now on, at the next pairing and in a guardian offer,
+    /// without a restart. The document service's identity is not touched
+    /// (N1b).
+    fn set_this_device_name(&mut self, name: &str) {
+        if let Err(e) = crate::device_name::save(name) {
+            self.set_notice("Device not renamed", &format!("This device's name could not be saved: {e}"));
+            return;
+        }
+        self.device_name = name.to_string();
+        if let Some(h) = self.p2p.as_mut() {
+            h.device_name = name.to_string();
+        }
+        self.refresh_devices_windows();
+    }
+
+    /// N5: paired device `peer_id` is called `name` on this device only — its
+    /// stored name in this device's paired list. Every place that names it
+    /// reads that list: the device list, History, the alerts, the orphans.
+    fn rename_paired_device(&mut self, peer_id: &str, name: &str) {
+        let Some(h) = self.p2p.as_ref() else {
+            self.set_notice("Device not renamed", "Sync isn't running. Log in to start the P2P node.");
+            return;
+        };
+        match h.rename_paired(&self.rt, peer_id, name) {
+            Ok(true) => {}
+            Ok(false) => {
+                self.set_notice("Device not renamed", "This device is no longer paired.");
+                return;
+            }
+            Err(e) => {
+                self.set_notice("Device not renamed", &e);
+                return;
+            }
+        }
+        if let Some(entry) = self.older_peers.iter_mut().find(|(p, _)| p == peer_id) {
+            entry.1 = name.to_string();
+        }
+        self.refresh_devices_windows();
+        self.refresh_device_names_shown();
+    }
+
+    /// After a paired device's rename: the open History windows, the alerts
+    /// and the orphans read the names again (N5, R1).
+    fn refresh_device_names_shown(&mut self) {
+        let names = self.device_names();
+        let own = self.own_peer_id();
+        for w in self.windows.iter_mut() {
+            if let WindowContent::History(hp) = &mut w.content {
+                hp.name_devices(&names, &own);
+            }
+        }
+        self.refresh_alerts();
+        self.refresh_orphans();
+    }
+
+    /// R1: a History panel's rows name the device, from this device's paired
+    /// list and its own peer id.
+    fn name_history_devices(&self, hp: &mut HistoryPanel) {
+        let names = self.device_names();
+        let own = self.own_peer_id();
+        hp.name_devices(&names, &own);
+    }
+
+    /// Where the Rename field opens (screen): over the name it renames, in
+    /// the top-most Settings → Devices window. `None` without one, or when a
+    /// paired device's row is no longer there.
+    fn device_rename_anchor(&self) -> Option<Rect> {
+        let target = self.device_rename.as_ref()?.target().clone();
+        let w = self.windows.iter().rev().find(|w| matches!(&w.content, WindowContent::Devices(_)))?;
+        let WindowContent::Devices(dp) = &w.content else { return None };
+        let body = window_chrome(w.bounds).2;
+        match target {
+            crate::device_rename::RenameTarget::ThisDevice => Some(crate::panels::devices_name_rect(body)),
+            crate::device_rename::RenameTarget::Paired(peer_id) => {
+                let idx = dp.rows.iter().position(|r| r.peer_id == peer_id)?;
+                let top = body.y0 + DEVICES_HEADER_H - dp.scroll + idx as f64 * DEVICE_ROW_H;
+                Some(crate::panels::device_row_name_rect(Rect::new(body.x0, top, body.x1, top + DEVICE_ROW_H)))
+            }
+        }
+    }
+
     /// Nothing drawn above the new-thread prompt or the rename field that
     /// takes input first (a lock, a modal, a notice, a menu).
     fn nothing_above_fields(&self) -> bool {
@@ -3278,6 +3979,92 @@ impl App {
             && self.trash_modal.is_none()
     }
 
+    /// The top window's text field: the chat composer or the search query
+    /// (v0.0.12 item 21).
+    fn top_field(&self) -> Option<&ChatField> {
+        match &self.windows.last()?.content {
+            WindowContent::Chat(c) => Some(&c.input),
+            WindowContent::Search(sp) => Some(&sp.query),
+            _ => None,
+        }
+    }
+
+    fn top_field_mut(&mut self) -> Option<&mut ChatField> {
+        match &mut self.windows.last_mut()?.content {
+            WindowContent::Chat(c) => Some(&mut c.input),
+            WindowContent::Search(sp) => Some(&mut sp.query),
+            _ => None,
+        }
+    }
+
+    /// Whether the top window's composer or search query takes the input
+    /// method: no prompt, rename field or modal above it (K2).
+    fn chat_field_on_top(&self) -> bool {
+        self.new_thread_prompt.is_none()
+            && self.lane_rename.is_none()
+            && self.device_rename.is_none()
+            && self.orphan_modal.is_none()
+            && self.nothing_above_fields()
+            && self.top_field().is_some()
+    }
+
+    /// An input for the top window's field (input method, …); its step is
+    /// routed as a key's.
+    fn top_field_event(&mut self, event: sovereign_editor::input::InputEvent) {
+        let Some(step) = self.top_field_mut().map(|f| f.event(event)) else { return };
+        self.field_step(self.windows.len() - 1, step);
+    }
+
+    /// Routes a step of window `top`'s field (the chat composer or the search
+    /// query, item 21): one line per step; what is sent is unchanged (the
+    /// text, trimmed, through `dispatch_chat`; K6 unchanged).
+    fn field_step(&mut self, top: usize, step: FieldStep) {
+        match step {
+            FieldStep::None => {}
+            FieldStep::Close => {
+                self.windows.remove(top);
+            }
+            FieldStep::QueryChanged(_) => self.update_search_window(top),
+            FieldStep::Send(text) => self.field_send(top, &text),
+        }
+    }
+
+    /// The composer sent `text`; or the search escalated its query `text` to
+    /// a chat question (K3).
+    fn field_send(&mut self, top: usize, text: &str) {
+        if matches!(self.windows[top].content, WindowContent::Search(_)) {
+            // Enter on a search query escalates it to a chat question.
+            self.windows.remove(top);
+            let bounds = self.next_bounds(WindowKind::Chat);
+            let mut chat = ChatPanel::new();
+            let to_send = chat.submit(text);
+            if to_send.is_some() {
+                chat.loading = self.model_loading_next();
+            }
+            self.windows.push(Window { content: WindowContent::Chat(chat), bounds });
+            if let Some(text) = to_send {
+                self.dispatch_chat(text);
+            }
+            return;
+        }
+        // First message builds + loads the model: flag the chat so it shows
+        // "loading the model" rather than just "thinking".
+        let loading = self.model_loading_next();
+        let to_send = match &mut self.windows[top].content {
+            WindowContent::Chat(c) => {
+                let t = c.submit(text);
+                if t.is_some() {
+                    c.loading = loading;
+                }
+                t
+            }
+            _ => None,
+        };
+        if let Some(text) = to_send {
+            self.dispatch_chat(text);
+        }
+    }
+
     /// Apply what the input method should do to the winit window, only when
     /// it changed: allowed or not, and where its candidate window goes. The
     /// new-thread prompt's field has it while open; otherwise the focused
@@ -3287,6 +4074,11 @@ impl App {
         let (want, area) = match (&self.new_thread_prompt, &self.lane_rename) {
             (Some(p), _) if !self.locked => p.ime_request(total),
             (None, Some(r)) if !self.locked => r.ime_request(total),
+            (None, None) if !self.locked && self.device_rename.is_some() => {
+                self.device_rename.as_ref().map_or((false, None), |f| f.ime_request(total))
+            }
+            // The top window's composer or search query (item 21, K2).
+            _ if self.chat_field_on_top() => self.top_field().map_or((false, None), |f| f.ime_request(total)),
             _ => self.v2_ime_request(),
         };
         let RenderState::Active { window, .. } = &self.state else { return };
@@ -3306,22 +4098,19 @@ impl App {
         }
     }
 
-    /// Create a new "Untitled" document in the thread mapped to `lane`, then
-    /// reload. No-op if there's no thread to attach it to.
+    /// Create a new "Untitled" document in the thread lane `lane` shows (N2),
+    /// then reload. Nothing on the Unfiled lane (N3: not offered there); a
+    /// notice when there is no thread at all.
     fn new_document(&mut self, lane: usize) {
-        let Some(db) = self.db.clone() else { return };
-        let tid = self.rt.block_on(async {
-            let threads = db.list_threads().await.unwrap_or_default();
-            threads
-                .iter()
-                .enumerate()
-                .find(|(i, _)| i % LANES == lane)
-                .or_else(|| threads.iter().enumerate().next())
-                .and_then(|(_, t)| t.id.as_ref().map(|x| x.to_string()))
-        });
-        let Some(tid) = tid else {
-            self.set_notice("Document not created", "There is no lane to put it in \u{2014} create a lane first.");
-            return;
+        let tid = match self.lanes.lane(lane) {
+            Some(LaneKind::Thread(t)) => t.to_string(),
+            Some(LaneKind::Unfiled) => return,
+            None => {
+                if self.lanes.thread_count() == 0 {
+                    self.set_notice("Document not created", "There is no lane to put it in \u{2014} create a lane first.");
+                }
+                return;
+            }
         };
         // C-DOC adoption step 3: through the document service — v2, a version
         // from creation, the user's own (owned, provenance written).
@@ -3340,8 +4129,8 @@ impl App {
         // Open the freshly-created doc straight away so you can start typing
         // immediately — don't make the user hunt for it on the canvas.
         if let Ok(out) = created {
-            // Cards carry the store's display form of the id.
-            let new_id = sovereign_db::schema::raw_to_thing(&out.id).map(|t| t.to_string()).unwrap_or(out.id);
+            // Cards carry the raw id, as the service does (I1).
+            let new_id = out.id;
             if let Some(idx) = self.cards.iter().position(|c| c.id == new_id) {
                 self.open_doc_window(idx);
                 // Its window starts on the title, selected, so the name is
@@ -3365,32 +4154,51 @@ impl App {
             return None;
         }
         let lane = (world_y / LANE_H).floor() as usize;
-        (lane < LANES).then_some(lane)
+        (lane < self.lanes.len()).then_some(lane)
     }
 
-    /// Drop a dragged card onto the lane at `cursor_y`: reassign its document to
-    /// that lane's thread (move_document_to_thread), then reload. No-op if the
-    /// lane is unchanged or has no thread.
+    /// The colour lane `lane` is drawn in (N7: its thread's hue; Unfiled grey).
+    fn lane_color(&self, lane: usize) -> Color {
+        self.lane_colors.get(lane).copied().unwrap_or(crate::canvas::UNFILED_COLOR)
+    }
+
+    /// The thread a card dropped at `screen_y` moves to (N2, N3): the thread
+    /// of the lane there — in the canvas area, between the time ruler and the
+    /// taskbar. `None`: the drop does nothing, and no drop highlight shows
+    /// (over the Unfiled lane, off the lanes, over the ruler or the taskbar).
+    pub(crate) fn drop_target_thread(&self, screen_y: f64) -> Option<String> {
+        if screen_y < AXIS_H {
+            return None;
+        }
+        if let Some((_, h)) = self.win_size() {
+            if screen_y >= h - BOTTOM_CHROME {
+                return None;
+            }
+        }
+        let lane = self.lane_at_y(screen_y)?;
+        self.lanes.thread_of_lane(lane).map(str::to_string)
+    }
+
+    /// Drop a dragged card at `cursor_y`: its document moves to the thread
+    /// the lane there shows (`drop_target_thread`), through the document
+    /// service's stamped move (M1, M2: so the move travels), then reload.
+    /// Nothing over the Unfiled lane or off the lanes, nor onto the thread it
+    /// is already in. A card from Unfiled moves out like any other (N3).
     fn drop_card_on_lane(&mut self, id: &str, cursor_y: f64) {
         let Some(ci) = self.card_index_of(id) else { return };
         let Some(card) = self.cards.get(ci) else { return };
-        let Some(lane) = self.lane_at_y(cursor_y) else { return };
-        if lane == card.lane {
-            return;
+        let Some(tid) = self.drop_target_thread(cursor_y) else { return };
+        if self.lanes.thread_of_lane(card.lane) == Some(tid.as_str()) {
+            return; // dropped back on its own thread's lane
         }
         let id = card.id.clone();
-        let Some(db) = self.db.clone() else { return };
-        let tid = self.rt.block_on(async {
-            let threads = db.list_threads().await.unwrap_or_default();
-            threads
-                .iter()
-                .enumerate()
-                .find(|(i, _)| i % LANES == lane)
-                .and_then(|(_, t)| t.id.as_ref().map(|x| x.to_string()))
-        });
-        let Some(tid) = tid else { return }; // no thread occupies that lane
-        if let Err(e) = self.rt.block_on(db.move_document_to_thread(&id, &tid)) {
-            self.set_notice("Not moved", &format!("The document couldn't be moved: {e}"));
+        let Some(docs) = self.docs.clone() else {
+            self.set_notice("Not moved", "The workspace is locked.");
+            return;
+        };
+        if let Err(e) = self.rt.block_on(docs.move_to_thread(&id, &tid)) {
+            let why = sovereign_ai::docs_host::doc_error_message(&e);
+            self.set_notice("Not moved", &format!("The document couldn't be moved: {why}"));
             return;
         }
         self.load_workspace_now();
@@ -3477,7 +4285,14 @@ impl App {
     fn resolve_unsaved(&mut self, choice: UnsavedChoice) {
         let Some(prompt) = self.unsaved_prompt.take() else { return };
         if choice == UnsavedChoice::Cancel {
-            return; // back to editing, nothing lost
+            // Back to editing, nothing lost. Cancel during a quit ends the
+            // quit, and the Discards chosen during it with it (lot 1, D1):
+            // those documents' edits count as unsaved again.
+            if prompt.then == AfterUnsaved::Quit {
+                self.quit_requested = false;
+                self.v2_withdraw_discards();
+            }
+            return;
         }
         // The window's editor saves (and closes or quits once saved), or
         // discards.
@@ -3522,6 +4337,7 @@ impl App {
     }
 
     /// Open (or focus) the version-history window for a document id + title.
+    /// Opens only when the versions were read (lot 1a, H3/H5).
     fn open_history(&mut self, doc_id: &str, title: &str) {
         if let Some(idx) = self.windows.iter().position(|w| {
             matches!(&w.content, WindowContent::History(h) if h.doc_id == doc_id)
@@ -3529,21 +4345,49 @@ impl App {
             self.bring_to_front(idx);
             return;
         }
-        let Some(db) = self.db.clone() else { return };
-        let hp = self.rt.block_on(load_history(&db, doc_id, title));
-        let bounds = self.next_bounds(WindowKind::History);
-        self.windows.push(Window { content: WindowContent::History(hp), bounds });
+        // v0.0.12 lot 1a: the rows come from the document service (H1); no
+        // service (locked) opens nothing and says to log in (H5); a store
+        // error opens nothing and says so, never an empty History (H3).
+        let Some(docs) = self.docs.clone() else {
+            self.set_notice("History not opened", "The workspace is locked: log in to see a document\u{2019}s versions.");
+            return;
+        };
+        match self.rt.block_on(load_history(&docs, doc_id, title)) {
+            Ok(mut hp) => {
+                // v0.0.12 item 14, R1: the rows name the device.
+                self.name_history_devices(&mut hp);
+                let bounds = self.next_bounds(WindowKind::History);
+                self.windows.push(Window { content: WindowContent::History(hp), bounds });
+            }
+            Err(e) => {
+                println!("sovereign-shell: History of a document could not be read: {e}");
+                self.set_notice(HISTORY_UNREADABLE.0, HISTORY_UNREADABLE.1);
+            }
+        }
     }
 
     /// Reload any open History window for `doc_id` (after a save / restore).
+    /// When the versions cannot be read, the open list is kept as it was and
+    /// the notice says the history could not be read again (H3).
     fn refresh_history_for(&mut self, doc_id: &str) {
-        let Some(db) = self.db.clone() else { return };
+        if !self.windows.iter().any(|w| matches!(&w.content, WindowContent::History(h) if h.doc_id == doc_id)) {
+            return;
+        }
+        let Some(docs) = self.docs.clone() else { return };
         let title = self.cards.iter().find(|c| c.id == doc_id).map(|c| crate::canvas::display_title(&c.title).to_string()).unwrap_or_default();
         for i in 0..self.windows.len() {
             let matches = matches!(&self.windows[i].content, WindowContent::History(h) if h.doc_id == doc_id);
             if matches {
-                let hp = self.rt.block_on(load_history(&db, doc_id, &title));
-                self.windows[i].content = WindowContent::History(hp);
+                match self.rt.block_on(load_history(&docs, doc_id, &title)) {
+                    Ok(mut hp) => {
+                        self.name_history_devices(&mut hp);
+                        self.windows[i].content = WindowContent::History(hp);
+                    }
+                    Err(e) => {
+                        println!("sovereign-shell: History of a document could not be re-read: {e}");
+                        self.set_notice("History not updated", "The document\u{2019}s history could not be read again. The list shown may be out of date.");
+                    }
+                }
             }
         }
     }
@@ -3578,6 +4422,10 @@ impl App {
     /// Current window size in LOGICAL px (physical / total scale), or None when
     /// suspended — matches the coordinate space the scene is laid out in.
     pub(crate) fn win_size(&self) -> Option<(f64, f64)> {
+        #[cfg(test)]
+        if let Some(v) = self.test_view {
+            return Some(v);
+        }
         match &self.state {
             RenderState::Active { window, .. } => {
                 let s = window.inner_size();
@@ -3766,6 +4614,10 @@ impl App {
         let Some((w, h)) = self.win_size() else { return };
         let p = Point::new(px, py);
         if self.locked {
+            // B2: while a key derivation runs, the locked screens are inert.
+            if self.auth_job.is_some() {
+                return;
+            }
             // The access-recovery wizard overlays the gate — it owns clicks first.
             if self.handle_recovery_click(p, w, h) {
                 return;
@@ -3779,7 +4631,7 @@ impl App {
                 return; // handshake in flight — ignore clicks
             }
             // The "Recover with guardians" link, when this device can recover.
-            if self.recovery_available && !self.auth_form.onboarding && !self.auth_form.joining
+            if self.recovery_available && !self.auth_form.joining
                 && crate::panels::recovery_link_rect(w, h, self.auth_form.fields.len()).contains(p)
             {
                 self.open_recovery();
@@ -3800,10 +4652,12 @@ impl App {
             }
             // The hint strip at the card's bottom toggles join <-> create-new
             // (only pre-onboarding — once an auth.store exists, login only).
+            // Leaving the join puts the setup wizard back on the next frame
+            // (`ensure_wizard`).
             let hint = Rect::new(card.x0, card.y1 - 34.0, card.x1, card.y1);
             if hint.contains(p) && !auth_store_exists() {
                 self.auth_form = if self.auth_form.joining {
-                    AuthForm::onboarding()
+                    AuthForm::login()
                 } else {
                     AuthForm::join()
                 };
@@ -3935,6 +4789,15 @@ impl App {
             return;
         }
 
+        // The Rename field of Settings → Devices: a click outside closes it,
+        // renaming nothing; a click in it was the field's at the press.
+        if let Some(field) = self.device_rename.as_ref() {
+            if !field.contains(p) {
+                self.device_rename_step(crate::device_rename::RenameStep::Cancel);
+            }
+            return;
+        }
+
         // The delete notice's Undo (S5-8), while it is shown.
         if self.delete_notice.as_ref().is_some_and(|n| n.shown(Instant::now()))
             && crate::trash_ui::toast_geom(w, h).1.contains(p)
@@ -3964,7 +4827,7 @@ impl App {
         // The status-bar notice opens what it is about (C-WIRE 13 / 12).
         if let Some(r) = self.status_notice_rect {
             if r.contains(p) {
-                let alerts = !self.alert_notices.is_empty() || self.orphan_count > 0;
+                let alerts = !self.alert_notices.is_empty() || self.orphan_count > 0 || self.unreadable_count > 0;
                 let kind = if alerts { WindowKind::Alerts } else { WindowKind::Devices };
                 if self.window_index_of(kind).is_none() {
                     self.focus_or_toggle(kind);
@@ -4263,6 +5126,11 @@ impl App {
                     self.open_pairing();
                     return;
                 }
+                // v0.0.12 item 19, N3: Rename this device.
+                if crate::panels::device_rename_this_btn(body).contains(p) {
+                    self.open_device_rename(crate::device_rename::RenameTarget::ThisDevice);
+                    return;
+                }
                 let scroll = match &self.windows[wi].content {
                     WindowContent::Devices(dp) => dp.scroll,
                     _ => 0.0,
@@ -4279,12 +5147,15 @@ impl App {
                         let idx = idx as usize;
                         let row_top = list_y0 - scroll + idx as f64 * DEVICE_ROW_H;
                         let row = Rect::new(body.x0, row_top, body.x1, row_top + DEVICE_ROW_H);
+                        let peer_id = match &self.windows[wi].content {
+                            WindowContent::Devices(dp) => dp.rows[idx].peer_id.clone(),
+                            _ => String::new(),
+                        };
                         if device_forget_btn(row).contains(p) {
-                            let peer_id = match &self.windows[wi].content {
-                                WindowContent::Devices(dp) => dp.rows[idx].peer_id.clone(),
-                                _ => String::new(),
-                            };
                             self.p2p_forget(&peer_id);
+                        } else if crate::panels::device_rename_btn(row).contains(p) {
+                            // N5: Rename, for this device only.
+                            self.open_device_rename(crate::device_rename::RenameTarget::Paired(peer_id));
                         }
                     }
                 }
@@ -4499,12 +5370,12 @@ impl App {
                         DeviceRow { peer_id, name, status }
                     })
                     .collect();
-                devices_panel(true, h.local_peer_id.clone(), h.device_name.clone(), listen, rows)
+                devices_panel(true, h.local_peer_id.clone(), self.device_name.clone(), listen, rows)
             }
             None => devices_panel(
                 false,
                 "\u{2014}".into(),
-                self.p2p_config.device_name.clone(),
+                self.device_name.clone(),
                 String::new(),
                 Vec::new(),
             ),
@@ -4735,7 +5606,13 @@ impl App {
 
     /// Reconstruct + re-install under the new passphrase. On success the session
     /// unlocks exactly as a login would; on failure the account is untouched.
-    fn recovery_finalize(&mut self) {
+    /// The derivation runs on a worker (v0.0.12 item 18); `recover_done`
+    /// applies its result.
+    pub(crate) fn recovery_finalize(&mut self) {
+        // B3: one at a time.
+        if self.auth_job.is_some() {
+            return;
+        }
         let pass = match &self.recovery_wizard {
             Some(w) if !w.finalizing => w.new_password.clone(),
             _ => return,
@@ -4750,7 +5627,13 @@ impl App {
             w.finalizing = true;
             w.error = None;
         }
-        match self.rt.block_on(crate::crypto::recover_and_install(pass.as_bytes())) {
+        self.start_auth_job(AuthJob::Recover, move |work| AuthDone::Recover(work.recover(pass.as_bytes())));
+    }
+
+    /// Recovery's result, on the UI thread: on success the session unlocks
+    /// exactly as a login would; on failure the account is untouched.
+    fn recover_done(&mut self, result: anyhow::Result<Session>) {
+        match result {
             Ok((persona, db, account_key, device_key, kek)) => {
                 // Same unlock sequence as try_login.
                 self.db = Some(db.clone() as Arc<dyn GraphDB>);
@@ -4769,6 +5652,11 @@ impl App {
                 self.start_p2p();
                 let _ = persona;
                 println!("sovereign-shell: recovered + unlocked");
+                // The account is rebuilt: a completed recovery is not an
+                // interrupted setup (B5b), as on the phone (lot 1).
+                if let Err(e) = crate::crypto::mark_setup_complete() {
+                    eprintln!("sovereign-shell: could not write the setup marker after recovery: {e}");
+                }
             }
             Err(e) => {
                 if let Some(w) = &mut self.recovery_wizard {
@@ -4868,11 +5756,51 @@ impl App {
         }
     }
 
+    /// This persona's own peer id, as the screen names it "this device" (R1,
+    /// item 22 D5): the running node's id, else the one derived from the
+    /// persona's device key (the same id: the node derives it from that key);
+    /// empty before an unlock.
+    pub(crate) fn own_peer_id(&self) -> String {
+        if let Some(h) = &self.p2p {
+            return h.local_peer_id.clone();
+        }
+        self.device_key
+            .as_deref()
+            .and_then(|dk| sovereign_crypto::peer_identity::peer_id(dk).ok())
+            .unwrap_or_default()
+    }
+
+    /// The document service's device identity (v0.0.12 item 22, D1): this
+    /// persona's libp2p peer id, derived from its device key — the id its P2P
+    /// node runs under. Never a display name, so a rename changes nothing
+    /// (D4) and the duress persona has its own (D6). Every unlock sets the
+    /// device key before the service is built.
+    ///
+    /// **Fails closed:** without a key, or when the derivation fails, an error
+    /// (the caller then installs no document service). A shared stand-in would
+    /// stamp every such device alike — item 22's defect back, silently. Only
+    /// test builds, whose fixtures build a store without a key, get
+    /// [`NO_DEVICE_KEY_IDENTITY`].
+    fn stamp_identity(&self) -> Result<String, String> {
+        let derived = match self.device_key.as_deref() {
+            Some(dk) => sovereign_crypto::peer_identity::peer_id(dk).map_err(|e| format!("derivation failed: {e}")),
+            None => Err("no device key".to_string()),
+        };
+        #[cfg(test)]
+        let derived = if self.test_identity_fallback {
+            derived.or_else(|_| Ok(NO_DEVICE_KEY_IDENTITY.to_string()))
+        } else {
+            derived
+        };
+        derived
+    }
+
     /// The open alerts, as a panel (None while locked).
     fn load_alerts_panel(&self) -> Option<AlertsPanel> {
         let docs = self.docs.clone()?;
         let names = self.device_names();
-        Some(self.rt.block_on(load_alerts(&docs, &names)))
+        let own = self.own_peer_id();
+        Some(self.rt.block_on(load_alerts_as(&docs, &names, &own)))
     }
 
     /// Re-reads the alerts: the status-bar notice, the screen reader's notice,
@@ -4882,11 +5810,14 @@ impl App {
         let Some(mut ap) = self.load_alerts_panel() else {
             self.alert_notices.clear();
             self.orphan_count = 0;
+            self.unreadable_count = 0;
             return;
         };
         self.alert_notices = ap.rows.iter().map(|r| r.notice()).collect();
         let orphans = ap.take_orphans();
         self.orphan_count = orphans.count();
+        let unreadable = ap.unreadable().to_vec();
+        self.unreadable_count = unreadable.len();
         for i in 0..self.windows.len() {
             if let WindowContent::Alerts(old) = &self.windows[i].content {
                 let keep = old.selected_row().map(|r| r.doc_id.clone());
@@ -4900,7 +5831,8 @@ impl App {
                     finding: r.finding.clone(),
                     previous_version: r.previous_version.clone(),
                 }).collect())
-                .with_orphans(section);
+                .with_orphans(section)
+                .with_unreadable(unreadable.clone());
                 if let Some(k) = keep {
                     if let Some(j) = fresh.rows.iter().position(|r| r.doc_id == k) {
                         fresh.selected = j;
@@ -4923,7 +5855,8 @@ impl App {
             return;
         };
         let names = self.device_names();
-        let Ok(section) = self.rt.block_on(crate::orphans::OrphansSection::load(&docs, &names)) else { return };
+        let own = self.own_peer_id();
+        let Ok(section) = self.rt.block_on(crate::orphans::OrphansSection::load_as(&docs, &names, &own)) else { return };
         self.orphan_count = section.count();
         for w in self.windows.iter_mut() {
             if let WindowContent::Alerts(ap) = &mut w.content {
@@ -5007,7 +5940,57 @@ impl App {
                 self.orphan_prompt_target = Some(target);
             }
             OrphanAction::Trash => {
+                // The card Delete's guard (lot 1, settled reading 3; review
+                // finding 22, its orphan half): never trash a document over
+                // its unsaved edits. For "Trash all", one such document
+                // refuses the whole group, and nothing is moved.
+                if let Some(msg) = self.orphan_trash_blocked(&target) {
+                    self.set_notice("Not moved to the trash", &msg);
+                    return;
+                }
                 self.orphan_resolve(target, sovereign_docs::OrphanResolution::Trash);
+            }
+        }
+    }
+
+    /// Why trashing `target` from the orphans section must wait: a window
+    /// holds unsaved edits of one of its documents (or, for a group, the
+    /// group's documents could not be listed while such a window is open).
+    fn orphan_trash_blocked(&mut self, target: &crate::orphans_ui::OrphanTarget) -> Option<String> {
+        use crate::orphans_ui::OrphanTarget;
+        let unsaved: Vec<String> = self
+            .windows
+            .iter()
+            .filter_map(|w| match &w.content {
+                WindowContent::Doc(d) if d.has_unsaved_edits() => Some(d.doc_id.clone()),
+                _ => None,
+            })
+            .collect();
+        if unsaved.is_empty() {
+            return None;
+        }
+        const ONE: &str = "This document has unsaved edits. Save them first. Nothing was moved.";
+        match target {
+            OrphanTarget::One(id) => unsaved.iter().any(|u| u == id).then(|| ONE.to_string()),
+            OrphanTarget::Group(tid) => {
+                let Some(docs) = self.docs.clone() else { return None };
+                match self.rt.block_on(docs.orphans_of_deleted_threads()) {
+                    Ok(waiting) => waiting
+                        .iter()
+                        .find(|o| &o.thread_id == tid && unsaved.iter().any(|u| u == &o.id))
+                        .map(|o| {
+                            // Its title as shown: tokens as their labels (L2).
+                            let title = self.rt.block_on(crate::canvas::shown_title(Some(&docs), &o.id, &o.title));
+                            format!(
+                                "\u{201c}{}\u{201d} has unsaved edits. Save them first. Nothing was moved.",
+                                crate::canvas::display_title(&title)
+                            )
+                        }),
+                    Err(e) => {
+                        println!("sovereign-shell: the waiting documents could not be listed: {e}");
+                        Some("The documents could not be checked for unsaved edits. Nothing was moved.".to_string())
+                    }
+                }
             }
         }
     }
@@ -5038,6 +6021,17 @@ impl App {
             }
         }
         match r {
+            // v0.0.12 item 9, T2: none of the documents shown still waits
+            // (resolved meanwhile); one that joined the group after is not
+            // acted on. Zero, not a refusal.
+            Ok(0) => {
+                self.refresh_orphans();
+                self.set_notice(
+                    "Nothing to do",
+                    "None of the documents shown is still waiting for a decision (resolved meanwhile). Nothing was changed.",
+                );
+                true
+            }
             Ok(n) => {
                 self.load_workspace_now();
                 self.rebuild_settings_windows();
@@ -5073,7 +6067,15 @@ impl App {
         let waiting = self.rt.block_on(docs.orphans_of_deleted_threads()).unwrap_or_default();
         let still = match &target {
             OrphanTarget::One(id) => waiting.iter().any(|o| &o.id == id),
-            OrphanTarget::Group(tid) => waiting.iter().any(|o| &o.thread_id == tid),
+            // What the group shows (v0.0.12 item 9, T2): a document that
+            // joined it after is not what the user chose for.
+            OrphanTarget::Group(tid) => {
+                let shown = match self.window_index_of(WindowKind::Alerts).map(|i| &self.windows[i].content) {
+                    Some(WindowContent::Alerts(ap)) => ap.orphans().shown_of_group(tid),
+                    _ => Vec::new(),
+                };
+                waiting.iter().any(|o| &o.thread_id == tid && shown.contains(&o.id))
+            }
         };
         if !still {
             self.refresh_orphans();
@@ -5277,6 +6279,17 @@ impl App {
     pub(crate) fn status_notice(&self) -> Option<(String, bool)> {
         // S5-12 W5: how many documents whose thread was deleted wait.
         let orphans = crate::orphans::status_segment(self.orphan_count);
+        // v0.0.12 item 7, V2: documents that could not be read, listed in
+        // Alerts — where they are, said where the person looks first.
+        let unreadable = match self.unreadable_count {
+            0 => None,
+            1 => Some("1 document could not be read".to_string()),
+            n => Some(format!("{n} documents could not be read")),
+        };
+        let orphans = match (orphans, unreadable) {
+            (Some(o), Some(u)) => Some(format!("{o}; {u}")),
+            (o, u) => o.or(u),
+        };
         let tail = orphans.as_ref().map(|s| format!("; {s}")).unwrap_or_default();
         match self.alert_notices.len() {
             0 => {}
@@ -5479,7 +6492,7 @@ impl App {
         let Some(db) = self.db.clone() else { return };
         // Attach to the first thread (web clippings have no inherent thread).
         let tid = self.rt.block_on(async {
-            db.list_threads().await.unwrap_or_default().first().and_then(|t| t.id.as_ref().map(|x| x.to_string()))
+            db.list_threads().await.unwrap_or_default().first().and_then(|t| t.id_string())
         });
         let Some(tid) = tid else {
             self.set_notice("Save page", "No thread to save into — create one first.");
@@ -5581,13 +6594,41 @@ impl App {
     /// its documents (document windows, History, lists of its documents)
     /// closes, the editors' sessions end on it, and the clipboard forgets this
     /// process's copy (`v2_leave_store`); no prompt is shown.
+    ///
+    /// v0.0.12 item 22: the service stamps with this persona's peer id. When
+    /// it cannot be had, no service is installed (the outgoing one is dropped
+    /// too, so nothing writes under another persona's identity): the session
+    /// goes on as when the service is unavailable, with a notice.
     fn install_document_service(&mut self, store: Arc<sovereign_db::encrypted::EncryptedGraphDB>) {
         self.v2_leave_store();
-        let docs = Arc::new(sovereign_ai::docs_host::build_document_service(
-            store,
-            self.account_key.clone(),
-            self.p2p_config.device_name.clone(),
-        ));
+        let identity = match self.stamp_identity() {
+            Ok(identity) => identity,
+            Err(why) => {
+                tracing::warn!("no document service: this device's identity could not be derived ({why})");
+                self.docs = None;
+                if let Some(task) = self.purge_task.take() {
+                    task.abort();
+                }
+                if let Some(task) = self.migration_task.take() {
+                    task.abort();
+                }
+                let cell = self.orch.clone();
+                self.rt.block_on(async move {
+                    if let Some(o) = cell.lock().await.as_ref() {
+                        o.clear_document_service();
+                    }
+                });
+                self.set_notice("Documents", IDENTITY_UNAVAILABLE);
+                return;
+            }
+        };
+        // v0.0.12 item 7, V3: the shell's own build version, which the
+        // one-time conversion records and compares (it retries what it could
+        // not decrypt only under another version).
+        let docs = Arc::new(
+            sovereign_ai::docs_host::build_document_service(store, self.account_key.clone(), identity)
+                .with_build_version(env!("CARGO_PKG_VERSION")),
+        );
         self.docs = Some(docs.clone());
         self.start_purge_ticks(docs.clone());
         self.start_unlock_migration(docs.clone());
@@ -5688,6 +6729,9 @@ impl App {
         };
         let mut cfg = crate::p2p::p2p_config_from_app(&self.p2p_config);
         cfg.enabled = true; // the shell opts in by running the node
+        // v0.0.12 item 19, N1: the node (and its offers) name this device by
+        // its own name; the document identity is the peer id (item 22, N1b).
+        cfg.device_name = self.device_name.clone();
         match crate::p2p::start_p2p_node(
             &self.rt,
             db,
@@ -6023,24 +7067,36 @@ impl App {
     /// the persona's EncryptedGraphDB, so titles/content decrypt).
     pub(crate) fn load_workspace_now(&mut self) {
         let Some(db) = self.db.clone() else { return };
-        match self.rt.block_on(load_workspace(&db, &mut self.shaper)) {
-            Some((cards, links, world_w, lane_names, time_ref)) => {
-                self.cards = cards;
-                self.links = links;
-                self.world_w = world_w;
-                self.time_ref = time_ref;
-                self.lane_names = lane_names;
+        let lanes_before = self.lanes.len();
+        let docs = self.docs.clone();
+        let threads = match self.rt.block_on(load_workspace_full(&db, docs.as_deref(), &mut self.shaper)) {
+            Some(ws) => {
+                self.cards = ws.cards;
+                self.links = ws.links;
+                self.world_w = ws.world_w;
+                self.time_ref = ws.ref_ts;
+                self.lane_names = ws.lane_names;
+                self.lanes = ws.lanes;
+                ws.threads
             }
             None => {
                 self.cards = Vec::new();
                 self.links = Vec::new();
                 self.lane_names = Vec::new();
+                self.lanes = LaneMap::default();
+                Vec::new()
             }
-        }
-        self.minimap = make_minimap(&self.cards, self.world_w);
-        // The renamable labels (THREAD-name R1, R6), read as the lanes are.
-        let threads = self.rt.block_on(db.list_threads()).unwrap_or_default();
+        };
+        self.lane_colors = lane_colors(&self.lanes);
+        self.minimap = make_minimap(&self.cards, self.world_w, self.lanes.len());
+        // The renamable labels (THREAD-name R1, R6), from the same thread
+        // list the lanes were (one mapping, N1).
         self.lane_labels = crate::lane_rename::lane_labels(&threads);
+        // Lanes added or removed (a thread created, deleted, synced): the
+        // stop again, so the block does not drift out of the canvas (N4).
+        if self.lanes.len() != lanes_before && self.win_size().is_some() {
+            self.apply_lane_stop();
+        }
         // A rename field whose thread no longer has a label (deleted by the
         // assistant, or by a sync) closes with a notice: nothing is renamed
         // (R7).
@@ -6084,17 +7140,185 @@ impl App {
         }
     }
 
-    /// Login: authenticate against the existing AuthStore and install the
-    /// persona's encrypted DB. Fail-closed — on error the gate stays locked.
-    pub(crate) fn try_login(&mut self, password: String) {
-        let store = match AuthStore::load(&auth_store_path()) {
-            Ok(s) => s,
+    /// Start a key derivation on its worker (v0.0.12 item 18, B1): the locked
+    /// screens turn inert and show its status line until `auth_drain` applies
+    /// the result. The callers check that none is running (B3).
+    fn start_auth_job(&mut self, job: AuthJob, run: impl FnOnce(&dyn AuthWork) -> AuthDone + Send + 'static) {
+        match crate::auth_work::start(self.auth_work.clone(), job, run) {
+            Ok(running) => self.auth_job = Some(running),
+            // No thread, no derivation: the form says so and works again.
             Err(e) => {
-                self.auth_form.error = Some(format!("Auth store unreadable: {e}"));
-                return;
+                eprintln!("sovereign-shell: could not start the key derivation: {e}");
+                self.apply_auth_done(AuthDone::stopped(job));
             }
+        }
+    }
+
+    /// Per frame (`build_scene`): the result of the derivation in flight, if
+    /// it has ended, applied on the UI thread — the steps that need the app's
+    /// state run here, in the order they always had.
+    fn auth_drain(&mut self) {
+        let Some(running) = &self.auth_job else { return };
+        let done = match running.rx.try_recv() {
+            Ok(done) => done,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            // The worker ended without a result (it panicked): never leave
+            // the screens inert.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => AuthDone::stopped(running.job),
         };
-        match self.rt.block_on(install_session(&store, password.as_bytes())) {
+        self.auth_job = None;
+        self.apply_auth_done(done);
+    }
+
+    fn apply_auth_done(&mut self, done: AuthDone) {
+        match done {
+            AuthDone::Setup(r) => self.setup_done(r),
+            AuthDone::Unlock(r) => self.unlock_done(r),
+            AuthDone::Recover(r) => self.recover_done(r),
+        }
+    }
+
+    /// The locked screens' keyboard (the wizard, the auth form), from
+    /// `window_event`. Inert while a key derivation runs (B2): Enter does
+    /// nothing and the fields cannot be edited.
+    pub(crate) fn locked_key(&mut self, logical_key: &Key, text: Option<&str>) {
+        if self.auth_job.is_some() {
+            return;
+        }
+        // v0.0.12 rc2 (V0012-rc2-labels-spoken, L4): Alt+F8 shows or hides
+        // the secrets from any field, as on Windows' own sign-in screen.
+        if matches!(logical_key, Key::Named(NamedKey::F8)) && self.mods.alt_key() {
+            self.toggle_locked_reveal();
+            return;
+        }
+        // The onboarding wizard owns the keyboard when active.
+        if self.wizard.is_some() {
+            if self.ctrl_down {
+                if let Key::Character(s) = logical_key {
+                    if s.eq_ignore_ascii_case("v") {
+                        if let Some(clip) = crate::clip::get_text() {
+                            if let Some(w) = self.wizard.as_mut() {
+                                w.insert_str(clip.trim());
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
+            match logical_key {
+                Key::Named(NamedKey::Enter) => self.wiz_enter(),
+                Key::Named(NamedKey::Tab) => {
+                    if let Some(w) = self.wizard.as_mut() {
+                        w.focus_next();
+                    }
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some(w) = self.wizard.as_mut() {
+                        w.backspace();
+                    }
+                }
+                Key::Named(NamedKey::Escape) => {
+                    if let Some(w) = self.wizard.as_mut() {
+                        if w.step > 0 {
+                            w.step -= 1;
+                            w.focus = 0;
+                            w.error = None;
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(t) = text {
+                        if let Some(w) = self.wizard.as_mut() {
+                            for ch in t.chars() {
+                                w.insert_char(ch);
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        // Ctrl+V: paste into the focused field (the join offer code is
+        // ~200 chars + there's no camera to scan a QR back).
+        if self.ctrl_down {
+            if let Key::Character(s) = logical_key {
+                if s.eq_ignore_ascii_case("v") {
+                    if let Some(clip) = crate::clip::get_text() {
+                        let replace_offer = self.auth_form.joining && self.auth_form.focus == 0;
+                        let f = self.auth_form.focus;
+                        if let Some(field) = self.auth_form.fields.get_mut(f) {
+                            if replace_offer {
+                                *field = clip.trim().to_string();
+                            } else {
+                                field.push_str(clip.trim());
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        if self.auth_form.busy {
+            return; // pairing handshake in flight — ignore input
+        }
+        match logical_key {
+            Key::Named(NamedKey::Enter) => self.auth_submit(),
+            Key::Named(NamedKey::Tab) => {
+                let n = self.auth_form.fields.len();
+                if n > 1 {
+                    self.auth_form.focus = (self.auth_form.focus + 1) % n;
+                }
+            }
+            Key::Named(NamedKey::Backspace) => {
+                let f = self.auth_form.focus;
+                if let Some(field) = self.auth_form.fields.get_mut(f) {
+                    field.pop();
+                }
+            }
+            _ => {
+                if let Some(t) = text {
+                    let f = self.auth_form.focus;
+                    if let Some(field) = self.auth_form.fields.get_mut(f) {
+                        for ch in t.chars() {
+                            if !ch.is_control() {
+                                field.push(ch);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The locked screen's "show" toggle (L4): the wizard's on its secret
+    /// steps, else the login or join form's. What is drawn changes; the tree
+    /// still says a secret's length only (L5).
+    fn toggle_locked_reveal(&mut self) {
+        if let Some(w) = self.wizard.as_mut() {
+            if w.a11y_show_name().is_some() {
+                w.reveal = !w.reveal;
+            }
+        } else if self.auth_form.a11y_show_name().is_some() {
+            self.auth_form.reveal = !self.auth_form.reveal;
+        }
+    }
+
+    /// Login: authenticate against the existing AuthStore and install the
+    /// persona's encrypted DB, on a worker (v0.0.12 item 18); `unlock_done`
+    /// applies the result. Fail-closed — on error the gate stays locked.
+    pub(crate) fn try_login(&mut self, password: String) {
+        // B3: one at a time.
+        if self.auth_job.is_some() {
+            return;
+        }
+        self.auth_form.error = None;
+        self.start_auth_job(AuthJob::Unlock, move |work| AuthDone::Unlock(work.unlock(password.as_bytes())));
+    }
+
+    /// The unlock's result, on the UI thread: today's sequence, then (a join)
+    /// the first sync, then (B5b) the interrupted-setup notice, once.
+    fn unlock_done(&mut self, result: anyhow::Result<Session>) {
+        match result {
             Ok((persona, db, account_key, device_key, kek)) => {
                 // Lot 0.8: the owner has their passphrase, so an access recovery
                 // in progress on this device is moot — clear it (primary persona
@@ -6125,8 +7349,31 @@ impl App {
                 println!("sovereign-shell: unlocked");
                 #[cfg(any(debug_assertions, feature = "dev-switches"))]
                 self.v2_seed_pii_test();
+                // The login that ends a join: kick the first sync immediately,
+                // direct-dialing the source peer from the offer — don't wait
+                // for mDNS discovery.
+                if let Some((peer_id, addrs)) = self.pending_join_peer.take() {
+                    if let Some(h) = &self.p2p {
+                        h.pair_sync(&self.rt, peer_id, addrs);
+                    }
+                }
+                // B5b (lot 1's P2 on the desktop): auth.store with the
+                // setup-started record and without the setup-complete marker
+                // is a setup that was interrupted. Said once, after the login
+                // of either persona; then the marker. With neither record the
+                // account predates them (as amended, ff959de): the marker is
+                // written silently.
+                if !crate::crypto::setup_complete() {
+                    if crate::crypto::setup_started() {
+                        self.set_notice("Setup not finished", INTERRUPTED_SETUP);
+                    }
+                    if let Err(e) = crate::crypto::mark_setup_complete() {
+                        eprintln!("sovereign-shell: could not write the setup marker: {e}");
+                    }
+                }
             }
             Err(e) => {
+                self.pending_join_peer = None;
                 self.auth_form.error = Some(format!("{e}"));
                 if let Some(f) = self.auth_form.fields.get_mut(0) {
                     f.clear();
@@ -6212,6 +7459,11 @@ impl App {
     /// don't double-borrow.
     fn handle_wiz_action(&mut self, action: crate::onboarding::WizAction) {
         use crate::onboarding::{WizAction, STEP_CANARY, STEP_DURESS, WIZ_STEPS};
+        // B2/B3: while the account is being created, the wizard is inert —
+        // its buttons (Get started again among them) start nothing.
+        if self.auth_job.is_some() {
+            return;
+        }
         match action {
             WizAction::None => {}
             WizAction::ChoosePair => {
@@ -6316,16 +7568,20 @@ impl App {
     }
 
     /// Complete first-device onboarding from the wizard's collected fields:
-    /// create the two-persona auth store, install the session, persist the
-    /// profile (nickname/bubble/theme) + optional canary, and seed sample data
-    /// when requested. Mirrors `try_onboard` but driven by the wizard.
+    /// create the two-persona auth store and install the session — on a
+    /// worker (v0.0.12 item 18), the wizard staying on screen, inert, with its
+    /// status line — then (`setup_done`, `complete_onboarding`) persist the
+    /// profile (nickname/bubble/theme) + optional canary, seed sample data
+    /// when requested, and write the setup-complete marker.
     fn finish_onboarding(&mut self) {
-        let Some(wiz) = self.wizard.take() else { return };
+        // B3: one at a time — no second derivation, no second store write.
+        if self.auth_job.is_some() {
+            return;
+        }
+        let Some(wiz) = self.wizard.as_mut() else { return };
         if crate::onboarding::strength_score(&wiz.password) < 5 || wiz.password != wiz.password_confirm {
-            let mut w = wiz;
-            w.step = crate::onboarding::STEP_PASSWORD;
-            w.error = Some("Enter a valid, matching password.".into());
-            self.wizard = Some(w);
+            wiz.step = crate::onboarding::STEP_PASSWORD;
+            wiz.error = Some("Enter a valid, matching password.".into());
             return;
         }
         // Skipped duress -> a random, unreachable decoy (never an empty one,
@@ -6335,25 +7591,57 @@ impl App {
         } else {
             wiz.duress.clone()
         };
-        let store = match create_auth_store(wiz.password.as_bytes(), duress.as_bytes()) {
-            Ok(s) => s,
-            Err(e) => {
-                let mut w = wiz;
-                w.error = Some(format!("Could not create account: {e}"));
-                self.wizard = Some(w);
-                return;
-            }
-        };
-        let (persona, db, account_key, device_key, kek) =
-            match self.rt.block_on(install_session(&store, wiz.password.as_bytes())) {
-                Ok(t) => t,
-                Err(e) => {
-                    let mut w = wiz;
-                    w.error = Some(format!("Encryption install failed: {e}"));
-                    self.wizard = Some(w);
+        let password = wiz.password.clone();
+        wiz.error = None;
+        self.start_auth_job(AuthJob::Setup, move |work| {
+            AuthDone::Setup(crate::auth_work::setup(work, password.as_bytes(), duress.as_bytes()))
+        });
+    }
+
+    /// The setup's result, on the UI thread. Before the store, a failure
+    /// keeps the wizard with what was typed (P4: the store's duress = main
+    /// refusal takes it back to the duress step); after it, the account
+    /// exists, so the wizard gives way to the login form (B5b).
+    fn setup_done(&mut self, result: Result<Session, SetupFailed>) {
+        use crate::onboarding::{DURESS_EQUALS_MAIN, STEP_DURESS};
+        match result {
+            Ok(session) => match self.wizard.take() {
+                Some(wiz) => self.complete_onboarding(wiz, session),
+                // Nothing to persist without the wizard: open the account as
+                // a login would (its first login says the setup was cut short).
+                None => self.unlock_done(Ok(session)),
+            },
+            Err(SetupFailed { store_written, error }) => {
+                if store_written || auth_store_exists() {
+                    self.wizard = None;
+                    self.auth_form = AuthForm::login();
+                    self.auth_form.error =
+                        Some(format!("Your account was created, but it could not be opened: {error}. Enter your password to try again."));
                     return;
                 }
-            };
+                let Some(w) = self.wizard.as_mut() else {
+                    self.auth_form.error = Some(format!("Could not create account: {error}"));
+                    return;
+                };
+                let duress_equals_main = matches!(
+                    error.downcast_ref::<sovereign_crypto::CryptoError>(),
+                    Some(sovereign_crypto::CryptoError::DuressEqualsPrimary)
+                );
+                if duress_equals_main {
+                    w.step = STEP_DURESS;
+                    w.focus = 0;
+                    w.error = Some(DURESS_EQUALS_MAIN.into());
+                } else {
+                    w.error = Some(format!("Could not create account: {error}"));
+                }
+            }
+        }
+    }
+
+    /// After the setup's derivation: what needs the app's state, in today's
+    /// order, then the setup-complete marker (B5b).
+    fn complete_onboarding(&mut self, wiz: crate::onboarding::OnboardingWizard, session: Session) {
+        let (persona, db, account_key, device_key, kek) = session;
 
         // Persist profile: bubble / theme are device preferences (the shared
         // profile at the data dir, read before login); the nickname is the
@@ -6382,6 +7670,15 @@ impl App {
                 if let Err(e) = q.save(&id_dir) {
                     setup_errors.push(format!("profile: {e}"));
                 }
+            }
+        }
+        // v0.0.12 item 19, N2: this device's name, saved with the setup
+        // (blank: the default stays).
+        if let Some(name) = crate::device_name::clean(&wiz.device_name) {
+            if let Err(e) = crate::device_name::save(&name) {
+                setup_errors.push(format!("this device's name: {e}"));
+            } else {
+                self.device_name = name;
             }
         }
         // Canary phrase (optional) -> sealed under the KEK.
@@ -6436,75 +7733,24 @@ impl App {
         // H-shell1: don't print the persona kind (see login path).
         let _ = persona;
         println!("sovereign-shell: onboarded via wizard (seeded={})", wiz.seed_sample);
-    }
-
-    /// Onboarding: validate (incl. confirm-match — guards against a typo'd
-    /// password that would otherwise lock the user out forever), create the
-    /// two-persona AuthStore, then install the primary session (which encrypts
-    /// the fresh workspace at rest). Fields: password, confirm, duress, confirm.
-    pub(crate) fn try_onboard(&mut self) {
-        let f = &self.auth_form.fields;
-        let primary = f.first().cloned().unwrap_or_default();
-        let confirm = f.get(1).cloned().unwrap_or_default();
-        let duress = f.get(2).cloned().unwrap_or_default();
-        let duress_confirm = f.get(3).cloned().unwrap_or_default();
-        let v = PasswordPolicy::default_policy().validate(&primary);
-        if !v.valid {
-            self.auth_form.error = Some(format!("Password needs: {}", v.errors.join(", ")));
-            return;
-        }
-        if primary != confirm {
-            self.auth_form.error = Some("Passwords don't match — re-type the confirmation (or click \u{201c}show\u{201d}).".into());
-            return;
-        }
-        if duress.is_empty() {
-            self.auth_form.error = Some("Set a duress password too".into());
-            return;
-        }
-        if duress != duress_confirm {
-            self.auth_form.error = Some("Duress passwords don't match.".into());
-            return;
-        }
-        if duress == primary {
-            self.auth_form.error = Some("Duress password must differ from your password".into());
-            return;
-        }
-        let store = match create_auth_store(primary.as_bytes(), duress.as_bytes()) {
-            Ok(s) => s,
-            Err(e) => {
-                self.auth_form.error = Some(format!("Could not create account: {e}"));
-                return;
+        // B5b: the setup is complete once everything above is in place; a
+        // step that failed leaves the marker unwritten, so the first login
+        // says so (as lot 1 does on the phone).
+        if setup_errors.is_empty() {
+            if let Err(e) = crate::crypto::mark_setup_complete() {
+                eprintln!("sovereign-shell: could not write the setup marker: {e}");
             }
-        };
-        match self.rt.block_on(install_session(&store, primary.as_bytes())) {
-            Ok((persona, db, account_key, device_key, kek)) => {
-                self.db = Some(db.clone() as Arc<dyn GraphDB>);
-                self.persona = Some(persona);
-                self.account_key = Some(account_key);
-                self.device_key = Some(device_key);
-                self.kek = Some(kek);
-                self.install_document_service(db);
-                self.locked = false;
-                self.auth_form.error = None;
-                self.arm_model_integrity(); // MODELTRUST-001: TOFU for unlisted models
-                self.seed_starter_lanes();
-                self.load_workspace_now();
-                self.frame_now();
-                self.start_p2p();
-                self.bubble_picker = true; // first-run: let them pick a bubble style
-                let _ = persona; // H-shell1: don't print the persona kind
-                println!("sovereign-shell: onboarded + unlocked");
-            }
-            Err(e) => self.auth_form.error = Some(format!("Encryption install failed: {e}")),
         }
     }
 
-    /// Submit the auth form (Enter) — dispatches to join / onboarding / login.
+    /// Submit the auth form (Enter) — dispatches to join / login. Nothing
+    /// while a key derivation runs (B2, B3).
     pub(crate) fn auth_submit(&mut self) {
+        if self.auth_job.is_some() {
+            return;
+        }
         if self.auth_form.joining {
             self.try_join();
-        } else if self.auth_form.onboarding {
-            self.try_onboard();
         } else {
             let password = self.auth_form.fields.first().cloned().unwrap_or_default();
             self.try_login(password);
@@ -6524,6 +7770,9 @@ impl App {
         let pin = f.get(1).cloned().unwrap_or_default();
         let password = f.get(2).cloned().unwrap_or_default();
         let duress = f.get(3).cloned().unwrap_or_default();
+        // v0.0.12 item 19, N2: this device's name, the form's fifth field
+        // (blank: the default), sent in `PairHello` and saved with the join.
+        let typed_name = f.get(4).and_then(|n| crate::device_name::clean(n));
         if let Err(e) = crate::p2p::preview_offer(&offer) {
             self.auth_form.error = Some(if e.contains("expired") {
                 "That pairing offer has expired \u{2014} arm a fresh one on the other device.".into()
@@ -6553,7 +7802,8 @@ impl App {
         self.pending_join_peer = sovereign_p2p::PairingOffer::decode(offer.trim())
             .ok()
             .map(|o| (o.source_peer_id, o.addrs));
-        let device_name = self.p2p_config.device_name.clone();
+        let device_name = typed_name.clone().unwrap_or_else(|| self.device_name.clone());
+        self.pending_join_name = typed_name;
         let tx = self.pair_tx.clone();
         self.rt.spawn(async move {
             let r = crate::p2p::accept_pairing(offer, pin, password, duress, device_name).await;
@@ -6610,7 +7860,7 @@ impl App {
     /// loaded cards. `self.windows` and `self.cards` are disjoint fields.
     fn update_search_window(&mut self, wi: usize) {
         let WindowContent::Search(sp) = &mut self.windows[wi].content else { return };
-        let q = sp.query.to_lowercase();
+        let q = sp.query.text().to_lowercase();
         sp.results.clear();
         if !q.is_empty() {
             for (i, card) in self.cards.iter().enumerate() {
@@ -6641,9 +7891,31 @@ impl App {
         const ROOT: NodeId = NodeId(0);
         // The thread chooser's ids (the prompt has `1 << 61`, the document editor `1 << 62`).
         const ORPHAN_CHOOSER_NS: u64 = 1 << 60;
-        // The lane labels' buttons, and the rename field's tree (THREAD-name R4).
-        const LANE_LABEL_NS: u64 = 1 << 59;
+        // The lane labels' buttons (`LANE_LABEL_NS`, module level: the
+        // screen reader's actions name them too), and the rename field's tree
+        // (THREAD-name R4).
         const LANE_RENAME_NS: u64 = 1 << 58;
+        // The Rename field of Settings → Devices (v0.0.12 item 19, N6).
+        const DEVICE_RENAME_NS: u64 = 1 << 56;
+        // The trash's modal: its thread chooser or Empty confirmation (item 9, T4).
+        const TRASH_MODAL_NS: u64 = 1 << 55;
+        // The top window's composer or search query (K5): the field's own
+        // tree, inlined under its id range at `field_at` among the items.
+        const CHAT_FIELD_NS: u64 = 1 << 57;
+        let mut field_tree = if self.locked {
+            None
+        } else {
+            self.top_field_mut().map(|f| crate::new_thread::inline_tree(f.accessibility_tree(), CHAT_FIELD_NS))
+        };
+        let mut field_at: Option<usize> = None;
+        // v0.0.12 rc2 (V0012-rc2-setup-step-announced, N1, N2, N4): a locked
+        // screen — the wizard's step, the login or the join form — has its
+        // ids in a range of its own (`LOCKED_SCREEN_NS | key << 32`), so every
+        // change of screen moves the focus, and its items sit under a group
+        // named by its title (and "Step N of 8"), which holds the focus when
+        // no field does. (first item, screen key, group name)
+        const LOCKED_SCREEN_NS: u64 = 1 << 54;
+        let mut screen: Option<(usize, u64, String)> = None;
         // (role, label, value, focused)
         let mut items: Vec<(AkRole, String, String, bool)> = Vec::new();
 
@@ -6663,6 +7935,16 @@ impl App {
             for line in wiz.a11y_lines() {
                 items.push((AkRole::Label, line, String::new(), false));
             }
+            // v0.0.12 items 18+20 (B2, B4): its status line while the new
+            // password is set; else the error it draws, as an alert (the
+            // Failed phase already says its error among its lines).
+            if wiz.finalizing {
+                items.push((AkRole::Status, crate::auth_work::SETTING_PASSWORD.into(), String::new(), false));
+            } else if let Some(e) = wiz.error.as_deref().filter(|e| !e.trim().is_empty()) {
+                if wiz.phase != RecoveryPhase::Failed {
+                    items.push((AkRole::Alert, e.to_string(), String::new(), false));
+                }
+            }
         }
         // C-WIRE 13 / 12: the alert notice and the older-device notice, read
         // whatever window is open.
@@ -6674,25 +7956,24 @@ impl App {
         }
 
         if self.locked {
-            let f = &self.auth_form;
-            items.push((
-                AkRole::Label,
-                if f.onboarding { "Welcome to Sovereign" } else { "Unlock Sovereign" }.into(),
-                String::new(),
-                false,
-            ));
-            for (i, field) in f.fields.iter().enumerate() {
-                let label = if f.onboarding && i == 1 { "Duress password" } else { "Password" };
-                // Never read the password aloud — announce length only.
-                let val = if field.is_empty() {
-                    String::new()
-                } else {
-                    format!("{} characters", field.chars().count())
-                };
-                items.push((AkRole::TextInput, label.into(), val, i == f.focus));
+            // v0.0.12 item 20 (A1–A5): the form that is drawn — the wizard's
+            // current step, or the login / join form — never the hidden one.
+            // Fields are named by their drawn labels; secrets by length only.
+            if let Some(wiz) = &self.wizard {
+                screen = Some((items.len(), wiz.step as u64 + 1, wiz.a11y_name()));
+                items.extend(wiz.a11y_items());
+            } else {
+                let key = crate::onboarding::WIZ_STEPS as u64 + if self.auth_form.joining { 2 } else { 1 };
+                screen = Some((items.len(), key, self.auth_form.a11y_name().into()));
+                items.extend(self.auth_form.a11y_items());
+                if self.recovery_available && !self.auth_form.joining {
+                    items.push((AkRole::Button, "Forgot your password? Recover with guardians".into(), String::new(), false));
+                }
             }
-            if let Some(e) = &f.error {
-                items.push((AkRole::Label, format!("Error: {e}"), String::new(), false));
+            // B2: the status line of a derivation in flight (recovery's is
+            // with its wizard, above).
+            if let Some(job) = self.auth_job.as_ref().map(|j| j.job).filter(|j| *j != AuthJob::Recover) {
+                items.push((AkRole::Status, job.status().into(), String::new(), false));
             }
         } else if let Some(top) = self.windows.last() {
             // The focused (top) window is announced. Other open windows are noted
@@ -6708,7 +7989,7 @@ impl App {
                     if chat.pending {
                         items.push((AkRole::Label, "Assistant is thinking".into(), String::new(), false));
                     }
-                    items.push((AkRole::TextInput, "Message".into(), chat.input.clone(), true));
+                    field_at = Some(items.len());
                 }
                 WindowContent::Inbox(ib) => {
                     items.push((AkRole::Label, "Inbox".into(), String::new(), false));
@@ -6724,7 +8005,7 @@ impl App {
                 }
                 WindowContent::Search(sp) => {
                     items.push((AkRole::Label, "Search".into(), String::new(), false));
-                    items.push((AkRole::TextInput, "Query".into(), sp.query.clone(), true));
+                    field_at = Some(items.len());
                     for (_, title) in &sp.results {
                         items.push((AkRole::Label, title.clone(), String::new(), false));
                     }
@@ -6770,9 +8051,8 @@ impl App {
                 }
                 WindowContent::Devices(dp) => {
                     items.push((AkRole::Label, "Devices & Sync".into(), String::new(), false));
-                    for line in dp.a11y_lines() {
-                        items.push((AkRole::Label, line, String::new(), false));
-                    }
+                    // v0.0.12 item 19: N4's sentence and the Rename buttons (N6).
+                    items.extend(dp.a11y_items());
                 }
             }
             if extra > 0 {
@@ -6781,7 +8061,11 @@ impl App {
         } else {
             items.push((
                 AkRole::Label,
-                format!("Spatial canvas — {} documents across {LANES} thread lanes", self.cards.len()),
+                format!(
+                    "Spatial canvas — {} documents across {} thread lanes",
+                    self.cards.len(),
+                    self.lanes.thread_count()
+                ),
                 String::new(),
                 false,
             ));
@@ -6790,21 +8074,79 @@ impl App {
         let mut nodes: Vec<(NodeId, Node)> = Vec::with_capacity(items.len() + 1);
         let mut child_ids: Vec<NodeId> = Vec::with_capacity(items.len());
         let mut focus = ROOT;
-        for (i, (role, label, value, foc)) in items.into_iter().enumerate() {
-            let id = NodeId(i as u64 + 1);
-            let mut n = Node::new(role);
-            n.set_label(label);
-            if !value.is_empty() {
-                n.set_value(value);
+        let screen_at = screen.as_ref().map(|s| s.0);
+        let id_base = screen.as_ref().map_or(0, |s| LOCKED_SCREEN_NS | s.1 << 32);
+        let mut screen_children: Vec<NodeId> = Vec::new();
+        let mut screen_focused = false;
+        // L4: the name of the screen's show/hide toggle, if it draws one.
+        let show_name: Option<String> = if !self.locked {
+            None
+        } else if let Some(w) = &self.wizard {
+            w.a11y_show_name().map(str::to_string)
+        } else {
+            self.auth_form.a11y_show_name().map(str::to_string)
+        };
+        let mut show_node: Option<NodeId> = None;
+        let n_items = items.len();
+        let mut items = items.into_iter();
+        for i in 0..=n_items {
+            // The field's nodes go where its item is (K5).
+            if field_at == Some(i) {
+                if let Some((root, field_nodes, field_focus)) = field_tree.take() {
+                    nodes.extend(field_nodes);
+                    child_ids.push(root);
+                    focus = field_focus;
+                }
             }
-            if role == AkRole::TextInput {
+            let Some((role, label, value, foc)) = items.next() else { break };
+            let id = NodeId(id_base + i as u64 + 1);
+            let mut n = Node::new(role);
+            // v0.0.12 rc2 (V0012-rc2-labels-spoken, L1): a `Label` is spoken
+            // by its value (accesskit_consumer 0.35, `label_comes_from_value`),
+            // so its drawn text goes there; every other role keeps its label.
+            if role == AkRole::Label {
+                n.set_value(label);
+            } else {
+                // L4: the locked screen's show/hide node, pressed by a screen
+                // reader through `a11y_action`.
+                if role == AkRole::Button && screen_at.is_some_and(|at| i >= at) && show_name.as_deref() == Some(label.as_str()) {
+                    show_node = Some(id);
+                }
+                n.set_label(label);
+                if !value.is_empty() {
+                    n.set_value(value);
+                }
+            }
+            if matches!(role, AkRole::TextInput | AkRole::PasswordInput) {
                 n.add_action(Action::Focus);
+            }
+            if matches!(role, AkRole::Button | AkRole::DefaultButton | AkRole::RadioButton | AkRole::CheckBox) {
+                n.add_action(Action::Click);
             }
             if foc {
                 focus = id;
             }
             nodes.push((id, n));
-            child_ids.push(id);
+            if screen_at.is_some_and(|at| i >= at) {
+                screen_focused |= foc;
+                screen_children.push(id);
+            } else {
+                child_ids.push(id);
+            }
+        }
+        // The locked screen's group (N1, N4): a new node, named directly (no
+        // drawn label is renamed, N5); the focus when no field holds it.
+        if let Some((_, _, name)) = screen {
+            let group_id = NodeId(id_base);
+            let mut g = Node::new(AkRole::Group);
+            g.set_label(name);
+            g.add_action(Action::Focus);
+            g.set_children(screen_children);
+            if !screen_focused {
+                focus = group_id;
+            }
+            nodes.push((group_id, g));
+            child_ids.push(group_id);
         }
         if let Some((child, ed_focus, _)) = self.v2_a11y_slot() {
             nodes.push((editor_v2::EDITOR_CONTAINER, editor_v2::container_node(child)));
@@ -6814,10 +8156,15 @@ impl App {
             }
         }
         // The lane labels (R4): one button "Rename thread <name>" per
-        // renamable label, whether or not a window is open (P4).
+        // renamable label, whether or not a window is open (P4) — every
+        // lane's, visible or not (N8: the tree is not culled), each keyed by
+        // its thread (N5). A label a screen reader focused holds the focus.
         if !self.locked {
             for (l, n) in self.lane_labels.iter().zip(crate::lane_rename::lane_label_nodes(&self.lane_labels)) {
-                let id = NodeId(LANE_LABEL_NS | l.lane as u64);
+                let id = crate::lane_rename::label_node_id(LANE_LABEL_NS, &l.thread_id);
+                if self.a11y_label_focus.as_deref() == Some(l.thread_id.as_str()) {
+                    focus = id;
+                }
                 nodes.push((id, n));
                 child_ids.push(id);
             }
@@ -6833,6 +8180,17 @@ impl App {
                 focus = field_focus;
             }
         }
+        // The Rename field of Settings → Devices (N6): a text input named
+        // "This device's name" or "Name of {name}", holding the focus.
+        if !self.locked && self.new_thread_prompt.is_none() && self.lane_rename.is_none() {
+            if let Some(field) = self.device_rename.as_mut() {
+                let (root, field_nodes, field_focus) =
+                    crate::new_thread::inline_tree(field.accessibility_tree(), DEVICE_RENAME_NS);
+                nodes.extend(field_nodes);
+                child_ids.push(root);
+                focus = field_focus;
+            }
+        }
         // The new-thread prompt (N5): its dialog inlined under its own id
         // range, holding the focus while it is open. Every frame its whole
         // tree, as the shell's own items.
@@ -6843,6 +8201,18 @@ impl App {
                 nodes.extend(prompt_nodes);
                 child_ids.push(dialog);
                 focus = prompt_focus;
+            }
+        }
+        // The trash's modal (v0.0.12 item 9, T4): the thread chooser, a modal
+        // dialog with its list of threads, or the Empty trash confirmation,
+        // holding the focus while it is open.
+        if !self.locked {
+            if let Some(m) = &self.trash_modal {
+                let (dialog, modal_nodes, modal_focus) =
+                    crate::new_thread::inline_tree(m.accessibility_tree(), TRASH_MODAL_NS);
+                nodes.extend(modal_nodes);
+                child_ids.push(dialog);
+                focus = modal_focus;
             }
         }
         // S5-12: the section's thread chooser, a modal dialog with its list
@@ -6863,7 +8233,44 @@ impl App {
         all.push((ROOT, root));
         all.extend(nodes);
         self.a11y_root_focus = focus;
+        self.a11y_show_node = show_node;
         TreeUpdate { nodes: all, tree: Some(Tree::new(ROOT)), tree_id: TreeId::ROOT, focus }
+    }
+
+    /// An accessibility action from the screen reader (the adapter's
+    /// `A11yAction`, drained by `about_to_wait`). Handled today: the lane
+    /// labels' buttons — Focus gives the label the focus and scrolls its lane
+    /// into view (N8: the tree holds every lane, visible or not); Click opens
+    /// the rename field over it, as a double-click on the label does (R1).
+    /// While locked, only Click on the screen's show/hide node, which toggles
+    /// the reveal (v0.0.12 rc2, V0012-rc2-labels-spoken, L4).
+    /// Anything else is ignored.
+    pub(crate) fn a11y_action(&mut self, request: accesskit::ActionRequest) {
+        if self.locked {
+            if request.action == Action::Click && self.a11y_show_node == Some(request.target_node) {
+                self.toggle_locked_reveal();
+            }
+            return;
+        }
+        let Some(label) = self
+            .lane_labels
+            .iter()
+            .find(|l| crate::lane_rename::label_node_id(LANE_LABEL_NS, &l.thread_id) == request.target_node)
+            .cloned()
+        else {
+            return;
+        };
+        match request.action {
+            Action::Focus => {
+                self.a11y_label_focus = Some(label.thread_id.clone());
+                self.scroll_lane_into_view(label.lane);
+            }
+            Action::Click => {
+                self.scroll_lane_into_view(label.lane);
+                self.open_lane_rename(label.lane);
+            }
+            _ => {}
+        }
     }
 
     /// The accessibility updates the shell sends **after**
@@ -7014,7 +8421,7 @@ impl ApplicationHandler for App {
                 event_loop,
                 &window,
                 A11yActivation,
-                A11yAction,
+                A11yAction(self.a11y_tx.clone()),
                 A11yDeactivation,
             ));
             window.set_visible(true);
@@ -7047,6 +8454,8 @@ impl ApplicationHandler for App {
                     self.context
                         .resize_surface(surface, size.width.max(1), size.height.max(1));
                 }
+                // The canvas's height changed: the stop again (N4).
+                self.view_resized();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.scale = scale_factor;
@@ -7069,6 +8478,14 @@ impl ApplicationHandler for App {
                     if let Some(f) = self.lane_rename.as_mut() {
                         f.event(sovereign_editor::input::InputEvent::Ime(crate::winit_input::map_ime(ime)));
                     }
+                } else if self.device_rename_on_top() {
+                    // The Rename field of Settings → Devices (N3, N5).
+                    if let Some(f) = self.device_rename.as_mut() {
+                        f.event(sovereign_editor::input::InputEvent::Ime(crate::winit_input::map_ime(ime)));
+                    }
+                } else if self.chat_field_on_top() {
+                    // The top window's composer or search query (item 21, K2).
+                    self.top_field_event(sovereign_editor::input::InputEvent::Ime(crate::winit_input::map_ime(ime)));
                 } else {
                     self.v2_ime(ime);
                 }
@@ -7076,6 +8493,7 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => match state {
                 ElementState::Pressed => {
                     self.press_pos = Some(self.cursor);
+                    self.a11y_label_focus = None; // as a key does (N8)
                     let p = Point::new(self.cursor.0, self.cursor.1);
                     let (vw, vh) = self.win_size().unwrap_or((0.0, 0.0));
                     // A press off the lane labels ends a double-click on one
@@ -7083,7 +8501,7 @@ impl ApplicationHandler for App {
                     if crate::lane_rename::label_at(p, &self.label_rects).is_none() {
                         self.label_clicks.press(None, p, Instant::now());
                     }
-                    if self.unsaved_prompt.is_some() || self.comms_form.is_some() || self.compose_form.is_some() || self.pairing_modal.is_some() || self.guardian_modal.is_some() || self.recovery_wizard.is_some() || self.injection_prompt.is_some() || self.bubble_picker || self.pending_action.is_some() || self.notice.is_some() || self.ctx_menu.is_some() || self.trash_modal.is_some() || self.new_thread_prompt.is_some() || self.orphan_modal.is_some() || self.lane_rename.is_some() {
+                    if self.unsaved_prompt.is_some() || self.comms_form.is_some() || self.compose_form.is_some() || self.pairing_modal.is_some() || self.guardian_modal.is_some() || self.recovery_wizard.is_some() || self.injection_prompt.is_some() || self.bubble_picker || self.pending_action.is_some() || self.notice.is_some() || self.ctx_menu.is_some() || self.trash_modal.is_some() || self.new_thread_prompt.is_some() || self.orphan_modal.is_some() || self.lane_rename.is_some() || self.device_rename.is_some() {
                         // Modal/menu open: no drag/pan — release dismisses or acts.
                         self.dragging = false;
                         // The new-thread prompt's field takes a press (caret,
@@ -7101,6 +8519,13 @@ impl ApplicationHandler for App {
                                 field.press(p, mods);
                             }
                         }
+                        // And the Rename field of Settings → Devices.
+                        if self.device_rename_on_top() {
+                            let mods = crate::winit_input::editor_modifiers(self.mods);
+                            if let Some(field) = self.device_rename.as_mut() {
+                                field.press(p, mods);
+                            }
+                        }
                     } else if self.in_taskbar(p, vw, vh) {
                         // Taskbar is always on top: no drag/pan, the click fires on release.
                         self.dragging = false;
@@ -7114,6 +8539,12 @@ impl ApplicationHandler for App {
                             self.drag_win = Some(top);
                         }
                         self.v2_pointer_down(p);
+                        // The composer and the search query take a press in
+                        // their field (caret, double-click, drag-select; K2).
+                        let mods = crate::winit_input::editor_modifiers(self.mods);
+                        if let Some(f) = self.top_field_mut() {
+                            f.press(p, mods);
+                        }
                         self.dragging = false; // a window has focus, not the canvas
                     } else if let Some(lane) = crate::lane_rename::label_at(p, &self.label_rects) {
                         // Press on a renamable lane label (drawn above the
@@ -7141,6 +8572,13 @@ impl ApplicationHandler for App {
                     }
                     if let Some(field) = self.lane_rename.as_mut() {
                         field.release(Point::new(self.cursor.0, self.cursor.1));
+                    }
+                    if let Some(field) = self.device_rename.as_mut() {
+                        field.release(Point::new(self.cursor.0, self.cursor.1));
+                    }
+                    let cursor = Point::new(self.cursor.0, self.cursor.1);
+                    if let Some(f) = self.top_field_mut() {
+                        f.release(cursor);
                     }
                     let card_drag = self.card_drag.take();
                     self.drag_win = None;
@@ -7177,6 +8615,14 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
+                // And the Rename field of Settings → Devices.
+                if self.device_rename_on_top() {
+                    let p = Point::new(self.cursor.0, self.cursor.1);
+                    if !self.device_rename.as_ref().is_some_and(|f| f.contains(p)) {
+                        self.device_rename_step(crate::device_rename::RenameStep::Cancel);
+                    }
+                    return;
+                }
                 self.open_context_menu();
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -7191,8 +8637,9 @@ impl ApplicationHandler for App {
                         win.bounds = win.bounds + vello::kurbo::Vec2::new(dx, dy);
                     }
                 } else if self.dragging {
-                    self.cam.offset_x += dx;
-                    self.cam.offset_y += dy;
+                    // A drag of the canvas: time as the pointer, the lanes
+                    // within the stop (N4).
+                    self.canvas_drag(dx, dy);
                 }
                 self.cursor = (px, py);
                 self.v2_pointer_move(Point::new(px, py));
@@ -7202,12 +8649,18 @@ impl ApplicationHandler for App {
                 if let Some(field) = self.lane_rename.as_mut() {
                     field.drag(Point::new(px, py));
                 }
+                if let Some(field) = self.device_rename.as_mut() {
+                    field.drag(Point::new(px, py));
+                }
+                if let Some(f) = self.top_field_mut() {
+                    f.drag(Point::new(px, py));
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.ctx_menu = None; // any scroll dismisses an open menu
-                let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y as f64,
-                    MouseScrollDelta::PixelDelta(p) => p.y / 60.0,
+                let (lines_x, lines) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x as f64, y as f64),
+                    MouseScrollDelta::PixelDelta(p) => (p.x / 60.0, p.y / 60.0),
                 };
                 let p = Point::new(self.cursor.0, self.cursor.1);
                 let (vw, vh) = self.win_size().unwrap_or((0.0, 0.0));
@@ -7215,6 +8668,11 @@ impl ApplicationHandler for App {
                     // The section's thread chooser takes the wheel (its list scrolls).
                     if m.contains(vw, vh, p) {
                         m.scroll(lines.round() as i64);
+                    }
+                } else if let Some(m) = self.trash_modal.as_ref() {
+                    // So does the trash's (v0.0.12 item 9, T4); nothing under a modal scrolls.
+                    if m.contains(vw, vh, p) {
+                        self.trash_modal_scroll(lines.round() as i64);
                     }
                 } else if self.in_taskbar(p, vw, vh) {
                     // Taskbar swallows scroll (no canvas zoom underneath it).
@@ -7246,15 +8704,18 @@ impl ApplicationHandler for App {
                         WindowContent::Browser(_) => {} // the webview scrolls itself
                     }
                 } else {
-                    let factor = (1.0 + lines * 0.12).clamp(0.2, 5.0);
-                    let (cx, cy) = self.cursor;
-                    self.cam.zoom_toward(cx, cy, factor);
+                    // The canvas (N4): the wheel scrolls the lanes, Shift+wheel
+                    // and a horizontal delta scroll in time, Ctrl+wheel zooms.
+                    self.canvas_wheel(lines_x, lines, self.mods);
                 }
             }
             WindowEvent::KeyboardInput {
                 event: KeyEvent { logical_key, text, state: ElementState::Pressed, .. },
                 ..
             } => {
+                // A key takes the focus back from a lane label a screen reader
+                // focused (N8): the shell's own focus applies again.
+                self.a11y_label_focus = None;
                 // Global UI zoom (WCAG resize text) — Ctrl +/- to scale the whole
                 // UI, Ctrl+0 to reset. Works in any mode (auth, chat, canvas).
                 if self.ctrl_down {
@@ -7330,6 +8791,10 @@ impl ApplicationHandler for App {
                 // closes it (recovery keeps running); the SetPassword phase takes
                 // the new passphrase.
                 if let Some(phase) = self.recovery_wizard.as_ref().map(|w| w.phase) {
+                    // B2: inert while its new password is being set.
+                    if self.auth_job.is_some() {
+                        return;
+                    }
                     match &logical_key {
                         Key::Named(NamedKey::Escape) => self.recovery_wizard = None,
                         Key::Named(NamedKey::Enter) => match phase {
@@ -7475,8 +8940,10 @@ impl ApplicationHandler for App {
                         return;
                     }
                 }
-                // A trash modal owns the keyboard (only Esc acts, above).
+                // A trash modal owns the keyboard (Esc acts above; the
+                // chooser's keys, v0.0.12 item 9, T4).
                 if self.trash_modal.is_some() {
+                    self.trash_modal_key(&logical_key);
                     return;
                 }
                 // So does a dialog of the section "Documents whose thread was deleted".
@@ -7505,6 +8972,12 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
+                // So does the Rename field of Settings → Devices (N3, N5).
+                if self.device_rename_on_top() {
+                    let mods = crate::winit_input::editor_modifiers(self.mods);
+                    self.device_rename_key(&logical_key, text.as_deref(), mods);
+                    return;
+                }
 
                 // A focused document editor owns the keyboard.
                 if !self.locked && self.v2_key(&logical_key, text.as_deref()) {
@@ -7513,194 +8986,15 @@ impl ApplicationHandler for App {
 
                 // The auth gate owns the keyboard while locked.
                 if self.locked {
-                    // The onboarding wizard owns the keyboard when active.
-                    if self.wizard.is_some() {
-                        if self.ctrl_down {
-                            if let Key::Character(s) = &logical_key {
-                                if s.eq_ignore_ascii_case("v") {
-                                    if let Some(clip) = crate::clip::get_text() {
-                                        if let Some(w) = self.wizard.as_mut() {
-                                            w.insert_str(clip.trim());
-                                        }
-                                    }
-                                    return;
-                                }
-                            }
-                        }
-                        match &logical_key {
-                            Key::Named(NamedKey::Enter) => self.wiz_enter(),
-                            Key::Named(NamedKey::Tab) => {
-                                if let Some(w) = self.wizard.as_mut() {
-                                    w.focus_next();
-                                }
-                            }
-                            Key::Named(NamedKey::Backspace) => {
-                                if let Some(w) = self.wizard.as_mut() {
-                                    w.backspace();
-                                }
-                            }
-                            Key::Named(NamedKey::Escape) => {
-                                if let Some(w) = self.wizard.as_mut() {
-                                    if w.step > 0 {
-                                        w.step -= 1;
-                                        w.focus = 0;
-                                        w.error = None;
-                                    }
-                                }
-                            }
-                            _ => {
-                                if let Some(t) = &text {
-                                    if let Some(w) = self.wizard.as_mut() {
-                                        for ch in t.chars() {
-                                            w.insert_char(ch);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        return;
-                    }
-                    // Ctrl+V: paste into the focused field (the join offer code is
-                    // ~200 chars + there's no camera to scan a QR back).
-                    if self.ctrl_down {
-                        if let Key::Character(s) = &logical_key {
-                            if s.eq_ignore_ascii_case("v") {
-                                if let Some(clip) = crate::clip::get_text() {
-                                    let replace_offer =
-                                        self.auth_form.joining && self.auth_form.focus == 0;
-                                    let f = self.auth_form.focus;
-                                    if let Some(field) = self.auth_form.fields.get_mut(f) {
-                                        if replace_offer {
-                                            *field = clip.trim().to_string();
-                                        } else {
-                                            field.push_str(clip.trim());
-                                        }
-                                    }
-                                }
-                                return;
-                            }
-                        }
-                    }
-                    if self.auth_form.busy {
-                        return; // pairing handshake in flight — ignore input
-                    }
-                    match &logical_key {
-                        Key::Named(NamedKey::Enter) => self.auth_submit(),
-                        Key::Named(NamedKey::Tab) => {
-                            let n = self.auth_form.fields.len();
-                            if n > 1 {
-                                self.auth_form.focus = (self.auth_form.focus + 1) % n;
-                            }
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            let f = self.auth_form.focus;
-                            if let Some(field) = self.auth_form.fields.get_mut(f) {
-                                field.pop();
-                            }
-                        }
-                        _ => {
-                            if let Some(t) = &text {
-                                let f = self.auth_form.focus;
-                                if let Some(field) = self.auth_form.fields.get_mut(f) {
-                                    for ch in t.chars() {
-                                        if !ch.is_control() {
-                                            field.push(ch);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    self.locked_key(&logical_key, text.as_deref());
                 }
-                // The TOP (focused) window takes typed text when it's a text widget
-                // (Chat composer or Search query).
-                else if matches!(self.top_kind(), Some(WindowKind::Chat)) {
-                    let top = self.windows.len() - 1;
-                    match &logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            self.windows.pop();
-                        }
-                        Key::Named(NamedKey::Enter) => {
-                            // First message builds + loads the model: flag the chat so
-                            // it shows "loading the model" rather than just "thinking".
-                            let loading = self.model_loading_next();
-                            let to_send = match &mut self.windows[top].content {
-                                WindowContent::Chat(c) => {
-                                    let t = c.submit();
-                                    if t.is_some() {
-                                        c.loading = loading;
-                                    }
-                                    t
-                                }
-                                _ => None,
-                            };
-                            if let Some(text) = to_send {
-                                self.dispatch_chat(text);
-                            }
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            if let WindowContent::Chat(c) = &mut self.windows[top].content {
-                                c.input.pop();
-                            }
-                        }
-                        _ => {
-                            if let Some(t) = &text {
-                                if let WindowContent::Chat(c) = &mut self.windows[top].content {
-                                    for ch in t.chars() {
-                                        if !ch.is_control() {
-                                            c.input.push(ch);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if matches!(self.top_kind(), Some(WindowKind::Search)) {
-                    let top = self.windows.len() - 1;
-                    match &logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            self.windows.pop();
-                        }
-                        Key::Named(NamedKey::Enter) => {
-                            // Enter on a search query escalates it to a chat question.
-                            let q = match &self.windows[top].content {
-                                WindowContent::Search(sp) => sp.query.trim().to_string(),
-                                _ => String::new(),
-                            };
-                            self.windows.remove(top);
-                            if !q.is_empty() {
-                                let bounds = self.next_bounds(WindowKind::Chat);
-                                let mut chat = ChatPanel::new();
-                                chat.input = q;
-                                let to_send = chat.submit();
-                                if to_send.is_some() {
-                                    chat.loading = self.model_loading_next();
-                                }
-                                self.windows
-                                    .push(Window { content: WindowContent::Chat(chat), bounds });
-                                if let Some(text) = to_send {
-                                    self.dispatch_chat(text);
-                                }
-                            }
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            if let WindowContent::Search(sp) = &mut self.windows[top].content {
-                                sp.query.pop();
-                            }
-                            self.update_search_window(top);
-                        }
-                        _ => {
-                            if let Some(t) = &text {
-                                if let WindowContent::Search(sp) = &mut self.windows[top].content {
-                                    for ch in t.chars() {
-                                        if !ch.is_control() {
-                                            sp.query.push(ch);
-                                        }
-                                    }
-                                }
-                                self.update_search_window(top);
-                            }
-                        }
+                // The TOP (focused) window's text field takes the key when it is
+                // the Chat composer or the Search query: the editor's field
+                // (item 21, K1-K4); App only routes the field's step.
+                else if matches!(self.top_kind(), Some(WindowKind::Chat | WindowKind::Search)) {
+                    let mods = crate::winit_input::editor_modifiers(self.mods);
+                    if let Some(step) = self.top_field_mut().map(|f| f.key(&logical_key, text.as_deref(), mods)) {
+                        self.field_step(self.windows.len() - 1, step);
                     }
                 } else if matches!(self.top_kind(), Some(WindowKind::Alerts)) {
                     // WCAG 2.1.1: every alert action from the keyboard.
@@ -7850,27 +9144,8 @@ impl ApplicationHandler for App {
                                 // uses it. Other keys keep their global meaning.
                                 self.history_key(&other);
                             } else if self.windows.is_empty() {
-                                let (vw, vh) = self.win_size().unwrap_or((1600.0, 1000.0));
-                                const STEP: f64 = 60.0;
-                                match other {
-                                    Key::Named(NamedKey::ArrowLeft) => self.cam.offset_x += STEP,
-                                    Key::Named(NamedKey::ArrowRight) => self.cam.offset_x -= STEP,
-                                    Key::Named(NamedKey::ArrowUp) => self.cam.offset_y += STEP,
-                                    Key::Named(NamedKey::ArrowDown) => self.cam.offset_y -= STEP,
-                                    Key::Character(ref s) if s == "=" || s == "+" => {
-                                        self.cam.zoom_toward(vw * 0.5, vh * 0.5, 1.15)
-                                    }
-                                    Key::Character(ref s) if s == "-" || s == "_" => {
-                                        self.cam.zoom_toward(vw * 0.5, vh * 0.5, 0.87)
-                                    }
-                                    Key::Character(ref s) if s.eq_ignore_ascii_case("h") => {
-                                        self.frame_now();
-                                    }
-                                    Key::Character(ref s) if s.eq_ignore_ascii_case("f") => {
-                                        self.frame_fit(); // fit all documents in view
-                                    }
-                                    _ => {}
-                                }
+                                // Arrows, zoom keys, home, fit (N4: the stop applies).
+                                self.canvas_key(&other);
                             }
                         }
                     }
@@ -7890,9 +9165,21 @@ impl ApplicationHandler for App {
                 return;
             }
         }
+        // The screen reader's actions (the adapter's thread sent them).
+        while let Ok(request) = self.a11y_rx.try_recv() {
+            self.a11y_action(request);
+        }
         if let RenderState::Active { window, .. } = &self.state {
             window.request_redraw();
         }
+    }
+
+    /// winit calls this on every exit of the event loop — the window closed,
+    /// a confirmed quit, the last prompt resolved: the clipboard forgets any
+    /// copy of ours still on it (item 8, K2), so nothing copied in Sovereign
+    /// can be pasted after it has quit. A crash or a kill clears nothing.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        editor_v2::forget_clipboard();
     }
 }
 
@@ -7906,20 +9193,27 @@ pub(crate) fn run_shot(path: String) {
     const ALIGN: u32 = 256; // wgpu COPY_BYTES_PER_ROW_ALIGNMENT
 
     let mut app = App::new();
-    // SHELL_AUTH_AUTO: drive the auth gate headlessly (onboard or login with the
-    // probe passwords) so we can shoot the post-unlock canvas, not just the gate.
+    // SHELL_AUTH_AUTO: drive the auth gate headlessly (set up through the
+    // wizard, or log in, with the probe passwords) so we can shoot the
+    // post-unlock canvas, not just the gate.
     if crate::dev::flag("SHELL_AUTH_AUTO") && app.locked {
-        if app.auth_form.onboarding {
-            // Fields: password, confirm, duress, confirm (must match).
-            app.auth_form.fields = vec![
-                "Primary!Pass1234".into(),
-                "Primary!Pass1234".into(),
-                "Duress!Pass5678".into(),
-                "Duress!Pass5678".into(),
-            ];
-            app.try_onboard();
+        app.ensure_wizard();
+        if let Some(w) = app.wizard.as_mut() {
+            // The wizard filled as a user reaching its last step would.
+            w.password = "Primary!Pass1234".into();
+            w.password_confirm = "Primary!Pass1234".into();
+            w.duress = "Duress!Pass5678".into();
+            w.duress_confirm = "Duress!Pass5678".into();
+            w.seed_sample = false;
+            w.step = crate::onboarding::STEP_CANARY;
+            app.finish_onboarding();
         } else {
             app.try_login("Primary!Pass1234".into());
+        }
+        // The derivation runs on its worker; its result lands with a frame.
+        while app.auth_job.is_some() {
+            app.build_scene(W as f64, H as f64);
+            std::thread::sleep(std::time::Duration::from_millis(15));
         }
     }
     // SHELL_OPEN_CTX=card|canvas: pop a context menu (screenshot debug). Cursor
@@ -7967,7 +9261,7 @@ pub(crate) fn run_shot(path: String) {
     // drop-target highlight renders (screenshot debug).
     if crate::dev::flag("SHELL_DRAG") && !app.cards.is_empty() {
         app.card_drag = Some(app.cards[0].id.clone());
-        let target_lane = (app.cards[0].lane + 2) % LANES;
+        let target_lane = (app.cards[0].lane + 2) % app.lanes.len().max(1);
         app.cursor = (700.0, app.cam.w2s_y(target_lane as f64 * LANE_H + LANE_H * 0.5));
     }
     // SHELL_ACTION=modify|transmit|destruct: pop a sample AI action-confirmation
@@ -8025,7 +9319,7 @@ pub(crate) fn run_shot(path: String) {
     let mut framed = Scene::new();
     framed.append(&app.scene, Some(Affine::scale(total)));
 
-    let mut context = RenderContext::new();
+    let mut context = crate::gpu::render_context();
     let dev_id = pollster::block_on(context.device(None)).expect("no compatible GPU device");
     let device = &context.devices[dev_id].device;
     let queue = &context.devices[dev_id].queue;
@@ -8145,7 +9439,7 @@ pub(crate) fn run_auth_probe() {
         let mut doc = sovereign_db::schema::Document::new("My secret note".into(), tid, true);
         doc.content = "This body must be ciphertext at rest.".into();
         let created = enc.create_document(doc).await.expect("create doc");
-        let did = created.id.as_ref().map(|t| t.to_string()).unwrap();
+        let did = created.id_string().unwrap();
 
         // 4. Read back through ENCRYPTED -> plaintext.
         let dec = enc.get_document(&did).await.expect("enc get");
@@ -8203,7 +9497,7 @@ pub(crate) fn run_chat_probe(msg: String) {
 
 #[cfg(test)]
 mod taskbar_tests {
-    use super::{avatar_hue_index, build_skill_registry, one_line, recovery_rows, LANES};
+    use super::{avatar_hue_index, build_skill_registry, one_line, recovery_rows};
 
     #[test]
     fn action_level_labels_are_distinct_and_nonempty() {
@@ -8242,10 +9536,12 @@ mod taskbar_tests {
     #[test]
     fn avatar_hue_is_stable_and_in_range() {
         // Same id -> same hue across sessions; always a valid palette index.
+        // (v0.0.12 lanes lot: the palette has 12 hues, spec N7; the lane
+        // count `LANES` it was compared with goes, N1.)
         let a = avatar_hue_index("contact:alice");
         assert_eq!(a, avatar_hue_index("contact:alice"));
-        assert!(a < LANES);
-        assert!(avatar_hue_index("") < LANES);
+        assert!(a < 12);
+        assert!(avatar_hue_index("") < 12);
     }
 
     // --- Settings -> Recovery (F1 Surface 1) -------------------------------

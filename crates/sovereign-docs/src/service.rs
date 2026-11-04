@@ -22,7 +22,7 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
-use sovereign_db::encrypted::{CommitIntegrity, EncryptedGraphDB};
+use sovereign_db::encrypted::{CommitIntegrity, EncryptedGraphDB, UndecryptableDocument};
 use sovereign_db::schema::{
     raw_to_thing, Commit, Document, DocumentPatch, DocumentSnapshot, PurgeMarker, SourceKind,
     SourceRef,
@@ -38,13 +38,18 @@ use crate::host::{
 use crate::types::{
     token_spans, AdoptionCandidate, AdoptionPreview, AdoptionReport, AdoptionSelector, AdoptionSkip,
     Duplicate, PreviewWarning, ChangeKind, CreateOutcome, DocError, DocumentChanged, DocumentSummary,
-    DocumentView, Edit, EditContent, EditSession, MacState, MigrationReport, NewContent,
+    DocId, DocumentView, Edit, EditContent, EditSession, EmptiedTrash, MacState, MigrationReport, NewContent,
     NewDocument, Origin, PastedToken, PiiOutcome, Provenance, PurgeReport, ReadOnlyReason,
     RemoteDocument, RemoteOutcome, Revision, SaveOutcome, StoredForm, TextField, TokenOccurrence,
-    TokenStatus, TrashEntry, Trust, TrustDecision, VersionInfo, VersionView, Writable,
+    TokenStatus, TrashEntry, TrashOutcome, Trust, TrustDecision, VersionInfo, VersionView, Writable,
 };
-use crate::wire::{decode_stamp, encode_stamp, Stamp};
+use crate::wire::{decode_stamp, encode_stamp, Stamp, MAX_STAMP_AHEAD_SECS};
 use crate::TRASH_RETENTION_DAYS;
+
+/// The key of the store record holding "trash since" (v0.0.12 item 3, L10):
+/// when this store's first purge tick ran with this build. One per persona's
+/// store, sealed like every store record, never synced or backed up.
+pub(crate) const TRASH_SINCE_KEY: &str = "trash_since";
 
 /// The one door to documents. Cheap to share (`Arc`); every operation is
 /// `&self` and safe to call concurrently. Writes are serialised (one write
@@ -66,6 +71,24 @@ pub struct DocumentService {
     /// readings count, never a received stamp: the bound cannot be walked
     /// forward by a peer.
     pub(crate) wall_floor: std::sync::atomic::AtomicI64,
+    /// The build the service runs under (`with_build_version`, the host's own
+    /// crate version): what the one-time conversion records and compares to
+    /// retry the documents it could not decrypt only after a version change
+    /// (v0.0.12 item 7, V3). `None`: no host said (tests, tools) — such a
+    /// service never retries.
+    pub(crate) build_version: Option<String>,
+}
+
+/// What one pass of the one-time conversion covers (v0.0.12 item 7).
+#[derive(Clone, Copy)]
+pub(crate) enum MigrationScope<'a> {
+    /// Every document (the first run, and its resumptions).
+    All,
+    /// Only these ids (a retry after a version change, V3).
+    Only(&'a HashSet<String>),
+    /// No conversion: only list the rows that cannot be decrypted (a store
+    /// whose conversion completed before they were counted).
+    ListOnly,
 }
 
 // ---------------------------------------------------------------- helpers --
@@ -274,7 +297,7 @@ fn trashed_at_of(d: &Document) -> Option<DateTime<Utc>> {
     })
 }
 
-fn rfc3339(t: DateTime<Utc>) -> String {
+pub(crate) fn rfc3339(t: DateTime<Utc>) -> String {
     t.to_rfc3339()
 }
 
@@ -418,8 +441,11 @@ pub(crate) struct Arrived {
 }
 
 /// The `last_writer` of a state the one-time migration wrote (no other writer
-/// uses it: sync writes `sync:<device>`, editors `editor:<session>`).
-pub(crate) const MIGRATION_WRITER: &str = "migration";
+/// uses it: sync writes `sync:<device>`, editors `editor:<session>`). Public
+/// for the hosts' editors (v0.0.12 item 7, V5): a stored state with this
+/// writer and the text the editor opened is its own conversion, not a change
+/// from elsewhere.
+pub const MIGRATION_WRITER: &str = "migration";
 
 /// How many stamps a document remembers of its past.
 pub(crate) const STAMP_HISTORY: usize = 32;
@@ -466,7 +492,23 @@ impl DocumentService {
             write_lock: Mutex::new(()),
             hlc: std::sync::Mutex::new(None),
             wall_floor: std::sync::atomic::AtomicI64::new(started),
+            build_version: None,
         }
+    }
+
+    /// The service running under the host's build `version` (v0.0.12 item 7,
+    /// V3): a host passes its own `env!("CARGO_PKG_VERSION")` — this crate's
+    /// version is not the build's. The one-time conversion records it with
+    /// the documents it could not decrypt, and retries them at an unlock
+    /// under another version only.
+    pub fn with_build_version(mut self, version: &str) -> Self {
+        self.build_version = Some(version.to_string());
+        self
+    }
+
+    /// The build version the host gave ([`with_build_version`](Self::with_build_version)).
+    pub fn build_version(&self) -> Option<&str> {
+        self.build_version.as_deref()
     }
 
     /// This device's clock for the bound on received stamps: the current
@@ -492,20 +534,33 @@ impl DocumentService {
     }
 
     /// The purge marker of an id, when it still applies (a revoked one —
-    /// the id came back as a differing copy, C-WIRE 10 — does not).
+    /// the id came back live with a later stamp, v0.0.12 item 3, L6 — does
+    /// not).
     pub(crate) async fn marker(&self, id: &str) -> Result<Option<PurgeMarker>, DocError> {
         Ok(self.store().get_purge_marker(id).await.map_err(store_err)?.filter(|m| !m.revoked))
     }
 
-    /// Initialises the clock from the stamps the store holds (once).
+    /// The latest `wall_ms` this device takes from a stamp it received or
+    /// read: its wall clock plus [`MAX_STAMP_AHEAD_SECS`] (v0.0.12 C1).
+    fn stamp_bound_ms(&self) -> i64 {
+        self.device_clock_ms().saturating_add(MAX_STAMP_AHEAD_SECS * 1000)
+    }
+
+    /// Initialises the clock from the stamps the store holds (once). A stored
+    /// stamp beyond the bound is skipped (v0.0.12 C3): one a v0.0.11 build
+    /// took from a peer whose clock was ahead must not start this clock ahead
+    /// again at every restart.
     pub(crate) async fn ensure_clock(&self) -> Result<(), DocError> {
         if self.hlc.lock().expect("hlc lock").is_some() {
             return Ok(());
         }
+        let bound = self.stamp_bound_ms();
         let mut max: (i64, u32) = (i64::MIN, 0);
         let mut see = |s: Option<&str>| {
             if let Some(st) = s.and_then(decode_stamp) {
-                max = max.max((st.wall_ms, st.counter));
+                if st.wall_ms <= bound {
+                    max = max.max((st.wall_ms, st.counter));
+                }
             }
         };
         for d in self.store().list_documents_including_deleted().await.map_err(store_err)? {
@@ -536,18 +591,36 @@ impl DocumentService {
         let now = self.now().timestamp_millis();
         let mut g = self.hlc.lock().expect("hlc lock");
         let (w, c) = g.unwrap_or((i64::MIN, 0));
-        let next = if now > w { (now, 0) } else { (w, c + 1) };
+        // A counter at its maximum moves to the next millisecond (v0.0.12 C4):
+        // never a wrap, never a panic under the lock.
+        let next = if now > w {
+            (now, 0)
+        } else {
+            match c.checked_add(1) {
+                Some(c) => (w, c),
+                None => (w.saturating_add(1), 0),
+            }
+        };
         *g = Some(next);
         Ok(Stamp { wall_ms: next.0, counter: next.1, device: self.deps.device.clone() })
     }
 
-    /// Advances the clock past a received stamp.
-    pub(crate) fn observe_stamp(&self, s: &Stamp) {
+    /// Advances the clock past a stamp received or read, when it is within
+    /// the bound: at most [`MAX_STAMP_AHEAD_SECS`] ahead of this device's wall
+    /// clock (`device_clock_ms`, not the logical clock). Returns whether the
+    /// stamp was taken (moved the clock, or was already covered); `false`
+    /// when it is beyond the bound and the clock did not move (v0.0.12 C1:
+    /// every caller gets the bound, none can forget it).
+    pub(crate) fn observe_stamp(&self, s: &Stamp) -> bool {
+        if s.wall_ms > self.stamp_bound_ms() {
+            return false;
+        }
         let mut g = self.hlc.lock().expect("hlc lock");
         let cur = g.unwrap_or((i64::MIN, 0));
         if (s.wall_ms, s.counter) > cur {
             *g = Some((s.wall_ms, s.counter));
         }
+        true
     }
 
     /// The stamps of a local write replacing `d`'s state.
@@ -1184,13 +1257,21 @@ impl DocumentService {
     }
 
     /// A commit of document `id`, with its integrity; refused when it is not
-    /// one of the document's.
+    /// one of the document's. An id that does not parse as a commit id
+    /// (`commit:<key>`, raw) is refused as malformed, apart from a well-formed
+    /// id that is not found (v0.0.12 H2: the History bug read as "no such
+    /// version" for every row).
     async fn version_of(&self, id: &str, commit_id: &str) -> Result<(Commit, CommitIntegrity), DocError> {
+        const MALFORMED: &str = "the version id is malformed";
         let refused = |reason: &str| DocError::VersionRefused { commit_id: commit_id.to_string(), reason: reason.to_string() };
+        if raw_to_thing(commit_id).is_none_or(|t| t.tb != "commit") {
+            return Err(refused(MALFORMED));
+        }
         match self.store().get_commit_checked(commit_id).await {
             Ok((c, _)) if c.document_id != id => Err(refused("the version belongs to another document")),
             Ok(found) => Ok(found),
-            Err(DbError::NotFound(_)) | Err(DbError::InvalidId(_)) => Err(refused("no such version")),
+            Err(DbError::NotFound(_)) => Err(refused("no such version")),
+            Err(DbError::InvalidId(_)) => Err(refused(MALFORMED)),
             Err(e) => Err(store_err(e)),
         }
     }
@@ -1266,23 +1347,29 @@ impl DocumentService {
     /// links and personal-data sources are kept; the document leaves every
     /// list, and its suggested links leave the pending suggestions, until it is
     /// restored or purged.
-    pub async fn trash(&self, id: &str) -> Result<(), DocError> {
+    ///
+    /// Says what it did (v0.0.12 item 9, T3): a document already in the trash
+    /// (deleted here earlier, or by a peer whose deletion arrived) is left as
+    /// it is — no write, no event — and answers
+    /// [`TrashOutcome::AlreadyInTrash`], so no host offers to undo a deletion
+    /// this call did not make.
+    pub async fn trash(&self, id: &str) -> Result<TrashOutcome, DocError> {
         let _w = self.write_lock.lock().await;
         self.trash_locked(id).await
     }
 
     /// [`DocumentService::trash`], for a caller already holding the write
     /// lock (the S5-12 resolutions, which check and write under one lock).
-    pub(crate) async fn trash_locked(&self, id: &str) -> Result<(), DocError> {
+    pub(crate) async fn trash_locked(&self, id: &str) -> Result<TrashOutcome, DocError> {
         let d = self.load(id).await?;
         if d.deleted_at.is_some() {
-            return Ok(());
+            return Ok(TrashOutcome::AlreadyInTrash);
         }
         let mut patch = DocumentPatch { deleted_at: Some(Some(rfc3339(self.now()))), ..Default::default() };
         self.stamp_local(&d, &mut patch).await?;
         self.store().update_document_fields(id, patch).await.map_err(store_err)?;
         self.emit(id, ChangeKind::Trashed);
-        Ok(())
+        Ok(TrashOutcome::Trashed)
     }
 
     /// Brings a document back from the trash, exactly as it was (G12).
@@ -1336,7 +1423,40 @@ impl DocumentService {
         Ok(entries)
     }
 
-    /// Empties the trash: purges every trashed document now (G12).
+    /// Empties the trash as it was shown (v0.0.12 item 9, T1): purges those
+    /// of `shown` (the ids the trash view listed when it was drawn) that are
+    /// still in the trash, under one write lock. A document that entered the
+    /// trash after the view was drawn is not in `shown`, so it stays; a shown
+    /// one no longer in the trash (restored, or purged meanwhile, here or
+    /// elsewhere) is left alone and listed in `skipped`. What a purge removes
+    /// is [`DocumentService::empty_trash`]'s.
+    pub async fn empty_trash_of(&self, shown: &[DocId]) -> Result<EmptiedTrash, DocError> {
+        let _w = self.write_lock.lock().await;
+        let mut out = EmptiedTrash::default();
+        let mut seen: HashSet<&str> = HashSet::new();
+        for id in shown {
+            if !seen.insert(id.as_str()) {
+                continue;
+            }
+            // `load` answers `Purged` for a trashed row under a live marker
+            // (being purged), `NotFound` for a row gone: neither is in the trash.
+            let in_trash = match self.load(id).await {
+                Ok(d) => d.deleted_at.is_some(),
+                Err(DocError::NotFound(_)) | Err(DocError::Purged(_)) => false,
+                Err(e) => return Err(e),
+            };
+            if in_trash {
+                self.purge_one(id, &mut out.purged).await?;
+            } else {
+                out.skipped.push(id.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// Empties the trash: purges every trashed document now (G12). No view
+    /// calls it any more (v0.0.12 item 9: a view empties what it showed,
+    /// [`DocumentService::empty_trash_of`]).
     pub async fn empty_trash(&self) -> Result<PurgeReport, DocError> {
         let _w = self.write_lock.lock().await;
         let mut report = PurgeReport::default();
@@ -1360,19 +1480,66 @@ impl DocumentService {
         Ok(report)
     }
 
-    /// Purges what has been in the trash for 30 days or more by the clock.
-    /// Run periodically by every host.
+    /// Purges what has been in the trash for 30 days or more by this device's
+    /// clock, counted from the local trash date (v0.0.12 item 3, L8) floored by
+    /// "trash since" (L10). Run periodically by every host, and at unlock.
+    ///
+    /// The first run on a store records "trash since" (when this build
+    /// started counting); a document whose trash date is earlier is purged 30
+    /// days after it, never before. So nothing soft-deleted before an upgrade,
+    /// and never shown in a trash, is purged at the first unlock (finding 14).
+    /// It also erases any fingerprint a v0.0.11 marker still holds (L12).
     pub async fn purge_expired(&self) -> Result<PurgeReport, DocError> {
         let _w = self.write_lock.lock().await;
         let mut report = PurgeReport::default();
+        self.erase_marker_fingerprints_locked().await?;
         self.finish_interrupted_purges(&mut report).await?;
-        let cutoff = self.now() - Duration::days(TRASH_RETENTION_DAYS);
+        let now = self.now();
+        let since = match self.trash_since().await? {
+            Some(t) => t,
+            None => {
+                self.store().put_store_record(TRASH_SINCE_KEY, &rfc3339(now)).await.map_err(store_err)?;
+                now
+            }
+        };
+        let cutoff = now - Duration::days(TRASH_RETENTION_DAYS);
         for d in self.trashed().await? {
-            if trashed_at_of(&d).is_some_and(|t| t <= cutoff) {
+            if trashed_at_of(&d).is_some_and(|t| t.max(since) <= cutoff) {
                 self.purge_one(&d.id_string().unwrap_or_default(), &mut report).await?;
             }
         }
         Ok(report)
+    }
+
+    /// When this store's first purge tick ran with this build ("trash since",
+    /// v0.0.12 item 3, L10): the floor of every trash date before it, for the
+    /// purge and for the days shown. `None` until the first tick. A record
+    /// that cannot be read reads as absent, and the next tick records a later
+    /// time: the floor only ever moves the purge later, never earlier.
+    pub async fn trash_since(&self) -> Result<Option<DateTime<Utc>>, DocError> {
+        let raw = self.store().get_store_record(TRASH_SINCE_KEY).await.map_err(store_err)?;
+        Ok(raw.and_then(|s| DateTime::parse_from_rfc3339(&s).ok()).map(|t| t.with_timezone(&Utc)))
+    }
+
+    /// Erases the fingerprint of every stored purge marker (v0.0.12 item 3,
+    /// L12; review of v0.0.11, finding 13): a marker holds an id, times and a
+    /// stamp only. Run at every unlock (the one-time migration's seam and the
+    /// purge tick) and before the manifest reads the markers, so a store left
+    /// by v0.0.11 holds none by the first sync. Returns how many it erased.
+    pub async fn erase_marker_fingerprints(&self) -> Result<usize, DocError> {
+        let _w = self.write_lock.lock().await;
+        self.erase_marker_fingerprints_locked().await
+    }
+
+    pub(crate) async fn erase_marker_fingerprints_locked(&self) -> Result<usize, DocError> {
+        let mut n = 0;
+        for m in self.store().list_purge_markers().await.map_err(store_err)? {
+            if m.fingerprint.is_some() {
+                self.store().set_purge_marker(PurgeMarker { fingerprint: None, ..m }).await.map_err(store_err)?;
+                n += 1;
+            }
+        }
+        Ok(n)
     }
 
     /// Whether a document id was purged here. Sync never brings it back.
@@ -1397,29 +1564,23 @@ impl DocumentService {
     /// interruption is resumed), then everything hanging off it, then the
     /// row, then its key; the marker is completed last. Every step is
     /// idempotent.
+    ///
+    /// A purge is local (v0.0.12 item 3, L1–L2): the marker it leaves is the
+    /// deletion — the document's id and the stamp of the trashed state being
+    /// purged (its current stamp), never a stamp taken at purge time, and no
+    /// fingerprint, title or content. That marker travels as a deletion only.
+    /// An interrupted purge resumed here keeps its marker's times and stamp.
     pub(crate) async fn purge_one(&self, id: &str, report: &mut PurgeReport) -> Result<(), DocError> {
-        self.purge_one_as(id, None, report).await
-    }
-
-    /// Purges one document, recording the marker's stamp and the purged
-    /// version's fingerprint (C-WIRE 10) — the received ones when a peer's
-    /// marker purges it here, else a new stamp and this copy's fingerprint.
-    pub(crate) async fn purge_one_as(
-        &self,
-        id: &str,
-        received: Option<(Stamp, String)>,
-        report: &mut PurgeReport,
-    ) -> Result<(), DocError> {
         let store = self.store();
-        let (purged_at, stamp, fingerprint) = match (self.marker(id).await?, received) {
-            (Some(m), _) => (m.purged_at, m.stamp, m.fingerprint),
-            (None, Some((st, fp))) => (self.now(), Some(encode_stamp(&st)), Some(fp)),
-            (None, None) => {
-                let fp = match store.get_document(id).await {
-                    Ok(d) => Some(crate::wire::purge_fingerprint(id, &d.title, &d.content)),
-                    Err(_) => None,
+        let (purged_at, stamp) = match self.marker(id).await? {
+            Some(m) => (m.purged_at, m.stamp),
+            None => {
+                let stamp = match store.get_document(id).await {
+                    Ok(d) => Some(encode_stamp(&current_stamp_of(&d, &self.deps.device))),
+                    Err(DbError::NotFound(_)) | Err(DbError::InvalidId(_)) => None,
+                    Err(e) => return Err(store_err(e)),
                 };
-                (self.now(), Some(encode_stamp(&self.next_stamp().await?)), fp)
+                (self.now(), stamp)
             }
         };
         let marker = |complete| PurgeMarker {
@@ -1428,7 +1589,7 @@ impl DocumentService {
             purged_at,
             complete,
             stamp: stamp.clone(),
-            fingerprint: fingerprint.clone(),
+            fingerprint: None,
             revoked: false,
         };
         store.set_purge_marker(marker(false)).await.map_err(store_err)?;
@@ -1591,8 +1752,10 @@ impl DocumentService {
             other => self.scan_mark(other, &mut extra),
         }
         if remote_trashed && !local_trashed {
-            let when = remote.deleted_at.unwrap_or_else(|| self.now());
-            extra.deleted_at = Some(Some(rfc3339(when)));
+            // Trash entry is local (v0.0.12 item 3, L8): dated by this
+            // device's clock, whatever date the peer sent, so the 30 days run
+            // on this device's own clock (finding 3).
+            extra.deleted_at = Some(Some(rfc3339(self.now())));
         } else if !remote_trashed && local_trashed {
             extra.deleted_at = Some(None);
         }
@@ -1684,7 +1847,9 @@ impl DocumentService {
         row.provenance_kind = pk;
         row.provenance_detail = pd;
         row.pii_scanned_at = matches!(pii, PiiOutcome::Scanned).then_some(self.now());
-        row.deleted_at = remote.deleted_at.map(rfc3339);
+        // Arriving already in the sender's trash (or restored in the trash
+        // from a backup): it enters this device's trash now (L8, L13).
+        row.deleted_at = remote.deleted_at.map(|_| rfc3339(self.now()));
         row.write_seq = 1;
         row.last_writer = Some(format!("sync:{}", remote.device));
         let mut p = DocumentPatch::default();
@@ -1708,8 +1873,25 @@ impl DocumentService {
     /// newer-format and unreadable documents are left untouched; trashed
     /// documents are migrated too and stay trashed. Idempotent. Changes no
     /// title, trust, provenance, thread or time, and runs no ingest.
+    ///
+    /// v0.0.12 item 7: the rows that exist but cannot be decrypted are listed
+    /// in `undecryptable` and left exactly as they are (V1); the write lock is
+    /// taken **per document**, not for the whole run, so a save, a trash or a
+    /// create issued meanwhile waits at most for one document's conversion
+    /// (V4). Each document is re-read under the lock before it is converted:
+    /// a write that landed since the listing is what gets converted, or, if
+    /// it already converted the document, nothing is (G3).
     pub async fn migrate_all(&self) -> Result<MigrationReport, DocError> {
-        let _w = self.write_lock.lock().await;
+        Ok(self.migration_pass(MigrationScope::All).await?.0)
+    }
+
+    /// One pass of the one-time conversion over `scope`, with the dates of
+    /// the undecryptable rows it found (what the completion record lists and
+    /// the Alerts window shows, v0.0.12 item 7, V2).
+    pub(crate) async fn migration_pass(
+        &self,
+        scope: MigrationScope<'_>,
+    ) -> Result<(MigrationReport, Vec<UndecryptableDocument>), DocError> {
         let mut report = MigrationReport::default();
         let purging: HashSet<String> = self
             .store()
@@ -1720,10 +1902,26 @@ impl DocumentService {
             .filter(|m| !m.revoked)
             .map(|m| m.document_id)
             .collect();
-        let docs = self.store().list_documents_including_deleted().await.map_err(store_err)?;
+        let (docs, undecryptable) =
+            self.store().list_documents_including_deleted_and_undecryptable().await.map_err(store_err)?;
+        let in_scope = |id: &str| match scope {
+            MigrationScope::All | MigrationScope::ListOnly => true,
+            MigrationScope::Only(ids) => ids.contains(id),
+        };
+        let mut listed = Vec::new();
+        for u in undecryptable {
+            if u.id.is_empty() || purging.contains(&u.id) || !in_scope(&u.id) {
+                continue;
+            }
+            report.undecryptable.push(u.id.clone());
+            listed.push(u);
+        }
+        if matches!(scope, MigrationScope::ListOnly) {
+            return Ok((report, listed));
+        }
         for d in docs {
             let Some(id) = d.id_string() else { continue };
-            if purging.contains(&id) {
+            if purging.contains(&id) || !in_scope(&id) {
                 continue;
             }
             match DocumentV2::read_seeded(&d.content, &id) {
@@ -1738,37 +1936,74 @@ impl DocumentService {
                     report.unreadable.push(id.clone());
                     report.read_only.push(id);
                 }
-                Ok((mut doc, _legacy)) => {
-                    self.fill_media_hashes(&mut doc);
-                    let w = Write {
-                        title: d.title.clone(),
-                        content: doc.to_json_string(),
-                        writer: MIGRATION_WRITER.into(),
-                        same_session: false,
-                        prior_message: "Before migration to format v2".into(),
-                        result: ResultVersion::Never,
-                        // No time, title, trust or thread changes: the
-                        // timeline does not move.
-                        extra: DocumentPatch::default(),
-                        thread_id: d.thread_id.clone(),
-                        // The migration changes the stored form, not the
-                        // state: its stamps stay as they are (C-WIRE 3) —
-                        // a row never stamped stays unstamped.
-                        stamping: None,
-                        keep_stamps: true,
-                        keep_prior_as_concurrent: None,
-                    };
-                    match self.apply_write(&id, &d, w).await {
-                        Ok(_) => {
-                            self.emit(&id, ChangeKind::Migrated);
-                            report.migrated.push(id);
-                        }
-                        Err(e) => report.failed.push((id, e.to_string())),
-                    }
-                }
+                Ok(_) => self.convert_one(&id, &mut report).await,
             }
         }
-        Ok(report)
+        Ok((report, listed))
+    }
+
+    /// Converts one legacy document under the write lock, taken for it alone
+    /// (v0.0.12 item 7, V4). The row is read again under the lock: what the
+    /// listing saw may have been saved, trashed or purged since.
+    async fn convert_one(&self, id: &str, report: &mut MigrationReport) {
+        let _w = self.write_lock.lock().await;
+        let d = match self.store().get_document(id).await {
+            Ok(d) => d,
+            // Purged (or otherwise gone) since the listing: nothing to convert.
+            Err(DbError::NotFound(_)) | Err(DbError::InvalidId(_)) => return,
+            // A store failure (or a row that stopped decrypting since the
+            // listing): an interruption, retried at the next unlock (M3).
+            Err(e) => {
+                report.failed.push((id.to_string(), store_err(e).to_string()));
+                return;
+            }
+        };
+        let mut doc = match DocumentV2::read_seeded(&d.content, id) {
+            Ok((_, SourceForm::V2)) => {
+                // A write converted it since the listing (G3: not counted).
+                report.already_v2 += 1;
+                if d.last_writer.as_deref() == Some(MIGRATION_WRITER) {
+                    report.previously_migrated.push(id.to_string());
+                }
+                return;
+            }
+            Ok((_, SourceForm::NewerVersion { .. })) => {
+                report.read_only.push(id.to_string());
+                return;
+            }
+            Err(_) => {
+                report.unreadable.push(id.to_string());
+                report.read_only.push(id.to_string());
+                return;
+            }
+            Ok((doc, _legacy)) => doc,
+        };
+        self.fill_media_hashes(&mut doc);
+        let w = Write {
+            title: d.title.clone(),
+            content: doc.to_json_string(),
+            writer: MIGRATION_WRITER.into(),
+            same_session: false,
+            prior_message: "Before migration to format v2".into(),
+            result: ResultVersion::Never,
+            // No time, title, trust or thread changes: the
+            // timeline does not move.
+            extra: DocumentPatch::default(),
+            thread_id: d.thread_id.clone(),
+            // The migration changes the stored form, not the
+            // state: its stamps stay as they are (C-WIRE 3) —
+            // a row never stamped stays unstamped.
+            stamping: None,
+            keep_stamps: true,
+            keep_prior_as_concurrent: None,
+        };
+        match self.apply_write(id, &d, w).await {
+            Ok(_) => {
+                self.emit(id, ChangeKind::Migrated);
+                report.migrated.push(id.to_string());
+            }
+            Err(e) => report.failed.push((id.to_string(), e.to_string())),
+        }
     }
 
     // ------------------------------------------------ duplicate (G20) --

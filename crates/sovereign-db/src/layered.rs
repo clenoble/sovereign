@@ -94,6 +94,8 @@ impl GraphDB for ArcWrapper {
     async fn set_document_pinned(&self, id: &str, pinned: bool) -> DbResult<()> { self.0.set_document_pinned(id, pinned).await }
     async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>> { self.0.search_documents_by_title(query).await }
     async fn search_documents_by_title_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Document>> { self.0.search_documents_by_title_token_hashes(hashes).await }
+    async fn document_title_candidates(&self, title: &str) -> DbResult<Vec<Document>> { self.0.document_title_candidates(title).await }
+    async fn document_title_candidates_by_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Document>> { self.0.document_title_candidates_by_token_hashes(hashes).await }
     async fn set_document_title_encryption(&self, id: &str, title_ciphertext: &str, title_nonce: &str, title_token_hashes: &[String]) -> DbResult<()> {
         self.0.set_document_title_encryption(id, title_ciphertext, title_nonce, title_token_hashes).await
     }
@@ -120,6 +122,8 @@ impl GraphDB for ArcWrapper {
     async fn delete_thread(&self, id: &str) -> DbResult<()> { self.0.delete_thread(id).await }
     async fn find_thread_by_name(&self, name: &str) -> DbResult<Option<Thread>> { self.0.find_thread_by_name(name).await }
     async fn find_thread_by_name_token_hashes(&self, hashes: &[String]) -> DbResult<Option<Thread>> { self.0.find_thread_by_name_token_hashes(hashes).await }
+    async fn thread_name_candidates(&self, name: &str) -> DbResult<Vec<Thread>> { self.0.thread_name_candidates(name).await }
+    async fn thread_name_candidates_by_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Thread>> { self.0.thread_name_candidates_by_token_hashes(hashes).await }
     async fn set_thread_encryption(&self, id: &str, name_ciphertext: &str, name_nonce: &str, description_ciphertext: &str, description_nonce: &str, name_token_hashes: &[String]) -> DbResult<()> {
         self.0.set_thread_encryption(id, name_ciphertext, name_nonce, description_ciphertext, description_nonce, name_token_hashes).await
     }
@@ -278,6 +282,8 @@ impl GraphDB for LayeredGraphDB {
     async fn set_document_pinned(&self, id: &str, pinned: bool) -> DbResult<()> { self.current().set_document_pinned(id, pinned).await }
     async fn search_documents_by_title(&self, query: &str) -> DbResult<Vec<Document>> { self.current().search_documents_by_title(query).await }
     async fn search_documents_by_title_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Document>> { self.current().search_documents_by_title_token_hashes(hashes).await }
+    async fn document_title_candidates(&self, title: &str) -> DbResult<Vec<Document>> { self.current().document_title_candidates(title).await }
+    async fn document_title_candidates_by_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Document>> { self.current().document_title_candidates_by_token_hashes(hashes).await }
     async fn set_document_title_encryption(&self, id: &str, title_ciphertext: &str, title_nonce: &str, title_token_hashes: &[String]) -> DbResult<()> {
         self.current().set_document_title_encryption(id, title_ciphertext, title_nonce, title_token_hashes).await
     }
@@ -304,6 +310,8 @@ impl GraphDB for LayeredGraphDB {
     async fn delete_thread(&self, id: &str) -> DbResult<()> { self.current().delete_thread(id).await }
     async fn find_thread_by_name(&self, name: &str) -> DbResult<Option<Thread>> { self.current().find_thread_by_name(name).await }
     async fn find_thread_by_name_token_hashes(&self, hashes: &[String]) -> DbResult<Option<Thread>> { self.current().find_thread_by_name_token_hashes(hashes).await }
+    async fn thread_name_candidates(&self, name: &str) -> DbResult<Vec<Thread>> { self.current().thread_name_candidates(name).await }
+    async fn thread_name_candidates_by_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Thread>> { self.current().thread_name_candidates_by_token_hashes(hashes).await }
     async fn set_thread_encryption(&self, id: &str, name_ciphertext: &str, name_nonce: &str, description_ciphertext: &str, description_nonce: &str, name_token_hashes: &[String]) -> DbResult<()> {
         self.current().set_thread_encryption(id, name_ciphertext, name_nonce, description_ciphertext, description_nonce, name_token_hashes).await
     }

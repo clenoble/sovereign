@@ -198,6 +198,37 @@ record exists.
   once, in the background, at the first unlock after the update; when it is done a notice says how
   many documents were converted and that each one's earlier state is in its History. Until then a
   document is converted at its next write. Then the tolerant read is removed (adoption step 6).
+- **What the migration cannot read, and saves during it — v0.0.12 item 7** (Céline, 2026-10-24:
+  count them, list them, retry only after a version change):
+  - A document row that exists but cannot be decrypted is **counted** in the notice and **left as
+    it was**; nothing about it changes.
+  - The desktop's Alerts window **lists** each one under "Documents that could not be read": a
+    short id (the first 8 characters of its key) and its last modified date, "(in the trash)"
+    where it applies, never a title. The status line says how many and that they are in Alerts.
+  - **The Tauri app lists them too** (V2b, built: `doc/plans/V0012-item7-v2b-app-list.md`, merged
+    `9f99b7f`, 2026-10-25; PANDA2's contract, the laptop's second position). The heading, the line
+    "Each one is kept as it was, untouched. Sovereign will try to read it again after its next
+    update." and each document's line (short id, "(in the trash)", last modified date in local
+    time) are worded in one place, in `sovereign-docs`, and both hosts use them; the shell's text
+    is unchanged. The app's Alerts dialog (phone and Tauri desktop) shows them below the orphans:
+    a heading, the meaning line, and a list labelled by the heading, with nothing to act on. While
+    any remain, the dialog's notice bar says "1 document could not be read" (or "N documents…")
+    as a status, with a button that opens the dialog (PANDA2's choice); it is not the one-time
+    migration notice, and it stays while any remain. The list is loaded with the other alerts and
+    again when a migration ends. A locked session's request is refused and the app shows an empty
+    list, so one persona's list never shows under the other; the app has no lock signal yet, so a
+    store change empties the list at the next reload (backlog). The dialog stays open while this
+    list is the only thing in it.
+  - The migration's record keeps the build version that ran and the ids it could not read. Only an
+    unlock under a **different** build version tries them again; a row that now decrypts is
+    converted like any other and leaves the list. A store whose migration completed under v0.0.11
+    is listed at its first unlock under v0.0.12, without converting readable rows that arrived
+    since.
+  - The migration takes the write lock **per document**, not for its whole run, so a save, a trash
+    or a create waits for at most one document's conversion.
+  - An editor holding the document gets no "changed elsewhere" from its own conversion: it takes
+    the converted form silently when the row was last written by the migration and its plain text
+    equals what the editor opened; any other change still warns.
 - The block schemas are specified below, in *Document format v2 — blocks*.
 
 What follows describes the forms in use up to v0.0.10.
@@ -571,7 +602,12 @@ history is never rewritten, and the restore itself can be undone. Restore does n
 membership or deletion state. Under the encrypted layer, restore also refuses a snapshot that
 predates nonce-carrying commits when the live row is encrypted, since it could not be decrypted.
 Restore is reachable from the History window (native shell), the orchestrator's `restore`
-intent, and peer review's one-click restore (ch. 05). The frozen Tauri desktop build also has a
+intent, and peer review's one-click restore (ch. 05). In the native shell the History rows come
+from the document service, with the store's own version ids; a row whose integrity check fails
+says so ("can't be verified"), a history that cannot be read opens no window and says so, and a
+malformed version id is refused as such, not as "no such version". *(v0.0.11 failed on every row:
+the rows carried SurrealDB's display form of the id, which quotes the reserved table name
+`commit`; fixed in v0.0.12 lot 1, tested through the shell's own path.)* The frozen Tauri desktop build also has a
 history panel.
 
 ### Auto-commit policy
@@ -656,6 +692,34 @@ trash is reached from **Settings**. A document comes back from the trash into it
 thread was deleted, the user chooses the thread it goes to (to "bring back" a thread, create a
 new one and assign the documents to it from the trash).
 
+**Actions act on what was shown — built in v0.0.12** (item 9; the cloud review of v0.0.11, R15
+and R20; `doc/plans/V0012-item9-act-on-what-was-shown.md`, merged `f879443`, 2026-10-25). A peer's
+deletion or a synced document can change the trash or an orphan group between the moment a list
+is drawn and the moment the person confirms; until v0.0.11 the confirm re-listed and so acted on
+documents nobody had seen. The choices marked PANDA2's were made by the PANDA2 maille on
+2026-10-24.
+- **Empty trash empties what was shown**, on the desktop and on the phone. The confirm carries the
+  ids the trash view listed, and the service (`empty_trash_of`) purges exactly those still in the
+  trash. A document that entered the trash after the view was drawn stays, and the next view lists
+  it; a shown document no longer in the trash (restored or purged meanwhile, here or elsewhere) is
+  left alone. The report counts what was purged, and the message names the skipped ones in
+  neutral words: "1 document was no longer in the trash and was left alone." (PANDA2's choice).
+  The 30-day purge still purges by date, not by a view.
+- **An orphan group's action acts on the documents shown** (a document that arrived for a thread
+  deleted here, *Thread deletion*): "Move all to a thread…", "All in a new thread…" and "Trash all"
+  apply to the ids the group listed, those still waiting (`resolve_orphans_shown`). A document
+  that joined the group after is left waiting and listed at the next refresh. The result says how
+  many were acted on; when none of the shown is still waiting, nothing is changed, no thread is
+  created, and it says so (PANDA2's choice: zero, not a refusal). Desktop and phone.
+- **Delete says what it did.** `trash` tells "moved to the trash" from "was already in the trash".
+  In the second case the desktop and the phone say "Already in the trash", with no Undo; an Undo
+  restores only a deletion this Delete made, never one another device made.
+- **"Restore into…" offers every thread** (desktop): every live thread, in the lanes' order, in a
+  list that scrolls by wheel and by keyboard (Up, Down, Page Up, Page Down, Home, End); Enter
+  restores into the selected thread, Escape cancels. For a screen reader it is a list, each thread
+  an option named by its name, with the selection exposed. The same for "Restore all into a
+  thread…". Until v0.0.11 it showed at most 8 threads, with no scrolling.
+
 - The orchestrator has no document-delete intent: `delete_document` is graded Destruct in the
   action gate, but no handler acts on it [by code reading].
 
@@ -723,6 +787,9 @@ commit)` · `trash(id)` · `restore_from_trash(id)` · `list_trash()` · `empty_
 `purge_from_trash(id)` **[choice]** · `purge_expired()` · `is_purged(id)` ·
 `apply_remote(RemoteDocument)` · `migrate_all()` · and, specified 2026-10-15 (G20–G22):
 `duplicate(Duplicate)` · `preview_adoption(AdoptionSelector)` · `apply_adoption(&preview)`.
+Since v0.0.12 (item 9, *Deletion*): `trash(id)` returns whether it moved the document or found
+it already in the trash; `empty_trash_of(shown)` purges the shown ids still in the trash and
+reports the skipped ones; `empty_trash()` is called by no UI.
 
 An **edit** carries the revision it was read at, an optional title, optional content — the
 whole v2 document (the editor), new text for given text blocks, or plain text (accepted only
@@ -832,10 +899,12 @@ the service **[choice]**.
     source references — and a discovered record left with no source; a vault entry is never
     removed by a purge. What remains is a **purge marker carrying no content** (decided
     2026-10-11), so a purged document is never listed, read, restored, or brought back by sync —
-    **with one exception (decided by Céline, 2026-10-15; ch. 05, C-WIRE): a paired device's copy
-    that differs from the purged version comes back as a new arrival**; the marker carries the
-    purged version's fingerprint for that (C-WIRE *Deletions and purges*). A purge interrupted at
-    any point completes when run again. Nothing else is touched.
+    **with one exception (decided by Céline, 2026-10-23; ch. 05, C-WIRE *Deletions and purges*): a
+    live state from a paired device with a later stamp than the deletion comes back as a new
+    arrival.** **A purge is local** (same decision, replacing that of 2026-10-15): it removes the
+    document from this device only, the 30 days run on this device's clock from the moment the
+    document entered this trash, and what travels is the deletion, never the purge. A purge
+    interrupted at any point completes when run again. Nothing else is touched.
 14. **Token links come from a Sovereign paste only** (ch. 09, *Where a token resolves*). A save
     adds the document to a record's sources only when it comes from the editor, names the record
     among its pasted tokens, the record is linked to the document the token was copied from, and
@@ -862,8 +931,8 @@ the service **[choice]**.
     Before a peer's state replaces the local one, the local state is a version; **no review flag
     is raised** (changed 2026-10-15, C-WIRE 13 — an alert only when the incoming-change analysis
     detects something, G31); a peer's tombstone moves the document to the trash, restorably; a
-    live peer state brings a trashed document back; a purged id is ignored (by fingerprint with
-    `apply_wire`, G27); a state equal to the local one changes nothing. Legacy content from an
+    live peer state brings a trashed document back; a purged id is ignored unless a live state
+    with a later stamp arrives (G27, as amended 2026-10-23); a state equal to the local one changes nothing. Legacy content from an
     older peer is stored as v2, newer-format content verbatim (read-only). Sync moves to
     `apply_wire` (G24–G31); `apply_remote` keeps these rules for other callers.
 
@@ -951,17 +1020,19 @@ and `purge_fingerprint(id, title, content)`.
     while the local state changed since, is concurrent: the greater stamp is current, the other is
     kept as a version (a remote state with the lower stamp is stored as a version without becoming
     current), and the outcome says it was concurrent.
-27. **Purge markers.** A purge leaves a marker — id, stamp, fingerprint of the purged version,
-    never its content. A received marker purges this device's copy only if it has the same
-    fingerprint, live or in the trash, whatever its trust; a differing copy is kept. A purged id
-    ignores a state with the purged fingerprint and comes back, as a new arrival with its own first
-    version, from a state that differs (the exception to G13). A device without the document records
-    the marker.
-28. **Normalised hash and fingerprint.** The hash covers title, thread, trash state, trust, trust
+27. **Purge markers** *(amended 2026-10-23, Céline: purges are local; built in v0.0.12 item 3)*. A
+    purge leaves a local marker — id and deletion stamp, no fingerprint, never content. It travels
+    as a deletion only: a peer's live copy with an earlier stamp goes to that peer's trash, a
+    trashed copy stays there; no peer copy is purged. A purged id ignores a peer's trashed copy and
+    any earlier live state, and comes back, live, as a new arrival with its own first version, from
+    a live state with a later stamp (the exception to G13). The 30 days run on each device's clock
+    from the moment the document entered its trash.
+28. **Normalised hash.** The hash covers title, thread, trash state, trust, trust
     decision, provenance and the content as v2 (legacy forms converted, seeded by the document id):
     equal for two copies of one document whatever form each stores, different when any of these
-    differs, independent of the sending device and the modification time. The fingerprint covers
-    title and content only. Both are lowercase hex and never contain the text.
+    differs, independent of the sending device and the modification time. It is lowercase hex and
+    never contains the text. *(The purge fingerprint this guarantee also described is gone since
+    v0.0.12 item 3: purges are local, and a marker holds no fingerprint.)*
 29. **The stored state, for sending.** `stored_state` gives everything that defines a document
     without the caller reading `content`; applied on a device without the document it reproduces
     it (same hash, trust, decision, provenance, creation time, copies included). Trashed documents

@@ -15,7 +15,7 @@ use vello::Scene;
 
 use sovereign_core::profile::BubbleStyle;
 
-use crate::panels::{bubble_style_color, draw_bubble_style};
+use crate::panels::{bubble_style_color, draw_bubble_style, A11yItem};
 use crate::text::{draw_text, Brush, TextShaper};
 use crate::theme::pal;
 
@@ -31,6 +31,13 @@ pub(crate) const STEP_SAMPLE: usize = 4;
 pub(crate) const STEP_PASSWORD: usize = 5;
 pub(crate) const STEP_DURESS: usize = 6;
 pub(crate) const STEP_CANARY: usize = 7;
+
+/// The nickname step's field holding this device's name (v0.0.12 item 19, N2).
+pub(crate) const DEVICE_NAME_FIELD: usize = 1;
+
+/// The duress step's refusal of a duress password equal to the main one: the
+/// wizard's own check, and the store's (P4) after a Back changed the main one.
+pub(crate) const DURESS_EQUALS_MAIN: &str = "Duress password must differ from your password.";
 
 /// What a click resolved to — the App acts on it (advance, finish, hand off to
 /// join, mutate a field, …). Keeps the App ↔ wizard boundary explicit.
@@ -53,6 +60,9 @@ pub(crate) struct OnboardingWizard {
     pub(crate) step: usize,
     pub(crate) designation: String,
     pub(crate) nickname: String,
+    /// This device's name (v0.0.12 item 19, N2): the nickname step's second
+    /// field, prefilled with the computer's name; saved with the setup.
+    pub(crate) device_name: String,
     pub(crate) bubble: BubbleStyle,
     pub(crate) theme_dark: bool,
     pub(crate) seed_sample: bool,
@@ -73,6 +83,7 @@ impl OnboardingWizard {
             step: STEP_WELCOME,
             designation,
             nickname: String::new(),
+            device_name: crate::device_name::host_name(),
             bubble: BubbleStyle::all()[0],
             theme_dark,
             seed_sample: true,
@@ -91,20 +102,22 @@ impl OnboardingWizard {
     /// Number of editable text fields on the current step.
     pub(crate) fn field_count(&self) -> usize {
         match self.step {
-            STEP_NICKNAME => 1,
+            STEP_NICKNAME => 2,
             STEP_PASSWORD | STEP_DURESS | STEP_CANARY => 2,
             _ => 0,
         }
     }
 
-    /// Whether field `idx` on this step renders masked (secrets).
+    /// Whether field `idx` on this step renders masked (secrets). The canary
+    /// phrase is a secret too, entered like a password (v0.0.12, K1–K2).
     fn field_masked(&self, _idx: usize) -> bool {
-        matches!(self.step, STEP_PASSWORD | STEP_DURESS)
+        matches!(self.step, STEP_PASSWORD | STEP_DURESS | STEP_CANARY)
     }
 
     fn field_mut(&mut self, idx: usize) -> Option<&mut String> {
         match (self.step, idx) {
             (STEP_NICKNAME, 0) => Some(&mut self.nickname),
+            (STEP_NICKNAME, 1) => Some(&mut self.device_name),
             (STEP_PASSWORD, 0) => Some(&mut self.password),
             (STEP_PASSWORD, 1) => Some(&mut self.password_confirm),
             (STEP_DURESS, 0) => Some(&mut self.duress),
@@ -118,6 +131,7 @@ impl OnboardingWizard {
     fn field_val(&self, idx: usize) -> &str {
         match (self.step, idx) {
             (STEP_NICKNAME, 0) => &self.nickname,
+            (STEP_NICKNAME, 1) => &self.device_name,
             (STEP_PASSWORD, 0) => &self.password,
             (STEP_PASSWORD, 1) => &self.password_confirm,
             (STEP_DURESS, 0) => &self.duress,
@@ -183,7 +197,7 @@ impl OnboardingWizard {
             return Err("Duress passwords don't match.".into());
         }
         if self.duress == self.password {
-            return Err("Duress password must differ from your password.".into());
+            return Err(DURESS_EQUALS_MAIN.into());
         }
         if strength_score(&self.duress) < 5 {
             return Err("Duress password needs 12+ chars with upper, lower, digit, symbol.".into());
@@ -246,11 +260,13 @@ impl OnboardingWizard {
                 // Text-field steps: focus a field or toggle reveal.
                 let rects = field_rects(card, self.field_count());
                 for (i, fr) in rects.iter().enumerate() {
-                    if fr.contains(p) {
-                        return WizAction::FocusField(i);
-                    }
+                    // The "show" button is drawn inside its field: test it
+                    // first, or the field swallows the click (K1).
                     if self.field_masked(i) && reveal_btn(*fr).contains(p) {
                         return WizAction::ToggleReveal;
+                    }
+                    if fr.contains(p) {
+                        return WizAction::FocusField(i);
                     }
                 }
             }
@@ -275,6 +291,121 @@ impl OnboardingWizard {
             };
         }
         WizAction::None
+    }
+
+    /// The accessibility items of the step on screen, in drawn order (v0.0.12
+    /// item 20, A1–A5): its title and copy, its widgets, each field named by
+    /// the label drawn above it, its error, its buttons. A masked field says
+    /// its length only, whether "show" is on or not (A3).
+    pub(crate) fn a11y_items(&self) -> Vec<A11yItem> {
+        use accesskit::Role;
+        let item = |role: Role, label: &str, value: String, focused: bool| (role, label.to_string(), value, focused);
+        let (title, body) = step_copy(self.step);
+        let mut v = vec![item(Role::Label, title, String::new(), false)];
+        if self.step > STEP_WELCOME {
+            v.push(item(Role::Label, &format!("Step {} of {}", self.step + 1, WIZ_STEPS), String::new(), false));
+        }
+        v.push(item(Role::Label, body, String::new(), false));
+        match self.step {
+            STEP_WELCOME => {
+                if !self.designation.trim().is_empty() {
+                    v.push(item(Role::Label, &format!("Your designation: {}", self.designation), String::new(), false));
+                }
+                v.push(item(Role::Button, "Set up this device", String::new(), false));
+                v.push(item(Role::Button, "Pair with an existing device", String::new(), false));
+            }
+            STEP_BUBBLE => {
+                for st in BubbleStyle::all() {
+                    let name = if *st == self.bubble { format!("{}, selected", st.label()) } else { st.label().into() };
+                    v.push(item(Role::RadioButton, &name, String::new(), false));
+                }
+            }
+            STEP_THEME => {
+                for (name, dark) in [("Dark", true), ("Light", false)] {
+                    let name = if dark == self.theme_dark { format!("{name}, selected") } else { name.into() };
+                    v.push(item(Role::RadioButton, &name, String::new(), false));
+                }
+            }
+            STEP_SAMPLE => {
+                let (state, hint) = if self.seed_sample {
+                    ("Enabled", "Sample documents, threads, and contacts will be created.")
+                } else {
+                    ("Disabled", "You'll start with a clean, empty workspace.")
+                };
+                v.push(item(Role::CheckBox, &format!("Load sample data: {state}"), String::new(), false));
+                v.push(item(Role::Label, hint, String::new(), false));
+            }
+            _ => {
+                for (i, label) in field_labels(self.step).iter().enumerate() {
+                    let val = self.field_val(i);
+                    let focused = i == self.focus;
+                    if self.field_masked(i) {
+                        // Never the text, even with "show" on: its length only.
+                        let n = val.chars().count();
+                        let len = if n == 0 { String::new() } else { format!("{n} characters") };
+                        v.push(item(Role::PasswordInput, label, len, focused));
+                    } else {
+                        v.push(item(Role::TextInput, label, val.to_string(), focused));
+                    }
+                    // N2: under this device's name, in plain words.
+                    if self.step == STEP_NICKNAME && i == DEVICE_NAME_FIELD {
+                        v.push(item(Role::Label, crate::device_name::SEEN_BY, String::new(), false));
+                    }
+                }
+                if self.step == STEP_PASSWORD && !self.password.is_empty() {
+                    let s = strength_label(strength_score(&self.password));
+                    v.push(item(Role::Label, &format!("Password strength: {s}"), String::new(), false));
+                }
+                // The wizard's single "show" toggle, named for what it reveals
+                // on this step (K2: "Show phrase" on the canary step).
+                if let Some(name) = self.a11y_show_name() {
+                    v.push(item(Role::Button, name, String::new(), false));
+                    // v0.0.12 rc2 (V0012-rc2-labels-spoken, L4): the key, heard
+                    // right after the toggle and never drawn. Not in the
+                    // toggle's own name: K1/K2 (first_run) and N5
+                    // (setup_step_announced) pin that name as it is.
+                    let what = if self.step == STEP_CANARY { "the phrase" } else { "the passwords" };
+                    v.push(item(Role::Label, &format!("{} shows or hides {what}", crate::panels::SHOW_KEY), String::new(), false));
+                }
+            }
+        }
+        if let Some(e) = self.error.as_deref().filter(|e| !e.trim().is_empty()) {
+            v.push(item(Role::Alert, e, String::new(), false));
+        }
+        if self.step > STEP_WELCOME {
+            v.push(item(Role::Button, "Back", String::new(), false));
+            if matches!(self.step, STEP_DURESS | STEP_CANARY) {
+                v.push(item(Role::Button, "Skip", String::new(), false));
+            }
+            let primary = if self.step == STEP_CANARY { "Get started" } else { "Next" };
+            v.push(item(Role::DefaultButton, primary, String::new(), false));
+        }
+        v
+    }
+
+    /// The name of the step's show/hide toggle, on the steps that draw one
+    /// (K2; v0.0.12 rc2, V0012-rc2-labels-spoken, L4: Alt+F8 and a screen
+    /// reader's Click press it).
+    pub(crate) fn a11y_show_name(&self) -> Option<&'static str> {
+        match (self.step, self.reveal) {
+            (STEP_PASSWORD | STEP_DURESS, false) => Some("Show passwords"),
+            (STEP_PASSWORD | STEP_DURESS, true) => Some("Hide passwords"),
+            (STEP_CANARY, false) => Some("Show phrase"),
+            (STEP_CANARY, true) => Some("Hide phrase"),
+            _ => None,
+        }
+    }
+
+    /// The name of the step's group in the accessibility tree: its title and,
+    /// past the welcome step, "Step N of 8" — what a screen reader says when
+    /// a step without a field opens (v0.0.12 rc2, V0012-rc2-setup-step-announced, N1).
+    pub(crate) fn a11y_name(&self) -> String {
+        let (title, _) = step_copy(self.step);
+        if self.step > STEP_WELCOME {
+            format!("{title}, Step {} of {}", self.step + 1, WIZ_STEPS)
+        } else {
+            title.to_string()
+        }
     }
 }
 
@@ -434,7 +565,16 @@ fn button(scene: &mut Scene, shaper: &mut TextShaper, r: Rect, label: &str, fg: 
     draw_text(scene, &l, Affine::translate((tx, ty)), fg.with_alpha(a));
 }
 
-pub(crate) fn draw_onboarding(scene: &mut Scene, shaper: &mut TextShaper, wiz: &OnboardingWizard, w: f64, h: f64) {
+/// `status`: the line of a derivation in flight (v0.0.12 item 18, B2), drawn
+/// in the error's place; the buttons are inert meanwhile, and drawn so.
+pub(crate) fn draw_onboarding(
+    scene: &mut Scene,
+    shaper: &mut TextShaper,
+    wiz: &OnboardingWizard,
+    status: Option<&str>,
+    w: f64,
+    h: f64,
+) {
     // Dark full-window backdrop + centered card (matches the auth screen).
     scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(15, 16, 21), None, &Rect::new(0.0, 0.0, w, h));
     let card = wiz_card(w, h);
@@ -470,23 +610,27 @@ pub(crate) fn draw_onboarding(scene: &mut Scene, shaper: &mut TextShaper, wiz: &
         _ => draw_fields(scene, shaper, wiz, card),
     }
 
-    // Error line just above the nav bar.
-    if let Some(e) = &wiz.error {
+    // Error line just above the nav bar; a derivation's status line takes it.
+    if let Some(s) = status {
+        let l = shape(shaper, s, (card.width() - 64.0) as f32, 12.0);
+        draw_text(scene, &l, Affine::translate((card.x0 + 32.0, card.y1 - 92.0)), accent);
+    } else if let Some(e) = &wiz.error {
         let l = shape(shaper, e, (card.width() - 64.0) as f32, 12.0);
         draw_text(scene, &l, Affine::translate((card.x0 + 32.0, card.y1 - 92.0)), Color::from_rgb8(220, 110, 110));
     }
 
     // Nav bar (not on Welcome — its cards are the nav).
     if wiz.step > STEP_WELCOME {
+        let idle = status.is_none();
         let nav = wiz_nav(card, wiz.step);
         if let Some(b) = nav.back {
-            button(scene, shaper, b, "Back", text, pal().surface_alt, true);
+            button(scene, shaper, b, "Back", text, pal().surface_alt, idle);
         }
         if let Some(s) = nav.skip {
-            button(scene, shaper, s, "Skip", dim, pal().surface, true);
+            button(scene, shaper, s, "Skip", dim, pal().surface, idle);
         }
         let primary_label = if wiz.step == STEP_CANARY { "Get started" } else { "Next" };
-        button(scene, shaper, nav.primary, primary_label, pal().on_accent, accent, wiz.can_advance());
+        button(scene, shaper, nav.primary, primary_label, pal().on_accent, accent, idle && wiz.can_advance());
     }
 
     scene.pop_layer();
@@ -582,14 +726,20 @@ fn draw_sample_step(scene: &mut Scene, shaper: &mut TextShaper, wiz: &Onboarding
     text_at(scene, shaper, hint, t.x0, t.y1 + 18.0, 11.5, pal().text_dim);
 }
 
-fn draw_fields(scene: &mut Scene, shaper: &mut TextShaper, wiz: &OnboardingWizard, card: Rect) {
-    let labels: &[&str] = match wiz.step {
-        STEP_NICKNAME => &["Nickname"],
+/// The labels drawn above a step's fields, in order: what they are named in
+/// the accessibility tree too (A2).
+fn field_labels(step: usize) -> &'static [&'static str] {
+    match step {
+        STEP_NICKNAME => &["Nickname", crate::device_name::FIELD_LABEL],
         STEP_PASSWORD => &["Password", "Confirm password"],
         STEP_DURESS => &["Duress password", "Confirm duress password"],
         STEP_CANARY => &["Canary phrase", "Confirm phrase"],
         _ => &[],
-    };
+    }
+}
+
+fn draw_fields(scene: &mut Scene, shaper: &mut TextShaper, wiz: &OnboardingWizard, card: Rect) {
+    let labels = field_labels(wiz.step);
     let rects = field_rects(card, wiz.field_count());
     for (i, fr) in rects.iter().enumerate() {
         if let Some(lbl) = labels.get(i) {
@@ -619,6 +769,10 @@ fn draw_fields(scene: &mut Scene, shaper: &mut TextShaper, wiz: &OnboardingWizar
             let cx = tx + l.width() as f64 + 1.0;
             scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, pal().caret, None, &Line::new(Point::new(cx, fr.y0 + 8.0), Point::new(cx, fr.y1 - 8.0)));
         }
+        // N2: under this device's name, in plain words.
+        if wiz.step == STEP_NICKNAME && i == DEVICE_NAME_FIELD {
+            text_at(scene, shaper, crate::device_name::SEEN_BY, fr.x0, fr.y1 + 6.0, 11.0, pal().text_faint);
+        }
         if wiz.field_masked(i) {
             let btn = reveal_btn(*fr);
             scene.fill(Fill::NonZero, Affine::IDENTITY, pal().surface, None, &RoundedRect::from_rect(btn, 5.0));
@@ -644,3 +798,7 @@ fn draw_fields(scene: &mut Scene, shaper: &mut TextShaper, wiz: &OnboardingWizar
         }
     }
 }
+
+#[cfg(test)]
+#[path = "onboarding_reveal_tests.rs"]
+mod reveal_tests;

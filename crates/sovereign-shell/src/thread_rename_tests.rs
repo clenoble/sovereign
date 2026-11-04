@@ -43,7 +43,7 @@ use sovereign_editor::Fonts;
 use vello::kurbo::{Point, Rect};
 use winit::keyboard::{Key as WKey, NamedKey as WNamed};
 
-use crate::canvas::{lane_label_rect, load_workspace, AXIS_H, FALLBACK_LANE_NAME, LANES, LANE_H};
+use crate::canvas::{lane_label_rect, load_workspace, AXIS_H, FALLBACK_LANE_NAME, LANE_H};
 use crate::lane_rename::{
     label_at, lane_label_nodes, lane_labels, save_thread_rename, LabelClicks, LaneLabel, LaneRename, RenameOutcome,
     RenameStep, FIELD_LABEL, LABEL_BUTTON_PREFIX,
@@ -390,23 +390,28 @@ fn r1_labels_are_the_threads_the_lanes_show() {
     });
 }
 
-// R1 with lanes shared (more threads than lanes: thread i is drawn in lane
-// i mod LANES): a lane's label renames the thread whose name it shows.
+// R1 with more threads than the 12 lanes there used to be (rewritten for the
+// v0.0.12 lanes lot, N2 "one lane per live thread, no cap" and N1 "one
+// mapping"; it was `r1_a_shared_lane_renames_the_thread_its_label_shows`,
+// which pinned 12 labels for 13 threads, a shared lane labelled by its last
+// thread): every thread has its own lane and its own label, which renames it.
 #[test]
-fn r1_a_shared_lane_renames_the_thread_its_label_shows() {
+fn r1_with_more_than_twelve_threads_each_label_renames_its_own_thread() {
     rt().block_on(async {
-        let store = testing::encrypted_memory_store("r1-shared").await;
+        let store = testing::encrypted_memory_store("r1-thirteen").await;
         let db = as_dyn(&store);
-        let names: Vec<String> = (0..=LANES).map(|i| format!("Thread {i}")).collect();
+        let names: Vec<String> = (0..13).map(|i| format!("Thread {i}")).collect();
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
         let ids = threads(&store, &refs).await;
         let labels = lane_labels(&db.list_threads().await.unwrap());
         let drawn = lane_names(&db).await;
-        assert_eq!(labels.len(), LANES, "one label per lane, not per thread: {labels:?}");
-        for l in &labels {
+        assert_eq!(labels.len(), 13, "one label per thread: {labels:?}");
+        assert_eq!(drawn.len(), 13, "one lane per thread: {drawn:?}");
+        for (i, id) in ids.iter().enumerate() {
+            let l = labels.iter().find(|l| l.thread_id == *id).unwrap_or_else(|| panic!("thread {i} has a label"));
+            assert_eq!(l.lane, i, "thread {i} is in lane {i} (creation order)");
+            assert_eq!(l.name, names[i], "the id and the name are the same thread's");
             assert_eq!(drawn[l.lane], l.name, "lane {}: the label renames the thread it shows", l.lane);
-            let i = ids.iter().position(|id| *id == l.thread_id).expect("a thread of the workspace");
-            assert_eq!(names[i], l.name, "the id and the name are the same thread's");
         }
     });
 }
@@ -734,6 +739,9 @@ fn r6_no_label_for_a_deleted_thread_nor_the_fallback_lane() {
 
         let drawn = lane_names(&db).await;
         assert!(drawn.iter().any(|n| n == FALLBACK_LANE_NAME), "the fallback lane is drawn: {drawn:?}");
+        // v0.0.12 lanes lot, N3 (added by the lot's test author): the fallback
+        // lane comes after the threads' lanes, and only it besides them.
+        assert_eq!(drawn, vec!["Keep".to_string(), FALLBACK_LANE_NAME.to_string()], "Keep's lane, then Unfiled");
         let labels = lane_labels(&db.list_threads().await.unwrap());
         assert_eq!(labels.len(), 1, "only Keep can be renamed: {labels:?}");
         assert_eq!((labels[0].thread_id.as_str(), labels[0].name.as_str()), (ids[0].as_str(), "Keep"));

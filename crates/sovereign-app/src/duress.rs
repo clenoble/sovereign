@@ -20,10 +20,25 @@ fn past_ts(max_days: i64) -> chrono::DateTime<chrono::Utc> {
     chrono::Utc::now() - chrono::Duration::minutes(mins)
 }
 
+/// The duress persona's device identity (v0.0.12 item 22, D6): the libp2p
+/// peer id of the device key `auth_store` derives for `duress_passphrase` —
+/// the persona's own, never the primary's, never a display name. For a
+/// pre-seed outside the duress login (setup, recoveries), which holds the
+/// duress passphrase but not its device key. `None` when the passphrase does
+/// not open the duress persona (then the first duress login seeds the decoy).
+pub fn duress_identity(auth_store: &sovereign_crypto::auth::AuthStore, duress_passphrase: &[u8]) -> Option<String> {
+    let auth = auth_store.authenticate(duress_passphrase).ok()?;
+    if !matches!(auth.persona, sovereign_crypto::auth::PersonaKind::Duress) {
+        return None;
+    }
+    sovereign_crypto::peer_identity::peer_id(&auth.device_key).ok()
+}
+
 /// Seed the duress persona database with plausible but innocuous data.
 /// Called when the duress password is used and the duress DB is empty.
-/// `device` is this device's name, the one the persona's document service
-/// stamps with (the decoy's thread stamps carry it, as a real workspace's do).
+/// `device` is the duress persona's device identity, its libp2p peer id (v0.0.12
+/// item 22: the one its document service stamps with; the decoy's thread
+/// stamps carry it, as a real workspace's do).
 #[allow(dead_code)]
 pub async fn seed_duress_db(db: &SurrealGraphDB, device: &str) -> Result<()> {
     let threads = db.list_threads().await?;

@@ -115,12 +115,15 @@ async fn open_primary_documents(
     if let Err(e) = crate::setup::complete_auth(auth.persona, &device_key, &kek) {
         tracing::warn!("complete_auth side-effect failed: {e}");
     }
+    // v0.0.12 item 22 (D1): the service stamps with this persona's peer id,
+    // the id its P2P node announces, never the configured display name.
+    let identity = sovereign_crypto::peer_identity::peer_id(&device_key)?;
     let raw: std::sync::Arc<dyn GraphDB> = std::sync::Arc::new(create_db(config).await?);
     let db = crate::setup::build_encrypted_db(raw, device_key, kek, sovereign_core::auth::PersonaKind::Primary)?;
     let docs = sovereign_ai::docs_host::build_document_service(
         db.clone(),
         Some(std::sync::Arc::new(auth.account_key)),
-        config.p2p.device_name.clone(),
+        identity,
     );
     Ok((db, docs))
 }
@@ -156,12 +159,13 @@ pub async fn list_docs(config: &AppConfig, thread_id: Option<String>) -> Result<
 /// already in the trash, purged or unknown is refused, and nothing changes.
 pub async fn delete_doc_with(docs: &DocumentService, id: &str) -> Result<()> {
     let message = |e: sovereign_docs::DocError| anyhow::anyhow!(sovereign_ai::docs_host::doc_error_message(&e));
-    let view = docs.read(id).await.map_err(message)?;
-    if view.trashed_at.is_some() {
-        anyhow::bail!("{id} is already in the trash; nothing was changed");
+    // The service says whether this call moved it (v0.0.12 item 9, T3).
+    match docs.trash(id).await.map_err(message)? {
+        sovereign_docs::TrashOutcome::Trashed => Ok(()),
+        sovereign_docs::TrashOutcome::AlreadyInTrash => {
+            anyhow::bail!("{id} is already in the trash; nothing was changed")
+        }
     }
-    docs.trash(id).await.map_err(message)?;
-    Ok(())
 }
 
 /// `delete-doc`: moves a document to the trash (recoverable until the 30-day

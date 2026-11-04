@@ -289,6 +289,24 @@ pub struct AuthCheckResult {
     pub needs_onboarding: bool,
     pub needs_login: bool,
     pub crypto_enabled: bool,
+    /// v0.0.12 lot 1, P2: `auth.store` exists but the setup did not finish
+    /// (killed after the store, or a later step failed, P2b). The frontend
+    /// shows the notice once, after the next successful login: "Setup was
+    /// interrupted before it finished. Your account works; your safety phrase
+    /// and typing profile may not have been saved." That login writes the
+    /// `onboarding_done` marker, so the flag is false from the launch after.
+    pub setup_incomplete: bool,
+}
+
+/// What `complete_onboarding` and `complete_onboarding_paired` report when
+/// they succeed (v0.0.12 lot 1, P2b). Once `auth.store` is written the account
+/// exists, so a later failure (the salt file, the session, sample documents,
+/// the safety phrase, the typing profile, the marker) does not fail the
+/// command: it succeeds with `incomplete: true`, the wizard goes to the login
+/// screen, and the first login shows P2's notice.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OnboardingOutcome {
+    pub incomplete: bool,
 }
 
 #[derive(Serialize)]
@@ -335,8 +353,17 @@ pub struct OnboardingData {
     pub bubble_style: Option<String>,
     pub seed_sample_data: bool,
     pub password: Option<String>,
+    /// v0.0.12 lot 1, P3: the second entry of each value typed twice. A given
+    /// password, duress password or safety phrase whose confirmation is
+    /// absent or differs is refused before anything is written.
+    #[serde(default)]
+    pub password_confirm: Option<String>,
     pub duress_password: Option<String>,
+    #[serde(default)]
+    pub duress_confirm: Option<String>,
     pub canary_phrase: Option<String>,
+    #[serde(default)]
+    pub canary_confirm: Option<String>,
     pub keystrokes: Vec<Vec<KeystrokeSampleDto>>,
 }
 

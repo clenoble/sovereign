@@ -151,14 +151,29 @@ pub struct AuthSuccess {
     pub kek: Kek,
 }
 
+/// P4 (v0.0.12 lot 1): every constructor refuses a duress passphrase equal to
+/// the primary one, before deriving anything. Each constructor builds its own
+/// entries, so each calls this — a check in `create` alone would miss paired
+/// setup and guardian recovery. The comparison is on the exact bytes given.
+fn refuse_duress_equal_to_primary(primary: &[u8], duress: &[u8]) -> CryptoResult<()> {
+    if primary == duress {
+        return Err(CryptoError::DuressEqualsPrimary);
+    }
+    Ok(())
+}
+
 impl AuthStore {
     /// Create a new AuthStore with primary + duress personas.
+    ///
+    /// Refuses ([`CryptoError::DuressEqualsPrimary`]) a duress passphrase
+    /// equal to the primary one.
     pub fn create(
         primary_passphrase: &[u8],
         duress_passphrase: &[u8],
         salt: &[u8],
         device_id: &str,
     ) -> CryptoResult<Self> {
+        refuse_duress_equal_to_primary(primary_passphrase, duress_passphrase)?;
         let kdf = Kdf::current();
         let primary_entry =
             Self::build_entry(primary_passphrase, salt, device_id, &padded_probe(PRIMARY_TAG), &kdf)?;
@@ -341,6 +356,7 @@ impl AuthStore {
     /// via guardians) under a **new** passphrase and fresh salt. The old
     /// passphrase is never involved — that is the whole point of recovery.
     /// The duress persona is a fresh random decoy, as in normal creation.
+    /// Refuses a duress passphrase equal to the primary one (P4).
     pub fn create_with_secrets(
         primary_passphrase: &[u8],
         duress_passphrase: &[u8],
@@ -349,6 +365,7 @@ impl AuthStore {
         account_key: &AccountKey,
         kek: &Kek,
     ) -> CryptoResult<Self> {
+        refuse_duress_equal_to_primary(primary_passphrase, duress_passphrase)?;
         let kdf = Kdf::current();
         let primary_entry = Self::build_entry_with_secrets(
             primary_passphrase,
@@ -386,7 +403,8 @@ impl AuthStore {
     ///
     /// The duress persona's AccountKey is derived locally from the
     /// duress passphrase as usual — duress workspaces are per-device
-    /// and not synced.
+    /// and not synced. Refuses a duress passphrase equal to the primary
+    /// one (P4).
     pub fn create_with_imported_account_key(
         primary_passphrase: &[u8],
         duress_passphrase: &[u8],
@@ -394,6 +412,7 @@ impl AuthStore {
         device_id: &str,
         imported_account_key: &AccountKey,
     ) -> CryptoResult<Self> {
+        refuse_duress_equal_to_primary(primary_passphrase, duress_passphrase)?;
         let kdf = Kdf::current();
         let primary_entry = Self::build_entry_with_account_key(
             primary_passphrase,

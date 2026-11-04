@@ -1,4 +1,4 @@
-//! G28 — the normalised hash and the purge fingerprint.
+//! G28 — the normalised hash (the purge fingerprint is retired).
 //!
 //! Spec ch. 03, *Document service — contract (C-DOC)*, G28 (specified
 //! 2026-10-15, for C-WIRE): "The normalised hash of a state covers its title,
@@ -9,13 +9,19 @@
 //! content (as v2) only. Both are lowercase hex and never contain the text."
 //!
 //! C-WIRE guarantee 3 (spec ch. 05): "Equal means equal after normalisation."
+//!
+//! v0.0.12 item 3 (purges are local, `doc/plans/V0012-item3-local-purges.md`,
+//! L12): "`purge_fingerprint` is gone from the code." The fingerprint's half of
+//! G28 is retired with it; its two assertions are removed here (the test
+//! author of item 3, 2026-10-24) and L12's source scan
+//! (`item3_no_fingerprint.rs`) takes their place.
 
 mod common;
 
 use chrono::{TimeZone, Utc};
 use common::wire::*;
 use common::*;
-use sovereign_docs::{normalized_hash, purge_fingerprint, DocumentV2, Provenance, Trust, TrustDecision};
+use sovereign_docs::{normalized_hash, DocumentV2, Provenance, Trust, TrustDecision};
 
 const ENVELOPE: &str = r#"{"body":"the body","images":[{"path":"/a.png","caption":"c"}]}"#;
 
@@ -37,7 +43,8 @@ fn g28_a_legacy_copy_and_a_migrated_copy_hash_the_same() {
     let mut b = a.clone();
     b.content = migrated.clone();
     assert_eq!(normalized_hash(&a), normalized_hash(&b));
-    assert_eq!(purge_fingerprint(id, "T", ENVELOPE), purge_fingerprint(id, "T", &migrated));
+    // (Item 3, L12: the fingerprint assertion that stood here is removed with
+    // `purge_fingerprint`.)
 }
 
 #[test]
@@ -84,16 +91,10 @@ fn g28_every_field_of_the_state_changes_the_hash() {
     }
 }
 
-#[test]
-fn g28_the_fingerprint_covers_title_and_content_only() {
-    let id = "document:f";
-    let c = v2(vec![text_block(1, "body")]);
-    let f = purge_fingerprint(id, "T", &c);
-    assert_ne!(purge_fingerprint(id, "T2", &c), f, "title");
-    assert_ne!(purge_fingerprint(id, "T", &v2(vec![text_block(1, "other")])), f, "content");
-    assert!(hex64(&f));
-    // Thread, trust and trash are not parameters: they cannot change it.
-}
+// `g28_the_fingerprint_covers_title_and_content_only` (asserted: the purge
+// fingerprint changes with the title and the content, 64 lowercase hex) is
+// removed by item 3: the fingerprint no longer exists (L12, replaced by
+// `item3_no_fingerprint::l12_purge_fingerprint_is_gone_from_the_code`).
 
 #[test]
 fn g28_hashes_are_hex_and_never_hold_the_text() {

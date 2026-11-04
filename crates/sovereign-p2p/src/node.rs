@@ -8,7 +8,7 @@ use rand::Rng as _;
 use libp2p::swarm::SwarmEvent;
 use libp2p::{Multiaddr, PeerId, StreamProtocol, Swarm};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::behaviour::{SovereignBehaviour, SovereignBehaviourEvent};
 use crate::config::P2pConfig;
@@ -446,10 +446,103 @@ pub struct SovereignNode {
     /// Seed-relay circuits queued at startup; the `/p2p-circuit` listen is
     /// issued when the relay identifies (see reserve_seed_relays for why).
     pending_relay_circuits: HashMap<libp2p::PeerId, Multiaddr>,
+    /// False when the node was built without the DNS transport (no system
+    /// resolver config, e.g. Android) — v0.0.12 item 12.
+    dns_transport: bool,
+    /// Set once [`NO_DNS_REASON`] has been logged, so it is said once per
+    /// node and not on every attempt (item 12, P3).
+    no_dns_reason_logged: bool,
+}
+
+/// Why a name cannot be dialled on a node built without the DNS transport
+/// (v0.0.12 item 12, P3). Logged once per node, the first time a named
+/// address (`/dns`, `/dns4`, `/dns6`, `/dnsaddr`) is dialled.
+pub const NO_DNS_REASON: &str =
+    "this device cannot resolve names; it syncs on the local network and with addresses given by IP";
+
+/// True when dialling `addr` needs a name resolved first.
+fn needs_name_resolution(addr: &Multiaddr) -> bool {
+    addr.iter().any(|p| {
+        matches!(
+            p,
+            libp2p::multiaddr::Protocol::Dns(_)
+                | libp2p::multiaddr::Protocol::Dns4(_)
+                | libp2p::multiaddr::Protocol::Dns6(_)
+                | libp2p::multiaddr::Protocol::Dnsaddr(_)
+        )
+    })
+}
+
+/// The node's network behaviour, the same with or without the DNS transport.
+fn build_behaviour(
+    key: &libp2p::identity::Keypair,
+    relay_behaviour: libp2p::relay::client::Behaviour,
+    peer_id: PeerId,
+    enable_mdns: bool,
+) -> Result<SovereignBehaviour, Box<dyn std::error::Error + Send + Sync>> {
+    // mDNS is toggleable (P2P-006). When disabled, the node does
+    // no LAN multicast / auto-discovery at all.
+    let mdns = if enable_mdns {
+        let m = libp2p::mdns::tokio::Behaviour::new(libp2p::mdns::Config::default(), peer_id)
+            .map_err(|e| P2pError::Transport(e.to_string()))?;
+        libp2p::swarm::behaviour::toggle::Toggle::from(Some(m))
+    } else {
+        libp2p::swarm::behaviour::toggle::Toggle::from(None)
+    };
+
+    let rendezvous = libp2p::rendezvous::client::Behaviour::new(key.clone());
+
+    let request_response = libp2p::request_response::cbor::Behaviour::<
+        SovereignRequest,
+        SovereignResponse,
+    >::new(
+        [(StreamProtocol::new(PROTOCOL_NAME), ProtocolSupport::Full)],
+        request_response::Config::default(),
+    );
+
+    let identify = libp2p::identify::Behaviour::new(
+        libp2p::identify::Config::new("/sovereign/id/1".to_string(), key.public())
+            // P2P-003: advertise a bare agent string with NO build
+            // version. The exact `sovereign/<x.y.z>` was a free
+            // version-fingerprint to anyone on an untrusted LAN; the
+            // protocol id "/sovereign/id/1" already carries the wire
+            // version we actually negotiate on.
+            .with_agent_version("sovereign".to_string()),
+    );
+
+    let dcutr = libp2p::dcutr::Behaviour::new(peer_id);
+
+    let mailbox = libp2p::request_response::cbor::Behaviour::<
+        sovereign_core::mailbox::MailboxRequest,
+        sovereign_core::mailbox::MailboxResponse,
+    >::new(
+        [(
+            StreamProtocol::new(sovereign_core::mailbox::MAILBOX_PROTOCOL),
+            ProtocolSupport::Full,
+        )],
+        request_response::Config::default(),
+    );
+
+    Ok(SovereignBehaviour {
+        mdns,
+        rendezvous,
+        request_response,
+        identify,
+        relay_client: relay_behaviour,
+        dcutr,
+        mailbox,
+    })
+}
+
+fn swarm_config(cfg: libp2p::swarm::Config) -> libp2p::swarm::Config {
+    cfg.with_idle_connection_timeout(Duration::from_secs(60))
 }
 
 impl SovereignNode {
-    /// Create a new P2P node.
+    /// Create a new P2P node. The DNS transport is built from the system
+    /// resolver config (hickory's `read_system_conf`, what `.with_dns()`
+    /// reads); where there is none (Android has no `/etc/resolv.conf`) the
+    /// node is built without it — see [`Self::new_with_dns_source`].
     pub fn new(
         config: &P2pConfig,
         keypair: libp2p::identity::Keypair,
@@ -458,6 +551,37 @@ impl SovereignNode {
         sync_service: Arc<SyncService>,
         backup_host: Option<Arc<crate::backup_host::BackupHost>>,
     ) -> P2pResult<Self> {
+        Self::new_with_dns_source(
+            config,
+            keypair,
+            event_tx,
+            command_rx,
+            sync_service,
+            backup_host,
+            || hickory_resolver::system_conf::read_system_conf().map_err(std::io::Error::from),
+        )
+    }
+
+    /// Create a new P2P node, taking the "system resolver config" from
+    /// `dns_source` (v0.0.12 item 12). The source is consulted once, while the
+    /// swarm is built: when it gives a config the DNS transport is built from
+    /// it, as `.with_dns()` does; when it fails the node is built WITHOUT the
+    /// DNS transport and starts anyway — LAN discovery, paired devices on the
+    /// local network and peers given by IP work, names are not resolved (no
+    /// fallback resolver of any kind). The choice is made by trying the
+    /// config, never by `target_os`. [`Self::has_dns_transport`] says which.
+    pub fn new_with_dns_source(
+        config: &P2pConfig,
+        keypair: libp2p::identity::Keypair,
+        event_tx: mpsc::Sender<P2pEvent>,
+        command_rx: mpsc::Receiver<P2pCommand>,
+        sync_service: Arc<SyncService>,
+        backup_host: Option<Arc<crate::backup_host::BackupHost>>,
+        dns_source: impl FnOnce() -> std::io::Result<(
+            libp2p::dns::ResolverConfig,
+            libp2p::dns::ResolverOpts,
+        )>,
+    ) -> P2pResult<Self> {
         let peer_id = keypair.public().to_peer_id();
         let enable_mdns = config.enable_mdns;
         info!(
@@ -465,7 +589,7 @@ impl SovereignNode {
             peer_id, enable_mdns
         );
 
-        let swarm = libp2p::SwarmBuilder::with_existing_identity(keypair.clone())
+        let transports = libp2p::SwarmBuilder::with_existing_identity(keypair.clone())
             .with_tokio()
             .with_tcp(
                 libp2p::tcp::Config::default().nodelay(true),
@@ -473,81 +597,39 @@ impl SovereignNode {
                 libp2p::yamux::Config::default,
             )
             .map_err(|e| P2pError::Transport(e.to_string()))?
-            .with_quic()
-            .with_dns()
-            .map_err(|e| P2pError::Transport(e.to_string()))?
-            // M1.5: relay-v2 client transport. The closure below receives
-            // the constructed relay behaviour to place in SovereignBehaviour.
-            .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)
-            .map_err(|e| P2pError::Transport(e.to_string()))?
-            .with_behaviour(|key, relay_behaviour| {
-                // mDNS is toggleable (P2P-006). When disabled, the node does
-                // no LAN multicast / auto-discovery at all.
-                let mdns = if enable_mdns {
-                    let m = libp2p::mdns::tokio::Behaviour::new(
-                        libp2p::mdns::Config::default(),
-                        peer_id,
-                    )
-                    .map_err(|e| P2pError::Transport(e.to_string()))?;
-                    libp2p::swarm::behaviour::toggle::Toggle::from(Some(m))
-                } else {
-                    libp2p::swarm::behaviour::toggle::Toggle::from(None)
-                };
+            .with_quic();
 
-                let rendezvous = libp2p::rendezvous::client::Behaviour::new(key.clone());
-
-                let request_response = libp2p::request_response::cbor::Behaviour::<
-                    SovereignRequest,
-                    SovereignResponse,
-                >::new(
-                    [(
-                        StreamProtocol::new(PROTOCOL_NAME),
-                        ProtocolSupport::Full,
-                    )],
-                    request_response::Config::default(),
+        // The two branches differ only in the DNS layer; the transport types
+        // differ, so each finishes its own builder chain.
+        let (swarm, dns_transport) = match dns_source() {
+            Ok((resolver_config, resolver_opts)) => {
+                let swarm = transports
+                    .with_dns_config(resolver_config, resolver_opts)
+                    // M1.5: relay-v2 client transport. The closure below receives
+                    // the constructed relay behaviour to place in SovereignBehaviour.
+                    .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)
+                    .map_err(|e| P2pError::Transport(e.to_string()))?
+                    .with_behaviour(|key, relay| build_behaviour(key, relay, peer_id, enable_mdns))
+                    .map_err(|e| P2pError::Transport(e.to_string()))?
+                    .with_swarm_config(swarm_config)
+                    .build();
+                (swarm, true)
+            }
+            Err(e) => {
+                info!(
+                    "P2P node running without the DNS transport: no system resolver config ({e}). \
+                     Named addresses are not dialled; LAN discovery and addresses given by IP work."
                 );
-
-                let identify = libp2p::identify::Behaviour::new(
-                    libp2p::identify::Config::new(
-                        "/sovereign/id/1".to_string(),
-                        key.public(),
-                    )
-                    // P2P-003: advertise a bare agent string with NO build
-                    // version. The exact `sovereign/<x.y.z>` was a free
-                    // version-fingerprint to anyone on an untrusted LAN; the
-                    // protocol id "/sovereign/id/1" already carries the wire
-                    // version we actually negotiate on.
-                    .with_agent_version("sovereign".to_string()),
-                );
-
-                let dcutr = libp2p::dcutr::Behaviour::new(peer_id);
-
-                let mailbox = libp2p::request_response::cbor::Behaviour::<
-                    sovereign_core::mailbox::MailboxRequest,
-                    sovereign_core::mailbox::MailboxResponse,
-                >::new(
-                    [(
-                        StreamProtocol::new(sovereign_core::mailbox::MAILBOX_PROTOCOL),
-                        ProtocolSupport::Full,
-                    )],
-                    request_response::Config::default(),
-                );
-
-                Ok(SovereignBehaviour {
-                    mdns,
-                    rendezvous,
-                    request_response,
-                    identify,
-                    relay_client: relay_behaviour,
-                    dcutr,
-                    mailbox,
-                })
-            })
-            .map_err(|e| P2pError::Transport(e.to_string()))?
-            .with_swarm_config(|cfg| {
-                cfg.with_idle_connection_timeout(Duration::from_secs(60))
-            })
-            .build();
+                let swarm = transports
+                    .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)
+                    .map_err(|e| P2pError::Transport(e.to_string()))?
+                    .with_behaviour(|key, relay| build_behaviour(key, relay, peer_id, enable_mdns))
+                    .map_err(|e| P2pError::Transport(e.to_string()))?
+                    .with_swarm_config(swarm_config)
+                    .build();
+                (swarm, false)
+            }
+        };
 
         Ok(Self {
             swarm,
@@ -564,7 +646,34 @@ impl SovereignNode {
             backup_jobs: HashMap::new(),
             sync_buckets: HashMap::new(),
             pending_relay_circuits: HashMap::new(),
+            dns_transport,
+            no_dns_reason_logged: false,
         })
+    }
+
+    /// Whether the node was built with the DNS transport (v0.0.12 item 12).
+    /// False when the system resolver config could not be read: the node then
+    /// runs on the local network and with addresses given by IP only. The app
+    /// reads it before `run()` and shows it in Settings → Devices.
+    pub fn has_dns_transport(&self) -> bool {
+        self.dns_transport
+    }
+
+    /// On a node without the DNS transport, a named address cannot be dialled:
+    /// returns true for one, after saying why — [`NO_DNS_REASON`] once per
+    /// node, a short debug line on later attempts (item 12, P3). Returns false
+    /// (nothing logged) when the node has DNS or the address needs no name.
+    fn refuse_unresolvable(&mut self, addr: &Multiaddr) -> bool {
+        if self.dns_transport || !needs_name_resolution(addr) {
+            return false;
+        }
+        if self.no_dns_reason_logged {
+            debug!("Not dialling {addr}: no DNS transport on this node");
+        } else {
+            self.no_dns_reason_logged = true;
+            warn!("Cannot dial {addr}: {NO_DNS_REASON}");
+        }
+        true
     }
 
     /// Token-bucket admission for an inbound sync request from a paired peer
@@ -634,6 +743,9 @@ impl SovereignNode {
                 warn!(%relay, "seed relay multiaddr must end in /p2p/<peer-id> — skipped");
                 continue;
             };
+            if self.refuse_unresolvable(&base) {
+                continue;
+            }
             // Dial the relay directly (identify + learn our observed
             // address, which also feeds dcutr)…
             if let Err(e) = self.swarm.dial(base.clone()) {
@@ -686,6 +798,17 @@ impl SovereignNode {
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 info!("Disconnected from {}", peer_id);
+            }
+            SwarmEvent::OutgoingConnectionError {
+                error: libp2p::swarm::DialError::Transport(failed),
+                ..
+            } if !self.dns_transport => {
+                // A dial by peer id may reach an address learnt by name
+                // (identify, the address book): say why it fails (P3).
+                if let Some((addr, _)) = failed.iter().find(|(a, _)| needs_name_resolution(a)) {
+                    let addr = addr.clone();
+                    self.refuse_unresolvable(&addr);
+                }
             }
             _ => {}
         }
@@ -1074,8 +1197,9 @@ impl SovereignNode {
             }
         }
 
-        // Purges the remote made (C-WIRE 10): an identical copy is purged
-        // here, a differing one kept (it travels back).
+        // Deletions the remote advertises (its purge markers; v0.0.12 item 3,
+        // L4): an older live copy goes to this device's trash, a later live
+        // copy or a trashed one is kept, none is purged.
         if let Err(e) = self.sync_service.apply_purge_markers(&remote).await {
             warn!("applying purge markers from {peer_id} failed: {e}");
         }
@@ -1320,7 +1444,10 @@ impl SovereignNode {
             P2pCommand::Dial { address } => {
                 match address.parse::<Multiaddr>() {
                     Ok(addr) => {
-                        if let Err(e) = self.swarm.dial(addr.clone()) {
+                        if self.refuse_unresolvable(&addr) {
+                            // No DNS transport: nothing could resolve the
+                            // name, so the dial is not attempted (item 12, P3).
+                        } else if let Err(e) = self.swarm.dial(addr.clone()) {
                             warn!("Dial {address} failed: {e}");
                         } else {
                             info!("Dialing {addr}");

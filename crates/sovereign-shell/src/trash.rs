@@ -7,7 +7,8 @@
 //! user chooses an existing thread, alone or for the whole group of the
 //! deleted thread. Nothing restored from the trash lands in the fallback
 //! lane. There is no per-item "delete forever" (Q1): only Empty trash, after
-//! its confirmation, and the 30-day purge.
+//! its confirmation, and the 30-day purge. Empty trash purges what the view
+//! showed, never what entered the trash after (v0.0.12 item 9, T1).
 
 use chrono::{DateTime, Utc};
 use sovereign_db::traits::GraphDB;
@@ -17,6 +18,7 @@ use sovereign_docs::{active_thread, list_trash_named, restore_to_thread, Documen
 #[derive(Clone, Debug)]
 pub(crate) struct TrashLine {
     pub(crate) id: String,
+    /// The title as shown: its tokens as their labels (item 8, L2).
     pub(crate) title: String,
     /// The thread the document was in.
     pub(crate) thread_id: String,
@@ -48,12 +50,25 @@ pub(crate) struct TrashView {
     /// "Empty trash" was clicked and its confirmation is showing (K7: a
     /// Destruct action asks first, in a modal).
     empty_requested: bool,
+    /// The ids listed when "Empty trash" was clicked: what its confirmation
+    /// acts on (v0.0.12 item 9, T1), whatever a refresh shows meanwhile.
+    empty_shown: Vec<String>,
+}
+
+/// What the confirmed Empty trash did (v0.0.12 item 9, T1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Emptied {
+    /// Documents purged: those shown that were still in the trash.
+    pub(crate) purged: usize,
+    /// Documents shown but no longer in the trash (restored, or purged
+    /// meanwhile, here or elsewhere): left alone.
+    pub(crate) skipped: usize,
 }
 
 impl TrashView {
     /// The trash as of `now`, newest first; thread names read from `db`.
     pub(crate) async fn load(docs: &DocumentService, db: &dyn GraphDB, now: DateTime<Utc>) -> Result<TrashView, String> {
-        Ok(TrashView { lines: read_lines(docs, db, now).await?, empty_requested: false })
+        Ok(TrashView { lines: read_lines(docs, db, now).await?, empty_requested: false, empty_shown: Vec::new() })
     }
 
     /// The lines shown.
@@ -187,6 +202,7 @@ impl TrashView {
     /// purged yet.
     pub(crate) fn request_empty(&mut self) {
         self.empty_requested = true;
+        self.empty_shown = self.lines.iter().map(|l| l.id.clone()).collect();
     }
 
     /// The empty-trash confirmation is showing.
@@ -197,45 +213,73 @@ impl TrashView {
     /// The confirmation dismissed: nothing purged.
     pub(crate) fn cancel_empty(&mut self) {
         self.empty_requested = false;
+        self.empty_shown.clear();
     }
 
-    /// The confirmation accepted: empties the trash (`empty_trash`) and
-    /// reports how many documents were purged. Without a showing confirmation
-    /// it purges nothing.
+    /// The confirmation accepted: purges what the view showed when "Empty
+    /// trash" was clicked and is still in the trash (`empty_trash_of`, v0.0.12
+    /// item 9, T1), and reports how many documents were purged. A document
+    /// that entered the trash after is not purged. Without a showing
+    /// confirmation it purges nothing.
+    #[cfg_attr(not(test), allow(dead_code))] // the tests' seam; `App` reads the report
     pub(crate) async fn confirm_empty(&mut self, docs: &DocumentService) -> Result<usize, String> {
+        self.confirm_empty_report(docs).await.map(|e| e.purged)
+    }
+
+    /// [`TrashView::confirm_empty`], with the shown documents it left alone.
+    /// The view drops what it acted on; what entered the trash meanwhile
+    /// shows at the next read.
+    pub(crate) async fn confirm_empty_report(&mut self, docs: &DocumentService) -> Result<Emptied, String> {
         if !self.empty_requested {
             return Err("Emptying the trash needs its confirmation. Nothing was purged.".into());
         }
         self.empty_requested = false;
-        let report = docs
-            .empty_trash()
+        let shown = std::mem::take(&mut self.empty_shown);
+        let out = docs
+            .empty_trash_of(&shown)
             .await
             .map_err(|e| format!("The trash couldn't be emptied ({e}). Some documents may remain in it."))?;
-        self.lines.clear();
-        Ok(report.documents.len())
+        self.lines.retain(|l| !shown.contains(&l.id));
+        Ok(Emptied { purged: out.purged.documents.len(), skipped: out.skipped.len() })
     }
+}
+
+/// What the notice says after Empty trash: how many were purged, and — when
+/// any — how many shown documents were left alone, in neutral words, since a
+/// skipped one may have been restored or purged elsewhere (v0.0.12 item 9,
+/// T1, **[choice]**).
+pub(crate) fn emptied_message(e: Emptied) -> String {
+    let n = e.purged;
+    let mut msg = format!("{n} document{} deleted for good.", if n == 1 { " was" } else { "s were" });
+    match e.skipped {
+        0 => {}
+        1 => msg.push_str(" 1 document was no longer in the trash and was left alone."),
+        k => msg.push_str(&format!(" {k} documents were no longer in the trash and were left alone.")),
+    }
+    msg
 }
 
 async fn read_lines(docs: &DocumentService, db: &dyn GraphDB, now: DateTime<Utc>) -> Result<Vec<TrashLine>, String> {
     let listing = list_trash_named(docs, db, now)
         .await
         .map_err(|e| format!("The trash couldn't be read ({e})."))?;
-    Ok(listing
-        .into_iter()
-        .map(|l| {
-            let thread_deleted = l.thread_name.is_none();
-            let thread_name = l.thread_name.unwrap_or_else(|| deleted_thread_label(l.deleted_thread_name.as_deref()));
-            TrashLine {
-                id: l.entry.id,
-                title: l.entry.title,
-                thread_id: l.entry.thread_id,
-                thread_name,
-                thread_deleted,
-                trashed_at: l.entry.trashed_at,
-                days_left: l.days_left,
-            }
-        })
-        .collect())
+    let mut lines = Vec::with_capacity(listing.len());
+    for l in listing {
+        let thread_deleted = l.thread_name.is_none();
+        let thread_name = l.thread_name.unwrap_or_else(|| deleted_thread_label(l.deleted_thread_name.as_deref()));
+        // The title as shown: its tokens as their labels (item 8, L2).
+        let title = crate::canvas::shown_title(Some(docs), &l.entry.id, &l.entry.title).await;
+        lines.push(TrashLine {
+            id: l.entry.id,
+            title,
+            thread_id: l.entry.thread_id,
+            thread_name,
+            thread_deleted,
+            trashed_at: l.entry.trashed_at,
+            days_left: l.days_left,
+        });
+    }
+    Ok(lines)
 }
 
 /// What a line or a group says when its thread was deleted: the thread's old

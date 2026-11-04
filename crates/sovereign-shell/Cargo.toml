@@ -1,6 +1,6 @@
 [package]
 name = "sovereign-shell"
-version = "0.0.11"
+version = "0.0.12"
 edition = "2021"
 publish = false
 
@@ -28,6 +28,9 @@ dev-switches = []
 # Surface backend/P2P logs (sync engine, mDNS, pairing) for debugging — the node
 # logs via `tracing`, dropped without a subscriber. Env-filtered (RUST_LOG).
 tracing-subscriber = { workspace = true }
+# v0.0.12 item 22: the shell's own warnings that reach the same subscriber
+# (no document service when this device's identity cannot be derived).
+tracing = { workspace = true }
 # Only to turn on ICU's `logging` feature (parley reaches icu_provider through
 # its segmenter). Without it, a debug build of icu_provider writes its data
 # warnings with `eprintln!` ("ICU4X data error: No segmentation model for
@@ -104,6 +107,9 @@ qrcode = { version = "0.14", default-features = false }
 # scan a QR back). arboard reuses the already-warm windows-sys (0.59/0.60) — its
 # only build-script dep — so no fresh build script for SAC to block.
 arboard = "3.6"
+# v0.0.12 item 19 (N2): a device name is at most 64 grapheme clusters, never
+# cut inside one. Already in the lock (sovereign-editor's), same version.
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
 # Lot 0: the shell's document-write invariants (doc_writes.rs) are tested
@@ -113,3 +119,11 @@ tempfile = "3"
 # Replays the editor-v2 accessibility updates through the consumer version the
 # Windows adapter uses (accesskit_windows 0.32 -> accesskit_consumer 0.35).
 accesskit_consumer = "0.35"
+# v0.0.12 lot 1 tests (src/lot1_tests.rs): the document service suite's
+# generated failing store (sovereign-docs/tests/common/faulty.rs), reused for
+# History's store-error test (H3), implements `GraphDB` with `#[async_trait]`.
+async-trait = { workspace = true }
+# v0.0.12 item 22 follow-up: `Orchestrator::for_host_tests` (an orchestrator
+# with no model) for the fail-closed test. A dev-dependency feature: with
+# resolver 2 it is on for the shell's tests only, never in its builds.
+sovereign-ai = { workspace = true, features = ["test-support"] }

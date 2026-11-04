@@ -129,3 +129,11 @@ url = "2.5"
 # mismatches across crate identities.
 [patch.crates-io]
 curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }
+
+# Dependencies build without debug info; the workspace crates keep it, so our own
+# backtraces still name file and line. `profile.test` inherits this override.
+# Measured on WSL, gate step 4 on a cold target: 98.2 GB -> 34.2 GB, build
+# 1271 s -> 879 s (claude-coord WSL 0026; Celine chose it 2026-10-28, item 17).
+# Cost: no file:line inside dependency frames, no stepping into their source.
+[profile.dev.package."*"]
+debug = false

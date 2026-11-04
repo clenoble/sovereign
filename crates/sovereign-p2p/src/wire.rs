@@ -57,30 +57,33 @@ impl SyncService {
         self
     }
 
-    /// Applies the purge markers a peer's manifest carries (C-WIRE guarantee
-    /// 10), through the document service. A peer on an older build carries
-    /// none. Returns how many markers changed something here.
+    /// Applies the deletions a peer's manifest carries (its purge markers;
+    /// spec ch. 05 *Deletions and purges*, v0.0.12 item 3, L4–L5), through
+    /// the document service. A peer on an older build carries none; a
+    /// v0.0.11 peer's markers, which carry a fingerprint, are read as
+    /// deletions, the fingerprint ignored. Deduplicated by id and stamp: a
+    /// marker this device already holds with a stamp not earlier is skipped.
+    /// Returns how many markers changed something here.
     pub async fn apply_purge_markers(&self, remote: &SyncManifest) -> P2pResult<usize> {
         let Some(docs) = &self.documents else { return Ok(0) };
         if remote.wire_version.is_none() {
             return Ok(0);
         }
-        let known: HashSet<(String, String)> = docs
-            .purge_markers()
-            .await
-            .map_err(doc_err)?
-            .into_iter()
-            .map(|m| (m.id, m.fingerprint))
-            .collect();
+        let known: HashMap<String, Stamp> =
+            docs.purge_markers().await.map_err(doc_err)?.into_iter().map(|m| (m.id, m.stamp)).collect();
         let mut changed = 0;
         for m in &remote.purge_markers {
-            if known.contains(&(m.doc_id.clone(), m.fingerprint.clone())) {
+            let stamp = stamp_of(&m.stamp);
+            if known.get(&m.doc_id).is_some_and(|here| *here >= stamp) {
                 continue;
             }
-            let marker = PurgeMarkerWire { id: m.doc_id.clone(), stamp: stamp_of(&m.stamp), fingerprint: m.fingerprint.clone() };
+            let marker = PurgeMarkerWire { id: m.doc_id.clone(), stamp };
             match docs.apply_purge_marker(marker).await.map_err(doc_err)? {
-                PurgeApplied::Purged | PurgeApplied::Recorded => changed += 1,
-                PurgeApplied::KeptDiffers => {}
+                PurgeApplied::Trashed | PurgeApplied::Recorded => changed += 1,
+                // Kept: nothing changed here. Refused for a stamp beyond the
+                // bound: not recorded, so it is offered again at a later sync
+                // (v0.0.12 C2).
+                PurgeApplied::KeptLive | PurgeApplied::KeptInTrash | PurgeApplied::RefusedStampAhead => {}
             }
         }
         Ok(changed)
@@ -100,11 +103,14 @@ impl SyncService {
                 stamped: st.stamped,
             });
         }
+        // Each deletion with the `fingerprint` field a v0.0.11 build requires,
+        // sent empty: such a device still decodes the manifest and ignores the
+        // marker (an empty fingerprint matches nothing; v0.0.12 item 3, L3).
         for m in docs.purge_markers().await.map_err(doc_err)? {
             manifest.purge_markers.push(PurgeMarkerEntry {
                 doc_id: m.id,
                 stamp: wire_stamp(&m.stamp),
-                fingerprint: m.fingerprint,
+                fingerprint: String::new(),
             });
         }
         Ok(())
@@ -577,8 +583,12 @@ pub struct DocumentPlan {
 ///   the other; two never-stamped states are ordered by their derived stamps
 ///   (modification time, then device) — C-WIRE weakness 25.
 /// - Otherwise the edits were concurrent: exchanged both ways.
-/// - A document only one side holds travels to the other (the receiver's
-///   purge marker, if any, decides by fingerprint).
+/// - A document only one side holds travels to the other — except to a side
+///   whose purge marker for it has a stamp not earlier than the copy's: the
+///   receiver would ignore it (v0.0.12 item 3, L14). So the device that
+///   purged neither fetches nor is sent an older copy, and two devices settle
+///   after a purge whichever starts the round. A copy later than the marker
+///   travels, and the receiver judges it (L6).
 pub fn plan_documents(local: &SyncManifest, remote: &SyncManifest) -> DocumentPlan {
     let mut plan = DocumentPlan::default();
     if remote.wire_version.is_none() {
@@ -588,8 +598,17 @@ pub fn plan_documents(local: &SyncManifest, remote: &SyncManifest) -> DocumentPl
     let l: HashMap<&str, &DocumentWireEntry> = local.document_wire.iter().map(|e| (e.doc_id.as_str(), e)).collect();
     let r: HashMap<&str, &DocumentWireEntry> = remote.document_wire.iter().map(|e| (e.doc_id.as_str(), e)).collect();
     let ancestor = |a: &WireStamp, of: &DocumentWireEntry| of.prev_stamp.as_ref() == Some(a) || of.history.contains(a);
+    // The deletion stamps each side holds (L14).
+    let marks = |m: &SyncManifest| -> HashMap<String, Stamp> {
+        m.purge_markers.iter().map(|p| (p.doc_id.clone(), stamp_of(&p.stamp))).collect()
+    };
+    let (local_marks, remote_marks) = (marks(local), marks(remote));
+    let ignored_by = |marks: &HashMap<String, Stamp>, e: &DocumentWireEntry| {
+        marks.get(&e.doc_id).is_some_and(|deletion| *deletion >= stamp_of(&e.stamp))
+    };
     for re in &remote.document_wire {
         match l.get(re.doc_id.as_str()) {
+            None if ignored_by(&local_marks, re) => {}
             None => plan.fetch.push(re.doc_id.clone()),
             Some(le) => {
                 if le.normalized_hash == re.normalized_hash || le.stamp == re.stamp {
@@ -614,7 +633,7 @@ pub fn plan_documents(local: &SyncManifest, remote: &SyncManifest) -> DocumentPl
         }
     }
     for le in &local.document_wire {
-        if !r.contains_key(le.doc_id.as_str()) {
+        if !r.contains_key(le.doc_id.as_str()) && !ignored_by(&remote_marks, le) {
             plan.push.push(le.doc_id.clone());
         }
     }

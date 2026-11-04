@@ -318,7 +318,9 @@ pub async fn access_recovery_finalize(
         // is the same check the shell's recover_and_install uses — one copy of
         // the brick-the-account ordering, not two (coord from-windows/0061).
         let crypto_dir = crate::setup::crypto_dir();
-        let auth_store = sovereign_crypto::recovery_store::install_recovered_auth_store(
+        // v0.0.12 item 22 (D6): with the duress persona's peer id, for the
+        // decoy's pre-seed below.
+        let (auth_store, duress_identity) = sovereign_crypto::recovery_store::install_recovered_auth_store_with_duress_identity(
             &crypto_dir,
             &kek,
             &account_key,
@@ -343,13 +345,14 @@ pub async fn access_recovery_finalize(
                 &state.config,
                 sovereign_core::auth::PersonaKind::Duress,
             );
-            match crate::setup::create_db(&duress_config).await {
-                Ok(ddb) => {
-                    if let Err(e) = crate::duress::seed_duress_db(&ddb, &state.config.p2p.device_name).await {
+            match (crate::setup::create_db(&duress_config).await, duress_identity) {
+                (Ok(ddb), Some(identity)) => {
+                    if let Err(e) = crate::duress::seed_duress_db(&ddb, &identity).await {
                         tracing::warn!("duress decoy pre-seed at access recovery failed: {e}");
                     }
                 }
-                Err(e) => tracing::warn!("duress decoy DB pre-create at access recovery failed: {e}"),
+                (Ok(_), None) => tracing::warn!("duress decoy pre-seed at access recovery skipped: no duress identity"),
+                (Err(e), _) => tracing::warn!("duress decoy DB pre-create at access recovery failed: {e}"),
             }
         }
 

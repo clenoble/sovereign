@@ -163,6 +163,7 @@ pub fn doc_error_message(e: &DocError) -> String {
         DocError::InTrash(_) => "This document is in the trash. Nothing was changed.".into(),
         DocError::Purged(_) | DocError::NotFound(_) => "This document no longer exists.".into(),
         DocError::VersionRefused { reason, .. } => format!("This version can't be restored: {reason}."),
+        DocError::MoveRefused(why) => why.clone(),
         other => format!("The document couldn't be saved ({other})."),
     }
 }
@@ -366,13 +367,17 @@ impl sovereign_skills::SkillDbAccess for ServiceSkillDb {
         self.inner.list_all_documents_with_link_counts()
     }
 
-    /// Finds the thread through the bare store, or creates it through the
-    /// document service's one thread-write path, stamped (THREAD-sync S1).
+    /// Finds the thread with that exact name (ignoring case and surrounding
+    /// spaces) through the bare store, or creates it through the document
+    /// service's one thread-write path, stamped (THREAD-sync S1). Two live
+    /// threads with that name are refused, none picked (v0.0.12 item 6, A1).
     fn find_or_create_thread(&self, name: &str, description: &str) -> anyhow::Result<String> {
         let found = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.docs.store().find_thread_by_name(name))
-        })?;
-        if let Some(id) = found.and_then(|t| t.id_string()) {
+            tokio::runtime::Handle::current()
+                .block_on(sovereign_db::existing_thread_for_find_or_create(self.docs.store(), name))
+        })
+        .map_err(|e| anyhow::anyhow!(e))?;
+        if let Some(id) = found {
             return Ok(id);
         }
         tokio::task::block_in_place(|| {

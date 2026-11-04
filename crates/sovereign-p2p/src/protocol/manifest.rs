@@ -127,8 +127,8 @@ pub struct SyncManifest {
     /// C-WIRE: per document, the normalised hash and the stamp.
     #[serde(default)]
     pub document_wire: Vec<DocumentWireEntry>,
-    /// C-WIRE: the purge markers this device knows (id, stamp, fingerprint —
-    /// never content).
+    /// C-WIRE: the purge markers this device knows, as deletions (id and the
+    /// deletion's stamp; the fingerprint field sent empty — never content).
     #[serde(default)]
     pub purge_markers: Vec<PurgeMarkerEntry>,
     /// THREAD-sync S1/S2: the stamp of each stamped thread's current state.
@@ -174,11 +174,16 @@ pub struct DocumentWireEntry {
     pub stamped: bool,
 }
 
-/// C-WIRE: a purge marker, in the manifest.
+/// C-WIRE: a purge marker, in the manifest — a deletion: the id and the stamp
+/// of the deletion (v0.0.12 item 3, L3).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PurgeMarkerEntry {
     pub doc_id: String,
     pub stamp: WireStamp,
+    /// Kept for v0.0.11 builds, which require the field: this build always
+    /// sends it **empty** (such a device then decodes the manifest and ignores
+    /// the marker), and never reads what a v0.0.11 peer puts in it (L5).
+    #[serde(default)]
     pub fingerprint: String,
 }
 

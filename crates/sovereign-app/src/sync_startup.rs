@@ -213,6 +213,14 @@ pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
         .map_err(|e| format!("p2p listen: {e}"))?;
     tracing::info!("P2P node listening on {listen_addr}");
 
+    // v0.0.12 item 12: without a system resolver config (Android) the node
+    // runs without the DNS transport; Settings → Devices says so (P4).
+    let without_dns = !node.has_dns_transport();
+    state.set_p2p_without_dns(without_dns);
+    if without_dns {
+        tracing::info!("P2P node runs without DNS: local network and addresses given by IP only");
+    }
+
     // Spawn the swarm event loop.
     tauri::async_runtime::spawn(async move {
         node.run().await;

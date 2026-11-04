@@ -901,6 +901,10 @@
 									<span class="p2p-val">{p2pSettings.wifi_only ? 'On' : 'Off'}</span>
 								</div>
 							</div>
+							{#if p2pSettings.running && p2pSettings.without_dns === true}
+								<!-- v0.0.12 item 12 (P4): no DNS transport on this device -->
+								<p class="hint">This phone cannot look up names: it syncs on the local network and with addresses given by IP.</p>
+							{/if}
 							<p class="hint">
 								These are read from config.toml ([p2p] section) at startup.
 								In-app editing arrives with the config rework.

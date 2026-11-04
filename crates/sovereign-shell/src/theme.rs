@@ -3,7 +3,7 @@
 //! Dark palette ships today; `set_palette` is the (future) settings hook.
 //!
 //! Semantic, meaning-bearing colors are deliberately NOT in the palette — lane
-//! hues (`canvas::lane_color`), action-gravity colors (`app::level_color`),
+//! hues (`canvas::hue_color`), action-gravity colors (`app::level_color`),
 //! avatar hues, and the per-window category accents encode information, not
 //! chrome, so they stay constant across themes.
 

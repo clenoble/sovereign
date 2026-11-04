@@ -1,6 +1,6 @@
 [package]
 name = "sovereign-app"
-version = "0.0.11"
+version = "0.0.12"
 edition = "2021"
 description = "Sovereign GE binary — CLI and GUI entry point"
 

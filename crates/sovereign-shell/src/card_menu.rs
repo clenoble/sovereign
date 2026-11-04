@@ -11,7 +11,7 @@
 //! Delete is one click (Céline, 2026-10-17, Q3 → b): the document goes to the
 //! trash at once, and the notice offers Undo (`delete_notice`).
 
-use sovereign_docs::{DocError, DocumentService};
+use sovereign_docs::{DocError, DocumentService, TrashOutcome};
 
 /// Which rows the menu shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,15 +71,24 @@ impl CardMenu {
 /// document is gone (already in the trash, purged, never existed), nothing is
 /// done and the error says so, for the notice.
 ///
-/// The service's `trash` is idempotent (a document already in the trash
-/// answers `Ok`), so the document is read first: a menu confirmed on a
-/// document trashed meanwhile (from another window, or a paired device through
-/// sync) must say so rather than report a delete it did not make.
+/// A menu confirmed on a document trashed meanwhile (from another window, or
+/// a paired device through sync) must say so rather than report a delete it
+/// did not make: the service's `trash` says which it was (v0.0.12 item 9, T3).
+#[cfg_attr(not(test), allow(dead_code))] // the step-5 tests' seam; `App` reads the outcome
 pub(crate) async fn trash_target(docs: &DocumentService, id: &str) -> Result<(), String> {
-    let view = docs.read(id).await.map_err(|e| gone_message(&e))?;
-    if view.trashed_at.is_some() {
-        return Err("This document is already in the trash. Nothing was changed.".into());
+    match trash_target_outcome(docs, id).await? {
+        TrashOutcome::Trashed => Ok(()),
+        TrashOutcome::AlreadyInTrash => Err(ALREADY_IN_TRASH.into()),
     }
+}
+
+/// What the notice says for a Delete that found the document in the trash.
+pub(crate) const ALREADY_IN_TRASH: &str = "This document is already in the trash. Nothing was changed.";
+
+/// [`trash_target`], telling a Delete that moved the document from one that
+/// found it in the trash already (no Undo then: the deletion is not this
+/// Delete's). Gone (purged, never existed): the error says so.
+pub(crate) async fn trash_target_outcome(docs: &DocumentService, id: &str) -> Result<TrashOutcome, String> {
     docs.trash(id).await.map_err(|e| gone_message(&e))
 }
 

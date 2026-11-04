@@ -31,7 +31,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use sovereign_ai::docs_host::{new_user_document, testing};
-use sovereign_core::interfaces::{ChatEnd, ChatOutcome, OrchestratorEvent, WriteOutcome, WriteResult};
+use sovereign_core::interfaces::{ActionOutcome, ChatEnd, ChatOutcome, OrchestratorEvent, WriteOutcome, WriteResult};
 use sovereign_db::encrypted::EncryptedGraphDB;
 use sovereign_db::schema::{Document, Thread};
 use sovereign_db::traits::GraphDB;
@@ -110,8 +110,23 @@ fn unlock_into(app: &mut App, store: Arc<EncryptedGraphDB>) {
     app.db = Some(store.clone() as Arc<dyn GraphDB>);
     app.persona = Some(sovereign_core::auth::PersonaKind::Primary);
     app.install_document_service(store);
+    wait_for_unlock_migration(app);
     app.locked = false;
     app.load_workspace_now();
+}
+
+/// The unlock starts the one-time format migration in the background
+/// (`App::start_unlock_migration`). It converts any row stored before it
+/// runs, and marks the store complete. A row a test writes raw after the
+/// unlock must not race it: under load (a full suite) the migration sometimes
+/// ran after the write and converted it, so E3's refused JSON opened a window
+/// (measured 2026-10-24, 1 run in 3). Waiting here gives the order a real
+/// session has: the migration over the store as it was at the unlock, then
+/// the rows written later.
+fn wait_for_unlock_migration(app: &mut App) {
+    if let Some(task) = app.migration_task.take() {
+        let _ = app.rt.block_on(task);
+    }
 }
 
 fn harness(tag: &str) -> H {
@@ -129,9 +144,12 @@ fn harness(tag: &str) -> H {
     H { app, store, thread }
 }
 
-/// The id a canvas card carries for a document the service created.
+/// The id a canvas card carries for a document the service created: its raw
+/// id (v0.0.12 lanes lot, I1 "raw ids everywhere in the shell"; I2 removed the
+/// helper's conversion to the store's display form, rewritten by the lot's
+/// test author).
 fn card_id(raw: &str) -> String {
-    sovereign_db::schema::raw_to_thing(raw).map(|t| t.to_string()).unwrap_or_else(|| raw.to_string())
+    raw.to_string()
 }
 
 impl H {
@@ -1103,7 +1121,8 @@ fn e5_an_assistant_write_reaches_an_open_editor() {
     let id = h.add_doc("Assistant", "Before");
     h.open(&id);
     h.assistant_writes(&id, "zebra-from-the-assistant");
-    h.app.orch_tx.send(OrchestratorEvent::ActionExecuted { action: "edit_document".into(), success: true }).unwrap();
+    let outcome = ActionOutcome::Changed { summary: "Edited 'Assistant'".into() };
+    h.app.orch_tx.send(OrchestratorEvent::ActionExecuted { action: "edit_document".into(), success: true, outcome }).unwrap();
     h.scene();
     assert_eq!(h.editor_text(&id), "zebra-from-the-assistant", "the editor reloaded");
 }
@@ -1134,7 +1153,8 @@ fn e5_with_unsaved_edits_the_editor_keeps_them_and_overwrites_nothing() {
     h.open(&id);
     h.type_in(&id, " zebra-mine");
     h.assistant_writes(&id, "zebra-assistant");
-    h.app.orch_tx.send(OrchestratorEvent::ActionExecuted { action: "edit_document".into(), success: true }).unwrap();
+    let outcome = ActionOutcome::Changed { summary: "Edited 'Kept'".into() };
+    h.app.orch_tx.send(OrchestratorEvent::ActionExecuted { action: "edit_document".into(), success: true, outcome }).unwrap();
     h.scene();
     assert!(h.editor_text(&id).contains("zebra-mine"), "the editor keeps its text");
     h.save(&id);
@@ -1411,7 +1431,11 @@ fn e8_the_accessibility_tree_exposes_the_document_through_the_editor() {
         "the editor's text is reachable"
     );
     assert!(
-        !nodes.iter().any(|n| n.role() == accesskit::Role::Label && n.label().is_some_and(|l| l.contains("Ringing zebra body"))),
+        // Amended for V0012-rc2-labels-spoken (2026-11-01, its test author):
+        // a Label is spoken by its value, so neither its label nor its value
+        // may hold the body.
+        !nodes.iter().any(|n| n.role() == accesskit::Role::Label
+            && [n.label(), n.value()].into_iter().flatten().any(|l| l.contains("Ringing zebra body"))),
         "no plain label holds the body (E2)"
     );
 }

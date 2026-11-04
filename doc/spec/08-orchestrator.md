@@ -38,6 +38,23 @@ All inference is local. No cloud endpoint, no external server, no Python in the 
   classification, not by a timer.
 - `n_ctx` defaults to 4096; `n_gpu_layers` to 99. The native shell is a CPU build and forces
   `n_gpu_layers` to 0; no shipped build offloads to the GPU (see ch. 02, ch. 14).
+- **A prompt longer than the batch is decoded in chunks** (v0.0.12). The context's batch is 2048
+  tokens; a prompt is fed in successive chunks of at most that, positions continuing, with logits
+  on its last token only, so any prompt that fits `n_ctx` with its answer is decoded. A prompt
+  that does not fit is refused before decoding, in plain words ("The prompt is too long for the
+  model: N tokens, plus M reserved for the answer, exceed the 4096-token window."). Until v0.0.11
+  a prompt over 2048 tokens failed with a llama error, long chat histories included. Checked with
+  a real model on a GPU (PANDA2, 2026-10-25).
+- **Summarize a long document** (v0.0.12 item 13; Céline, 2026-10-24: "Découper, avec une
+  limite"). A document that fits one call is summarized in one call. A longer one is cut at
+  paragraph boundaries (then sentences, then words) into parts that each fit; each part is
+  summarized, then the summaries together, repeated if they still do not fit. The reply first
+  says the document is long and will be summarized in N parts. At most **16 parts**: beyond, it
+  declines with the document's approximate length and a suggestion to summarize a section,
+  without calling the model. A call fits if `ceil(1.15 × characters / characters per token) +
+  answer budget ≤ n_ctx` (the 15 % margin covers accented, CJK and emoji-heavy text). Every part
+  and every intermediate summary gets the same protections as a whole document: the unscanned
+  refusal, PII token resolution, and the fencing of external content (*Data plane*, ch. 09).
 - **Mobile.** The Android app bundles no model file. When the orchestrator cannot load its
   router it is left out, and the app runs without the AI features of this chapter.
 - Model files live in `model_dir` (`models/` by default). Hardware sizing is in ch. 14.
@@ -202,11 +219,10 @@ naming any other action cannot cause it.
 
 **Status:** ◐ Partial — levels and gate built. Most Annotate, Transmit and Destruct actions have
 no handler; of Levels 4–5 only thread deletion executes. Since v0.0.10 a direct request that
-cannot be carried out is refused or reported as failed; two gaps remain (2026-10-16 review,
-private backlog): **a chat turn is reported as done whatever the agent loop did** (rule below,
-built 2026-10-17, `2492e2a`), and **a direct request's target is resolved by name after
-approval**, so the proposal shows the user's words rather than the exact object and a close name
-can be acted on instead (contract C-HOST, see *Action targets* below) (code:
+cannot be carried out is refused or reported as failed. The two gaps of the 2026-10-16 review are
+closed: a chat turn ends with its explicit outcome (rule below, built 2026-10-17, `2492e2a`), and
+since v0.0.12 a direct request's thread or document is resolved **before** the proposal, by its
+exact name (*Action targets*, "Built in v0.0.12") (code:
 `crates/sovereign-core/src/security.rs`, `crates/sovereign-ai/src/action_gate.rs`,
 `orchestrator.rs`).
 
@@ -224,9 +240,9 @@ user nor the model can lower it.
 |---|---|---|---|
 | **1** | Observe | search, open, navigate, history, summarize, word_count, list_models, list_milestones, chat, sync_status, list_devices, list_guardians, panel toggles | Executes immediately |
 | **2** | Annotate | annotate, tag, bookmark | Executes without confirmation |
-| **3** | Modify | create/rename/move, edit, restore, find_replace, duplicate, import_file, swap_model, merge/split thread, adopt, milestones | Proposal + user confirmation; may be auto-approved by earned trust |
+| **3** | Modify | create/rename/move, edit, restore, find_replace, duplicate, import_file, swap_model, split thread, adopt, milestones | Proposal + user confirmation; may be auto-approved by earned trust |
 | **4** | Transmit | export, share, transmit, pair_device, enroll_guardian, rotate_shards | Proposal + user confirmation; **never** auto-approved |
-| **5** | Destruct | delete_thread, delete_document, purge, initiate_recovery, revoke_guardian | Proposal + user confirmation; **never** auto-approved. Thread deletion by the orchestrator is a soft delete (ch. 03); see the ⚠ under *Hard barriers* |
+| **5** | Destruct | delete_thread, merge_threads (v0.0.12, Céline 2026-10-25: a merge deletes its source thread today), delete_document, purge, initiate_recovery, revoke_guardian | Proposal + user confirmation; **never** auto-approved. Thread deletion by the orchestrator is a soft delete (ch. 03); see the ⚠ under *Hard barriers* |
 
 - The table lists the level each action name maps to; it does not mean every action has a
   handler. Of the names above, the Annotate, Transmit and Destruct actions currently have no
@@ -234,10 +250,16 @@ user nor the model can lower it.
   P2P capability that the native shell does not wire, so it does not execute there.
 - A proposal waits **120 s** for a decision. Timeout, a closed channel, or no channel wired all
   **reject** (fail-closed); the rejection is recorded against trust like any other.
-- A confirmed action whose handler fails is reported as failed in the chat. As built, an action
-  that did nothing — no handler, a target not found, a capability the host has not wired, a
-  skill hint — still ends with a "done" event. **Requirement:** an action that did not run is
-  reported as not done.
+- **An action reports what happened** (v0.0.12 item 11). Every action ends with one outcome:
+  *changed* (the store changed; the only one that may say "Done" or ✓, and it names what was
+  done: "Renamed 'Plans' to 'Plans 2026'"), *reported* (a read: what was found or produced),
+  *no change* ("No change: …", e.g. a rename to the same name), or *failed* ("✗ Not carried
+  out: …", with the reason: no handler, a target not found or ambiguous, a capability the host
+  has not wired). The hosts show that one line and compose none of their own; a failure is said
+  once, not also as a separate warning message. **In a conversation too** (v0.0.12 item 11b;
+  Céline, 2026-10-28): a write tool that changes nothing (a rename to the same name, a move into the
+  thread the document is in) ends as "No change: <tool> (<reason>)", never "Done", and the turn's
+  trace records it as executed without change.
 - The native shell does not yet display the results of several Observe actions (search, open,
   history, summarize, `list_models`, milestones); the orchestrator produces them.
 
@@ -309,6 +331,34 @@ maille from the 2026-10-16 review; decided with Céline the same day.
 - **AT8 — Hosts refer by identity too.** A menu, a list or a drag in any host carries the
   object's id, never its index in a list that a reload can reorder. This holds on the phone,
   which has no orchestrator.
+
+**Built in v0.0.12** (items 6 and 23, `doc/plans/V0012-lot-assistant.md`,
+`V0012-item23-document-titles.md`; Céline, 2026-10-24 and 2026-10-25). Stricter than AT2–AT3 on
+names, for the direct-request path and the chat tools:
+- **Exact name only.** A thread or a document named in an action resolves to a live one whose
+  name (title) equals the words given, ignoring case and surrounding spaces, and to nothing else.
+  No exact match: not done, the close names (at most 5) are listed and the reply asks which. Two
+  or more exact matches: not done; for documents, which share titles more than threads do, the
+  reply lists them with their thread and last-modified date and says the action can be done from
+  the document itself. Searches stay partial: they show a list and act on nothing. One resolver
+  per kind, over every candidate of the blind index (no LIMIT), used by every caller (the
+  orchestrator, the chat tools, the import, the skills' bridge, the browser's save).
+- **Resolved before the proposal, which names it** (AT1 for threads and documents): the proposal
+  names the real object ("Restore 'Report' to its previous version"); after approval the action
+  runs on the resolved id, re-read by id; an object gone meanwhile is refused.
+- **The names come from the person's words, not the model's labels.** The router puts only the
+  first name of "rename X to Y", "move X to Y" or "merge X into Y" in its target; the second is
+  read from the request itself, with exact patterns. Quoted names are taken as given; a request
+  that reads two ways is not done and asks for the names in quotes. The router's `entities` are
+  never the source of a name.
+- **A name read from unquoted words is always proposed, never run by trust alone** (Céline,
+  2026-10-25). Any name the action itself cut out of unquoted text — the request's own words, a
+  router target split at " to ", `restore`'s target — shows the proposal whatever the trust
+  state; a quoted name, or a router target used whole, keeps the trust path. The name as written
+  is resolved before the one stripped of "the" and "thread"; both resolving to different objects
+  is two readings, asked as above.
+- Not yet: the shell's menus and hosts (AT8), the revision check (AT4) and the request id (AT6)
+  are those of the earlier work; a chat tool's "no exact match" goes to the model (BACKLOG).
 
 **Why it matters beyond the bugs it closes.** Silence as consent (K7) is safe only for an object
 the user could have seen; an injected instruction naming a target can only reach the object the
@@ -463,9 +513,9 @@ treatment is the three-way choice above; there is no report-to-source or communi
 
 ## Session log
 
-**Status:** ◐ Partial — encryption, hash chain, anchor and fail-closed writes are built. If the
-encrypted log cannot be opened, the orchestrator does not yet fail closed (tracked in the
-private backlog) (code: `crates/sovereign-ai/src/session_log.rs`, `encrypted_log.rs`).
+**Status:** ◐ Partial — encryption, hash chain, anchor, fail-closed writes and, since v0.0.12, the
+quarantine of an unverifiable log are built; the diagnostic sandbox is for the next release (code:
+`crates/sovereign-ai/src/session_log.rs`, `encrypted_log.rs`).
 
 **Decided 2026-10-10 (Céline):** when the encrypted session log cannot be opened or verified,
 logging stops — nothing is ever written in clear — and the user sees a notice saying so. Chat
@@ -486,6 +536,34 @@ The orchestrator's memory of the conversation and its audit trail.
   log directory detect truncation, rollback and a wipe of the whole log.
 - **Fail-closed:** on detected tampering the encrypted log refuses to append; if encrypting an
   entry fails, the entry is dropped rather than written in clear.
+- **An unverifiable log is quarantined, every time** (v0.0.12 item 10; Céline, 2026-10-26:
+  "quarantine, fresh start"). At each login, before the key is installed, the log is checked:
+  - the hash chain over its lines;
+  - every encrypted entry decrypting under this persona's key;
+  - the anchor (truncation, forgery, deletion);
+  - the beacon (a wiped log).
+
+  If any check fails, the log, its anchor, its rotated files and its beacon are moved unchanged into
+  a `quarantine-<UTC time>` directory beside it, which nothing reads. A fresh log starts, and nothing
+  of the quarantined one ever reaches the model. The person is told once, at that login, in Céline's
+  words:
+  > "Your assistant's conversation log could not be verified: it may have been changed while
+  > Sovereign was closed, or a write was cut short (a crash, a full disk). The assistant starts
+  > without its earlier conversations. Nothing was deleted."
+
+  If the quarantine itself cannot be done (a file locked, a disk error), logging is off for the
+  session, with the "could not be opened" notice, and the next login tries again.
+  - The check never fails by crashing: a malformed line is a failed check.
+  - No message (log line or notice) carries bytes from the file, at most a line number and a
+    length.
+  - On a host with one orchestrator for both personas (the frozen Tauri desktop), each login points
+    the log at the logging-in persona's own directory first, so one persona's login never touches
+    the other's log.
+  - Until v0.0.11 the chain was checked only when the history was read back. A reordered log, or a
+    plaintext line added after encryption, was then neither refused nor set aside: logging went on
+    and the history came back empty without saying so.
+  - Not yet: a sandbox to see what happened to a quarantined log (Céline, 2026-10-26: "in the next
+    version").
 - **Rotation:** by size — at 10 MB the log rotates, keeping 3 older files.
 - **Use:** the agent loop reloads recent entries as conversation history.
 

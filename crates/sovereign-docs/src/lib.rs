@@ -24,15 +24,20 @@
 
 pub mod host;
 pub mod hosts;
+mod moves;
 pub mod orphans;
 pub mod service;
 pub mod threads;
 pub mod types;
 pub mod unlock_migration;
 pub mod wire;
+// v0.0.12 lot 1 (C1 at the choke point): tests written before the code, by
+// another author; the implementer does not edit them.
+#[cfg(test)]
+mod lot1_clock_tests;
 
 pub use wire::{
-    analysis_text, backup_document_from_row, decode_provenance, encode_provenance, normalized_hash, purge_fingerprint,
+    analysis_text, backup_document_from_row, decode_provenance, encode_provenance, normalized_hash,
     purge_marker_wire, BackupDocument, BackupError, BackupReport, IncomingAlert, ModelCheck,
     PurgeApplied, PurgeMarkerWire, Stamp, WireApplied, WireMeta, WireOutcome, WireState,
     MAX_STAMP_AHEAD_SECS,
@@ -52,8 +57,10 @@ pub use threads::{parse_thread_stamp, seed_threads, thread_order, THREAD_MARKER_
 pub use service::DocumentService;
 pub use unlock_migration::{
     run_unlock_migration, start_unlock_migration, unlock_migration_complete, unlock_migration_notice_shown,
-    unlock_migration_pending_notice, MigrationNotice, MigrationRun, MigrationTask,
+    unlock_migration_pending_notice, unlock_migration_undecryptable, unreadable_line, unreadable_line_in,
+    MigrationNotice, MigrationRun, MigrationTask, UNREADABLE_HEADING, UNREADABLE_MEANING,
 };
+pub use sovereign_db::encrypted::UndecryptableDocument;
 pub use sovereign_docformat::{Block, BlockId, DocumentV2, EditError, FormatError, SourceForm};
 pub use types::*;
 

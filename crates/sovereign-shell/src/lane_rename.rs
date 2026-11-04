@@ -35,7 +35,7 @@ use vello::peniko::Fill;
 use vello::Scene;
 use winit::keyboard::{Key as WKey, NamedKey as WNamed};
 
-use crate::canvas::LANES;
+use crate::canvas::LaneMap;
 use crate::new_thread::{clean_name, name_field};
 use crate::theme::{editor_palette, pal};
 use crate::thread_writes::ThreadWrites;
@@ -66,40 +66,53 @@ pub(crate) struct LaneLabel {
 
 /// The renamable lane labels for `threads` (the store's thread list, as the
 /// canvas's workspace load reads it): one per lane whose label shows a live
-/// thread — the same thread and name the label shows (several threads can
-/// share a lane: the label shows one of them). No label for a deleted thread
-/// or a marker (R6), nor for the fallback lane, which holds no thread.
+/// thread with a name — its own lane (one lane per thread, N2), its raw id,
+/// its name. No label for a deleted thread or a marker (R6), nor for the
+/// fallback lane, which holds no thread; nor for a thread whose name is empty
+/// (no label is drawn) or still sealed (no key: it shows a lock, which is not
+/// renamable).
 ///
-/// Mirrors `canvas::load_workspace`'s lane names: thread *i* of the live
-/// threads is drawn in lane *i* mod [`LANES`]; a later thread with a name
-/// takes the label over, one with an empty name leaves it, one whose name is
-/// still sealed (no key) shows a lock, which is not renamable.
+/// The lane is the one mapping's ([`LaneMap`], N1), as the canvas's.
 pub(crate) fn lane_labels(threads: &[Thread]) -> Vec<LaneLabel> {
-    let mut per_lane: Vec<Option<LaneLabel>> = vec![None; LANES];
-    for (i, t) in threads.iter().filter(|t| t.deleted_at.is_none()).enumerate() {
-        let lane = i % LANES;
-        if t.name_nonce.is_none() && !t.name.is_empty() {
-            per_lane[lane] =
-                t.id_string().map(|thread_id| LaneLabel { lane, thread_id, name: t.name.clone() });
-        } else if t.name_nonce.is_some() {
-            per_lane[lane] = None;
-        }
-    }
-    per_lane.into_iter().flatten().collect()
+    let lanes = LaneMap::from_threads(threads);
+    threads
+        .iter()
+        .filter(|t| t.deleted_at.is_none() && t.name_nonce.is_none() && !t.name.is_empty())
+        .filter_map(|t| {
+            let thread_id = t.id_string()?;
+            let lane = lanes.lane_of_thread(&thread_id)?;
+            Some(LaneLabel { lane, thread_id, name: t.name.clone() })
+        })
+        .collect()
 }
 
 /// One AccessKit node per label, in order: a button named
-/// `"Rename thread <name>"` (R4). No action is declared: the shell's
-/// AccessKit actions are not wired yet (THREAD-name P3, BACKLOG §3).
+/// `"Rename thread <name>"` (R4). It takes the focus (N8: focusing an
+/// off-screen lane's label scrolls it into view) and a click (opens the
+/// rename field, as a double-click on the label does), both handled by
+/// `App::a11y_action`.
 pub(crate) fn lane_label_nodes(labels: &[LaneLabel]) -> Vec<Node> {
     labels
         .iter()
         .map(|l| {
             let mut n = Node::new(Role::Button);
             n.set_label(format!("{LABEL_BUTTON_PREFIX}{}", l.name));
+            n.add_action(accesskit::Action::Focus);
+            n.add_action(accesskit::Action::Click);
             n
         })
         .collect()
+}
+
+/// The accessibility id of a lane label's button (N5): keyed by its thread
+/// (an FNV-1a hash of the raw id, under `namespace`), so it stays the same
+/// while the thread exists, whatever lane it is in.
+pub(crate) fn label_node_id(namespace: u64, thread_id: &str) -> accesskit::NodeId {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in thread_id.bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    accesskit::NodeId(namespace | (h & (namespace - 1)))
 }
 
 /// The lane whose label rect contains `p` (shell coordinates), if any.

@@ -7,7 +7,7 @@
  *  thread was deleted, into a thread the user chooses. In the trash, a deleted
  *  thread's documents are grouped and can be restored all at once.
  *  Commands: `list_trash`, `restore_from_trash` ({ id, threadId }),
- *  `empty_trash`.
+ *  `empty_trash` ({ ids }: what the view shows, v0.0.12 item 9, T1).
  */
 
 import { emptyTrash, listTrash, restoreFromTrash, type TrashEntryDto } from '$lib/api/commands';
@@ -29,7 +29,10 @@ export const trash = $state({
 	/** "Empty trash" was clicked and its confirmation is showing. */
 	emptyRequested: false,
 	/** The last refusal or failure, for the user. */
-	error: null as string | null
+	error: null as string | null,
+	/** After Empty trash: the shown documents no longer in the trash
+	 *  (restored or purged elsewhere meanwhile), left alone (T1). */
+	leftAlone: 0
 });
 
 function toLine(d: TrashEntryDto): TrashLine {
@@ -149,14 +152,20 @@ export function cancelEmpty(): void {
 	trash.emptyRequested = false;
 }
 
-/** The confirmation accepted: empties the trash; how many were purged, or
- *  `null` when no confirmation was showing (nothing purged). */
+/** The confirmation accepted: empties what the view shows (its lines, as
+ *  drawn: a document a peer's deletion put in the trash since is not among
+ *  them, and stays; v0.0.12 item 9, T1); how many were purged, or `null` when
+ *  no confirmation was showing (nothing purged). A shown document not purged
+ *  was no longer in the trash: `trash.leftAlone` counts them. */
 export async function confirmEmpty(): Promise<number | null> {
 	if (!trash.emptyRequested) return null;
 	trash.emptyRequested = false;
+	trash.leftAlone = 0;
+	const ids = trash.lines.map((l) => l.id);
 	try {
-		const n = await emptyTrash();
+		const n = await emptyTrash(ids);
 		trash.error = null;
+		trash.leftAlone = Math.max(0, ids.length - n);
 		return n;
 	} catch (e) {
 		trash.error = message(e);

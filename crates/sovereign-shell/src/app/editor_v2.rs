@@ -94,8 +94,20 @@ thread_local! {
     static MODS: Cell<ModifiersState> = const { Cell::new(ModifiersState::empty()) };
     /// Whether the OS window has focus (`WindowEvent::Focused`).
     static WINDOW_FOCUSED: Cell<bool> = const { Cell::new(true) };
-    /// The clipboard is one per process: all editors share this state.
+    /// The clipboard is one per process: all editors, the shell's fields and
+    /// the pairing code share this state (item 8, K3).
     static CLIPBOARD: Rc<RefCell<ClipState>> = Rc::new(RefCell::new(ClipState::new(Box::new(OsClipboard::default()))));
+}
+
+/// Whether `doc`, found changed under an open editor whose base is `opened`
+/// (the stored form it opened or last saved), is that document's one-time
+/// conversion (v0.0.12 item 7, V5): written by the conversion, and with the
+/// same plain text as what the editor opened. A real change — another
+/// writer, or other text — is not.
+fn own_conversion(opened: &str, doc: &sovereign_db::schema::Document) -> bool {
+    let plain = |stored: &str| sovereign_docs::DocumentV2::read(stored).ok().map(|(d, _)| d.plain_text());
+    doc.last_writer.as_deref() == Some(sovereign_docs::service::MIGRATION_WRITER)
+        && plain(opened).is_some_and(|base| Some(base) == plain(&doc.content))
 }
 
 pub(crate) fn set_modifiers(m: ModifiersState) {
@@ -116,7 +128,22 @@ pub(crate) fn use_test_system_clipboard(sys: Box<dyn SystemClipboard>) {
 /// Tests: this thread's shared clipboard state (what every editor copies to).
 #[cfg(test)]
 pub(crate) fn clipboard_for_tests() -> Rc<RefCell<ClipState>> {
+    shared_clipboard()
+}
+
+/// This thread's shared clipboard state: where every copy this process makes
+/// is recorded — the editors', the shell's fields' (`crate::clip::FieldClipboard`)
+/// and the pairing code's (`crate::clip::set_text`) — so a later copy replaces
+/// an earlier one whoever made it, and the forgetting covers them all (item 8,
+/// K3).
+pub(crate) fn shared_clipboard() -> Rc<RefCell<ClipState>> {
     CLIPBOARD.with(|c| c.clone())
+}
+
+/// Forget this process's copy on the shared clipboard
+/// ([`ClipState::forget`]): at a store change and at quit (item 8, K1, K2).
+pub(crate) fn forget_clipboard() {
+    CLIPBOARD.with(|c| c.borrow_mut().forget());
 }
 
 /// Tests: editing sessions of closed editors still waiting to be ended.
@@ -229,6 +256,17 @@ impl ClipState {
         }
     }
 
+    /// A plain copy (a shell field, the pairing code): recorded like an
+    /// editor's, so it replaces the previous item and is forgotten with it,
+    /// but with no payload, no source document and no delayed clear (such a
+    /// copy shows no revealed value). Returns whether it reached the clipboard;
+    /// a failure is also left in `error` for the shell to say.
+    pub(crate) fn write_plain(&mut self, text: &str, privacy: ClipboardPrivacy) -> bool {
+        let item = ClipboardWrite { text: text.to_string(), sovereign: None, privacy, clear_after: None };
+        self.write_from(item, Duration::ZERO, None);
+        self.ours.is_some()
+    }
+
     pub(crate) fn read(&mut self) -> Option<ClipboardContent> {
         let text = self.sys.read_text()?;
         let sovereign = if self.holds_ours() {
@@ -249,13 +287,18 @@ impl ClipState {
         }
     }
 
-    /// Forget this process's copy, when the store is replaced (E9): its
-    /// private payload and the document it came from are dropped, and a
-    /// pending clear is run now — a revealed value still on the clipboard is
-    /// cleared at once, not left to its timer. Another application's copy, and
-    /// an ordinary copy of ours with no clear pending, stay on the clipboard.
+    /// Forget this process's copy, when the store is replaced (E9) and at
+    /// quit (item 8, K1, K2): if the clipboard still holds the item this
+    /// process wrote last — a revealed value, an ordinary copy of document
+    /// text, a field's copy, the pairing code — it is cleared now, so it
+    /// cannot be pasted in another persona or after Sovereign has quit
+    /// (Céline, 2026-10-24, reversing ch. 12's "no automatic clearing of
+    /// ordinary text" of 2026-10-10). Its private payload, the document it
+    /// came from and a pending clear are dropped. Another application's copy,
+    /// or anything this process did not write, is never cleared.
     pub(crate) fn forget(&mut self) {
-        if self.clear_at.take().is_some() && self.holds_ours() {
+        self.clear_at = None;
+        if self.holds_ours() {
             if let Err(e) = self.sys.clear() {
                 self.error = Some(e);
             }
@@ -676,8 +719,9 @@ pub(crate) struct EditorPane {
     in_flight: Vec<(SaveId, String)>,
     /// Close the window once everything is saved.
     pub(crate) close_after_save: bool,
-    /// The user chose Discard in the unsaved prompt: unsaved edits do not
-    /// block quitting any more.
+    /// The user chose Discard in the unsaved prompt of a quit: unsaved edits
+    /// do not block that quit any more. Withdrawn when the quit is cancelled
+    /// (lot 1, D1: `v2_withdraw_discards`).
     pub(crate) discarded: bool,
     /// A failed save was already announced in a modal (until a save succeeds).
     failure_announced: bool,
@@ -981,7 +1025,10 @@ impl App {
     /// why, in plain words — means no window opens (E3): there is no other
     /// view of a document. The notice never quotes what is stored (JSON or
     /// ciphertext) and never names a store, a persona or a store error's text.
-    pub(crate) fn v2_open(&mut self, doc_id: &str, title: &str) -> Option<Box<EditorPane>> {
+    /// The editor opens on the stored title, as read here (its tokens in
+    /// their stored form, which the editor shows through its display map):
+    /// the card's title is the title as shown (item 8, L2), never handed to it.
+    pub(crate) fn v2_open(&mut self, doc_id: &str) -> Option<Box<EditorPane>> {
         const NOTICE_TITLE: &str = "Document";
         let Some(db) = self.db.clone() else {
             self.set_notice(NOTICE_TITLE, "No workspace database is open, so the document can't be shown.");
@@ -1000,8 +1047,9 @@ impl App {
                 return None;
             }
         };
-        if doc.encryption_nonce.is_some() {
-            // No-auth mode: the content is ciphertext. Never show or edit that.
+        if doc.encryption_nonce.is_some() || doc.title_nonce.is_some() {
+            // No-auth mode: the content (or the title) is ciphertext. Never
+            // show or edit that.
             self.set_notice(NOTICE_TITLE, "This document is encrypted and this session can't decrypt it. Log in to open it.");
             return None;
         }
@@ -1014,7 +1062,7 @@ impl App {
         let clipboard = CLIPBOARD.with(|c| c.clone());
         let pii = ShellPii::new(db, self.rt.handle().clone(), ids.clone(), links.clone()).with_clipboard(clipboard.clone());
         let trust = if doc.is_owned { Trust::Owned } else { Trust::External };
-        match EditorPane::open(title, doc.content, trust, Fonts::System, Box::new(pii), notes, clipboard, links, ids) {
+        match EditorPane::open(&doc.title, doc.content, trust, Fonts::System, Box::new(pii), notes, clipboard, links, ids) {
             Ok(mut p) => {
                 p.save = SaveState::new(revision);
                 Some(Box::new(p))
@@ -1032,13 +1080,10 @@ impl App {
     /// a skill or a restore rewrote it; those refuse while edits are unsaved).
     pub(crate) fn v2_reopen(&mut self, doc_id: &str) {
         for wi in 0..self.windows.len() {
-            let title = match &self.windows[wi].content {
-                WindowContent::Doc(d) if d.doc_id == doc_id && d.v2.is_some() => {
-                    self.cards.iter().find(|c| c.id == doc_id).map(|c| c.title.clone()).unwrap_or_default()
-                }
-                _ => continue,
-            };
-            let fresh = self.v2_open(doc_id, &title);
+            if !matches!(&self.windows[wi].content, WindowContent::Doc(d) if d.doc_id == doc_id && d.v2.is_some()) {
+                continue;
+            }
+            let fresh = self.v2_open(doc_id);
             if let WindowContent::Doc(d) = &mut self.windows[wi].content {
                 if fresh.is_some() {
                     d.v2 = fresh;
@@ -1138,7 +1183,8 @@ impl App {
     /// Run one of window `wi`'s save requests through the document service:
     /// its content and, when it changed, its title, in one `Edit` (title
     /// contract T2). Returns what the store holds after it: the content, and
-    /// the title when the request carried one.
+    /// the title when the request carried one — as shown outside the editor
+    /// (its tokens as their labels, item 8 L2), for the card and the bar.
     ///
     /// A save refused because another writer saved first (`Conflict`, G11) goes
     /// into the editor's remote-change flow (C-DOC weakness 9): the editor keeps
@@ -1188,8 +1234,12 @@ impl App {
         }
         let stored = db.and_then(|db| rt.block_on(db.get_document(&key)).ok());
         // The service may have replaced personal data in the title by a
-        // token: the card shows what was stored.
-        let title = r.title.as_ref().map(|t| stored.as_ref().map(|d| d.title.clone()).unwrap_or_else(|| t.clone()));
+        // token: the card shows what was stored, its tokens as their labels
+        // (item 8, L2).
+        let title = r.title.as_ref().map(|t| {
+            let stored_title = stored.as_ref().map(|d| d.title.clone()).unwrap_or_else(|| t.clone());
+            rt.block_on(crate::canvas::shown_title(Some(&docs), &key, &stored_title))
+        });
         Ok((stored.map(|d| d.content).unwrap_or_else(|| r.content.clone()), title))
     }
 
@@ -1225,12 +1275,15 @@ impl App {
     /// windows end **now**, on the outgoing service (`self.docs` is still
     /// it), so none is left for a later frame to end on the incoming store;
     /// the unsaved prompt (it can only be about one of them) goes; the
-    /// clipboard forgets this process's copy (`ClipState::forget`). No prompt
+    /// clipboard forgets this process's copy (`ClipState::forget`, item 8 K1:
+    /// whatever copy of ours is still on it, at every store change). No prompt
     /// is shown: unsaved edits are dropped as a lock drops them, and the
     /// screen afterwards is the same whatever the windows held (the same in
     /// every persona). The first unlock — no store yet, no window — changes
     /// nothing.
     pub(crate) fn v2_leave_store(&mut self) {
+        // K1: any store change, the first unlock included (it finds nothing).
+        forget_clipboard();
         let has_store_windows = self.windows.iter().any(|w| shows_store_documents(&w.content));
         if self.docs.is_none() && !has_store_windows {
             return;
@@ -1249,7 +1302,6 @@ impl App {
         self.orphan_modal = None;
         self.delete_notice = None;
         self.v2_end_sessions(false);
-        CLIPBOARD.with(|c| c.borrow_mut().forget());
     }
 
     /// Draw the editor of window `i` (its chrome is drawn by `draw_doc_window`).
@@ -1436,6 +1488,20 @@ impl App {
         None
     }
 
+    /// Cancel on a quit's unsaved prompt (lot 1, D1): every Discard chosen
+    /// during that quit is withdrawn, so those windows' edits count as unsaved
+    /// again, as they were. A Discard outside a quit closes its window at
+    /// once, so only a quit's Discards are still on an open window here.
+    pub(crate) fn v2_withdraw_discards(&mut self) {
+        for w in &mut self.windows {
+            if let WindowContent::Doc(d) = &mut w.content {
+                if let Some(p) = d.v2.as_mut() {
+                    p.discarded = false;
+                }
+            }
+        }
+    }
+
     /// The unsaved prompt's answer, for an editor window. Returns whether the
     /// prompt was about one (and was handled here).
     pub(crate) fn v2_resolve_unsaved(&mut self, doc_id: &str, then: super::AfterUnsaved, save: bool) -> bool {
@@ -1470,6 +1536,9 @@ impl App {
     /// "editing on <device>" signal between paired devices does not exist yet,
     /// so `Editor::editing_moved_to` and the three-choice warning are not wired.
     /// No protocol is invented here.
+    ///
+    /// Not told: the document's own one-time conversion (v0.0.12 item 7, V5,
+    /// [`own_conversion`]), which the editor takes silently.
     pub(crate) fn v2_after_sync(&mut self, device: &str) {
         let Some(db) = self.db.clone() else { return };
         for wi in 0..self.windows.len() {
@@ -1483,7 +1552,18 @@ impl App {
             }
             let revision = self.docs.clone().and_then(|d| self.rt.block_on(d.read(&doc_id)).ok().map(|v| v.revision));
             if let Some(p) = self.v2_pane(wi) {
-                if !p.wrote(&doc.content) {
+                if !p.wrote(&doc.content) && own_conversion(&p.stored, &doc) {
+                    // v0.0.12 item 7, V5: the one-time conversion of this
+                    // document, with the text the editor opened: not a change
+                    // from elsewhere. The editor takes the converted form
+                    // silently — what it holds (typed text included) stays,
+                    // and its next save is based on the converted state, so
+                    // it is no conflict either.
+                    p.stored = doc.content.clone();
+                    if let Some(r) = revision {
+                        p.save.revision = Some(r);
+                    }
+                } else if !p.wrote(&doc.content) {
                     p.stored = doc.content.clone();
                     p.editor.remote_change(RemoteChange { content: doc.content, device: device.to_string() });
                     // The editor took the new version (it had nothing of its
@@ -1685,7 +1765,7 @@ impl App {
             let threads = db.list_threads().await.map_err(|e| e.to_string())?;
             let tid = threads
                 .first()
-                .and_then(|t| t.id.as_ref().map(|x| x.to_string()))
+                .and_then(|t| t.id_string())
                 .ok_or("no thread to put the test documents in")?;
             let a = new_user_document(
                 "Token test A",

@@ -7,10 +7,11 @@
 //! process stops issuing writes at an arbitrary point. It can also fail one
 //! single call and let every later call through (`fail_once_after`) — a
 //! transient failure the caller survives and can clean up after (added
-//! 2026-10-17 for S5-10, all or nothing).
+//! 2026-10-17 for S5-10, all or nothing). And it can slow every call
+//! (`slow_calls`, added 2026-10-24 for v0.0.12 item 7, V4).
 #![allow(dead_code, clippy::too_many_arguments)]
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -27,6 +28,9 @@ pub struct FaultyDb {
     one_shot: AtomicI64,
     one_shot_fired: AtomicBool,
     calls: Mutex<Vec<&'static str>>,
+    /// A delay before every call, in microseconds; 0 = none (v0.0.12 item 7,
+    /// V4: a slowed conversion).
+    delay_us: AtomicU64,
 }
 
 impl FaultyDb {
@@ -37,6 +41,7 @@ impl FaultyDb {
             one_shot: AtomicI64::new(-1),
             one_shot_fired: AtomicBool::new(false),
             calls: Mutex::new(Vec::new()),
+            delay_us: AtomicU64::new(0),
         }
     }
 
@@ -69,12 +74,29 @@ impl FaultyDb {
         self.budget.load(Ordering::SeqCst) == 0
     }
 
+    /// From now on, every call waits `d` before it goes through (the
+    /// thread sleeps: tests that use it run on a multi-thread runtime).
+    /// Added for v0.0.12 item 7, V4: a conversion slowed per document, so a
+    /// save issued during it can be seen to wait or not.
+    pub fn slow_calls(&self, d: std::time::Duration) {
+        self.delay_us.store(d.as_micros() as u64, Ordering::SeqCst);
+    }
+
+    /// Calls go through without waiting again.
+    pub fn fast_calls(&self) {
+        self.delay_us.store(0, Ordering::SeqCst);
+    }
+
     pub fn calls(&self) -> Vec<&'static str> {
         self.calls.lock().unwrap().clone()
     }
 
     fn gate(&self, name: &'static str) -> DbResult<()> {
         self.calls.lock().unwrap().push(name);
+        let delay = self.delay_us.load(Ordering::SeqCst);
+        if delay > 0 {
+            std::thread::sleep(std::time::Duration::from_micros(delay));
+        }
         loop {
             let f = self.one_shot.load(Ordering::SeqCst);
             if f < 0 {

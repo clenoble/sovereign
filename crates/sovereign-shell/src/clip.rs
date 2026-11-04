@@ -1,21 +1,32 @@
 //! Minimal clipboard access (Batch 6c Phase 2b).
 //!
 //! Used by the pairing flow: copy the offer code on the source device, paste it
-//! on the joiner. A fresh `arboard::Clipboard` per call — cheap enough for the
-//! occasional copy/paste, and it avoids holding the OS clipboard open.
+//! on the joiner. The paste reads with a fresh `arboard::Clipboard` per call;
+//! the copy is recorded in the shell's one clipboard state, as every copy this
+//! process makes (item 8, K3), so it is forgotten at a store change and at quit.
 
 use sovereign_editor::host::{Clipboard, ClipboardContent, ClipboardPrivacy, ClipboardWrite};
+
+use crate::app::editor_v2::shared_clipboard;
 
 /// Read the clipboard as text, or `None` if empty / unavailable.
 pub(crate) fn get_text() -> Option<String> {
     arboard::Clipboard::new().ok()?.get_text().ok()
 }
 
-/// Write `text` to the clipboard. Returns whether it succeeded.
+/// Write `text` to the clipboard (the pairing code). Returns whether it
+/// succeeded. Recorded in the shared state (K1: the forgetting clears it),
+/// with the privacy flags of an editor copy (K5: kept out of the clipboard's
+/// history, cloud sync and monitoring).
 pub(crate) fn set_text(text: &str) -> bool {
-    arboard::Clipboard::new()
-        .and_then(|mut c| c.set_text(text.to_string()))
-        .is_ok()
+    const ALL_EXCLUDED: ClipboardPrivacy =
+        ClipboardPrivacy { exclude_from_history: true, exclude_from_cloud_sync: true, exclude_from_monitoring: true };
+    let st = shared_clipboard();
+    let mut st = st.borrow_mut();
+    let ok = st.write_plain(text, ALL_EXCLUDED);
+    // The caller says it (the Devices window's "copied"); no second notice.
+    st.error = None;
+    ok
 }
 
 // ---- the privacy flags of an editor copy (C-TEXT, *Clipboard*) ----------
@@ -70,31 +81,26 @@ pub(crate) fn set_private(cb: &mut arboard::Clipboard, text: &str, _p: Clipboard
 /// from a document pastes into the field as the text it showed (its label),
 /// never as the token: such a field resolves no tokens, and a name is stored
 /// as typed. Nor does it run a delayed clear: the field shows no revealed
-/// value, so its copies carry no `clear_after`. One `arboard::Clipboard` is
-/// kept while the field lives (on Linux, dropping it right after a write can
-/// lose the data).
+/// value, so its copies carry no `clear_after`.
+///
+/// Its copies are recorded in the shell's one clipboard state
+/// (`editor_v2::shared_clipboard`, item 8, K3), with the editors' copies: a
+/// later copy replaces an earlier one whoever made it, and the forgetting at
+/// a store change and at quit clears a field's copy too. That state keeps the
+/// process's one `arboard::Clipboard` (on Linux, dropping it right after a
+/// write can lose the data).
 #[derive(Default)]
-pub(crate) struct FieldClipboard {
-    cb: Option<arboard::Clipboard>,
-}
-
-impl FieldClipboard {
-    fn cb(&mut self) -> Option<&mut arboard::Clipboard> {
-        if self.cb.is_none() {
-            self.cb = arboard::Clipboard::new().ok();
-        }
-        self.cb.as_mut()
-    }
-}
+pub(crate) struct FieldClipboard;
 
 impl Clipboard for FieldClipboard {
     fn read(&mut self) -> Option<ClipboardContent> {
-        let text = self.cb()?.get_text().ok()?;
+        // The text only: never a payload, even from an editor's copy.
+        let text = shared_clipboard().borrow_mut().read()?.text;
         Some(ClipboardContent { text, sovereign: None })
     }
     fn write(&mut self, item: ClipboardWrite) {
-        if let Some(cb) = self.cb() {
-            let _ = set_private(cb, &item.text, item.privacy);
-        }
+        // No payload and no delayed clear (`write_plain`); a failure is said
+        // by the shell's clipboard notice.
+        shared_clipboard().borrow_mut().write_plain(&item.text, item.privacy);
     }
 }

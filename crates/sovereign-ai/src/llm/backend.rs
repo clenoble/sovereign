@@ -18,6 +18,13 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::LlamaModel;
 #[cfg(feature = "llama")]
 use llama_cpp_2::sampling::LlamaSampler;
+#[cfg(feature = "llama")]
+use crate::llm::batching::{prompt_chunks, prompt_fits_context};
+
+/// The context's batch size (`with_n_batch`) and the size of the chunks a
+/// prompt is decoded in (S6): one name, so the two cannot drift apart.
+#[cfg(feature = "llama")]
+const N_BATCH: usize = 2048;
 
 /// Per-model sampling parameters. Different model families perform best with
 /// different settings (e.g. Qwen 3.5 wants higher temperature and top_k).
@@ -100,7 +107,7 @@ impl LlamaCppBackend {
         // Disable flash attention to avoid ggml symbol conflict with whisper-rs-sys.
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(n_ctx))
-            .with_n_batch(2048)
+            .with_n_batch(N_BATCH as u32)
             .with_flash_attention_policy(0);
 
         let ctx = model
@@ -133,16 +140,33 @@ impl LlamaCppBackend {
             .str_to_token(prompt, llama_cpp_2::model::AddBos::Never)
             .map_err(|e| anyhow::anyhow!("Tokenization failed: {:?}", e))?;
 
-        let mut batch = LlamaBatch::new(2048, 1);
-        let last_index = tokens_list.len() as i32 - 1;
-        for (i, token) in (0_i32..).zip(tokens_list.into_iter()) {
-            batch
-                .add(token, i, &[0], i == last_index)
-                .map_err(|e| anyhow::anyhow!("Batch add failed: {:?}", e))?;
+        // S6: refuse, in plain words, a prompt that leaves no room for the
+        // answer, before anything is added or decoded.
+        prompt_fits_context(tokens_list.len(), max_tokens, ctx.n_ctx()).map_err(|e| anyhow::anyhow!(e))?;
+        if tokens_list.is_empty() {
+            // No chunk would be decoded, so there would be no logits to sample from.
+            anyhow::bail!("The prompt is empty: there is nothing to generate from.");
         }
 
-        ctx.decode(&mut batch)
-            .map_err(|e| anyhow::anyhow!("Initial decode failed: {:?}", e))?;
+        // S6: decode the prompt in chunks of at most the batch size, in order,
+        // each token at its absolute position; only the prompt's last token asks
+        // for logits. llama.cpp may clamp the context's batch below N_BATCH (to
+        // n_ctx), so a chunk never exceeds what the context accepts.
+        let mut batch = LlamaBatch::new(N_BATCH, 1);
+        for chunk in prompt_chunks(tokens_list.len(), N_BATCH.min(ctx.n_batch() as usize)) {
+            batch.clear();
+            let tokens = &tokens_list[chunk.start..chunk.start + chunk.len];
+            for (k, token) in tokens.iter().enumerate() {
+                let pos = i32::try_from(chunk.start + k)
+                    .map_err(|_| anyhow::anyhow!("The prompt is too long for the model."))?;
+                let logits = chunk.logits_on_last && k + 1 == chunk.len;
+                batch
+                    .add(*token, pos, &[0], logits)
+                    .map_err(|e| anyhow::anyhow!("Batch add failed: {:?}", e))?;
+            }
+            ctx.decode(&mut batch)
+                .map_err(|e| anyhow::anyhow!("Prompt decode failed: {:?}", e))?;
+        }
 
         let mut samplers: Vec<LlamaSampler> = vec![LlamaSampler::temp(sampling.temperature)];
         if sampling.top_k > 0 {
@@ -162,7 +186,9 @@ impl LlamaCppBackend {
 
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut output = String::new();
-        let mut n_cur = batch.n_tokens();
+        // Generation continues after the whole prompt, not after the last chunk.
+        let mut n_cur = i32::try_from(tokens_list.len())
+            .map_err(|_| anyhow::anyhow!("The prompt is too long for the model."))?;
 
         for _ in 0..max_tokens {
             let token = sampler.sample(ctx, batch.n_tokens() - 1);

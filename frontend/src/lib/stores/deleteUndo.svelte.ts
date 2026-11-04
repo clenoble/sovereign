@@ -16,6 +16,17 @@ export const UNDO_WINDOW_MS = 10_000;
 
 export const NOTICE_TEXT = 'Moved to the trash — it can be restored for 30 days';
 
+/** What a Delete says when the document was in the trash already (a deletion
+ *  made elsewhere, or earlier): no Undo, since that deletion is not this
+ *  Delete's (v0.0.12 item 9, T3). */
+export const ALREADY_TEXT = 'Already in the trash — nothing was changed';
+
+/** A notice with no Undo. */
+export interface InfoNotice {
+	text: string;
+	shownAt: number;
+}
+
 export interface UndoNotice {
 	docId: string;
 	text: string;
@@ -25,18 +36,30 @@ export interface UndoNotice {
 export const undo = $state({
 	notice: null as UndoNotice | null,
 	/** The last refusal or failure, for the user. */
-	error: null as string | null
+	error: null as string | null,
+	/** A notice that offers nothing to undo ("Already in the trash"). */
+	info: null as InfoNotice | null
 });
 
 function message(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
 }
 
-/** One click on Delete: moves `docId` to the trash and shows the notice. */
+/** One click on Delete: moves `docId` to the trash and shows the notice
+ *  with Undo. When the host answers that it was in the trash already, the
+ *  notice says so and offers no Undo (T3); a missing answer (an older host)
+ *  counts as moved. */
 export async function deleteWithUndo(docId: string, now: number = Date.now()): Promise<void> {
 	try {
-		await deleteDocument(docId);
+		const outcome = await deleteDocument(docId);
 		undo.error = null;
+		if (outcome === 'already_in_trash') {
+			// An Undo restores only a deletion this Delete made.
+			undo.notice = null;
+			undo.info = { text: ALREADY_TEXT, shownAt: now };
+			return;
+		}
+		undo.info = null;
 		undo.notice = { docId, text: NOTICE_TEXT, shownAt: now };
 	} catch (e) {
 		undo.error = message(e);

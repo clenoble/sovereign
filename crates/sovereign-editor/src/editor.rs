@@ -654,14 +654,16 @@ impl Editor {
             NamedKey::Backspace => self.delete(false, word),
             NamedKey::Delete => self.delete(true, word),
             NamedKey::Enter => {
-                if self.field.is_some() {
-                    return EventResult::NotHandled;
-                }
                 // An Enter while a pre-edit is showing belongs to the input
                 // method (it commits the composition): no line break, no list
                 // continuation; the commit arrives as its own event (U35).
+                // A single-line field keeps it too, so its host sees only the
+                // next Enter (K3b).
                 if self.preedit.is_some() {
                     return EventResult::Handled;
+                }
+                if self.field.is_some() {
+                    return EventResult::NotHandled;
                 }
                 self.enter(m.shift);
             }
@@ -1378,14 +1380,7 @@ impl Editor {
         // is asked for: the title as shown, with its caret and selection.
         let title_run = match self.title_field.as_deref() {
             Some(f) if full || self.title_a11y_dirty => {
-                let t = f.field_text();
-                let pii = &*self.host.pii;
-                let cache = &self.pii_cache;
-                let resolve = |id: &str| shown(token_display(pii, cache, id));
-                let map = text::DisplayMap::build(
-                    text::DisplayInput { text: &t, start: 0, end: t.len(), mask: false, preedit: None, marks: "" },
-                    &resolve,
-                );
+                let map = self.title_display_map(&f.field_text());
                 let run = a11y::Run::new(map.text.clone());
                 let sel = (run.char_index(map.m2d(f.sel.anchor.offset)), run.char_index(map.m2d(f.sel.focus.offset)));
                 Some((run, sel))
@@ -1395,7 +1390,10 @@ impl Editor {
         self.title_a11y_dirty = false;
         let editable_title = self.title_editable();
         let title = title_run.as_ref().map(|(run, sel)| a11y::TitleNode { run, editable: editable_title, selection: *sel });
-        let title_text = self.title_field.as_deref().map(|f| f.field_text()).unwrap_or_default();
+        // The editor's label is the title as shown, as in the title's own node
+        // (item 8, L1): a token as its label, or its value while revealed —
+        // never its stored form.
+        let title_text = self.title_field.as_deref().map(|f| self.title_display_map(&f.field_text()).text).unwrap_or_default();
         let label = (self.field.is_none() && !title_text.is_empty()).then_some(title_text.as_str());
         a11y::build(a11y::TreeInput {
             tree_id: self.config.accessibility_tree,
@@ -1508,6 +1506,19 @@ impl Editor {
     /// is not read-only (T7).
     fn title_editable(&self) -> bool {
         self.title_field.is_some() && self.read_only.is_none()
+    }
+
+    /// The title text `t` as it is shown: each token through the display map
+    /// (its label, or its value while revealed; token-form text that is not a
+    /// token here as typed). The title's node and the editor's label read it.
+    fn title_display_map(&self, t: &str) -> text::DisplayMap {
+        let pii = &*self.host.pii;
+        let cache = &self.pii_cache;
+        let resolve = |id: &str| shown(token_display(pii, cache, id));
+        text::DisplayMap::build(
+            text::DisplayInput { text: t, start: 0, end: t.len(), mask: false, preedit: None, marks: "" },
+            &resolve,
+        )
     }
 
     /// Whether input goes to the title field.

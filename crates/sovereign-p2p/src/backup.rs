@@ -96,8 +96,16 @@ pub async fn build_snapshot(db: &dyn GraphDB, device_id: &str) -> P2pResult<Back
             .list_all_suggested_links()
             .await
             .map_err(|e| err("suggested_links", e))?,
-        // A store without purge markers (a test double) backs up none.
-        purge_markers: db.list_purge_markers().await.unwrap_or_default(),
+        // A store without purge markers (a test double) backs up none. A
+        // backup carries deletions — id and stamp — never a fingerprint, even
+        // one a v0.0.11 row not yet erased still holds (v0.0.12 item 3, L13).
+        purge_markers: db
+            .list_purge_markers()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| sovereign_db::schema::PurgeMarker { fingerprint: None, ..m })
+            .collect(),
     })
 }
 

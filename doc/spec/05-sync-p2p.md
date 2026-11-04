@@ -47,6 +47,16 @@ Phase 2 crowd backup (chapter 06, Feature 2).
   no build version), request-response over CBOR on `/sovereign/sync/1`, relay-v2 client,
   DCUtR, and the mailbox client (`/sovereign/mailbox/1`).
 - Idle connections close after 60 s.
+- **The DNS transport is optional** (v0.0.12 item 12). The node reads the system resolver
+  config once, at start. Where there is none (Android: no `/etc/resolv.conf`, its resolver is
+  `netd`), the swarm is built without the DNS layer and starts anyway; one startup line says so.
+  LAN discovery, sync with paired devices on the local network and peers addressed by IP work as
+  on the desktop. An address that needs a name (`/dns`, `/dns4`, `/dns6`, `/dnsaddr`) is never
+  dialled, by `Dial` or by the seed relays, and no name goes to a third-party resolver; the reason
+  is logged once per node. Settings → Devices shows: "This phone cannot look up names: it syncs
+  on the local network and with addresses given by IP." Resolving names through the system's own
+  resolver (`getaddrinfo`) is later, when seeds given by name are needed on the phone.
+  (code: crates/sovereign-p2p/src/node.rs `new_with_dns_source`, `has_dns_transport`)
 
 *Replaces v1.x:* "Transport: QUIC … TLS 1.3 + device-pair key." Channels are authenticated and
 encrypted by libp2p's Noise handshake (QUIC's built-in handshake on QUIC), bound to the
@@ -264,6 +274,57 @@ revocation not built.
 
 Specified, not built: per-device cryptographic revocation through a fresh key exchange per pair.
 
+### Device names
+
+**Status:** ● Built in v0.0.12 on the desktop (items 14 and 19, `doc/plans/V0012-items14-19-devices.md`,
+merged `c7a78e4`, 2026-10-24; code `crates/sovereign-shell/src/device_name.rs`, `device_rename.rs`,
+`history_device.rs`). The phone's device name is a later item.
+
+A device's name is a label for people. It is not its identity: the device in a stamp is its peer
+id (*Stamps*, item 22), and renaming a device never changes what is stored or written next. Until
+v0.0.11 the name came only from `[p2p] device_name` in the configuration file, "Sovereign Device"
+by default, with no setting in the UI, so two devices were easily indistinguishable. Céline put
+both items in on 2026-10-23; on 2026-10-24 she approved the choices PANDA2 put to her ("je suis
+d'accord avec tes choix"). The choices below marked PANDA2's are the PANDA2 maille's.
+- **One name per workspace.** This device's name is kept in a file of its own in the data
+  directory, read at start, and it overrides the configuration's value; without it the
+  configuration's value is used, then "Sovereign Device". It is the device's name, not an
+  account's: both personas read and change the same one (PANDA2's choice). So renaming the device
+  in a duress session renames it for the primary too; nothing in that reveals the duress persona.
+- **At setup.** The first-device wizard asks for it on the step that names the AI, in a second field
+  "This device's name", and the join form in a fifth field (PANDA2's choice). It is prefilled with
+  the computer's name, the operating system's host name (Céline, 2026-10-24: "Le nom de
+  l'ordinateur"), and editable; under it: "Your other devices and your guardians see this name."
+  A blank entry means the default. The name is trimmed and kept to at most 64 grapheme clusters,
+  never cut inside one (PANDA2's choice). The join sends it in `PairHello`.
+- **Renaming this device.** The Devices window's "This device" line has a Rename action: the
+  editor's single-line field (Enter saves, Escape cancels, a blank entry is refused with a
+  message). The new name is saved at once and is what this device sends from then on, at the
+  next pairing and in a guardian offer, without a restart.
+- **The name travels only at pairing**, and the protocol is unchanged: devices already paired keep
+  the name they learned. The Devices window says so under this device's name: "Devices already
+  paired with this one keep the name they learned until you pair them again."
+- **Renaming a paired device, here only.** Each paired device's row has a Rename action with the
+  same field and rules. The new label replaces that device's stored name in this device's paired
+  list, so every place that names it uses it: History, alerts, orphans (since item 22, which made
+  stamps carry the peer id the paired list is keyed by), the update notice and the device list. It
+  is not sent anywhere. This removes the "two Sovereign Device" ambiguity on each device without a
+  protocol change.
+- **History names the device** (item 14). A version received from a peer is stored with the
+  message "Synced from {id}" or "Received from {id}", the id being the peer's. The History window
+  shows, and announces, the device's name from the paired list instead; "this device" for its own
+  id; for a device no longer paired, "…" and the id's **last** 8 characters (every peer id starts
+  with the same 8). The stored message is unchanged, so older versions are shown the same way;
+  other messages are shown as they are. A row's message is one line, cut with "…" at the row's
+  width, never drawn over the time line under it; the full message stays in the row's accessible
+  text.
+- **Accessibility.** The rename fields are text inputs named "This device's name" and "Name of
+  {current name}"; the Rename actions are buttons named "Rename this device" and "Rename {name}";
+  the setup field is named by its visible label.
+
+Out of these items: trash rows also wrap over the next row (PANDA2's choice to leave them for a
+later lot); the phone's device name.
+
 ## Sync protocol
 
 **Status:** ◐ Partial — all tables carried; title-only edits, document thread moves,
@@ -422,7 +483,11 @@ preserves what it replaced and is surfaced:
 - **Rows:** before an overwrite, the prior row is captured, sealed under the account transport
   key, and stored as a `RowRecovery`. Restore is wired in the sync layer for threads, entities,
   PII records, contacts, messages, conversations and suggested links; both UIs offer it only for
-  threads, contacts and PII records. Append-only tables are never overwritten.
+  threads, contacts and PII records. Append-only tables are never overwritten. **A thread a peer
+  deleted** is brought back live, with its name, by a stamped write after the deletion it undoes
+  (`DocumentService::thread_restore`), so the restore travels like any thread write; its documents
+  in the trash stay there until restored (v0.0.12 item 6, A4; until v0.0.11 the restore went
+  through `thread_update`, which refuses a deleted thread).
 - **Audit:** each pending change is scored — a model-free heuristic (prompt-injection scan of the
   incoming content, wholesale-rewrite check against the prior) always, plus an LLM verdict when a
   model is loaded. The audit annotates; it never gates the sync. Only the frozen Tauri
@@ -499,7 +564,9 @@ The manifest (sealed under the account transport key) gains, per document, the *
 hash** and the **stamp**; it keeps today's byte hash for older peers. It gains a list of **purge
 markers** — document id, the stamp of the purge, and the **fingerprint** of the purged version
 (*Deletions and purges*), nothing else — and a **wire version** number so a peer on an older build
-can be recognised.
+can be recognised. *(Amended 2026-10-23, Céline: purges are local. A purged document travels as a
+deletion — id and deletion stamp — which puts or keeps a peer's copy in its trash; no fingerprint
+travels, and no peer copy is purged. To build in v0.0.12.)*
 
 ### Stamps instead of the wall clock **[choice]**
 
@@ -511,6 +578,30 @@ clock is refused, as manifests already are (today a document is accepted up to 2
 The rows already use Lamport stamps (*Rows* above); documents and trust decisions join them. This
 closes the C-DOC weakness that a device whose clock runs ahead wins every disagreement. The
 displayed times stay wall-clock.
+
+**The bound is inside the clock** (v0.0.12, lot 1, after the cloud review of v0.0.11, finding 1). A
+stamp more than 5 minutes ahead of this device's **wall clock** never moves its clock, whatever
+carries it: a document's state, a trust decision, a purge marker, a backup, or a stamp already
+stored (read again at start). A document whose state or decision stamp is beyond the bound is
+refused whole; a purge marker beyond it is refused and applies at a later sync; a backup is
+restored as stored, but its stamps beyond the bound do not move the clock. The rule "never lower
+than a stamp issued or seen here" holds for stamps within the bound; a stamp beyond it that is
+already stored keeps winning concurrent conflicts on its document until real time passes it.
+Each device bounds against its own wall clock, so two devices whose clocks are d apart may see a
+delay of at most d, never a stop. A counter at its maximum moves to the next millisecond: no wrap,
+no panic. *Status:* ● built in v0.0.12 lot 1 (`lot1_c_stamp_bound.rs`, `lot1_clock_tests.rs`).
+
+**The device in a stamp is the device's peer id** (v0.0.12 item 22; found by PANDA2's items 14 + 19
+test author; Céline, 2026-10-24: "Dans la v0.0.12"). It is the libp2p peer id of the persona,
+derived from its device key, the same id the P2P node announces: unique per workspace and persona,
+unchanged by renaming the device. Before, it was the configured display name ("Sovereign Device" by
+default on every desktop), so two devices could write equal stamps, and an equal stamp is ignored as
+known. Stamps already stored keep their name; old and new coexist (ordering by time and counter
+first; a write naming an old stamp as its previous one fast-forwards). Where a device is named from a
+stamp (History, orphans, alerts), the name comes from the paired list, "this device" for the own id,
+and an old name is shown as it is. If the identity cannot be derived, the desktop opens no document
+service rather than stamp with a shared word. *Status:* ● built (`item22_device_identity.rs` and the
+hosts' `item22_identity_tests.rs`).
 
 ### Comparing two states
 
@@ -597,26 +688,57 @@ only the rare alerts. Consequences:
 - **Every deletion a user makes is a trash** (C-DOC G13) and travels as a tombstone; applying it
   moves the document to the trash on the other device, restorably; a live state with a greater
   stamp brings it back (G19). There is no hard delete left to escape this.
-- **A purge removes the other device's copy only if it is the same version** (decided by Céline,
-  2026-10-15). The purge travels as a marker carrying the **fingerprint** of the version that was
-  purged. A device that holds the document — live or in its trash — purges it too **only if its
-  copy has the same fingerprint**. If its copy differs (edited there since, or otherwise
-  different), it is **kept** and synchronised as usual: it comes back to the device that purged
-  it, edits included. To be rid of it, the user deletes it again on either device; that purge
-  then removes it from both, since the copies are now the same.
-- **The fingerprint** **[choice]** is a hash of the purged version's **title and content** (the
-  content as normalised v2, ch. 03 G3), and nothing else: not the thread, trash state, trust or
-  times. A purge erases what was written; a copy that differs only by its lane, its trash state or
-  a trust decision holds nothing that would be lost, so it is purged. The marker carries the hash,
-  never the content.
-- **A purged id comes back only as a differing copy.** A device that purged a document ignores a
-  peer's state for it with the purged fingerprint, and **recreates** it from a state with a
-  different fingerprint — through the service, as a new arrival (its own first version, the
-  sender's trust and provenance, in the trash if the copy was in the peer's trash); the purge
-  marker is then dropped there. This is the one exception to C-DOC G13 ("a purged document is
-  never brought back by sync"), which is amended to say so.
-- A device that never had the document records the marker and refuses an identical copy from then
-  on.
+- **A purge is local** (decided by Céline, 2026-10-23, after the cloud review of v0.0.11;
+  replaces the rule of 2026-10-15, under which a purge marker travelled and purged a peer's
+  identical copy). Emptying the trash, purging one item, or 30 days in the trash removes the
+  document **from this device only**. A peer's purge never removes anything here, and this
+  device's purge never removes anything there.
+- **What travels after a purge is the deletion, never the purge.** The device that purged keeps a
+  **local purge marker** — the id and the stamp of the deletion, nothing else (no fingerprint, no
+  content) — and advertises it as a deletion: a peer that holds the document **live** with an
+  earlier stamp moves it to **its trash**, restorably; a peer that holds it **in its trash**
+  keeps it there. In both cases the peer's copy stays until its own term (30 days on that device)
+  or until it is purged there by hand.
+- **The 30 days run on each device's own clock**, from the moment the document entered *that
+  device's* trash (by a local delete or by applying a peer's deletion), never from a date a peer
+  sent.
+- **A purged id comes back only live, by a later action.** A device that purged a document ignores
+  a peer's copy of it that is in the peer's trash, and a live state whose stamp is earlier than its
+  deletion. A **live state with a later stamp** — the document restored or edited on another device
+  after the deletion — **brings it back here, live** (Céline, 2026-10-23), through the service, as a
+  new arrival (its own first version, the sender's trust and provenance); the local marker is then
+  dropped. This is the one exception to C-DOC G13 ("a purged document is never brought back by
+  sync"), which is amended to say so.
+- **Peers on v0.0.11** (Céline, 2026-10-24): documents keep syncing with them. A v0.0.11 purge
+  marker is read as a deletion (its fingerprint is neither compared nor stored); this build's
+  markers keep the `fingerprint` field a v0.0.11 build requires, sent empty, so that build still
+  reads the manifest and ignores them.
+- **The 30 days and an upgrade:** at its first purge tick a store records when it started counting
+  ("trash since"); a document whose trash date is earlier is purged 30 days after that, not
+  before, and the trash view shows those days **[choice]**. A document restored from a backup into
+  the trash enters this device's trash at the restore. Fingerprints already stored by v0.0.11 are
+  erased at the first unlock.
+- **Sync does not refetch what it will ignore:** the document plan neither fetches nor pushes a
+  copy that the other side's marker would ignore **[choice]**. *(Remainder, backlog: a copy a peer
+  holds in its trash with a later stamp is still fetched each round, then ignored; the manifest
+  does not say whether a copy is in the trash.)*
+- *Status:* ● built in v0.0.12 item 3 (`doc/plans/V0012-item3-local-purges.md`; tests
+  `item3_local_purges.rs`, `item3_no_fingerprint.rs`, `item3_trash_since.rs`,
+  `item3_purge_outcomes.rs`, `g27_purge_markers.rs`, and `sovereign-p2p/tests/item3_local_purges.rs`,
+  `wire_purges.rs`). Review of v0.0.11, findings 2, 3, 13 and 14, closed.
+
+### Moving a document
+
+**A move is a stamped write, and it travels** (v0.0.12, lanes lot, item 15; Céline's rc3 test A6
+showed that a move never converged). Every move goes through the document service: the desktop's
+drag, the assistant's move, the restore into a thread (one operation: out of the trash and into the
+thread), and the phone's "Move to Thread". The thread changes, title, content and versions do not;
+moved on two devices, the later move wins on both. A move into a deleted or unknown thread, of a
+trashed or purged document, or into the thread the document is already in, is refused with its
+reason. **The pin stays on each device** (Céline, 2026-10-24): it is not stamped, not sent, and
+never part of the compared state. A card's free position (written only by the frozen Tauri
+desktop) is not synced either. *Status:* ● built (`lanes_m1_move.rs`, `lanes_m2_one_move_path.rs`,
+`wire_lanes_moves.rs`, `wire_lanes_pin.rs`).
 
 ### Peers on an older build
 
@@ -626,7 +748,9 @@ contacts, messages and the other rows keep syncing. The reason: an older build c
 content — its tolerant read shows a v2 document as the raw JSON text, and an edit there would save
 that text back as the document.
 
-A peer is on an older build when its manifest carries no wire version. The new build sends it no
+A peer is on an older build when its manifest carries no wire version. *(A v0.0.11 peer is not an
+older build for documents: same wire version, same document format; only its purges differ, and
+they are read as deletions, see* Deletions and purges*.)* The new build sends it no
 document state and applies none from it; documents written on the old device stay there until it
 is updated, then sync normally. The v2 format is already written by this build, so "keep writing
 the old form until every device is updated" is not an option.
@@ -645,9 +769,8 @@ one version ("Restored from backup"), its trust, decision, provenance and times 
 is nothing local to conflict with, so everything in the backup comes back. **The purge rule there:**
 an empty device knows no purge, so a document purged after the backup was taken comes back with
 it; the backup carries the purge markers it knew of **[choice]**, which keep a document purged
-before the backup from returning by sync later. When the restored device next syncs with another
-device that still holds a later purge marker, the rule of *Deletions and purges* applies: a copy
-identical to the purged version is purged again; a differing one is kept. If no other device
+before the backup from returning by sync later, unless a peer sends a live state with a later
+stamp (*Deletions and purges*, as amended 2026-10-23: purges are local). If no other device
 survives, what the backup held is what comes back.
 
 **For the rare wish to see a backup next to existing data** (Céline's fallback): restore it into a

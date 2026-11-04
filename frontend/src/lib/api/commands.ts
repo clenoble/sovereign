@@ -289,6 +289,9 @@ export interface AuthCheckResult {
 	needs_onboarding: boolean;
 	needs_login: boolean;
 	crypto_enabled: boolean;
+	/** v0.0.12 P5g: `auth.store` exists and setup did not finish; cleared by the backend at
+	 *  the first login of either persona. */
+	setup_incomplete: boolean;
 }
 
 export interface PasswordValidationDto {
@@ -337,6 +340,10 @@ export interface OnboardingData {
 	password: string | null;
 	duress_password: string | null;
 	canary_phrase: string | null;
+	/** v0.0.12 P5f: each confirmation is trimmed, and null exactly when its value is. */
+	password_confirm: string | null;
+	duress_confirm: string | null;
+	canary_confirm: string | null;
 	keystrokes: KeystrokeSampleDto[][];
 }
 
@@ -350,8 +357,10 @@ export const validatePasswordPolicy = (password: string) =>
 	invoke<PasswordValidationDto>('validate_password_policy', { password });
 
 // Onboarding
+/** v0.0.12 P5e: `{ incomplete: true }` means the account was created but setup did
+ *  not finish (P2); a backend that returns nothing resolves to void/null. */
 export const completeOnboarding = (data: OnboardingData) =>
-	invoke<void>('complete_onboarding', { data });
+	invoke<{ incomplete?: boolean } | null | void>('complete_onboarding', { data });
 
 // Profile
 export const getProfile = () => invoke<UserProfileDto>('get_profile');
@@ -362,8 +371,10 @@ export const saveProfile = (data: SaveProfileDto) =>
 export const getConfig = () => invoke<AppConfigDto>('get_config');
 
 // Document deletion: one click moves the document to the trash (C-DOC
-// adoption step 5).
-export const deleteDocument = (id: string) => invoke<void>('delete_document', { id });
+// adoption step 5). The host says what it did (v0.0.12 item 9, T3): moved it,
+// or found it in the trash already (a deletion made elsewhere: no Undo).
+export type DeleteOutcome = 'trashed' | 'already_in_trash';
+export const deleteDocument = (id: string) => invoke<DeleteOutcome | null | undefined>('delete_document', { id });
 
 // The trash (C-DOC adoption step 5, S5-9/S5-11)
 export interface TrashEntryDto {
@@ -381,7 +392,9 @@ export const listTrash = () => invoke<TrashEntryDto[]>('list_trash');
 /** Into its thread, or into `threadId` (needed when its thread was deleted). */
 export const restoreFromTrash = (id: string, threadId: string | null) =>
 	invoke<void>('restore_from_trash', { id, threadId });
-export const emptyTrash = () => invoke<number>('empty_trash');
+/** Empties what the trash view showed (`ids`, its lines when drawn; v0.0.12
+ *  item 9, T1); the number purged. */
+export const emptyTrash = (ids: string[]) => invoke<number>('empty_trash', { ids });
 
 // ---------------------------------------------------------------------------
 // Phase 5: Trust, Import, Comms
@@ -574,9 +587,22 @@ export const listOrphanedDocuments = () => invoke<OrphanDto[]>('list_orphaned_do
 export const resolveOrphan = (docId: string, resolution: OrphanResolutionDto) =>
 	invoke<void>('resolve_orphan', { docId, resolution });
 
-/** The same way out for every document of the deleted thread `threadId`. */
-export const resolveOrphansOfThread = (threadId: string, resolution: OrphanResolutionDto) =>
-	invoke<number>('resolve_orphans_of_thread', { threadId, resolution });
+/** The same way out for the documents of the deleted thread `threadId` that
+ *  the group showed (`docIds`, as drawn; v0.0.12 item 9, T2); how many. */
+export const resolveOrphansOfThread = (threadId: string, docIds: string[], resolution: OrphanResolutionDto) =>
+	invoke<number>('resolve_orphans_of_thread', { threadId, docIds, resolution });
+
+// Documents the one-time conversion could not read (v0.0.12 item 7 V2b, B1–B2):
+// the heading, the meaning and each line come worded by the backend
+// (`sovereign-docs`); the frontend holds no copy. Nothing to act on.
+export interface UnreadableDocumentsDto {
+	heading: string;
+	meaning: string;
+	/** One line per document: short id, "(in the trash)" when so, last modified date. */
+	lines: string[];
+}
+
+export const listUnreadableDocuments = () => invoke<UnreadableDocumentsDto>('list_unreadable_documents');
 
 // Save web page as document
 export const saveWebPage = (
@@ -880,6 +906,10 @@ export interface P2pSettings {
 	enable_mdns: boolean;
 	wifi_only: boolean;
 	running: boolean;
+	/** True while the node runs without the DNS transport (no system resolver
+	 *  config, as on Android): it syncs on the local network and with
+	 *  addresses given by IP only (v0.0.12 item 12). */
+	without_dns: boolean;
 }
 
 /** Read-only view of the P2P configuration for Settings → Devices.
@@ -922,6 +952,8 @@ export interface CompletePairedOnboardingInput {
 	/** New local passphrase for this device — different from the
 	 *  source device is fine. */
 	password: string;
+	/** v0.0.12 P5f: the trimmed confirmation of `password`. */
+	password_confirm: string;
 	duress_password?: string | null;
 	nickname?: string | null;
 	bubble_style?: string | null;

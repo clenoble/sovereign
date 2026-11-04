@@ -81,7 +81,11 @@
 		<p class="error" role="alert">{trash.error}</p>
 	{/if}
 	{#if purged !== null}
-		<p class="info" role="status">{purged} document{purged === 1 ? '' : 's'} deleted for good.</p>
+		<p class="info" role="status">
+			{purged} document{purged === 1 ? '' : 's'} deleted for good.{#if trash.leftAlone === 1}
+				1 document was no longer in the trash and was left alone.{:else if trash.leftAlone > 1}
+				{trash.leftAlone} documents were no longer in the trash and were left alone.{/if}
+		</p>
 	{/if}
 
 	{#if trash.lines.length === 0}

@@ -48,6 +48,7 @@ pub mod keystroke;
 pub mod mac;
 pub mod master_key;
 pub mod password_gen;
+pub mod peer_identity;
 pub mod recovery_key;
 pub mod recovery_roster;
 pub mod recovery_seal;

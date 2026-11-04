@@ -159,6 +159,29 @@ impl DocumentService {
         self.put_thread(id, t, Some(prior)).await
     }
 
+    /// S1: brings deleted thread `id` back live, named `name` and described
+    /// `description` — the restore of a thread a peer deleted, from the sync
+    /// alert (v0.0.12 item 6, A4). A new action here, stamped after the
+    /// deletion it undoes, so it travels as any thread write and wins on the
+    /// peer that deleted it (S2). Its documents are not touched: those in the
+    /// trash stay there until restored. A live (or unknown) thread is refused:
+    /// renaming one is [`Self::thread_update`].
+    pub async fn thread_restore(&self, id: &str, name: &str, description: &str) -> Result<(), DocError> {
+        let _w = self.write_lock.lock().await;
+        let mut t = self.thread_row(id).await?;
+        if t.deleted_at.is_none() {
+            return Err(DocError::Store(format!("thread {id} is not deleted")));
+        }
+        let prior = t.clone();
+        let stamp = self.thread_write_stamp(&t).await?;
+        t.name = name.to_string();
+        t.description = description.to_string();
+        t.deleted_at = None;
+        t.modified_at = time_of(stamp.wall_ms);
+        t.stamp = Some(encode_stamp(&stamp));
+        self.put_thread(id, t, Some(prior)).await
+    }
+
     /// The stamp of thread `id`'s current state (its last create, rename or
     /// deletion, made here or received); `None` for a row written before
     /// stamps existed (an older build). A deleted thread shrunk to its id

@@ -100,6 +100,50 @@ impl P2pHandle {
         })
     }
 
+    /// v0.0.12 item 19, N5: renames paired device `peer_id` **on this device
+    /// only** — its stored name in this device's paired list becomes `name`,
+    /// and the list is saved. Nothing is sent: the name travels only at
+    /// pairing (N4). Whether the device was in the list.
+    pub(crate) fn rename_paired(&self, rt: &tokio::runtime::Runtime, peer_id: &str, name: &str) -> Result<bool, String> {
+        rt.block_on(async {
+            let mut guard = self.pairing_manager.write().await;
+            let Some(mut device) = guard.get_device(peer_id).cloned() else { return Ok(false) };
+            device.device_name = name.to_string();
+            guard.add_device(device);
+            guard.save(&self.store_key).map_err(|e| format!("save the paired devices: {e}"))?;
+            Ok(true)
+        })
+    }
+
+    /// A handle with no node behind it, for tests: this node's peer id
+    /// `local_peer_id`, the name it was started with `device_name`, no
+    /// listen address, a generated account key, the paired-device store
+    /// `paired` (saved under `store_key` when it changes); every command it
+    /// sends goes to the returned receiver (capacity [`COMMAND_BUFFER`]).
+    #[cfg(test)]
+    pub(crate) fn fake(
+        local_peer_id: &str,
+        device_name: &str,
+        paired: PairingManager,
+        store_key: [u8; 32],
+    ) -> (P2pHandle, mpsc::Receiver<P2pCommand>) {
+        let (command_tx, command_rx) = mpsc::channel(COMMAND_BUFFER);
+        let mk = sovereign_crypto::master_key::MasterKey::generate();
+        let account_key = AccountKey::derive(&mk).expect("an account key from a generated master key");
+        (
+            P2pHandle {
+                command_tx,
+                local_peer_id: local_peer_id.to_string(),
+                listen_addrs: Arc::new(std::sync::RwLock::new(Vec::new())),
+                pairing_manager: Arc::new(tokio::sync::RwLock::new(paired)),
+                account_key: Arc::new(account_key),
+                store_key,
+                device_name: device_name.to_string(),
+            },
+            command_rx,
+        )
+    }
+
     /// Current listen addresses (for display / pairing-offer dial hints).
     pub(crate) fn listen_addrs(&self) -> Vec<String> {
         self.listen_addrs.read().map(|a| a.clone()).unwrap_or_default()

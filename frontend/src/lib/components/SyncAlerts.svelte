@@ -17,8 +17,14 @@
 	 *  documents. A status notice says how many wait, even with no alert; the
 	 *  peer alerts are not changed by it (W6).
 	 *
+	 *  Below them, the documents the one-time conversion could not read
+	 *  (v0.0.12 item 7 V2b, B3–B4): the heading, the meaning and each line come
+	 *  worded by the backend; nothing to act on. A status notice says how many
+	 *  while any remain.
+	 *
 	 *  WCAG 2.1 AA: the notice is a live region (role="alert" for an alert,
-	 *  role="status" for the older-version notice and the documents waiting);
+	 *  role="status" for the older-version notice, the documents waiting and
+	 *  those that could not be read);
 	 *  the panel is a labelled dialog that takes focus when opened, closes on
 	 *  Escape and gives focus back; every action is a real button with its own
 	 *  label.
@@ -46,6 +52,7 @@
 		orphanNotice,
 		orphansNotice,
 		reloadOrphans,
+		unreadableNotice,
 		type Orphan,
 		type SyncAlert,
 		type PreviousValue
@@ -61,6 +68,7 @@
 	const notice = $derived(noticeText());
 	const older = $derived(olderNotice());
 	const waiting = $derived(orphansNotice());
+	const unreadable = $derived(unreadableNotice());
 
 	// ---- S5-12: documents whose thread was deleted ----
 
@@ -89,8 +97,14 @@
 	});
 
 	/** The open form: moving to a thread, or naming a new thread, for one
-	 *  document or for all of a deleted thread. One at a time. */
-	type Target = { kind: 'one'; docId: string } | { kind: 'group'; threadId: string };
+	 *  document or for all of a deleted thread. One at a time. A group's
+	 *  target carries its documents as drawn (v0.0.12 item 9, T2): one that
+	 *  joined the group after is not acted on, and shows at the next refresh. */
+	type Target = { kind: 'one'; docId: string } | { kind: 'group'; threadId: string; docIds: string[] };
+
+	function groupTarget(g: OrphanGroup): Target {
+		return { kind: 'group', threadId: g.threadId, docIds: g.docs.map((o) => o.docId) };
+	}
 	let form = $state<{ target: Target; mode: 'move' | 'new' } | null>(null);
 	let chosenThread = $state('');
 	let newName = $state('');
@@ -116,7 +130,11 @@
 		error = '';
 		try {
 			if (target.kind === 'one') await resolveOrphan(target.docId, resolution);
-			else await resolveOrphansOfThread(target.threadId, resolution);
+			else {
+				const n = await resolveOrphansOfThread(target.threadId, target.docIds, resolution);
+				// None of the documents shown still waits: nothing done, and said (zero, not a refusal).
+				if (n === 0) error = 'Nothing was changed: none of these documents is still waiting for a decision.';
+			}
 			form = null;
 			await reloadOrphans();
 			await refreshCanvas();
@@ -221,7 +239,7 @@
 	}
 </script>
 
-{#if notice || older || waiting}
+{#if notice || older || waiting || unreadable}
 	<div class="notices {variant}">
 		{#if notice}
 			<div class="notice alert" role="alert">
@@ -234,8 +252,33 @@
 		{#if waiting}
 			<div class="notice waiting" role="status">
 				<span class="notice-text">{waiting}</span>
-				<button class="notice-btn" onclick={open} aria-haspopup="dialog">
+				<!-- v0.0.12, F-a11y, F1: the name says what "it" is, and begins with
+				     the visible text (WCAG 2.4.6, 2.5.3). -->
+				<button
+					class="notice-btn"
+					onclick={open}
+					aria-haspopup="dialog"
+					aria-label={syncAlerts.orphans.length === 1
+						? 'See it: the document waiting for a decision'
+						: 'See them: the documents waiting for a decision'}
+				>
 					{syncAlerts.orphans.length === 1 ? 'See it' : 'See them'}
+				</button>
+			</div>
+		{/if}
+		{#if unreadable}
+			<div class="notice unreadable" role="status">
+				<span class="notice-text">{unreadable}</span>
+				<!-- v0.0.12, F-a11y, F1, as above. -->
+				<button
+					class="notice-btn"
+					onclick={open}
+					aria-haspopup="dialog"
+					aria-label={syncAlerts.unreadable.lines.length === 1
+						? 'See it: the document that could not be read'
+						: 'See them: the documents that could not be read'}
+				>
+					{syncAlerts.unreadable.lines.length === 1 ? 'See it' : 'See them'}
 				</button>
 			</div>
 		{/if}
@@ -388,21 +431,21 @@
 					{#if g.docs.length > 1}
 						<p class="group-title">{g.label} ({g.docs.length} documents)</p>
 						<div class="actions">
-							<button class="btn" onclick={() => openForm({ kind: 'group', threadId: g.threadId }, 'move')}>
+							<button class="btn" onclick={() => openForm(groupTarget(g), 'move')}>
 								Move all to a thread…
 							</button>
-							<button class="btn" onclick={() => openForm({ kind: 'group', threadId: g.threadId }, 'new')}>
+							<button class="btn" onclick={() => openForm(groupTarget(g), 'new')}>
 								Put all in a new thread…
 							</button>
 							<button
 								class="btn"
 								disabled={busy !== null}
-								onclick={() => resolve({ kind: 'group', threadId: g.threadId }, { kind: 'trash' })}
+								onclick={() => resolve(groupTarget(g), { kind: 'trash' })}
 							>
 								Put all in the trash
 							</button>
 						</div>
-						{@render orphanForm({ kind: 'group', threadId: g.threadId })}
+						{@render orphanForm(groupTarget(g))}
 					{/if}
 					<ul class="list" aria-labelledby="orphans-title">
 						{#each g.docs as o (o.docId)}
@@ -429,6 +472,16 @@
 					</ul>
 				</div>
 			{/each}
+		{/if}
+
+		{#if syncAlerts.unreadable.lines.length > 0}
+			<h3 class="section-title" id="unreadable-title">{syncAlerts.unreadable.heading}</h3>
+			<p class="hint">{syncAlerts.unreadable.meaning}</p>
+			<ul class="list unreadable-list" aria-labelledby="unreadable-title">
+				{#each syncAlerts.unreadable.lines as line}
+					<li class="card unreadable">{line}</li>
+				{/each}
+			</ul>
 		{/if}
 	</div>
 {/if}
@@ -471,8 +524,14 @@
 		color: var(--text-primary, #e0e0e0);
 		border: 1px solid #818cf8;
 	}
-	.notice.waiting .notice-btn {
+	.notice.waiting .notice-btn,
+	.notice.unreadable .notice-btn {
 		background: #4f46e5;
+	}
+	.notice.unreadable {
+		background: var(--bg-panel, #22222a);
+		color: var(--text-primary, #e0e0e0);
+		border: 1px solid var(--border, #444);
 	}
 	.notice.older {
 		background: var(--bg-panel, #22222a);
@@ -622,6 +681,12 @@
 	}
 	.card.orphan {
 		border-left-color: #818cf8;
+	}
+	.unreadable-list {
+		margin-top: 8px;
+	}
+	.card.unreadable {
+		font-size: 0.85rem;
 	}
 	.orphan-group {
 		margin-top: 10px;

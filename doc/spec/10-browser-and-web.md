@@ -149,8 +149,8 @@ WebView2; WebKitGTK [unverified].
 
 Open for the specification: how this interacts with the per-entity cookie view (ch. 09, *Cookies*),
 whose subject becomes session-scoped; how it applies to each persona; which of the PII browser flows
-built in the frozen Tauri desktop (ch. 09) it carries into the shell; and the role of the PII idle
-sweep, which Céline decided is specified together with A5 (ch. 09, *Idle sweep*).
+built in the frozen Tauri desktop (ch. 09) it carries into the shell. The PII idle sweep is no longer
+part of this question: it was decided on its own on 2026-10-10 (ch. 09, *Idle sweep*).
 
 ## O4 — Filtering local proxy
 

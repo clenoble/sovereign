@@ -171,11 +171,12 @@ crypto initialisation, orchestrator wiring) and sample-data seeding.
 When both engines are compiled in, RocksDB wins. With neither, the store falls back to
 in-memory and logs a warning; no shipped build is configured that way.
 
-◐ The Android build has no release recipe in the repository: `cargo tauri android build` with
-the `mobile` feature set (and default features off) appears only in a development note of May
-2026, as a debug build. Which features the v0.0.9 APK was built with is not recorded; SurrealKV
-on Android follows from the `mobile` feature set, not from a recorded release build. A release
-recipe for the shell and the APK is open work (backlog).
+◐ The Android build's recipe is `scripts/build-android.sh` (`--debug` or `--release`, Linux or
+WSL2 only), with its prerequisites in `doc/RELEASE.md`, *Android — the APK*. The published APKs so
+far are debug builds, signed with the SDK's debug key; a `--release` build comes out unsigned (the
+Gradle scaffold declares no signing config) and must be signed with a release key held outside the
+repository. Which features the v0.0.9 APK was built with is not recorded; SurrealKV on Android
+follows from the `mobile` feature set.
 
 ## Data flow of a request
 

@@ -280,16 +280,19 @@ pub struct PurgeMarker {
     pub document_id: String,
     pub purged_at: DateTime<Utc>,
     pub complete: bool,
-    /// The stamp of the purge (C-WIRE), encoded as on `Document::stamp`.
+    /// The stamp of the deletion the purge removed (C-WIRE; v0.0.12 item 3,
+    /// L2: the trashed state's stamp, or a received deletion's), encoded as on
+    /// `Document::stamp`.
     #[serde(default)]
     pub stamp: Option<String>,
-    /// The fingerprint of the purged version: a hash of its title and
-    /// content, never the content (C-WIRE *Deletions and purges*). `None` on
-    /// markers written before step 4.
+    /// Read only so a v0.0.11 row still decodes: v0.0.11 stored a hash of the
+    /// purged title and content here. This build never writes one and erases
+    /// any it finds at unlock (v0.0.12 item 3, L12); always `None` once erased.
     #[serde(default)]
     pub fingerprint: Option<String>,
-    /// The id came back as a differing copy (C-WIRE 10): the marker no longer
-    /// applies; kept only so the record of the purge is not silently lost.
+    /// The id came back live with a later stamp (v0.0.12 item 3, L6): the
+    /// marker no longer applies; kept only so the record of the purge is not
+    /// silently lost.
     #[serde(default)]
     pub revoked: bool,
 }

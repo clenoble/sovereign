@@ -83,7 +83,7 @@ async function settle() {
 	}
 }
 
-type Screen = ReturnType<typeof render>;
+type Screen = ReturnType<typeof render<typeof OnboardingWizard>>;
 
 function button(screen: Screen, name: string | RegExp): HTMLButtonElement {
 	return screen.getByRole('button', { name }) as HTMLButtonElement;
@@ -208,12 +208,12 @@ describe('OnboardingWizard while the account is being created (first device)', (
 		await settle();
 		expectLocked(screen);
 
-		pending.reject('Already onboarded — log in instead');
+		// A generic failure (v0.0.12 P5 contract, amended 06252af): "Already onboarded" now
+		// sends to the login screen instead (P5e), so it no longer serves this test's purpose.
+		pending.reject('disk full');
 		await settle();
 
-		await waitFor(() =>
-			expect(screen.getByText(/Already onboarded — log in instead/)).toBeInTheDocument()
-		);
+		await waitFor(() => expect(screen.getByText(/disk full/)).toBeInTheDocument());
 		expect(button(screen, 'Get Started'), '"Get Started" after a failure').toBeEnabled();
 		expect(button(screen, 'Back'), '"Back" after a failure').toBeEnabled();
 		for (const skip of screen.queryAllByRole('button', { name: 'Skip this step' })) {

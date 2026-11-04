@@ -66,12 +66,14 @@ pub(crate) const ACTIONS: [OrphanAction; 3] = [OrphanAction::MoveTo, OrphanActio
 #[derive(Clone, Debug)]
 pub(crate) struct OrphanLine {
     pub(crate) id: String,
+    /// The title as shown: its tokens as their labels (item 8, L2).
     pub(crate) title: String,
     /// The deleted thread it is still in.
     pub(crate) thread_id: String,
     /// The deleted thread's old name (from its tombstone); empty when unknown.
     pub(crate) old_thread_name: String,
-    /// The device's name when it is a paired device, else its id.
+    /// The device, named as `history_device::device_label` names it: "this
+    /// device", a paired device's name, an old display name, or a short id.
     pub(crate) device: String,
 }
 
@@ -138,22 +140,39 @@ impl OrphansSection {
     }
 
     /// The documents whose thread was deleted, read from the service; device
-    /// names from `device_names` (peer id → name).
+    /// names from `device_names` (peer id → name), without this device's own
+    /// id (see [`Self::load_as`]).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn load(docs: &DocumentService, device_names: &HashMap<String, String>) -> Result<Self, String> {
+        Self::load_as(docs, device_names, "").await
+    }
+
+    /// The documents whose thread was deleted, read from the service. Each
+    /// line's device, from its current state's stamp, is named as History
+    /// names one (item 22, D5): "this device" for `own_id` (this persona's
+    /// peer id), a paired device's name from `device_names`, a display name
+    /// from before item 22 as it is.
+    pub(crate) async fn load_as(
+        docs: &DocumentService,
+        device_names: &HashMap<String, String>,
+        own_id: &str,
+    ) -> Result<Self, String> {
         let list = docs
             .orphans_of_deleted_threads()
             .await
             .map_err(|e| format!("The documents whose thread was deleted couldn't be read ({e})."))?;
-        let mut lines: Vec<OrphanLine> = list
-            .into_iter()
-            .map(|o| OrphanLine {
-                device: device_names.get(&o.device).cloned().unwrap_or_else(|| o.device.clone()),
+        let mut lines: Vec<OrphanLine> = Vec::with_capacity(list.len());
+        for o in list {
+            // The title as shown: its tokens as their labels (item 8, L2).
+            let title = crate::canvas::shown_title(Some(docs), &o.id, &o.title).await;
+            lines.push(OrphanLine {
+                device: crate::history_device::device_label(&o.device, device_names, own_id),
                 id: o.id,
-                title: o.title,
+                title,
                 thread_id: o.thread_id,
                 old_thread_name: o.deleted_thread_name.unwrap_or_default(),
-            })
-            .collect();
+            });
+        }
         // One deleted thread's documents together, by its old name, then by title.
         lines.sort_by(|a, b| {
             (a.old_thread_name.to_lowercase(), &a.thread_id, a.title.to_lowercase(), &a.id).cmp(&(
@@ -207,17 +226,26 @@ impl OrphansSection {
     }
 
     /// The same way out for every document of the deleted thread
-    /// `deleted_thread_id` (W4, the group action); the section drops them at
-    /// once. The number of documents resolved.
+    /// `deleted_thread_id` that the section shows (W4, the group action;
+    /// v0.0.12 item 9, T2): a document that joined the group after the
+    /// section was drawn keeps waiting, and shows at the next refresh. The
+    /// section drops what was resolved at once. The number of documents
+    /// resolved (zero when none shown still waits).
     pub(crate) async fn resolve_group(
         &mut self,
         docs: &DocumentService,
         deleted_thread_id: &str,
         resolution: OrphanResolution,
     ) -> Result<usize, String> {
-        let r = docs.resolve_orphans_of_thread(deleted_thread_id, resolution).await;
+        let shown = self.shown_of_group(deleted_thread_id);
+        let r = docs.resolve_orphans_shown(deleted_thread_id, &shown, resolution).await;
         self.settle(docs, r.as_ref().ok().map(|d| d.documents.as_slice())).await;
         r.map(|d| d.documents.len()).map_err(|e| e.to_string())
+    }
+
+    /// The documents the section shows for the deleted thread `thread_id`.
+    pub(crate) fn shown_of_group(&self, thread_id: &str) -> Vec<String> {
+        self.lines.iter().filter(|l| l.thread_id == thread_id).map(|l| l.id.clone()).collect()
     }
 
     /// After a resolution, succeeded or refused: drops what was resolved, and

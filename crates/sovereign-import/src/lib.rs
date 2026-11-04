@@ -832,15 +832,24 @@ fn slide_number(name: &str) -> u32 {
 pub async fn execute(db: &dyn GraphDB, docs: &DocumentService, m: &Manifest) -> Result<ImportOutcome> {
     let mut outcome = ImportOutcome::default();
 
-    // 1. Resolve every thread name → id, reusing an existing thread of that
-    //    name (blind-index lookup on the encrypted layer; CONTAINS on raw).
+    // 1. Resolve every thread name → id, reusing the live thread with that
+    //    exact name (v0.0.12 item 6, A1: a folder "Work" never lands in "Work
+    //    Archive"). Every name is resolved before anything is written, so a
+    //    name two live threads share refuses the whole import, none picked.
     use std::collections::HashMap;
+    let mut existing: HashMap<String, Option<String>> = HashMap::new();
+    for name in &m.threads {
+        let found = sovereign_db::existing_thread_for_find_or_create(db, name)
+            .await
+            .map_err(|e| anyhow::anyhow!("thread {name}: {e}"))?;
+        existing.insert(name.clone(), found);
+    }
     let mut thread_ids: HashMap<String, String> = HashMap::new();
     for name in &m.threads {
-        let id = match db.find_thread_by_name(name).await? {
-            Some(t) => {
+        let id = match existing.get(name).cloned().flatten() {
+            Some(id) => {
                 outcome.threads_reused += 1;
-                t.id_string().unwrap_or_default()
+                id
             }
             None => {
                 // Through the one thread-write path, stamped (THREAD-sync S1).

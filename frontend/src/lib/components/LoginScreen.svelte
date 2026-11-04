@@ -3,6 +3,7 @@
 	import { validatePassword, checkAuthState } from '$lib/api/commands';
 	import type { KeystrokeSampleDto } from '$lib/api/commands';
 	import { openRecovery, checkAvailable, recovery } from '$lib/stores/recovery.svelte';
+	import { setSetupNoticeAfterLogin } from '$lib/stores/setupNotice.svelte';
 
 	let password = $state('');
 	let error = $state('');
@@ -13,6 +14,11 @@
 	let lockCountdown = $state('');
 	let submitting = $state(false);
 	let showPw = $state(false);
+	// P5g: what the backend reported when this screen opened. Captured before the login,
+	// since the backend clears the marker at the first login of either persona. The login
+	// waits for this answer, so an early submit still gets the notice; a failed check
+	// counts as false and does not block the login.
+	let setupIncompleteAtOpen: Promise<boolean> = Promise.resolve(false);
 
 	// Keystroke timing capture
 	let keyTimings: Map<string, number> = new Map();
@@ -20,9 +26,12 @@
 
 	// Load config for lockout settings
 	$effect(() => {
-		checkAuthState().then((result) => {
-			// Config values come from the backend; defaults are fine
-		});
+		setupIncompleteAtOpen = checkAuthState()
+			.then((result) => {
+				// Config values come from the backend; defaults are fine
+				return result.setup_incomplete === true; // P5g
+			})
+			.catch(() => false);
 	});
 
 	// Show the "forgot password?" recover option only if this device holds a
@@ -92,7 +101,9 @@
 		error = '';
 
 		try {
+			const setupIncomplete = await setupIncompleteAtOpen; // P5g: before the login clears it
 			const persona = await validatePassword(pw, keystrokes);
+			setSetupNoticeAfterLogin(setupIncomplete); // P5g: shown in the unlocked app, not here
 			app.authState = 'ready';
 		} catch (e) {
 			// Surface the REAL backend error. validate_password returns

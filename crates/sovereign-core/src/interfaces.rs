@@ -14,7 +14,10 @@ pub enum OrchestratorEvent {
     DocumentOpened { doc_id: String },
     SearchResults { query: String, doc_ids: Vec<String> },
     ActionProposed { proposal: ProposedAction },
-    ActionExecuted { action: String, success: bool },
+    /// An action of the action path ran (or was refused). `outcome` says what
+    /// came of it — the one line every UI shows is `outcome.summary_line()`;
+    /// `success` is true only for `Changed` and `Reported` (v0.0.12 item 11).
+    ActionExecuted { action: String, success: bool, outcome: ActionOutcome },
     ActionRejected { action: String, reason: String },
     InjectionDetected {
         source: String,
@@ -115,6 +118,52 @@ pub enum OrchestratorEvent {
     ChatTurnEnded { outcome: ChatOutcome },
 }
 
+/// What came of one action of the action path (v0.0.12 item 11, B1-B4): the
+/// counterpart of `ChatOutcome` for a classified action. Only `Changed` may be
+/// shown as done; the variant for "not done" is called `Failed` so that its
+/// `Debug` never says "Done".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionOutcome {
+    /// The store changed; `summary` names what was done ("Deleted thread
+    /// 'Work' (5 documents moved to the trash)").
+    Changed { summary: String },
+    /// A read-only action: what it found or produced (B1).
+    Reported { summary: String },
+    /// Nothing to change (B2): said as such, and not done.
+    NoChange { reason: String },
+    /// Not done: refused, not found, ambiguous, locked, or failed.
+    Failed { reason: String },
+}
+
+impl ActionOutcome {
+    /// The one line every UI shows for the action. Never empty; only a change
+    /// carries the outcome mark (✓), a no-change starts "No change", a failure
+    /// gives its reason.
+    pub fn summary_line(&self) -> String {
+        match self {
+            ActionOutcome::Changed { summary } if summary.trim().is_empty() => "\u{2713} Changed".to_string(),
+            ActionOutcome::Changed { summary } => format!("\u{2713} {summary}"),
+            ActionOutcome::Reported { summary } if summary.trim().is_empty() => "Nothing to report".to_string(),
+            ActionOutcome::Reported { summary } => summary.clone(),
+            ActionOutcome::NoChange { reason } if reason.trim().is_empty() => "No change".to_string(),
+            ActionOutcome::NoChange { reason } => format!("No change: {reason}"),
+            ActionOutcome::Failed { reason } if reason.trim().is_empty() => "\u{2717} Not carried out".to_string(),
+            ActionOutcome::Failed { reason } => format!("\u{2717} Not carried out: {reason}"),
+        }
+    }
+
+    /// True only when the store changed.
+    pub fn changed(&self) -> bool {
+        matches!(self, ActionOutcome::Changed { .. })
+    }
+
+    /// The `success` of the executed event: the action did what was asked (a
+    /// change, or a report). False for no change and for a failure.
+    pub fn succeeded(&self) -> bool {
+        matches!(self, ActionOutcome::Changed { .. } | ActionOutcome::Reported { .. })
+    }
+}
+
 /// How a chat turn ended: the writes that ran, and how the turn itself closed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatOutcome {
@@ -160,11 +209,15 @@ pub enum WriteOutcome {
     Failed(String),
     /// Proposed to the user and declined (or not confirmed in time).
     Declined,
+    /// Ran, and had nothing to change (v0.0.12 item 11b, C1): nothing written; the
+    /// reason ("the thread is already named 'Plans'"). Not done, never "Done".
+    NoChange(String),
 }
 
 impl ChatOutcome {
     /// The one line every UI shows for the turn. Never empty; says "Done" only of a
-    /// write that succeeded, names every write, and gives each failure's reason.
+    /// write that succeeded, names every write, gives each failure's reason, and says
+    /// "No change" with its reason for a write that had nothing to change.
     pub fn summary_line(&self) -> String {
         let mut parts: Vec<String> = self
             .writes
@@ -173,6 +226,10 @@ impl ChatOutcome {
                 WriteOutcome::Succeeded => format!("✓ Done: {}", w.tool),
                 WriteOutcome::Failed(reason) => format!("✗ Failed: {} ({reason})", w.tool),
                 WriteOutcome::Declined => format!("Declined: {}", w.tool),
+                WriteOutcome::NoChange(reason) if reason.trim().is_empty() => {
+                    format!("No change: {}", w.tool)
+                }
+                WriteOutcome::NoChange(reason) => format!("No change: {} ({reason})", w.tool),
             })
             .collect();
         match &self.end {
@@ -353,3 +410,15 @@ mod chat_outcome_tests;
 #[cfg(test)]
 #[path = "chat_round_limit_tests.rs"]
 mod chat_round_limit_tests;
+
+// v0.0.12 item 11 (B1-B4): the action path's outcome, written before the code.
+#[cfg(test)]
+#[path = "action_outcome_tests.rs"]
+mod action_outcome_tests;
+
+// v0.0.12 item 11b (C1, C3; doc/plans/V0012-item11b-chat-no-change.md),
+// written before the code: needs WriteOutcome::NoChange, which does not exist
+// yet; this module does not compile until it does.
+#[cfg(test)]
+#[path = "chat_no_change_tests.rs"]
+mod chat_no_change_tests;

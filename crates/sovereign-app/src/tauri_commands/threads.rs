@@ -68,7 +68,9 @@ pub async fn delete_thread(
     crate::doc_trash::delete_thread_to_trash(&docs, state.db.as_ref(), &id).await.map(|_| ())
 }
 
-/// Move a document to a different thread.
+/// Move a document to a different thread (the phone's "Move to Thread"):
+/// through the document service's one move (v0.0.12 item 15, M2), stamped,
+/// so the move travels to the paired devices.
 #[tauri::command]
 pub async fn move_document_to_thread(
     webview: tauri::Webview,
@@ -77,11 +79,9 @@ pub async fn move_document_to_thread(
     thread_id: String,
 ) -> Result<(), String> {
     state.require_unlocked(&webview).await?;
-    state
-        .db
-        .move_document_to_thread(&doc_id, &thread_id)
+    let docs = state.docs().await?;
+    docs.move_to_thread(&doc_id, &thread_id)
         .await
-        .str_err()?;
-    Ok(())
+        .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))
 }
 

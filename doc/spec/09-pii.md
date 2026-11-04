@@ -25,7 +25,7 @@ not shipped.
 
 ## Principle: PII by reference
 
-**Status:** ◐ Partial — data model and resolver built; no UI renders tokens yet; enforcement at ingest is partial (see *The "no stray PII" ingest invariant*).
+**Status:** ◐ Partial — data model and resolver built; the desktop shell shows a token as its label in the editor and, since v0.0.12, in titles (item 8, ch. 12 *Documents*), card bodies excepted; enforcement at ingest is partial (see *The "no stray PII" ingest invariant*).
 
 At rest, the graph holds **references** to PII, never raw values in unmanaged places. Each piece of
 personal information lives in an encrypted `PiiRecord` attached to the entity it belongs to; the
@@ -170,9 +170,9 @@ document content reaches the model (summaries, chat tools, skills, consolidation
 The v1 design rescans, when the system is idle, any content lacking `pii_scanned_at`, and re-scans
 when the detection taxonomy changes. A sweep routine exists in code but is not wired to any trigger;
 it was unwired on 2026-05-03 and deferred since. It is also compiled only with the `comms` feature,
-so it is absent from the mobile build. Céline decided on 2026-10-09 that what the sweep is
-for — what is done with what it finds — is specified together with A5 (credentials held in the PII
-manager feeding sign-in to the embedded browser). (code: `crates/sovereign-app/src/pii_sweep.rs`)
+so it is absent from the mobile build. What the sweep does with what it finds is the decision of
+2026-10-10 above. It replaces the 2026-10-09 plan to specify it together with A5. (code:
+`crates/sovereign-app/src/pii_sweep.rs`)
 
 ### Message, contact and share hooks
 
@@ -185,7 +185,7 @@ communication channels are dormant in v0.0.9 and are to be wired together with t
 
 ## Resolution and access levels
 
-**Status:** ◐ Partial — the resolver is built and used toward the model (type-only labels); no UI renders tokens; mobile shows raw tokens in scanned documents.
+**Status:** ◐ Partial — the resolver is built and used toward the model (type-only labels); the desktop shell shows a token as its label in the editor and, since v0.0.12, wherever it draws a title (item 8, ch. 12 *Documents*), card bodies excepted; mobile shows raw tokens in scanned documents.
 
 (code: `crates/sovereign-ai/src/pii/resolve.rs`; `crates/sovereign-app/src/tauri_commands/pii.rs`)
 
@@ -329,7 +329,8 @@ itself is built.
 
 **Status:** ○ Specified, not built.
 
-- What the idle sweep does with what it finds — with A5 (above).
+- The idle sweep, as decided on 2026-10-10 (*Idle sweep*, above). The review queue's cadence and
+  form are still to define.
 - OTP / TOTP generation for second-factor secrets.
 - Per-entity risk scoring from PII volume and share frequency.
 - Hash-chained audit of dashboard operations (with the audit-log hash chain).

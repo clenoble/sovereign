@@ -241,6 +241,10 @@ async fn w3_a_listed_document_stays_in_every_list_readable_and_editable() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn w3_the_purge_never_takes_a_listed_document() {
     let w = world("w3-purge").await;
+    // The tick a host runs at unlock (item 3, L10: a document trashed before
+    // the first tick gets 30 days from it). Added by the item-3 test author;
+    // what is tested is unchanged.
+    purge_tick(&w.s.svc).await.unwrap();
     w.s.clock.advance(Duration::days(45));
     let report = purge_tick(&w.s.svc).await.unwrap();
     assert!(report.documents.contains(&w.trashed), "the trash is purged as usual");

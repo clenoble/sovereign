@@ -17,22 +17,37 @@
 
 mod app;
 mod approval;
+// v0.0.12 item 18: the locked screens' key derivations, run on a worker
+// thread (`doc/plans/V0012-items18-20-first-run.md`, B1–B4).
+mod auth_work;
 mod camera;
 mod canvas;
 // C-DOC adoption step 5: the card menu by document id (S5-4) and the trash
 // view (S5-5..S5-7).
 mod card_menu;
+// v0.0.12 item 21 (`doc/plans/V0012-item21-composer.md`): the chat composer
+// and the search query, on the editor's single-line field.
+mod chat_field;
 mod clip;
 mod comms;
 mod crypto;
 // S5-8: the one-click delete's notice and Undo.
 mod delete_notice;
 mod dev;
+// v0.0.12 item 19 (`doc/plans/V0012-items14-19-devices.md`): this device's
+// name (N1, N2) and the Rename field of Settings → Devices (N3, N5, N6).
+mod device_name;
+mod device_rename;
 mod doc_writes;
+// v0.0.12, no OpenGL backend on Windows (`doc/plans/V0012-no-gl-windows.md`):
+// the one place the shell builds its wgpu instance (W4).
+mod gpu;
 // Renaming a thread in its lane label (contract R1–R6, `doc/plans/THREAD-name.md`):
 // the label's field, its hit-testing and its save; the seam to the one stamped
 // thread-write path (THREAD-sync S1).
 mod lane_rename;
+// v0.0.12 item 14: History names the device (R1) on one line (R2).
+mod history_device;
 mod thread_writes;
 // Naming a new thread (contract N1–N6, `doc/plans/THREAD-name.md`): the prompt
 // and the creation path.
@@ -55,6 +70,10 @@ mod orphans_ui;
 // edit them.
 #[cfg(test)]
 mod orphans_tests;
+// Test helper: the name Narrator receives for a node (v0.0.12 rc2,
+// `doc/plans/V0012-rc2-labels-spoken.md`), shared by the tests that read it.
+#[cfg(test)]
+mod a11y_spoken;
 // winit keys / input methods / clicks → the editor component's input events,
 // shared by the document editor and the new-thread prompt's field.
 mod winit_input;
@@ -91,6 +110,20 @@ mod auth_store_write_tests;
 // implementer does not edit them.
 #[cfg(test)]
 mod salt_restore_tests;
+// v0.0.12 item 21 (`doc/plans/V0012-item21-composer.md`): K3b through the
+// rename and new-thread seams. The tests, written before the code; the
+// implementer does not edit them.
+#[cfg(test)]
+mod field_enter_tests;
+// v0.0.12 item 21: the composer and search field (`crate::chat_field`), K1–K5.
+// The tests, written before the code; the implementer does not edit them.
+#[cfg(test)]
+mod chat_field_tests;
+// v0.0.12 item 7 V2b, B1 (`doc/plans/V0012-item7-v2b-app-list.md`): the
+// Alerts window's list takes its wording from `sovereign-docs`. Source scans,
+// written before the code; the implementer does not edit them.
+#[cfg(test)]
+mod item7_v2b_scan_tests;
 
 use winit::event_loop::{ControlFlow, EventLoop};
 

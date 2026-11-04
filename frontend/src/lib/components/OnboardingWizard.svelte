@@ -200,8 +200,18 @@
 			case 3: return true; // Theme
 			case 4: return true; // Sample data
 			case 5: return passwordPolicyValid && password === passwordConfirm && password.length > 0;
-			case 6: return true; // Duress — has skip
-			case 7: return true; // Canary — has skip
+			case 6: { // Duress (P5a): nothing set, or a matching pair that differs from the main one
+				const duress = duressPassword.trim();
+				const confirm = duressConfirm.trim();
+				if (!duress && !confirm) return true;
+				return duress.length > 0 && duress === confirm && duress !== password.trim();
+			}
+			case 7: { // Canary (P5b): nothing set, or a matching pair of at least 4 characters
+				const phrase = canaryPhrase.trim();
+				const confirm = canaryConfirm.trim();
+				if (!phrase && !confirm) return true;
+				return phrase.length >= 4 && phrase === confirm;
+			}
 			case 8: return true; // Keystroke — has skip
 			default: return true;
 		}
@@ -256,8 +266,10 @@
 
 	// Duress password validation
 	$effect(() => {
-		if (duressPassword && duressPassword === password) {
-			duressError = 'Duress password must differ from primary password';
+		// P5a: compared trimmed, as sent.
+		const duress = duressPassword.trim();
+		if (duress && duress === password.trim()) {
+			duressError = 'Duress password must differ from your password.'; // P5i: the desktop's words
 		} else {
 			duressError = '';
 		}
@@ -284,7 +296,8 @@
 
 	function handleNext() {
 		if (creating) return;
-		if (!canAdvance && !canSkipCurrentStep()) return;
+		// P5a/P5b: Next follows canAdvance only; skipping is the Skip link's.
+		if (!canAdvance) return;
 
 		if (isFinalStep) {
 			handleComplete();
@@ -338,6 +351,15 @@
 
 	function handleSkip() {
 		if (creating) return;
+		if (!canSkipCurrentStep()) return;
+		// P5c: a skipped step sends nothing.
+		if (step === 6) {
+			duressPassword = '';
+			duressConfirm = '';
+		} else if (step === 7) {
+			canaryPhrase = '';
+			canaryConfirm = '';
+		}
 		if (isFinalStep) {
 			handleComplete();
 			return;
@@ -392,6 +414,7 @@
 					qr_payload_b64: qrPayload.trim(),
 					pin: qrPin.trim(),
 					password: password.trim(),
+					password_confirm: passwordConfirm.trim(), // P5f
 					duress_password: null,
 					nickname: null,
 					bubble_style: null,
@@ -402,7 +425,10 @@
 			} catch (e) {
 				console.error('Paired onboarding failed:', e);
 				const msg = String(e);
-				if (msg.includes('invalid proof')) {
+				if (msg.includes('Already onboarded')) {
+					// P5h: the account exists; the way on is the login screen, as in P5e.
+					app.authState = 'login';
+				} else if (msg.includes('invalid proof')) {
 					pairingError =
 						'Wrong pairing code. Check the code shown on the existing device — after three wrong attempts you must generate a new QR there.';
 				} else if (msg.includes('no active pairing offer') || msg.includes('expired')) {
@@ -419,24 +445,44 @@
 			return;
 		}
 
+		// P5d: the main password can change after step 6 (Back); check again at Create.
+		if (cryptoEnabled && duressPassword.trim() && duressPassword.trim() === password.trim()) {
+			step = 6;
+			return;
+		}
+
+		const sendPassword = cryptoEnabled && password.trim() !== '';
+		const sendDuress = cryptoEnabled && duressPassword.trim() !== '';
+		const sendCanary = cryptoEnabled && canaryPhrase.trim() !== '';
 		const data: OnboardingData = {
 			nickname: nickname.trim() || null,
 			bubble_style: bubbleStyle,
 			seed_sample_data: seedSampleData,
-			password: cryptoEnabled && password.trim() ? password.trim() : null,
-			duress_password: cryptoEnabled && duressPassword.trim() ? duressPassword.trim() : null,
-			canary_phrase: cryptoEnabled && canaryPhrase.trim() ? canaryPhrase.trim() : null,
+			password: sendPassword ? password.trim() : null,
+			duress_password: sendDuress ? duressPassword.trim() : null,
+			canary_phrase: sendCanary ? canaryPhrase.trim() : null,
+			// P5f: each confirmation is null exactly when its value is.
+			password_confirm: sendPassword ? passwordConfirm.trim() : null,
+			duress_confirm: sendDuress ? duressConfirm.trim() : null,
+			canary_confirm: sendCanary ? canaryConfirm.trim() : null,
 			keystrokes: cryptoEnabled ? keystrokeSamples : []
 		};
 
 		try {
-			await completeOnboarding(data);
+			const result = await completeOnboarding(data);
 			app.bubbleStyle = bubbleStyle;
-			app.authState = 'ready';
+			// P5e: account created, setup not finished — the backend's notice is shown at login.
+			app.authState = result && result.incomplete ? 'login' : 'ready';
 		} catch (e) {
 			console.error('Onboarding failed:', e);
+			const msg = String(e);
+			if (msg.includes('Already onboarded')) {
+				// P5e: the account exists; the way on is the login screen, not Create again.
+				app.authState = 'login';
+				return;
+			}
 			// On the screen, not only in a log (spec ch. 12).
-			createError = String(e);
+			createError = msg;
 		}
 	}
 
@@ -903,11 +949,15 @@
 						<label class="field-label" for="duress-pw">Duress password</label>
 						<input
 							id="duress-pw"
-							type="password"
+							type={showPw ? 'text' : 'password'}
 							class="text-input"
 							placeholder="Enter duress password"
 							bind:value={duressPassword}
 							enterkeyhint="next"
+							autocapitalize="off"
+							autocorrect="off"
+							autocomplete="off"
+							spellcheck="false"
 							onkeydown={(e) => onFieldEnter(e, duressConfirmEl)}
 						/>
 					</div>
@@ -915,21 +965,30 @@
 						<label class="field-label" for="duress-confirm">Confirm</label>
 						<input
 							id="duress-confirm"
-							type="password"
+							type={showPw ? 'text' : 'password'}
 							class="text-input"
 							placeholder="Confirm duress password"
 							bind:value={duressConfirm}
 							bind:this={duressConfirmEl}
 							enterkeyhint="done"
+							autocapitalize="off"
+							autocorrect="off"
+							autocomplete="off"
+							spellcheck="false"
 							onkeydown={onFieldEnter}
 						/>
 					</div>
+					<label class="show-pw-toggle">
+						<input type="checkbox" bind:checked={showPw} />
+						Show password
+					</label>
 
 					{#if duressError}
 						<p class="error-text">{duressError}</p>
 					{/if}
-					{#if duressConfirm && duressPassword !== duressConfirm}
-						<p class="error-text">Passwords do not match</p>
+					<!-- P5a: only once both fields are filled -->
+					{#if duressPassword.trim() && duressConfirm.trim() && duressPassword.trim() !== duressConfirm.trim()}
+						<p class="error-text">The two entries don't match.</p>
 					{/if}
 
 					<button class="skip-link" onclick={handleSkip} disabled={creating}>Skip this step</button>
@@ -947,11 +1006,15 @@
 						<label class="field-label" for="canary-phrase">Canary phrase</label>
 						<input
 							id="canary-phrase"
-							type="text"
+							type={showPw ? 'text' : 'password'}
 							class="text-input"
 							placeholder="e.g. The cat sleeps on warm roofs"
 							bind:value={canaryPhrase}
 							enterkeyhint="next"
+							autocapitalize="off"
+							autocorrect="off"
+							autocomplete="off"
+							spellcheck="false"
 							onkeydown={(e) => onFieldEnter(e, canaryConfirmEl)}
 						/>
 					</div>
@@ -959,21 +1022,30 @@
 						<label class="field-label" for="canary-confirm">Confirm phrase</label>
 						<input
 							id="canary-confirm"
-							type="text"
+							type={showPw ? 'text' : 'password'}
 							class="text-input"
 							placeholder="Re-type your phrase"
 							bind:value={canaryConfirm}
 							bind:this={canaryConfirmEl}
 							enterkeyhint="done"
+							autocapitalize="off"
+							autocorrect="off"
+							autocomplete="off"
+							spellcheck="false"
 							onkeydown={onFieldEnter}
 						/>
 					</div>
+					<label class="show-pw-toggle">
+						<input type="checkbox" bind:checked={showPw} />
+						Show phrase
+					</label>
 
-					{#if canaryPhrase && canaryPhrase.length < 4}
+					{#if canaryPhrase.trim() && canaryPhrase.trim().length < 4}
 						<p class="error-text">Phrase must be at least 4 characters</p>
 					{/if}
-					{#if canaryConfirm && canaryPhrase !== canaryConfirm}
-						<p class="error-text">Phrases do not match</p>
+					<!-- P5b: only once both fields are filled -->
+					{#if canaryPhrase.trim() && canaryConfirm.trim() && canaryPhrase.trim() !== canaryConfirm.trim()}
+						<p class="error-text">The two entries don't match.</p>
 					{/if}
 
 					<button class="skip-link" onclick={handleSkip} disabled={creating}>Skip this step</button>
@@ -1060,7 +1132,7 @@
 			<button
 				class="nav-btn next-btn"
 				onclick={handleNext}
-				disabled={creating || (!canAdvance && !canSkipCurrentStep())}
+				disabled={creating || !canAdvance}
 			>
 				{#if isFinalStep}
 					Get Started

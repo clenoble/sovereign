@@ -23,6 +23,8 @@ pub mod pii;
 pub mod reliability;
 pub mod seed;
 pub mod session_log;
+pub(crate) mod document_titles;
+pub(crate) mod thread_names;
 pub mod tools;
 pub mod trust;
 pub mod voice;

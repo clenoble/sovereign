@@ -899,9 +899,22 @@ impl SyncService {
                 let docs = self.documents.clone().ok_or_else(|| {
                     P2pError::SyncError("restore thread: no document service on this device".into())
                 })?;
-                docs.thread_update(&rec.row_id, Some(&t.name), Some(&t.description))
+                // A thread the peer deleted comes back live, with its name,
+                // through the stamped restore (v0.0.12 item 6, A4; review
+                // v0.0.11 finding 10: `thread_update` refuses a deleted
+                // thread); its documents in the trash stay there.
+                let deleted = self
+                    .db
+                    .get_thread(&rec.row_id)
                     .await
+                    .map(|cur| cur.deleted_at.is_some())
                     .map_err(|e| P2pError::SyncError(format!("restore thread: {e}")))?;
+                let restored = if deleted {
+                    docs.thread_restore(&rec.row_id, &t.name, &t.description).await
+                } else {
+                    docs.thread_update(&rec.row_id, Some(&t.name), Some(&t.description)).await
+                };
+                restored.map_err(|e| P2pError::SyncError(format!("restore thread: {e}")))?;
             }
             "contact" => {
                 let c: Contact = serde_json::from_slice(&prior_json)
@@ -3503,5 +3516,87 @@ mod tests {
         assert_eq!((w, s), (0, 1));
         assert_eq!(p.db_b.list_all_milestones().await.unwrap().len(), 1);
         assert_eq!(p.db_b.list_all_relationships().await.unwrap().len(), 1);
+    }
+
+    // ── v0.0.12 item 6, A4 (doc/plans/V0012-lot-assistant.md) ──────────
+    //
+    // "Restoring a thread a peer deleted works. The sync alert's restore
+    // brings the thread back live, with its name, through the document
+    // service's stamped thread write (as any thread write travels), and its
+    // documents in the trash stay there until restored." Cloud review
+    // v0.0.11, finding 10: the alert offers the deleted thread's previous
+    // value, and the restore calls `thread_update`, which refuses a deleted
+    // thread. Written before the code by another author; the implementer
+    // does not edit this test.
+    //
+    // Read (marked): "as any thread write travels" — the restored row, pulled
+    // back by the peer that deleted the thread, brings it back there too (a
+    // later stamp wins, THREAD-sync S2).
+    #[tokio::test]
+    async fn a4_restoring_a_thread_a_peer_deleted_brings_it_back_live() {
+        let (a, b) = service_pair("a4-restore-deleted").await;
+        let tid = a.docs.thread_create("Work", "the work thread").await.unwrap();
+        assert_eq!(pull(&a, &b, SyncTable::Thread, &[tid.clone()]).await, (1, 0));
+
+        // On B, two documents of the thread, in the trash (as the peer's
+        // deletion sends them there).
+        let mut trashed = vec![];
+        for title in ["Plan", "Memo"] {
+            let new = sovereign_docs::NewDocument {
+                title: title.into(),
+                thread_id: tid.clone(),
+                content: sovereign_docs::NewContent::Text(format!("{title} text")),
+                trust: sovereign_docs::Trust::Owned,
+                provenance: sovereign_docs::Provenance::Written,
+                origin: sovereign_docs::Origin::Editor { session: sovereign_docs::EditSession(7) },
+                created_at: None,
+                modified_at: None,
+            };
+            let id = b.docs.create(new).await.unwrap().id;
+            b.docs.trash(&id).await.unwrap();
+            let at = b.docs.read(&id).await.unwrap().trashed_at;
+            assert!(at.is_some());
+            trashed.push((id, at));
+        }
+
+        // A deletes the thread; B receives the deletion and keeps the prior
+        // value for the alert.
+        sovereign_docs::delete_thread_to_trash(&a.docs, a.db.as_ref(), &tid).await.unwrap();
+        assert_eq!(pull(&a, &b, SyncTable::Thread, &[tid.clone()]).await, (1, 0));
+        assert!(b.db.get_thread(&tid).await.unwrap().deleted_at.is_some(), "the deletion applied on B");
+        let deleted_stamp = stamp_of(&b, &tid).await;
+        let rec = b
+            .db
+            .list_pending_row_recoveries()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.row_id == tid && r.table == "thread")
+            .expect("the alert offers the deleted thread's previous value");
+
+        // The alert's restore.
+        b.svc.restore_row_recovery(&rec.id_string().unwrap()).await.expect("restoring a peer-deleted thread works");
+
+        let t = b.db.get_thread(&tid).await.unwrap();
+        assert!(t.deleted_at.is_none(), "the thread is live again");
+        assert_eq!(t.name, "Work", "with its name");
+        assert_eq!(t.description, "the work thread", "and its description");
+        let restored_stamp = stamp_of(&b, &tid).await;
+        assert!(
+            (restored_stamp.wall_ms, restored_stamp.counter) > (deleted_stamp.wall_ms, deleted_stamp.counter),
+            "the restore is a new stamped write, after the deletion it undoes"
+        );
+        for (id, at) in &trashed {
+            assert_eq!(b.docs.read(id).await.unwrap().trashed_at, *at, "its documents stay in the trash until restored");
+        }
+        assert!(
+            !b.db.list_pending_row_recoveries().await.unwrap().iter().any(|r| r.row_id == tid),
+            "the alert is resolved"
+        );
+
+        // The restore travels: A, which deleted it, gets it back.
+        assert_eq!(pull(&b, &a, SyncTable::Thread, &[tid.clone()]).await, (1, 0), "A applies the restored row");
+        let back = a.db.get_thread(&tid).await.unwrap();
+        assert!(back.deleted_at.is_none() && back.name == "Work", "live again on A, with its name");
     }
 }

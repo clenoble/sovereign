@@ -51,6 +51,9 @@ base64 = { workspace = true, optional = true }
 
 [dev-dependencies]
 sovereign-db = { workspace = true, features = ["test-utils"] }
+# v0.0.12 item 10, L7: the tests capture every tracing message of the login check
+# (thread-scoped) to show that no bytes of the log file reach one.
+tracing-subscriber = { workspace = true }
 
 [features]
 default = ["llama", "cuda", "encrypted-log"]
@@ -62,3 +65,6 @@ p2p = ["sovereign-p2p"]
 encrypted-log = ["base64"]
 jiminy = ["reqwest", "tokio-tungstenite", "futures-util", "ringbuf"]
 vision = ["reqwest"]
+# Test seams for hosts (`Orchestrator::for_host_tests`). Enabled only by a
+# host's `[dev-dependencies]` (the shell's): never in a production build.
+test-support = []

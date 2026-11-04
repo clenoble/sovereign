@@ -1,5 +1,6 @@
 //! The trash of the Tauri host (the mobile app): what the commands
-//! `list_trash`, `restore_from_trash` and `empty_trash` do, kept out of the
+//! `list_trash`, `restore_from_trash`, `empty_trash` and `delete_document` do,
+//! kept out of the
 //! `#[tauri::command]` wrappers so they are tested against a real encrypted
 //! store without a webview, like `doc_saves.rs` (C-DOC adoption step 5,
 //! `doc/plans/C-DOC-adoption.md`, S5-5/S5-6/S5-7 through S5-9). The wrappers
@@ -12,7 +13,7 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sovereign_db::GraphDB;
-use sovereign_docs::{list_trash_named, DocError, DocumentService};
+use sovereign_docs::{list_trash_named, DocError, DocumentService, TrashOutcome};
 
 /// One line of the trash as the frontend receives it — and no content.
 #[derive(Clone, Debug, Serialize)]
@@ -86,12 +87,58 @@ pub async fn delete_thread_to_trash(docs: &DocumentService, db: &dyn GraphDB, th
         .map_err(|e| e.message)
 }
 
-/// Empties the trash; the number of documents purged.
+/// Empties the trash; the number of documents purged. No command calls it
+/// any more (v0.0.12 item 9: the phone empties what it showed,
+/// [`empty_trash_of`]).
 pub async fn empty_trash(docs: &DocumentService) -> Result<usize, String> {
     docs.empty_trash()
         .await
         .map(|report| report.documents.len())
         .map_err(|e| format!("The trash couldn't be emptied ({e}). Some documents may remain in it."))
+}
+
+/// Empties the trash as the phone showed it (v0.0.12 item 9, T1): purges
+/// those of `ids` (the trash view's lines when it was drawn) still in the
+/// trash; the number purged. A document that entered the trash after the
+/// view was drawn stays; a shown one no longer in the trash is left alone
+/// (the frontend tells them from the number: shown minus purged).
+pub async fn empty_trash_of(docs: &DocumentService, ids: &[String]) -> Result<usize, String> {
+    docs.empty_trash_of(ids)
+        .await
+        .map(|out| out.purged.documents.len())
+        .map_err(|e| format!("The trash couldn't be emptied ({e}). Some documents may remain in it."))
+}
+
+/// What a Delete did (v0.0.12 item 9, T3), as the frontend reads it:
+/// `"trashed"` (Undo offered) or `"already_in_trash"` (a deletion made
+/// elsewhere or earlier: no Undo).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeleteOutcome {
+    Trashed,
+    AlreadyInTrash,
+}
+
+impl From<TrashOutcome> for DeleteOutcome {
+    fn from(o: TrashOutcome) -> Self {
+        match o {
+            TrashOutcome::Trashed => DeleteOutcome::Trashed,
+            TrashOutcome::AlreadyInTrash => DeleteOutcome::AlreadyInTrash,
+        }
+    }
+}
+
+/// Moves a document to the trash through the document service (S5-1), and
+/// says whether this Delete moved it or found it there already: what the
+/// command `delete_document` answers. (The command calls the service itself:
+/// the S5-1 scan reads any call named `delete_document` outside the store and
+/// the service as a delete around them.)
+#[cfg_attr(not(test), allow(dead_code))]
+pub async fn delete_document(docs: &DocumentService, id: &str) -> Result<DeleteOutcome, String> {
+    docs.trash(id)
+        .await
+        .map(DeleteOutcome::from)
+        .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))
 }
 
 /// The host's purge (S5-3): runs `sovereign_docs::purge_tick` at unlock, then
@@ -176,11 +223,12 @@ pub mod commands {
         }
     }
 
-    /// Empties the trash (the UI asks first, K7); how many were purged.
+    /// Empties the trash as it was shown (the UI asks first, K7; v0.0.12
+    /// item 9, T1): `ids`, the lines the view listed; how many were purged.
     #[tauri::command]
-    pub async fn empty_trash(webview: tauri::Webview, state: State<'_, AppState>) -> Result<usize, String> {
+    pub async fn empty_trash(webview: tauri::Webview, state: State<'_, AppState>, ids: Vec<String>) -> Result<usize, String> {
         state.require_unlocked(&webview).await?;
         let docs = state.docs().await?;
-        super::empty_trash(&docs).await
+        super::empty_trash_of(&docs, &ids).await
     }
 }

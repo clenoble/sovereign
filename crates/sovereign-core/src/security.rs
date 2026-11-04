@@ -80,11 +80,13 @@ pub fn action_level(action: &str) -> ActionLevel {
         "annotate" | "tag" | "bookmark" => ActionLevel::Annotate,
         "create_document" | "create_thread" | "rename_thread" | "move_document"
         | "restore" | "edit" | "find_replace" | "duplicate" | "import_file"
-        | "swap_model" | "merge_threads" | "split_thread" | "adopt"
+        | "swap_model" | "split_thread" | "adopt"
         | "create_milestone" | "delete_milestone" => ActionLevel::Modify,
         "export" | "share" | "transmit"
         | "pair_device" | "enroll_guardian" | "rotate_shards" => ActionLevel::Transmit,
-        "delete_thread" | "delete_document" | "purge"
+        // v0.0.12 item 23, T4: a merge deletes its source thread, so it is
+        // never auto-approved, like deleting a thread.
+        "delete_thread" | "merge_threads" | "delete_document" | "purge"
         | "initiate_recovery" | "revoke_guardian" => ActionLevel::Destruct,
         _ => ActionLevel::Observe,
     }
@@ -164,8 +166,9 @@ mod tests {
     }
 
     #[test]
-    fn action_level_merge_split_modify() {
-        assert_eq!(action_level("merge_threads"), ActionLevel::Modify);
+    fn action_level_merge_destruct_split_modify() {
+        // v0.0.12 item 23, T4 (Céline, 2026-10-25): merging always asks.
+        assert_eq!(action_level("merge_threads"), ActionLevel::Destruct);
         assert_eq!(action_level("split_thread"), ActionLevel::Modify);
     }
 

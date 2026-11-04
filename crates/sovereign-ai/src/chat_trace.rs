@@ -27,6 +27,9 @@ pub enum TraceStep {
     Executed,
     /// Executed and failed, with the reason.
     Failed(String),
+    /// Executed with nothing to change, with the reason (v0.0.12 item 11b, C4); the
+    /// same whether it was proposed and approved or ran without a proposal.
+    NoChange(String),
 }
 
 impl TraceStep {
@@ -37,6 +40,7 @@ impl TraceStep {
             TraceStep::Declined => "Proposed to you and declined.".to_string(),
             TraceStep::Executed => "Executed.".to_string(),
             TraceStep::Failed(reason) => format!("Failed: {reason}"),
+            TraceStep::NoChange(reason) => format!("Executed without change: {reason}"),
         }
     }
 }

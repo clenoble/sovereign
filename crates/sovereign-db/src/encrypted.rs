@@ -27,6 +27,20 @@ use crate::traits::GraphDB;
 /// on pathological inputs; chosen wide enough not to truncate normal chat.
 const MESSAGE_TOKEN_CAP: usize = 256;
 
+/// A document row that exists but cannot be decrypted (v0.0.12 item 7, V1):
+/// what [`EncryptedGraphDB::list_documents_including_deleted_and_undecryptable`]
+/// gives beside the readable rows. Only what is stored in clear: no title, no
+/// content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UndecryptableDocument {
+    /// The row's id, as `Document::id_string` gives it (`document:…`).
+    pub id: String,
+    /// The row's last modified date (stored in clear).
+    pub modified_at: chrono::DateTime<chrono::Utc>,
+    /// Whether the row is in the trash (a tombstone).
+    pub deleted: bool,
+}
+
 /// A GraphDB wrapper that encrypts/decrypts content transparently.
 ///
 /// Per-entity-type key databases (separate `KeyDatabase` files, separate
@@ -258,6 +272,34 @@ impl EncryptedGraphDB {
             }
         }
         Ok(result)
+    }
+
+    /// Every document row, tombstones included, as
+    /// `list_documents_including_deleted` gives the readable ones — and,
+    /// beside them, each row that exists but cannot be decrypted, by id and
+    /// last modified date (v0.0.12 item 7, V1: the one-time conversion counts
+    /// and lists them). The ordinary listings still skip such a row with a
+    /// warning (DB-M1); this one names it instead. Nothing of an
+    /// undecryptable row's title or content is returned.
+    pub async fn list_documents_including_deleted_and_undecryptable(
+        &self,
+    ) -> DbResult<(Vec<Document>, Vec<UndecryptableDocument>)> {
+        let docs = self.inner.list_documents_including_deleted().await?;
+        let mut readable = Vec::with_capacity(docs.len());
+        let mut undecryptable = Vec::new();
+        for doc in docs {
+            let id = doc.id_string().unwrap_or_default();
+            let modified_at = doc.modified_at;
+            let deleted = doc.deleted_at.is_some();
+            match self.decrypt_document(doc).await {
+                Ok(d) => readable.push(d),
+                Err(e) => {
+                    tracing::warn!("undecryptable document {id} listed apart (v0.0.12 item 7): {e}");
+                    undecryptable.push(UndecryptableDocument { id, modified_at, deleted });
+                }
+            }
+        }
+        Ok((readable, undecryptable))
     }
 
     // -- Thread helpers --
@@ -709,6 +751,24 @@ impl GraphDB for EncryptedGraphDB {
         self.decrypt_documents(docs).await
     }
 
+    /// Every blind-index candidate for `title` (all, decrypted). A title with
+    /// no indexable token (every word shorter than three characters) has no
+    /// blind-index key: every live document is then a candidate, and the
+    /// resolver's exact comparison decides.
+    async fn document_title_candidates(&self, title: &str) -> DbResult<Vec<Document>> {
+        let hashes = self.token_hashes(title.trim());
+        if hashes.is_empty() {
+            let all = self.list_documents(None).await?;
+            return Ok(all.into_iter().filter(|d| d.deleted_at.is_none()).collect());
+        }
+        self.document_title_candidates_by_token_hashes(&hashes).await
+    }
+
+    async fn document_title_candidates_by_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Document>> {
+        let docs = self.inner.document_title_candidates_by_token_hashes(hashes).await?;
+        self.decrypt_documents(docs).await
+    }
+
     async fn set_document_title_encryption(
         &self,
         id: &str,
@@ -872,6 +932,24 @@ impl GraphDB for EncryptedGraphDB {
             Some(t) => Ok(Some(self.decrypt_thread(t).await?)),
             None => Ok(None),
         }
+    }
+
+    /// Every blind-index candidate for `name` (all, decrypted). A name with no
+    /// indexable token (every word shorter than three characters) has no
+    /// blind-index key: every live thread is then a candidate, and the
+    /// resolver's exact comparison decides.
+    async fn thread_name_candidates(&self, name: &str) -> DbResult<Vec<Thread>> {
+        let hashes = self.token_hashes(name.trim());
+        if hashes.is_empty() {
+            let all = self.list_threads().await?;
+            return Ok(all.into_iter().filter(|t| t.deleted_at.is_none()).collect());
+        }
+        self.thread_name_candidates_by_token_hashes(&hashes).await
+    }
+
+    async fn thread_name_candidates_by_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Thread>> {
+        let threads = self.inner.thread_name_candidates_by_token_hashes(hashes).await?;
+        self.decrypt_threads(threads).await
     }
 
     async fn update_thread(
@@ -2115,7 +2193,9 @@ impl GraphDB for EncryptedGraphDB {
     }
 
     async fn set_purge_marker(&self, marker: PurgeMarker) -> DbResult<()> {
-        // A marker carries an id and times only: nothing to seal.
+        // A marker holds an id, times and a stamp only (v0.0.12 item 3, L12:
+        // the fingerprint v0.0.11 stored is erased at unlock and never
+        // written again).
         self.inner.set_purge_marker(marker).await
     }
 

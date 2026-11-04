@@ -371,16 +371,31 @@ pub async fn recovery_finalize(
                 &state.config,
                 sovereign_core::auth::PersonaKind::Duress,
             );
-            match crate::setup::create_db(&duress_config).await {
-                Ok(ddb) => {
-                    if let Err(e) = crate::duress::seed_duress_db(&ddb, &state.config.p2p.device_name).await {
+            // v0.0.12 item 22 (D6): stamped with the duress persona's own peer
+            // id (the random duress passphrase's device key), never a name.
+            let duress_identity = crate::duress::duress_identity(&auth_store, random_duress.as_bytes());
+            match (crate::setup::create_db(&duress_config).await, duress_identity) {
+                (Ok(ddb), Some(identity)) => {
+                    if let Err(e) = crate::duress::seed_duress_db(&ddb, &identity).await {
                         tracing::warn!("duress decoy pre-seed at recovery failed (continuing): {e}");
                     }
                 }
-                Err(e) => {
+                (Ok(_), None) => {
+                    tracing::warn!("duress decoy pre-seed at recovery skipped: no duress identity (continuing)");
+                }
+                (Err(e), _) => {
                     tracing::warn!("duress decoy DB pre-create at recovery failed (continuing): {e}");
                 }
             }
+        }
+
+        // 6. The account is rebuilt: mark the setup finished. v0.0.12 lot 1
+        // (P1/P2): `auth.store` without `onboarding_done` now means an
+        // interrupted setup, and the first login would say so; a completed
+        // recovery is not one. Best-effort: on failure the first login writes
+        // it (and shows that notice once).
+        if let Err(e) = std::fs::write(state.profile_dir.join("onboarding_done"), "1") {
+            tracing::warn!("could not write onboarding_done after backup recovery: {e}");
         }
 
         Ok(rec.status().into())

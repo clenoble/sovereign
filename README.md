@@ -138,7 +138,7 @@ cd frontend && npm test
 
 This is an experimental prototype. Try it, break it, contribute. The most approachable contribution path is writing a new skill — see [doc/writing-skills.md](doc/writing-skills.md) for the WASM Component Model guide, sandbox model, and a worked example.
 
-**Latest release:** [v0.0.10](RELEASE_NOTES_v0.0.10.md) — stabilisation after a full audit: fixes for defects that could lose work (skills, unsaved edits, failed saves), reversible delete, recovery and guardian fixes, a conversation log that is never written in clear, release-build hardening, and an honest list of known limitations. The native shell is now the only desktop app. Release notes for every version are in `RELEASE_NOTES_v0.0.*.md`.
+**Latest release:** [v0.0.12](RELEASE_NOTES_v0.0.12.md) — the corrective release: it corrects what v0.0.11 got wrong (History works again on the desktop), gives every thread its own lane, names your desktops, and makes the assistant act only on what you named. Release notes for every version are in `RELEASE_NOTES_v0.0.*.md`.
 
 Ideas we haven't built yet: federation, plugin marketplace, collaborative editing, rich document format (WYSIWYG), semantic search via embeddings.
 

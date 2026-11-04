@@ -58,6 +58,42 @@ pub trait GraphDB: Send + Sync {
         hashes: &[String],
     ) -> DbResult<Vec<Document>>;
 
+    /// Every live document the title lookup offers as a candidate for
+    /// `title`: all of them, with no limit (v0.0.12 item 23, T1), where
+    /// `search_documents_by_title` stops at 20. On `EncryptedGraphDB` the
+    /// candidates come from the blind index (every document whose title
+    /// tokens include the title's), decrypted; on a plaintext store, every
+    /// live document whose title contains `title` ignoring case. Candidates
+    /// are not matches: [`crate::resolve_document_title`] compares their
+    /// titles.
+    ///
+    /// The default reads every live document (correct on any plaintext
+    /// store); stores with an index override it.
+    async fn document_title_candidates(&self, title: &str) -> DbResult<Vec<Document>> {
+        let needle = title.trim().to_lowercase();
+        Ok(self
+            .list_documents(None)
+            .await?
+            .into_iter()
+            .filter(|d| d.deleted_at.is_none() && d.title.to_lowercase().contains(&needle))
+            .collect())
+    }
+
+    /// Blind-index candidates over `document.title_token_hashes`
+    /// (CONTAINSALL): every live document that carries all of `hashes`, with
+    /// no limit.
+    async fn document_title_candidates_by_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Document>> {
+        if hashes.is_empty() {
+            return Ok(vec![]);
+        }
+        Ok(self
+            .list_documents(None)
+            .await?
+            .into_iter()
+            .filter(|d| d.deleted_at.is_none() && hashes.iter().all(|h| d.title_token_hashes.contains(h)))
+            .collect())
+    }
+
     /// Internal setter used by `EncryptedGraphDB::create_document` /
     /// `update_document` to write back encrypted title fields. The id-passed-in
     /// must already exist in the DB.
@@ -160,6 +196,39 @@ pub trait GraphDB: Send + Sync {
         &self,
         hashes: &[String],
     ) -> DbResult<Option<Thread>>;
+
+    /// Every live thread the name lookup offers as a candidate for `name`:
+    /// all of them, not one (v0.0.12 item 6, A1). On `EncryptedGraphDB` the
+    /// candidates come from the blind index (every thread whose name tokens
+    /// include the name's), decrypted; on a plaintext store, every live
+    /// thread whose name contains `name` ignoring case. Candidates are not
+    /// matches: [`crate::resolve_thread_name`] compares their names.
+    ///
+    /// The default reads every live thread (correct on any plaintext store);
+    /// stores with an index override it.
+    async fn thread_name_candidates(&self, name: &str) -> DbResult<Vec<Thread>> {
+        let needle = name.trim().to_lowercase();
+        Ok(self
+            .list_threads()
+            .await?
+            .into_iter()
+            .filter(|t| t.deleted_at.is_none() && t.name.to_lowercase().contains(&needle))
+            .collect())
+    }
+
+    /// Blind-index candidates over `thread.name_token_hashes` (CONTAINSALL):
+    /// every live thread that carries all of `hashes`, with no limit.
+    async fn thread_name_candidates_by_token_hashes(&self, hashes: &[String]) -> DbResult<Vec<Thread>> {
+        if hashes.is_empty() {
+            return Ok(vec![]);
+        }
+        Ok(self
+            .list_threads()
+            .await?
+            .into_iter()
+            .filter(|t| t.deleted_at.is_none() && hashes.iter().all(|h| t.name_token_hashes.contains(h)))
+            .collect())
+    }
 
     /// Internal setter used by `EncryptedGraphDB` after `create_thread` /
     /// `update_thread`. Writes encrypted name + description and name token hashes.

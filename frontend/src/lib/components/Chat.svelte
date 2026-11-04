@@ -3,12 +3,17 @@
 	import { app, confirmPendingAction, rejectPendingAction } from '$lib/stores/app.svelte';
 	import { chatMessage } from '$lib/api/commands';
 	import { renderMarkdown } from '$lib/utils/markdown';
+	import { trackChatAnnouncements } from '$lib/utils/chatAnnouncer.svelte';
 
 	let inputValue = $state('');
 	let messagesEl: HTMLDivElement | undefined = $state();
 	let copiedIdx = $state<number | null>(null);
 
 	let messages = $derived(recentMessages());
+
+	// v0.0.12, F-a11y, F2: new assistant and system messages, for the polite
+	// region below (the person's own are not read out again).
+	const announcer = trackChatAnnouncements();
 
 	function scrollToBottom() {
 		if (messagesEl) {
@@ -98,6 +103,14 @@
 	}
 </script>
 
+<!-- v0.0.12, F-a11y, F2: outside {#if chat.visible}, so a reply or an outcome
+     line that arrives while the panel is hidden is still announced. -->
+<div class="sr-only" aria-live="polite">
+	{#key announcer.seq}
+		{#if announcer.announcement}<p>{announcer.announcement}</p>{/if}
+	{/key}
+</div>
+
 {#if chat.visible}
 	<div class="chat-panel">
 		<div class="chat-header">
@@ -105,7 +118,8 @@
 			<button class="close-btn" onclick={() => toggleChat()}>X</button>
 		</div>
 
-		<div class="messages" bind:this={messagesEl}>
+		<!-- v0.0.12, F-a11y, F2: the conversation, named; not live, the region above speaks. -->
+		<div class="messages" bind:this={messagesEl} role="log" aria-label="Conversation" aria-live="off">
 			{#each messages as msg, i}
 				<div class="message {msg.role} {provenanceClass(msg.text)}" class:injection-warning={msg.role === 'system' && isInjectionWarning(msg.text)}>
 					<div class="msg-header">
@@ -155,6 +169,19 @@
 {/if}
 
 <style>
+	/* Visually hidden, still read by screen readers (v0.0.12, F-a11y, F2). */
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
 	.chat-panel {
 		position: fixed;
 		top: 120px;

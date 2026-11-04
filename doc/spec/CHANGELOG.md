@@ -6,6 +6,329 @@ the same commit.*
 
 ---
 
+## 2026-11-04 — v2.0.69: the app's duress and canary steps get the password step's "show" toggle (v0.0.12)
+
+ch. 12, *The canary phrase is entered like a password*: **K3** rewritten, **K4** extended, **K5**
+added. Contract and tests: PANDA2, `doc/plans/V0012-phone-show.md`.
+
+- **The gap.** The first K3 said the app's canary inputs are password inputs "as the password
+  step's are". But the password step also has a "Show password" checkbox, and the duress and
+  canary steps had none. Found by PANDA2's 0c read of rc1 (claude-coord 0196). Céline had chosen
+  on a description of the phone that was wrong. She decided again, on 2026-10-28: the toggle
+  also goes on the phone's duress and canary steps.
+- **K3**: the duress and canary inputs are masked by default. They have the password step's
+  checkbox, with one state for the whole wizard, labelled "Show password", or "Show phrase" on
+  the canary step.
+- **K4**: what is sent is the same with "show" on or off.
+- **K5** (Céline, 2026-11-04): those four inputs carry the password step's `autocapitalize`,
+  `autocorrect`, `autocomplete` and `spellcheck` attributes.
+  - Shown as text, a field otherwise lets the keyboard capitalise or correct the secret. A duress
+    password typed "abc" with "show" on could be saved as "Abc", and never match at login.
+  - For these two steps this does the BACKLOG item on `autocomplete` (§13). `new-password` for
+    the main password remains there.
+
+---
+
+## 2026-11-01 — corrections: three duress defences are the Tauri app's, not the desktop's (no version)
+
+During her rc1 test on the laptop, Céline created a duress account in the desktop shell. It opened
+empty. ch. 07 said "built in the shared login path" for *Decoy seeding*, *Login timing padding* and
+*Login throttle*. Read at rc1 (`20425d1`), all three live in `sovereign-app` (`duress.rs`,
+`tauri_commands/auth.rs`), and the shell, the only desktop UI shipped, calls none of them. BACKLOG §1
+already said so for the decoy and the throttle. The three status lines now say where each defence
+is built and where it is not. No change of substance: the design is unchanged and still to build in
+the shell.
+
+---
+
+## 2026-10-30 — corrections: the PII sweep is decided, not "with A5" (no version)
+
+The sweep was decided on 2026-10-10 (v2.0.6, D4). Three passages still carried the 2026-10-09 plan to
+specify it together with A5. PANDA2 raised the contradiction while merging the v0.0.13 priority
+lists; the laptop checked it and made the correction, at PANDA2's request (claude-coord 0189):
+- ch. 09 *Idle sweep*: its last paragraph;
+- ch. 09 *Not built*: the sweep's line;
+- ch. 10 *A5*: the sweep is no longer part of A5's open questions.
+No change of substance. Still to design: the review queue's cadence and form, and the three
+preconditions in ch. 09.
+
+---
+
+## 2026-10-28 — v2.0.68: the canary phrase is entered like a password (v0.0.12)
+
+Céline, 2026-10-28: "The canary phrase is a secret" (answer to PANDA2's 0c read, recorded by the
+laptop, claude-coord 0176) and, asked how it should be entered, "comme les mots de passe" (PANDA2
+session). ch. 12, *Accessibility*: K1–K4, the canary step masked on screen and in the tree, with the
+wizard's single "show" toggle, and password inputs in the app. ch. 07, *Canary phrase*: it is a
+secret; the pairing code is not. Contract: `doc/plans/V0012-canary-masked.md` (PANDA2). First
+numbered v2.0.67 on its branch; renumbered when item 11b took v2.0.67 on main.
+
+---
+
+## 2026-10-28 — v2.0.67: "Done" only for a real change, in a conversation too (v0.0.12 item 11b)
+
+Item 11b of v0.0.12 (`doc/plans/V0012-item11b-chat-no-change.md`, merged on `main` 5f0d8fa; Céline,
+2026-10-28, on PANDA2's read of the release notes, claude-coord 0175; PANDA2's second position,
+0184). ch. 08 *Action Gravity*: the chat loop's write tools report "No change" with its reason, like the
+direct path.
+
+---
+
+## 2026-10-26 — v2.0.66: an unverifiable conversation log is quarantined and said, every time (v0.0.12 item 10)
+
+Item 10 of v0.0.12 (`doc/plans/V0012-item10-session-log.md`, merged on `main` 5ed9d68; Céline's
+answers to the proposal, 2026-10-26: Part A now and Part B in the next release, quarantine and a
+fresh start, her notice, widened the same day for a crash or a full disk; PANDA2's second position,
+claude-coord 0171 and 0173). ch. 08 *Session log*:
+- the check (chain, decryption, anchor, beacon) at every login;
+- the quarantine and the fresh log;
+- the notice;
+- failing closed when the move fails;
+- no crash and no file bytes in messages;
+- each persona's own log on a one-orchestrator host;
+- the diagnostic sandbox announced for the next release.
+
+ch. 07 *After login*, *Migration*: the v0.0.11 one-time set-aside replaced.
+
+## 2026-10-26 — corrections: two stale passages (no version)
+
+Found by PANDA2 while writing v2.0.55–65 (claude-coord 0169); corrected by the laptop against the
+code at `main` `edba463`:
+- ch. 12 *Accessibility*, gaps: the canvas summary no longer announces "12 thread lanes" whatever the
+  workspace holds. It counts the real threads (`lanes.thread_count()`, since the lanes lot, v2.0.50).
+- ch. 02: the Android build has a recipe, `scripts/build-android.sh`, documented in `doc/RELEASE.md`.
+  The published APKs are debug builds; a release build is unsigned until signed outside the
+  repository.
+
+## 2026-10-26 — v2.0.65: the app's notice buttons name their object; its chat is announced (v0.0.12 F-a11y)
+
+F-a11y (`doc/plans/V0012-frontend-a11y.md`, merged on `main` 4ac3868, 2026-10-25; gaps found during
+second positions that day; PANDA2's contract; the laptop's second position, claude-coord 0161).
+ch. 12 *Accessibility*, the Svelte frontend: each notice button's accessible name begins with its
+visible text and names its object (F1); the chat is a log named "Conversation", with new assistant
+and system messages announced once by a polite region, the person's own not repeated, and replies
+announced while the panel is hidden (F2); the frontend type-checks with no error (F3). The short
+visible texts, the separate region and announcing while hidden are PANDA2's choices. **F4 is
+process, not in a chapter**: `_prepublish.bat` gains step 7b, `svelte-check --threshold error`
+(PANDA2's choice; the gate being shared, it waited for the laptop's yes, given in 0159). The Linux
+gate (`scripts/prepublish.sh`) has neither 7b nor 9, and `doc/RELEASE.md` still lists steps 0 to 8
+(found by the laptop, 0161).
+
+## 2026-10-26 — v2.0.64: the Tauri app lists the documents it could not read (v0.0.12 item 7, V2b)
+
+Item 7's V2b (`doc/plans/V0012-item7-v2b-app-list.md`, merged on `main` 9f99b7f, 2026-10-25; a gap
+found by the laptop at item 7's build, claude-coord 0153: the phone had a count and no list; under
+Céline's item 7 decision of 2026-10-24, count them and list them; PANDA2's contract; the laptop's
+second position, 0158). ch. 03 *Content encoding*, completing v2.0.53's "V2b, to follow": one
+wording in `sovereign-docs` for both hosts; the app's Alerts dialog lists the documents, with a
+notice while any remain (PANDA2's choice); a refused or locked request shows an empty list.
+
+## 2026-10-26 — v2.0.63: no OpenGL backend on Windows (v0.0.12)
+
+`doc/plans/V0012-no-gl-windows.md`, merged on `main` 3d1a1a4, 2026-10-25 (W1–W6, W3b). Céline's
+decision, 2026-10-24 ("Retirer sous Windows maintenant", via the laptop's claude-coord 0141;
+confirmed after PANDA2's measurement: "on l'enlevait à moins que tu aies une objection"); Linux
+keeps OpenGL. PANDA2's contract; the laptop's second position, 0150. ch. 12 *Native shell stack*:
+on Windows the instance is DX12 and Vulkan only; one function builds the render context;
+`WGPU_BACKEND` stays a development switch that decides when set, empty or unknown values included
+(PANDA2's choices); `WGPU_BACKEND=gl` is not offered to users as a fallback, since a GL-only start
+panicked once in six (amended at 9816dae, agreed by the laptop); the measured gain is small.
+
+## 2026-10-26 — v2.0.62: trash and orphan actions act on what was shown (v0.0.12 item 9)
+
+Item 9 of v0.0.12 (`doc/plans/V0012-item9-act-on-what-was-shown.md`, merged on `main` f879443,
+2026-10-25; the cloud review of v0.0.11, R15 and R20, in the scope Céline confirmed on 2026-10-23;
+PANDA2's contract; the laptop's second position, claude-coord 0144 on the contract and 0148 on the
+build). ch. 03 *Soft delete and 30-day purge*: Empty trash purges the ids the view showed, those
+still in the trash, and names the skipped ones; an orphan group's action applies to the ids it
+showed, zero when none is still waiting; Delete tells "already in the trash" apart, with no Undo;
+"Restore into…" lists every thread, scrolls, and is an accessible list; the C-DOC operations list
+names the trash outcome and `empty_trash_of`. The wording of the skipped
+message and the zero result are PANDA2's choices.
+
+## 2026-10-26 — v2.0.61: the clipboard forgets at quit and at a store change; no raw token in a title (v0.0.12 item 8)
+
+Item 8 of v0.0.12 (`doc/plans/V0012-item8-clipboard-labels.md`, merged on `main` e3e8c6c,
+2026-10-25; the cloud review of v0.0.11, R19 and R18, scope confirmed by Céline 2026-10-23;
+PANDA2's contract; the laptop's second position, claude-coord 0144 on the contract and 0147 on
+the build). **ch. 12 *Clipboard*** was reworded at merge (62de4dd, without a changelog entry until
+this one): any copy this process made — document text, a shell field, the pairing code — is
+cleared at quit and when the store changes, so it cannot cross to another persona; another
+application's copy is left alone (Céline, 2026-10-24: "Effacer à la fermeture aussi", which
+reverses "no automatic clearing of ordinary text" of 2026-10-10); the pairing code carries the
+same exclusion marks as any copy (PANDA2's choice, K5). A crash or a kill clears nothing: no code
+runs then. **ch. 12 *Documents*, title:** a token in a title is shown and announced as its label in
+the editor's label and wherever the shell draws a title; `[PII]` when the label cannot be read. ch. 09's two status lines no longer say that no UI renders tokens.
+
+## 2026-10-26 — v2.0.60: the time ruler across a daylight-saving change (v0.0.12)
+
+Two merges on the desktop's time ruler, one entry. **The panic** in the hour repeated when clocks
+go back (merged on `main` 37f303b, 2026-10-24; no contract, the cause and fix in claude-coord
+from-windows 0150; found by the item 8 test author; PANDA2's fix, the laptop's second position,
+0146): the ruler aligns by durations, not by setting local clock fields; in v0.0.11 too, and no
+v0.0.11 erratum for it (Céline, 2026-10-25: "Trop tard pour l'ajouter, c'est déjà passé. Il faudra
+corriger avant l'année prochaine"). **The days follow the calendar**
+(`doc/plans/V0012-ruler-calendar-days.md`, merged on `main` 41e45af, 2026-10-25; found by the
+laptop; PANDA2's contract; the laptop's second position, 0151 and 0153): day ticks are calendar
+dates, each labelled once on 23-, 24- and 25-hour days; multi-hour ticks are wall-clock hours
+(PANDA2's choice, agreed by the laptop); minute and 1-hour ticks unchanged. ch. 12 *X — calibrated
+time*.
+
+## 2026-10-26 — v2.0.59: devices have names, and History says them (v0.0.12 items 14, 19)
+
+Items 14 and 19 of v0.0.12 (`doc/plans/V0012-items14-19-devices.md`, merged on `main` c7a78e4,
+2026-10-24; both put in by Céline, 2026-10-23; PANDA2's contract; the laptop's second position,
+claude-coord 0139 on the contract and 0141 on the build). ch. 05 gains *Device names*: one name per
+workspace, shared by both personas, overriding the configuration; asked at setup, prefilled with
+the computer's name (Céline, 2026-10-24: "Le nom de l'ordinateur"), at most 64 grapheme clusters;
+renamed in the Devices window, sent from then on without a restart; a paired device renamed here
+only; History names the device ("this device", or "…" and the last 8 characters of a forgotten
+id) on one line that never overlaps the time. The name is not the identity (item 22). Céline
+approved the choices PANDA2 put to her on 2026-10-24 ("je suis d'accord avec tes choix"). ch. 12:
+pointers from *Text fields*, *Documents* (History) and *Onboarding*. The orphans follow a local
+rename since item 22, not before (the contract's known limit at merge). ch. 12 *Settings*: the conflict note says the device name is now set and renamed, the conflict standing for the other settings.
+
+## 2026-10-26 — v2.0.58: the desktop's first run works off the UI thread and says what it shows (v0.0.12 items 18, 20)
+
+Items 18 and 20 of v0.0.12 (`doc/plans/V0012-items18-20-first-run.md`, merged on `main` 7e2f6c9,
+2026-10-24; both put in by Céline, 2026-10-23; PANDA2's contract; the laptop's second position,
+claude-coord 0131 on the contract and 0138 on the build). ch. 12 *Onboarding and the auth gate*:
+setup, unlock, recovery's new password and the join's login run off the UI thread, with a status
+line, one at a time, the error on screen and in the tree; after the store, a failure goes to the
+login form; a refused duress = main goes back to the duress step; `try_onboard` deleted (the
+laptop's proposal). ch. 12 *Accessibility*: the locked screen's tree describes the step drawn,
+names each field by its label, never announces a secret, has no empty name; "the onboarding
+wizard is not in the tree" removed from the gaps. ch. 07 *Auth store*: the desktop's interrupted
+setup, a "setup started" record and a setup-complete marker, the notice once, and no notice for
+accounts made before v0.0.12 (PANDA2's choice). The other choices (no progress bar or cancel,
+closing not blocked, "show" not announced) are PANDA2's, open to Céline's review.
+
+## 2026-10-26 — v2.0.57: the chat composer and the search field are the editor's field (v0.0.12 item 21)
+
+Item 21 of v0.0.12 (`doc/plans/V0012-item21-composer.md`, merged on `main` 9e93a9b, 2026-10-24;
+asked by Céline, 2026-10-23; PANDA2's contract; the laptop's second position, claude-coord 0130 on
+the contract and 0137 on the build). ch. 12 *Native shell stack*: the stale "end-pinned caret
+only" line replaced by *Text fields* (which fields use the editor's single-line field, which three
+are still buffers), and the composer and search: Enter and Escape keep their meaning, an Enter
+during a composition stays in the field (a rule of the field, inherited by the rename and
+new-thread fields), the search refreshes on every edit, "Message" and "Search" in the
+accessibility tree, nothing new leaves memory, a pasted paragraph becomes one line. Ctrl+Z after a
+send brings the message back: kept by Céline (2026-10-24, "Garder"). The other choices are
+PANDA2's, open to her review.
+
+## 2026-10-26 — v2.0.56: the pre-publish gate checks the notes' claims (v0.0.12 item 17; process)
+
+Process, not behaviour of the software: no chapter changes. The specification has no chapter on
+the release process, which lives in `doc/RELEASE.md` and `_prepublish.bat`; this entry records the
+decision so it can be found from here. Céline's decision 4 on the cloud review of v0.0.11
+(2026-10-23, `doc/plans/CLAIMS-verifier.md`): every claim of the release notes names the test that
+proves it, and a verifier checks it before publishing. The verifier, `scripts/check-release-claims.py`,
+is the laptop's (merged on `main` acb3f8d). Item 17 and the claims step, PANDA2's (merged on
+`main` 582b1aa, 2026-10-24; the laptop's go-ahead, claude-coord 0133): every check of
+`_prepublish.bat` reads `%errorlevel% neq 0` (before, `if errorlevel 1` let a negative exit code
+pass); steps 4–7 write the lists of the tests they ran, and step 9 runs the verifier on the notes
+named as the gate's argument, against those lists. The notes as an argument, rather than a version
+read from `Cargo.toml`, is PANDA2's choice. Not in that merge: the other two parts of item 17
+(`build-android.sh` deleting the old APK; `[profile.test]` debug info).
+
+## 2026-10-26 — v2.0.55: the phone wizard checks what it sends (v0.0.12 P5)
+
+P5 of v0.0.12, the frontend half of item 4 (`doc/plans/V0012-p5-wizard.md`, merged on `main`
+b96fcb4 for P5a–P5f and 4de8a4b for P5g–P5i, 2026-10-24; PANDA2's contract; the laptop's second
+position, claude-coord 0131 and 0135). ch. 12 *Onboarding and the auth gate*: Next at the duress
+and safety-phrase steps only for both fields empty or both filled and equal (and, for duress,
+different from the main password), on trimmed values; Skip empties the step and sends nothing;
+Get Started checks duress ≠ main again; the confirmations are sent; "Already onboarded" leads to
+the login screen on both flows; the interrupted-setup notice once, after the login. The duress
+message takes the desktop's and the store's words (P5i; the rule is Céline's, 2026-10-23, ch. 07).
+The other choices are PANDA2's (2026-10-23 and 2026-10-24; Céline: "commencer tous les 2 sans moi
+ce soir"), open to her review.
+
+## 2026-10-25 — v2.0.54: the assistant acts on what it names (v0.0.12 items 6, 11, 13, 23)
+
+The assistant lot of v0.0.12 (`doc/plans/V0012-lot-assistant.md`, `V0012-item23-document-titles.md`,
+merged on `main` 3d52bb2; PANDA2's second position, claude-coord 0160–0165). ch. 08:
+- *Action Gravity*: `merge_threads` at Destruct (Céline, 2026-10-25); every action ends with one
+  outcome (changed, reported, no change, failed), "Done" only for a real change.
+- *Action targets*, "Built in v0.0.12": threads and documents by exact name only, resolved before
+  the proposal, which names them; the two names of a rename, move or merge read from the person's
+  words; a name read from unquoted words always proposed, never run by trust alone (Céline,
+  2026-10-25).
+- *Models and runtime*: a prompt longer than the batch decoded in chunks; Summarize in parts, at
+  most 16, with a 15 % margin on the estimate.
+ch. 05 *Rows*: restoring a thread a peer deleted.
+
+## 2026-10-25 — v2.0.53: the migration counts and lists what it cannot read (v0.0.12 item 7)
+
+Item 7 of v0.0.12 (`doc/plans/V0012-item7-conversion.md`, merged on `main` 1ed2354; Céline's
+decision of 2026-10-24; PANDA2's second position, claude-coord 0159). ch. 03 *Content encoding*:
+undecryptable rows are counted, left as they were, listed in the desktop's Alerts window by short
+id and date, and retried only after a build version change; the migration locks per document; an
+open editor takes its own conversion silently. The Tauri app's list (V2b) is to follow.
+
+## 2026-10-25 — v2.0.52: the node starts without a system DNS config (v0.0.12 item 12)
+
+Item 12 of v0.0.12 (`doc/plans/V0012-item12-phone-p2p.md`, merged on `main` 3122982; confirmed by
+Céline, 2026-10-23; PANDA2's second position, claude-coord 0155 and 0156). ch. 05 *Swarm and
+transports*: the DNS transport is optional; without a system resolver config the node runs
+without it, dials no named address, and says so in Settings → Devices. The phone run (P5) is on
+the v0.0.12 checklist.
+
+## 2026-10-24 — v2.0.51: the device in a stamp is its peer id (v0.0.12 item 22)
+
+Item 22 of v0.0.12 (`doc/plans/V0012-item22-device-identity.md`, merged on `main` 6240f6b; added by
+Céline, 2026-10-24; PANDA2's second position, claude-coord 0150). ch. 05 *Stamps*: the device in a
+stamp is the persona's libp2p peer id, not the display name; stored stamps keep their name; the
+desktop fails closed when the identity cannot be derived.
+
+## 2026-10-24 — v2.0.50: one lane per thread, moves travel (v0.0.12 lanes lot)
+
+The lanes lot of v0.0.12 (`doc/plans/V0012-lot-lanes.md`, merged on `main` f4e4b7d; PANDA2's second
+position, claude-coord 0148). ch. 12 *Y — thread lanes* moves to built: one lane per live thread, no
+cap, one mapping used everywhere, Unfiled only when needed; the wheel scrolls the lanes and
+Ctrl+wheel zooms (Céline, 2026-10-24); a lane's colour is its thread's (Céline, 2026-10-24); only
+visible lanes drawn, every label in the accessibility tree. ch. 05 gains *Moving a document*: a move
+is a stamped write that travels, through one service operation; the pin stays on each device
+(Céline, 2026-10-24). The shell holds raw ids only (no SurrealDB display form).
+
+## 2026-10-24 — v2.0.49: purges are local, built (v0.0.12 item 3)
+
+Item 3 of v0.0.12 (`doc/plans/V0012-item3-local-purges.md`, merged on `main` a7b067a; PANDA2's
+second position, claude-coord 0139). ch. 05 *Deletions and purges* moves to built, with what the
+build settled: **peers on v0.0.11** keep syncing documents, their purge markers read as deletions
+(Céline, 2026-10-24); our markers send the field v0.0.11 requires, empty; "trash since" floors the
+30 days at the first tick after an upgrade **[choice]**; a document restored from a backup into the
+trash enters this device's trash at the restore; stored fingerprints are erased at the first unlock;
+the plan neither fetches nor pushes copies a marker would ignore **[choice]**. *Peers on an older
+build:* a v0.0.11 peer is not one. ch. 03 G27 built; G28 loses the fingerprint. Review of v0.0.11,
+findings 2, 3, 13 and 14, closed.
+
+## 2026-10-24 — v2.0.48: v0.0.12 lot 1 built (the clock's bound, account creation, History, quit)
+
+Lot 1 of v0.0.12 (`doc/plans/V0012-lot1.md`, merged on `main` 2561d2a; PANDA2's second position,
+claude-coord 0137). Status lines move to built:
+- **ch. 05, stamps:** the 5-minute bound is inside the clock, for every stamp received, stored or
+  restored; a counter at its maximum moves to the next millisecond (review finding 1).
+- **ch. 07, auth store:** login or setup is decided by `auth.store`; an interrupted or failed setup
+  after the store opens, with a one-time notice (Céline, 2026-10-23); the store refuses a duress
+  passphrase equal to the primary one on every path (Céline, 2026-10-23: fix it now); the backend
+  checks the confirmations (review findings 4, 9).
+- **ch. 12:** Cancel during a quit withdraws its Discards (review finding 6).
+- **ch. 03, restore:** the native shell's History rows come from the document service; History
+  restore works again on the desktop (the review's History cause).
+
+## 2026-10-23 — v2.0.47: purges are local
+
+Decided by Céline, after the cloud review of v0.0.11 (findings 2, 3 and 13; the reviewer's advice
+4): **a purge of the trash affects only this device's documents.** Remote documents, live or in
+their trash, are put in the trash or stay there, until their own term or a manual purge on that
+device. What travels after a purge is the deletion (id and stamp), never the purge; no fingerprint
+travels. The 30 days run on each device's own clock, from the moment the document entered its
+trash. A live state from another device with a later stamp than the deletion brings a purged
+document back, live (Céline, same day). Replaces the rule of 2026-10-15 (a purge marker with a
+fingerprint purged a peer's identical copy). Ch. 05 *Deletions and purges*, the manifest line and
+*Backup restore*; ch. 03 G13, G19, G27, G28. Not built: planned for v0.0.12.
+
 ## 2026-10-19 — v2.0.46: account creation is single-flight; readable fields in the dark theme (rc2)
 
 Decided by Céline from rc1's checks. Ch. 07 *Auth store*: an auth store is created once — the

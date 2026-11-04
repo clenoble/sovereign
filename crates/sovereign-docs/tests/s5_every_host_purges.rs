@@ -62,6 +62,10 @@ async fn s5_3_the_tick_purges_what_is_30_days_in_the_trash_and_keeps_the_rest() 
     s.edb.create_relationship(&old, &live, RelationType::References, 0.5).await.unwrap();
     s.edb.create_relationship(&live, &old, RelationType::Supports, 0.5).await.unwrap();
 
+    // The tick a host runs at unlock, before anything is trashed (item 3,
+    // L10: a document trashed before the first tick gets 30 days from it).
+    // Added by the item-3 test author; what is tested is unchanged.
+    assert!(purge_tick(&s.svc).await.expect("unlock tick").documents.is_empty());
     s.svc.trash(&older).await.unwrap();
     s.clock.advance(Duration::days(5));
     s.svc.trash(&old).await.unwrap();
@@ -93,6 +97,8 @@ async fn s5_3_the_tick_purges_what_is_30_days_in_the_trash_and_keeps_the_rest() 
 async fn s5_3_a_later_tick_purges_what_an_earlier_one_kept() {
     let s = Stack::new("s5-3-later").await;
     let id = s.create_text("Doc", "text").await;
+    // The unlock tick (item 3, L10; see above).
+    assert!(purge_tick(&s.svc).await.expect("unlock tick").documents.is_empty());
     s.svc.trash(&id).await.unwrap();
     s.clock.advance(Duration::days(30) - Duration::seconds(1));
     let first = purge_tick(&s.svc).await.expect("first tick");

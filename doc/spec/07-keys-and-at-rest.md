@@ -276,6 +276,37 @@ derivation on a phone, passed the existence check, replaced `auth.store` and `sa
 while the first session had already sealed the key databases under the old one; the account could
 never be unlocked again. v0.0.10 has the same window (the IPC-006 check is check-then-act).
 
+**What decides between login and setup is the store** (v0.0.12, lot 1, after the cloud review of
+v0.0.11, findings 4 and 9). With encryption, the app shows the login screen when `auth.store`
+exists and the setup wizard when it does not, on the phone as on the desktop; the
+`onboarding_done` marker no longer decides. Once `auth.store` is written, a setup that is killed
+or fails at a later step leaves an account that opens with its password; a failure after the
+store is reported as an **incomplete** setup, not an error, and the wizard goes to the login
+screen. At the first login that follows, the marker is written and a notice says once: "Setup
+was interrupted before it finished. Your account works; your safety phrase, typing profile and
+sample documents may not have been saved." (Céline, 2026-10-23: "un avis une fois"). In paired
+setup the record of the source device is written before `auth.store`, so an account that opens
+is paired. **The duress passphrase must differ from the primary one**, refused by the store itself
+on every path that creates one (fresh and paired setup on both platforms, crowd backup and guardian
+recovery), with the desktop's words: "Duress password must differ from your password." (Céline,
+2026-10-23: fix it now; testers who made such an account on Android are told in the v0.0.12
+notes). The backend also checks what was typed twice (password, duress password, safety phrase)
+before the claim and before any key derivation. *Status:* ● built in v0.0.12 lot 1 (phone);
+the desktop's interrupted setup is items 18 and 20.
+
+**The desktop's interrupted setup** (v0.0.12 items 18 and 20, B5b: the laptop's proposal of
+2026-10-24, taken whole by PANDA2; built, merged `7e2f6c9`). The desktop had no marker. Its wizard
+now records that a setup **started** before `auth.store` is written, and writes a
+**setup-complete** marker at the end, once the profile, safety phrase, starter lanes or sample
+documents are in place. Once the store is written, a later failure drops the wizard for the login
+form, with the error. At a login where the setup started and did not complete, a notice says once,
+after the login: "Setup was interrupted before it finished. Your account works; your profile,
+safety phrase and sample documents may not have been saved." (the desktop's list of what its
+wizard saves after the store); then the marker is written, at the login of either persona. **An
+account made before v0.0.12** (a store and neither record) logs in with no notice and gets its
+marker silently, so existing desktop accounts see no false alarm (PANDA2's choice, 2026-10-24).
+Join and recovery leave no notice. The UI side is ch. 12, *Onboarding and the auth gate*.
+
 ### Primary and duress personas
 
 **Status:** ◐ Partial — the two personas and their separate stores are built as described below,
@@ -298,8 +329,9 @@ separate database under separate keys and cannot reach the primary persona's row
 
 **Status:** ◐ Partial — built 2026-10-17 (`296c8b7`): per-persona orchestrator state and
 session-log beacon; guardian recovery reachable from the primary persona only. Specified
-2026-10-17 (v2.0.29), to be built: the duress enrollment's waiting screen, the one-time set-aside
-at migration, the persona's own identity profile.
+2026-10-17 (v2.0.29), to be built: the duress enrollment's waiting screen and the persona's own
+identity profile. The one-time set-aside at migration was built in v0.0.11 and replaced in v0.0.12
+by the quarantine at every login (item 10).
 
 What must not be readable is *which* persona a session is (ATREST-011). A live session must not
 show it either. So, after login:
@@ -323,15 +355,13 @@ show it either. So, after login:
 - **No user-visible difference.** The same steps in a duress session and on a fresh install with no
   duress passphrase show the same strings; nothing tells the session that another persona exists.
 - **Migration** (Céline, Q2): the orchestrator directory used before this change, shared by both
-  personas, becomes the **primary** persona's; the duress persona starts with an empty one. If that
-  log's anchor does not verify under the primary's key (it may have been minted in a duress
-  session), it is **set aside unread** — kept on disk, never read — and the primary starts an empty
-  log (Céline, 2026-10-17). **This happens once**, at the first primary login after the change;
-  from then on an anchor that does not verify fails closed and is reported, as before
-  (SESSIONLOG-001), so the rule can never hide later tampering. The primary is told once that an
-  earlier conversation log could not be verified and was set aside. *(The once-only limit and the
-  notice are the PANDA2 maille's reading of Céline's "yes", so that tamper detection is not
-  weakened.)*
+  personas, becomes the **primary** persona's; the duress persona starts with an empty one. A log
+  that does not verify under the persona's key is moved unread into a quarantine and a fresh log
+  starts, with the alteration notice: **at every login, not once** (v0.0.12 item 10, ch. 08 *Session
+  log*). Until v0.0.11, a one-time rule set such a log aside with a gentler notice, recording "done"
+  in a plain marker file that nothing authenticated (review finding 17): deleting it made a later
+  alteration pass for the migration. The marker now decides nothing. Existing `set-aside-*`
+  directories stay as they are.
 - **The shell's user profile is split** (Céline, 2026-10-17: now, unless it pulls in too much of
   C-SESS). **Device preferences** read before login — the theme and the bubble style — stay in
   one file shared by the personas: they identify no one. **The persona's identity** — display
@@ -342,7 +372,10 @@ show it either. So, after login:
 
 ### Decoy seeding
 
-**Status:** ◐ Partial — built in the shared login path; completion tracked in the private backlog.
+**Status:** ◐ Partial — built in the Tauri app's login (the phone, and the frozen Tauri desktop).
+**The desktop shell, the only desktop UI shipped, does not seed:** `seed_duress_db` lives in
+`sovereign-app` and the shell never calls it. Checked at v0.0.12 rc1 (`20425d1`, 2026-11-01): a
+duress account created in Céline's test opened empty. Completion is tracked in the private backlog.
 
 The duress workspace is seeded with plausible, innocuous content, spread over a randomized past so
 the workspace does not look created in one instant. Content variation
@@ -350,7 +383,9 @@ across installs is open work. (code: `crates/sovereign-app/src/duress.rs`)
 
 ### Login timing padding
 
-**Status:** ◐ Partial — built in the shared login path; completion tracked in the private backlog.
+**Status:** ◐ Partial — built in the Tauri app's login only (`tauri_commands/auth.rs`). The desktop
+shell has no padding: nothing in `sovereign-shell` refers to it (checked at rc1, `20425d1`,
+2026-11-01). Completion is tracked in the private backlog.
 
 The persona-dependent part of login (the duress persona opens, and may seed, a separate database)
 is padded to a constant floor so that login latency does not reveal which persona unlocked
@@ -358,7 +393,9 @@ is padded to a constant floor so that login latency does not reveal which person
 
 ### Login throttle
 
-**Status:** ◐ Partial — built in the shared login path; completion tracked in the private backlog.
+**Status:** ◐ Partial — built in the Tauri app's login only (`tauri_commands/auth.rs`, with its
+known load/save race). The desktop shell has no throttle or lockout: nothing in `sovereign-shell`
+refers to them (checked at rc1, `20425d1`, 2026-11-01). Completion is tracked in the private backlog.
 
 A persisted attempt tracker enforces a lockout after a configurable number of failures within a
 window (defaults: 10 attempts, 300 s). Its purpose is to stop scripted online guessing through the
@@ -374,6 +411,11 @@ During onboarding the user may set a personal canary phrase, sealed under the KE
 be shown back after login, so that a substituted or tampered environment — which cannot know the
 phrase — is noticed. Display after login is not wired. A runtime detector primitive exists in the
 crypto crate without a caller. (code: `crates/sovereign-crypto/src/canary.rs`)
+
+**It is a secret** (Céline, 2026-10-28), so it is entered like a password: masked on screen, its
+length only for a screen reader, on the desktop and in the app (ch. 12, *The canary phrase is
+entered like a password*, K1–K4). The pairing code is not a secret: it is valid for ten minutes and
+meant to be shared (Céline, same day).
 
 ### Keystroke dynamics
 

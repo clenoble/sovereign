@@ -1,8 +1,10 @@
 pub mod async_backend;
 pub mod backend;
+pub mod batching;
 pub mod context;
 pub mod format;
 pub mod prompt;
 
 pub use async_backend::AsyncLlmBackend;
 pub use backend::SamplingConfig;
+pub use batching::{prompt_chunks, prompt_fits_context, PromptChunk};

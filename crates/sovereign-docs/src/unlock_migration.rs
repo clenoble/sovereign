@@ -16,9 +16,10 @@
 //! **The record.** One store record (`GraphDB::put_store_record`) under
 //! [`RECORD_KEY`], written exactly when a run completes: the counts of the
 //! notice and whether it has been shown (M1, M2b). Its presence is what
-//! "completed" means. It is a few numbers and a flag, the same shape in every
-//! persona's store, sealed at rest by the encrypted layer under the persona's
-//! own keys (M8), never synced and never backed up. A record found in clear
+//! "completed" means. It is a few numbers, a flag, a version and a list of
+//! ids (below), the same shape in every persona's store, sealed at rest by
+//! the encrypted layer under the persona's own keys (M8), never synced and
+//! never backed up. A record found in clear
 //! (written below the encrypted layer, as only the unreleased first step-6
 //! build did) reads as absent: the migration runs again, idempotently.
 //!
@@ -29,16 +30,30 @@
 //! by an earlier run, not written since). A document converted by a save
 //! before the migration reached it is not counted (G3: that write converted
 //! it). `not_converted` is the documents that could not be read (a newer
-//! format is left out of both counts).
+//! format is left out of both counts): those whose content does not parse
+//! (V6) and those that cannot be decrypted (v0.0.12 item 7, V1).
+//!
+//! **The undecryptable rows** (v0.0.12 item 7). The record also keeps the
+//! build version that wrote it (`DocumentService::with_build_version`, the
+//! host's) and the rows found and not decrypted, by id and last modified date
+//! (no title, no content): the hosts' Alerts list them
+//! ([`unlock_migration_undecryptable`]). At an unlock under **another** build
+//! version those ids, and only those, are tried again; a row that now
+//! decrypts is converted like any other and leaves the list (V3). A record
+//! written before v0.0.12 has no list: its first unlock under this build
+//! looks for undecryptable rows, lists them and converts nothing.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
+use sovereign_db::encrypted::UndecryptableDocument;
 use sovereign_db::GraphDB;
 
-use crate::service::{store_err, DocumentService};
+use crate::service::{store_err, DocumentService, MigrationScope};
 use crate::types::DocError;
 
 /// The key of the one-time migration's record in the persona's store. Names
@@ -112,16 +127,30 @@ pub enum MigrationRun {
 struct Record {
     notice: MigrationNotice,
     shown: bool,
+    /// The build version of the run that last wrote the record (v0.0.12 item
+    /// 7, V3); `None` when the host gave none, or in a record written before.
+    build_version: Option<String>,
+    /// The rows found and not decrypted, left as they were (V1, V2), retried
+    /// at an unlock under another build version (V3). `None`: a record
+    /// written before v0.0.12 (Readings, 1), whose list is unknown, not empty.
+    undecryptable: Option<Vec<UndecryptableDocument>>,
 }
 
 impl Record {
     fn to_json(&self) -> String {
-        json!({
+        let mut v = json!({
             "converted": self.notice.converted,
             "not_converted": self.notice.not_converted,
             "notice_shown": self.shown,
-        })
-        .to_string()
+            "build_version": self.build_version,
+        });
+        if let Some(list) = &self.undecryptable {
+            v["undecryptable"] = list
+                .iter()
+                .map(|u| json!({ "id": u.id, "modified_at": u.modified_at.to_rfc3339(), "deleted": u.deleted }))
+                .collect();
+        }
+        v.to_string()
     }
 
     /// A record that cannot be read still says the migration completed (its
@@ -129,10 +158,44 @@ impl Record {
     fn from_json(s: &str) -> Record {
         let v: Value = serde_json::from_str(s).unwrap_or(Value::Null);
         let count = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0) as usize;
+        let undecryptable = v.get("undecryptable").and_then(Value::as_array).map(|list| {
+            list.iter()
+                .filter_map(|e| {
+                    let id = e.get("id")?.as_str()?.to_string();
+                    let modified_at = e
+                        .get("modified_at")
+                        .and_then(Value::as_str)
+                        .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+                        .map(|t| t.with_timezone(&Utc))
+                        .unwrap_or_default();
+                    let deleted = e.get("deleted").and_then(Value::as_bool).unwrap_or(false);
+                    Some(UndecryptableDocument { id, modified_at, deleted })
+                })
+                .collect()
+        });
         Record {
             notice: MigrationNotice { converted: count("converted"), not_converted: count("not_converted") },
             shown: v.get("notice_shown").and_then(Value::as_bool).unwrap_or(true),
+            build_version: v.get("build_version").and_then(Value::as_str).map(str::to_string),
+            undecryptable,
         }
+    }
+
+    /// The notice to record after a later pass found something to tell:
+    /// `fresh`, plus an earlier notice not yet shown (M2b: never lost).
+    /// `retried`: `fresh` is a retry of rows the earlier notice already
+    /// counted as not read — those it converted move from one count to the
+    /// other; otherwise (a first listing) its rows are new to the count.
+    fn merged(&self, fresh: MigrationNotice, retried: bool) -> MigrationNotice {
+        if self.shown || !self.notice.worth_telling() {
+            return fresh;
+        }
+        let not_converted = if retried {
+            self.notice.not_converted.saturating_sub(fresh.converted)
+        } else {
+            self.notice.not_converted + fresh.not_converted
+        };
+        MigrationNotice { converted: self.notice.converted + fresh.converted, not_converted }
     }
 }
 
@@ -150,10 +213,34 @@ async fn write_record(docs: &DocumentService, record: &Record) -> Result<(), Doc
 /// returns the notice (M2, M3). Every document is left either converted or
 /// untouched (G3).
 pub async fn run_unlock_migration(docs: &DocumentService) -> Result<MigrationRun, DocError> {
-    if read_record(docs).await?.is_some() {
-        return Ok(MigrationRun::AlreadyComplete);
+    // v0.0.12 item 3, L12: every stored purge marker's fingerprint is erased
+    // at unlock — before the early return below, so a store whose format
+    // conversion completed under v0.0.11 is erased too. Idempotent; the purge
+    // tick and the manifest's read of the markers erase as well.
+    docs.erase_marker_fingerprints().await?;
+    let Some(record) = read_record(docs).await? else {
+        return first_run(docs).await;
+    };
+    match &record.undecryptable {
+        // Completed before v0.0.12: the rows it could not decrypt were never
+        // counted. Moving to this build is a version change (Readings, 1):
+        // they are looked for and listed, once, converting nothing (M1).
+        None => list_undecryptable(docs, record).await,
+        // v0.0.12 item 7, V3: retried after a version change only.
+        Some(list) if !list.is_empty() && version_changed(docs, &record) => retry(docs, record).await,
+        Some(_) => Ok(MigrationRun::AlreadyComplete),
     }
-    let report = docs.migrate_all().await?;
+}
+
+/// Whether this service runs under another build than the one the record
+/// names. A service whose host gave no version never retries.
+fn version_changed(docs: &DocumentService, record: &Record) -> bool {
+    docs.build_version().is_some_and(|v| record.build_version.as_deref() != Some(v))
+}
+
+/// The first run (and its resumptions, M3): every document.
+async fn first_run(docs: &DocumentService) -> Result<MigrationRun, DocError> {
+    let (report, listed) = docs.migration_pass(MigrationScope::All).await?;
     if !report.failed.is_empty() {
         // A store failure on a document is an interruption, not an unreadable
         // document: nothing is recorded, the next unlock converts what is left.
@@ -161,12 +248,107 @@ pub async fn run_unlock_migration(docs: &DocumentService) -> Result<MigrationRun
     }
     let notice = MigrationNotice {
         converted: report.migrated.len() + report.previously_migrated.len(),
-        not_converted: report.unreadable.len(),
+        // Unparseable rows (V6) and, beside them, undecryptable ones (V1).
+        not_converted: report.unreadable.len() + report.undecryptable.len(),
     };
     let worth = notice.worth_telling();
     // Nothing to tell is recorded as already shown: nothing pending (M2).
-    write_record(docs, &Record { notice: notice.clone(), shown: !worth }).await?;
+    let record = Record {
+        notice: notice.clone(),
+        shown: !worth,
+        build_version: docs.build_version().map(str::to_string),
+        undecryptable: Some(listed),
+    };
+    write_record(docs, &record).await?;
     Ok(MigrationRun::Completed { notice: worth.then_some(notice) })
+}
+
+/// A record written before v0.0.12 (no list): the rows that cannot be
+/// decrypted are listed, nothing is converted, and a notice says once how
+/// many could not be read.
+async fn list_undecryptable(docs: &DocumentService, record: Record) -> Result<MigrationRun, DocError> {
+    let (_, listed) = docs.migration_pass(MigrationScope::ListOnly).await?;
+    let found = listed.len();
+    let mut next = Record {
+        build_version: docs.build_version().map(str::to_string),
+        undecryptable: Some(listed),
+        ..record.clone()
+    };
+    let notice = (found > 0).then(|| record.merged(MigrationNotice { converted: 0, not_converted: found }, false));
+    if let Some(n) = &notice {
+        next.notice = n.clone();
+        next.shown = false;
+    }
+    write_record(docs, &next).await?;
+    Ok(MigrationRun::Completed { notice })
+}
+
+/// The retry after a version change (V3): the listed ids only. A row that
+/// now decrypts is converted like any other and leaves the list; one that
+/// still does not stays, under the new version. A retry that converts says
+/// so in a notice (Readings, 4).
+async fn retry(docs: &DocumentService, record: Record) -> Result<MigrationRun, DocError> {
+    let ids: HashSet<String> =
+        record.undecryptable.iter().flatten().map(|u| u.id.clone()).collect();
+    let (report, listed) = docs.migration_pass(MigrationScope::Only(&ids)).await?;
+    if !report.failed.is_empty() {
+        // Interrupted: the record is left as it was, so the next unlock
+        // retries again.
+        return Ok(MigrationRun::Interrupted { failed: report.failed.len() });
+    }
+    let mut next = Record {
+        build_version: docs.build_version().map(str::to_string),
+        undecryptable: Some(listed),
+        ..record.clone()
+    };
+    let converted = report.migrated.len();
+    let notice = (converted > 0).then(|| {
+        let still = report.undecryptable.len() + report.unreadable.len();
+        record.merged(MigrationNotice { converted, not_converted: still }, true)
+    });
+    if let Some(n) = &notice {
+        next.notice = n.clone();
+        next.shown = false;
+    }
+    write_record(docs, &next).await?;
+    Ok(MigrationRun::Completed { notice })
+}
+
+/// The documents this store's completion record lists as found and not
+/// decrypted (v0.0.12 item 7, V2: the Alerts window lists them by a short id
+/// and their last modified date). Empty before completion and once a retry
+/// has converted them all. Read from the store: each persona's own.
+pub async fn unlock_migration_undecryptable(docs: &DocumentService) -> Result<Vec<UndecryptableDocument>, DocError> {
+    Ok(read_record(docs).await?.and_then(|r| r.undecryptable).unwrap_or_default())
+}
+
+/// The heading of the hosts' list of documents that could not be read
+/// (v0.0.12 item 7 V2b, B1: one wording, used by the shell and the app).
+pub const UNREADABLE_HEADING: &str = "Documents that could not be read";
+
+/// What the list means, in one line (B1): kept as it was, tried again after
+/// the next update.
+pub const UNREADABLE_MEANING: &str =
+    "Each one is kept as it was, untouched. Sovereign will try to read it again after its next update.";
+
+/// One document's line in that list, its date in the device's local time
+/// (B1): "Document <short id>[ (in the trash)] — last modified YYYY-MM-DD HH:MM".
+/// No title: none can be read.
+pub fn unreadable_line(u: &UndecryptableDocument) -> String {
+    unreadable_line_in(u, &chrono::Local)
+}
+
+/// [`unreadable_line`] with the date in `tz`. The short id is the first 8
+/// characters of the id's key (after the last `:`, without `⟨ ⟩`).
+pub fn unreadable_line_in<Tz: chrono::TimeZone>(u: &UndecryptableDocument, tz: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let key = u.id.rsplit(':').next().unwrap_or(&u.id).trim_matches(|c| c == '\u{27e8}' || c == '\u{27e9}');
+    let short_id: String = key.chars().take(8).collect();
+    let trash = if u.deleted { " (in the trash)" } else { "" };
+    let when = u.modified_at.with_timezone(tz).format("%Y-%m-%d %H:%M");
+    format!("Document {short_id}{trash} \u{2014} last modified {when}")
 }
 
 /// Whether this service's store records that the one-time migration has

@@ -143,3 +143,28 @@ async fn later_traces_reuse_the_same_thread() {
     assert_eq!(trace_threads(&store).await.len(), 1, "one traces thread, reused");
     assert_eq!(docs.read(&a).await.unwrap().thread_id, docs.read(&b).await.unwrap().thread_id);
 }
+
+/// v0.0.12 item 11b, C4 (`doc/plans/V0012-item11b-chat-no-change.md`): a write that changed
+/// nothing is recorded as executed without change, with its reason — never as approved and
+/// executed. Names `TraceStep::NoChange(String)`, which does not exist yet: this file does not
+/// compile until it does. Written before the code; the implementer does not edit this test.
+#[test]
+fn a_no_change_write_is_named_as_executed_without_change() {
+    let mut t = ChatTrace::new("r");
+    t.push_round(round(
+        "rename_thread",
+        "{}",
+        "",
+        TraceStep::NoChange("the thread is already named 'Plans'".into()),
+    ));
+    t.stopped("limit");
+    let text = t.render();
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("What came of it:"))
+        .unwrap_or_else(|| panic!("no outcome line:\n{text}"));
+    let lower = line.to_lowercase();
+    assert!(lower.contains("executed") && lower.contains("without change"), "{line:?}");
+    assert!(line.contains("the thread is already named 'Plans'"), "{line:?}");
+    assert!(!lower.contains("approved"), "{line:?}");
+}

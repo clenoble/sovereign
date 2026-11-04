@@ -31,6 +31,11 @@ libp2p = { version = "0.56", features = [
     "ed25519",
 ] }
 
+# v0.0.12 item 12: the system resolver config is read here (the same reader
+# `.with_dns()` uses, same version as libp2p-dns), so a missing one (Android:
+# no /etc/resolv.conf) builds the node without DNS instead of failing it.
+hickory-resolver = { version = "0.25.2", default-features = false, features = ["system-config"] }
+
 tokio = { workspace = true }
 rand = { workspace = true }
 hkdf = "0.12"

@@ -298,6 +298,7 @@ mod tests {
         let event = OrchestratorEvent::ActionExecuted {
             action: "search".into(),
             success: true,
+            outcome: sovereign_core::interfaces::ActionOutcome::Reported { summary: "1 document found".into() },
         };
         bridge.handle_event(&event).await;
     }
@@ -308,6 +309,7 @@ mod tests {
         let event = OrchestratorEvent::ActionExecuted {
             action: "create_thread".into(),
             success: false,
+            outcome: sovereign_core::interfaces::ActionOutcome::Failed { reason: "the workspace is locked".into() },
         };
         bridge.handle_event(&event).await;
     }

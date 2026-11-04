@@ -113,15 +113,17 @@ impl<T: GraphDB + Send + Sync> SkillDbAccess for T {
         name: &str,
         _description: &str,
     ) -> anyhow::Result<String> {
-        let id_opt = tokio::task::block_in_place(|| {
+        // v0.0.12 item 6, A1: the exact name only (ignoring case and
+        // surrounding spaces) — "Work" never returns "Work Archive" — and two
+        // live threads with that name are refused, none picked.
+        let found = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
-                .block_on(GraphDB::find_thread_by_name(self, name))
-        })?;
+                .block_on(sovereign_db::existing_thread_for_find_or_create(self, name))
+        })
+        .map_err(|e| anyhow::anyhow!(e))?;
 
-        if let Some(thread) = id_opt {
-            if let Some(id) = thread.id_string() {
-                return Ok(id);
-            }
+        if let Some(id) = found {
+            return Ok(id);
         }
         anyhow::bail!("no thread named {name:?}, and threads are created only through the document service")
     }

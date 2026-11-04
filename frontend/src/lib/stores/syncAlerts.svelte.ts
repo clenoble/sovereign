@@ -14,9 +14,11 @@ import {
 	listOrphanedDocuments,
 	listPreviousValues,
 	listSyncAlerts,
+	listUnreadableDocuments,
 	type OrphanDto,
 	type PreviousValueDto,
-	type SyncAlertDto
+	type SyncAlertDto,
+	type UnreadableDocumentsDto
 } from '$lib/api/commands';
 
 export interface SyncAlert {
@@ -79,6 +81,9 @@ export const syncAlerts = $state({
 	olderDevices: [] as OlderDevice[],
 	/** Documents whose thread was deleted, waiting for a decision (S5-12). */
 	orphans: [] as Orphan[],
+	/** Documents the one-time conversion could not read (v0.0.12 item 7 V2b),
+	 *  worded by the backend; empty: `''`, `''`, `[]`. */
+	unreadable: { heading: '', meaning: '', lines: [] } as UnreadableDocumentsDto,
 	/** The Alerts panel (desktop) or sheet (mobile) is open. */
 	open: false
 });
@@ -108,10 +113,19 @@ export function olderNotice(): string | null {
 	return null;
 }
 
+/** Nothing left to show in the Alerts dialog. */
+function nothingToShow(): boolean {
+	return (
+		syncAlerts.alerts.length === 0 &&
+		syncAlerts.previousValues.length === 0 &&
+		syncAlerts.orphans.length === 0 &&
+		syncAlerts.unreadable.lines.length === 0
+	);
+}
+
 export function setAlerts(list: SyncAlert[]) {
 	syncAlerts.alerts = list;
-	if (list.length === 0 && syncAlerts.previousValues.length === 0 && syncAlerts.orphans.length === 0)
-		syncAlerts.open = false;
+	if (nothingToShow()) syncAlerts.open = false;
 }
 
 export function removeAlert(docId: string) {
@@ -151,9 +165,10 @@ export function onSyncRoundCompleted(peerId: string) {
 	}
 }
 
-/** Re-reads the alerts and the previous values (after login, a completed
- *  sync, or a background model verdict). Best-effort: a locked workspace
- *  leaves the lists as they are. */
+/** Re-reads the alerts, the previous values, the orphans and the documents
+ *  that could not be read (after login, a completed sync, or a background
+ *  model verdict). Best-effort: a locked workspace leaves the lists as they
+ *  are, except the last, which it empties (V2b, B5). */
 export async function reloadSyncAlerts() {
 	try {
 		setAlerts((await listSyncAlerts()).map(alertFromDto));
@@ -166,6 +181,7 @@ export async function reloadSyncAlerts() {
 		/* locked */
 	}
 	await reloadOrphans();
+	await reloadUnreadable();
 }
 
 // ---- S5-12: documents whose thread was deleted --------------------------
@@ -209,8 +225,7 @@ export function orphansNotice(): string | null {
 
 export function setOrphans(list: Orphan[]) {
 	syncAlerts.orphans = list;
-	if (list.length === 0 && syncAlerts.alerts.length === 0 && syncAlerts.previousValues.length === 0)
-		syncAlerts.open = false;
+	if (nothingToShow()) syncAlerts.open = false;
 }
 
 /** Re-reads the documents whose thread was deleted. Best-effort: a locked
@@ -220,6 +235,35 @@ export async function reloadOrphans() {
 		setOrphans((await listOrphanedDocuments()).map(orphanFromDto));
 	} catch {
 		/* locked, or a host that cannot list them */
+	}
+}
+
+// ---- v0.0.12 item 7 V2b: documents the conversion could not read -------
+// Kept as they were; Sovereign tries them again after its next update, so
+// nothing here is acted on. Tests: `syncAlerts.unreadable.svelte.test.ts`,
+// `SyncAlerts.unreadable.svelte.test.ts`.
+
+/** "N document(s) could not be read" while any remain (B4), or null. */
+export function unreadableNotice(): string | null {
+	const n = syncAlerts.unreadable.lines.length;
+	if (n === 0) return null;
+	return n === 1 ? '1 document could not be read' : `${n} documents could not be read`;
+}
+
+export function setUnreadable(list: UnreadableDocumentsDto) {
+	syncAlerts.unreadable = list;
+	if (nothingToShow()) syncAlerts.open = false;
+}
+
+/** Re-reads the list (B5). Unlike the orphans, a refused or failed call
+ *  empties it: a list read under another session never stays on screen
+ *  (contract, "Readings settled" 1–2). */
+export async function reloadUnreadable() {
+	try {
+		setUnreadable(await listUnreadableDocuments());
+	} catch {
+		/* locked, or a host without the command */
+		setUnreadable({ heading: '', meaning: '', lines: [] });
 	}
 }
 

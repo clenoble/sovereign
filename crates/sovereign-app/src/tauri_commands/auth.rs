@@ -37,6 +37,12 @@ async fn install_session_inner(
     let persona = auth_result.persona;
     let device_key_arc = std::sync::Arc::new(auth_result.device_key);
     let account_key_arc = std::sync::Arc::new(auth_result.account_key);
+    // v0.0.12 item 22 (D1, D6): this persona's device identity is the libp2p
+    // peer id derived from its own device key — the id its P2P node announces —
+    // never the configured display name. Its document service and, for the
+    // duress persona, its decoy are stamped with it.
+    let identity = sovereign_crypto::peer_identity::peer_id(&device_key_arc)
+        .map_err(|e| format!("Could not derive this device's identity ({e})"))?;
 
     // 1. Call complete_auth and discard the returned key_db / kek —
     //    side effect: keys.duress.db is created on first duress login,
@@ -99,7 +105,7 @@ async fn install_session_inner(
                     Ok(ddb) => {
                         // Seed plausible decoy data on first duress login
                         // (seed_duress_db is idempotent — no-op once populated).
-                        if let Err(e) = crate::duress::seed_duress_db(&ddb, &state.config.p2p.device_name).await {
+                        if let Err(e) = crate::duress::seed_duress_db(&ddb, &identity).await {
                             tracing::warn!("duress decoy seed failed (continuing): {e}");
                         }
                         std::sync::Arc::new(ddb)
@@ -145,11 +151,17 @@ async fn install_session_inner(
         // C-DOC adoption step 2: the document service over this persona's
         // encrypted store (document saves, skill write-back and restores go
         // through it). Its personal-data hook needs the account key.
-        let docs = std::sync::Arc::new(sovereign_ai::docs_host::build_document_service(
-            encrypted.clone(),
-            Some(account_key_arc.clone()),
-            state.config.p2p.device_name.clone(),
-        ));
+        // v0.0.12 item 7, V3: under the app's own build version, which the
+        // one-time conversion records and compares (it retries what it could
+        // not decrypt only under another version).
+        let docs = std::sync::Arc::new(
+            sovereign_ai::docs_host::build_document_service(
+                encrypted.clone(),
+                Some(account_key_arc.clone()),
+                identity.clone(),
+            )
+            .with_build_version(env!("CARGO_PKG_VERSION")),
+        );
         *state.docs.write().await = Some(docs.clone());
         if let Ok(mut sessions) = state.edit_sessions.lock() {
             sessions.clear();
@@ -231,9 +243,22 @@ async fn install_session_inner(
     // 4. Enable encrypted session log if the feature is on.
     #[cfg(feature = "encrypted-log")]
     if let Some(ref orch) = state.orchestrator {
+        // v0.0.12 item 10, L6: this host's one orchestrator was built at
+        // startup with the primary's paths, so the log is pointed at the
+        // logging-in persona's own directory and beacon before its key is
+        // installed. Otherwise a duress login would check, quarantine and
+        // announce the primary's log: a duress leak.
+        let log_persona = match persona {
+            sovereign_crypto::auth::PersonaKind::Primary => sovereign_core::auth::PersonaKind::Primary,
+            sovereign_crypto::auth::PersonaKind::Duress => sovereign_core::auth::PersonaKind::Duress,
+        };
+        let log_paths = sovereign_ai::OrchestratorStatePaths::for_persona(
+            &sovereign_core::sovereign_dir(),
+            log_persona,
+        );
         // SEAM D (v0.0.9 audit): derivation lifted to sovereign-crypto so the
         // native shell shares it — same info string, same key.
-        orch.set_session_log_key(account_key_arc.derive_session_log_key());
+        orch.set_session_log_key_for(&log_paths, account_key_arc.derive_session_log_key());
     }
 
     // 5. v0.0.4 → v0.0.5 migration: re-encrypt at-rest data under the
@@ -319,23 +344,49 @@ pub(crate) async fn start_sync_now(state: &AppState) {
 }
 
 /// Check whether the user needs onboarding or login.
+///
+/// v0.0.12 lot 1, P1: in a build with encryption the credential store
+/// decides — the login screen when `crypto/auth.store` exists, the wizard
+/// when it does not; the `onboarding_done` marker no longer routes (a setup
+/// killed after the store would otherwise reopen the wizard, whose claim
+/// refuses: "Already onboarded — log in instead", with no way out). The
+/// marker still says whether the setup finished: `auth.store` without it is
+/// P2's `setup_incomplete`. Without encryption the marker decides, as before.
 #[tauri::command]
 pub async fn check_auth_state(state: State<'_, AppState>) -> Result<AuthCheckResult, String> {
     let onboarding_done = state.profile_dir.join("onboarding_done").exists();
 
     #[cfg(feature = "encryption")]
-    let needs_login = onboarding_done && state.profile_dir.join("crypto/auth.store").exists();
+    let (needs_onboarding, needs_login, setup_incomplete) = {
+        let has_store = state.profile_dir.join("crypto").join("auth.store").exists();
+        (!has_store, has_store, has_store && !onboarding_done)
+    };
 
     #[cfg(not(feature = "encryption"))]
-    let needs_login = false;
-
-    let _ = &state; // suppress unused warning in non-encryption build
+    let (needs_onboarding, needs_login, setup_incomplete) = (!onboarding_done, false, false);
 
     Ok(AuthCheckResult {
-        needs_onboarding: !onboarding_done,
+        needs_onboarding,
         needs_login,
         crypto_enabled: cfg!(feature = "encryption"),
+        setup_incomplete,
     })
+}
+
+/// v0.0.12 lot 1, P2: the first successful login after an interrupted setup
+/// writes the `onboarding_done` marker, so P2's notice is said once. Written
+/// on either persona's login, so the two logins stay alike. A failure is
+/// logged and does not fail the login (the notice would then show again).
+#[cfg(feature = "encryption")]
+fn mark_setup_finished_at_login(profile_dir: &std::path::Path) {
+    let marker = profile_dir.join("onboarding_done");
+    if marker.exists() {
+        return;
+    }
+    match std::fs::write(&marker, "1") {
+        Ok(()) => tracing::info!("setup had not finished; onboarding_done written at the first login"),
+        Err(e) => tracing::warn!("could not write onboarding_done at login: {e}"),
+    }
 }
 
 /// Return the orchestrator designation the onboarding wizard should display.
@@ -423,6 +474,7 @@ pub async fn validate_password(
                 if let Err(e) = attempts.save(&crypto_dir) {
                     tracing::warn!("login_throttle: failed to persist reset on success: {e}");
                 }
+                mark_setup_finished_at_login(&state.profile_dir);
                 match persona {
                     sovereign_crypto::auth::PersonaKind::Primary => Ok("primary".into()),
                     sovereign_crypto::auth::PersonaKind::Duress => Ok("duress".into()),
@@ -471,13 +523,90 @@ pub async fn validate_password_policy(
     }
 }
 
+/// The words of P4's refusal: the desktop wizard's (`sovereign-shell`,
+/// `onboarding.rs`), used by every account-creation command.
+pub(crate) const DURESS_MUST_DIFFER: &str = "Duress password must differ from your password.";
+
+/// v0.0.12 lot 1, P3 and P4: what the user typed twice, checked in the
+/// backend **before the claim and before any key derivation or write**.
+///
+/// P3: a given value (`Some`, as sent: the wizard trims, this does not) whose
+/// confirmation is absent or differs is refused, in the wizard's register.
+/// An entry left empty (`None`) needs no confirmation. P4: a given duress
+/// password equal to the password is refused with the desktop's words (the
+/// store refuses it too, in all three `AuthStore` constructors).
+pub(crate) fn check_typed_twice(
+    password: Option<&str>,
+    password_confirm: Option<&str>,
+    duress: Option<&str>,
+    duress_confirm: Option<&str>,
+    phrase: Option<&str>,
+    phrase_confirm: Option<&str>,
+) -> Result<(), String> {
+    let entries = [
+        ("password", password, password_confirm),
+        ("duress password", duress, duress_confirm),
+        ("safety phrase", phrase, phrase_confirm),
+    ];
+    for (what, value, confirm) in entries {
+        if let Some(value) = value {
+            if confirm != Some(value) {
+                return Err(format!("The {what} and its confirmation don't match."));
+            }
+        }
+    }
+    if let (Some(p), Some(d)) = (password, duress) {
+        if p == d {
+            return Err(DURESS_MUST_DIFFER.to_string());
+        }
+    }
+    Ok(())
+}
+
+/// v0.0.12 lot 1, P2b: a step that failed after `auth.store` was written. The
+/// account exists, so the setup is reported incomplete instead of failing;
+/// the failure is logged. Steps that fail before the store still fail the
+/// command (`store_written == false` returns the error).
+fn after_store(
+    step: &str,
+    result: Result<(), String>,
+    store_written: bool,
+    incomplete: &mut bool,
+) -> Result<(), String> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if store_written => {
+            tracing::warn!("setup step '{step}' failed after auth.store was written (setup incomplete): {e}");
+            *incomplete = true;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Complete the onboarding wizard (save profile, optional crypto setup, seed data).
+///
+/// Returns [`OnboardingOutcome`]: once `auth.store` is written, a later
+/// failure makes the setup `incomplete` rather than an error (P2b), and the
+/// `onboarding_done` marker is written only when every step succeeded, so
+/// the first login shows P2's notice.
 #[tauri::command]
 pub async fn complete_onboarding(
     state: State<'_, AppState>,
     data: OnboardingData,
-) -> Result<(), String> {
+) -> Result<OnboardingOutcome, String> {
     let profile_dir = &state.profile_dir;
+
+    // v0.0.12 lot 1, P3/P4: the confirmations and duress ≠ password, before
+    // the claim and before anything is derived or written.
+    check_typed_twice(
+        data.password.as_deref(),
+        data.password_confirm.as_deref(),
+        data.duress_password.as_deref(),
+        data.duress_confirm.as_deref(),
+        data.canary_phrase.as_deref(),
+        data.canary_confirm.as_deref(),
+    )?;
 
     // rc2 (spec ch. 07, *Auth store*, "Created once"): account creation is
     // single-flight. The claim is taken first — before the key derivation and
@@ -507,6 +636,12 @@ pub async fn complete_onboarding(
     }
     profile.save(profile_dir).str_err()?;
 
+    // P2b: set once auth.store is written; from then on a failed step marks
+    // the setup incomplete instead of failing the command.
+    #[cfg_attr(not(feature = "encryption"), allow(unused_mut))]
+    let mut store_written = false;
+    let mut incomplete = false;
+
     // Create crypto stores if encryption enabled and password provided
     #[cfg(feature = "encryption")]
     if let Some(ref password) = data.password {
@@ -516,9 +651,15 @@ pub async fn complete_onboarding(
         let salt: [u8; 32] = rand::random();
         let device_id = uuid::Uuid::new_v4().to_string();
         // Duress optional → RANDOM unreachable decoy, never the shared
-        // source-visible literal (H-shell1 theme; matches the wizard).
+        // source-visible literal (H-shell1 theme; matches the wizard). An
+        // empty duress password counts as none: it would open the decoy with
+        // an empty string.
         let random_duress = sovereign_crypto::random_hex_32();
-        let duress = data.duress_password.as_deref().unwrap_or(&random_duress);
+        let duress = data
+            .duress_password
+            .as_deref()
+            .filter(|d| !d.is_empty())
+            .unwrap_or(&random_duress);
 
         let auth_store = sovereign_crypto::auth::AuthStore::create(
             password.as_bytes(),
@@ -535,6 +676,8 @@ pub async fn complete_onboarding(
             .save_new(&crypto_dir.join("auth.store"))
             .map_err(crate::onboarding_claim::save_new_error)?;
         tracing::info!("auth.store published (onboarding): {mode:?}");
+        // P2b: the account exists from here on.
+        store_written = true;
 
         // Persist the MasterKey salt so this device can later generate a
         // pairing QR (generate_pair_qr releases it to the new device). The
@@ -543,11 +686,21 @@ pub async fn complete_onboarding(
         // is not secret — it travels in the pairing offer. Written atomically
         // and owner-only; if a crash loses it, the next start restores it
         // from auth.store (setup::load_or_create_salt).
-        sovereign_crypto::fs_private::write_private(&crypto_dir.join("salt"), &salt).str_err()?;
+        after_store(
+            "salt",
+            sovereign_crypto::fs_private::write_private(&crypto_dir.join("salt"), &salt).str_err(),
+            store_written,
+            &mut incomplete,
+        )?;
 
         // Install the session immediately so the user lands in a fully
         // unlocked state (vault, PII pipeline, encrypted session log).
-        install_session(&state, &auth_store, password.as_bytes()).await?;
+        after_store(
+            "session",
+            install_session(&state, &auth_store, password.as_bytes()).await.map(|_| ()),
+            store_written,
+            &mut incomplete,
+        )?;
 
         // sidechannel-001-floor-not-equalizer: pre-create + pre-seed the duress
         // decoy DB now, at onboarding, so the FIRST duress login pays no seed
@@ -556,65 +709,67 @@ pub async fn complete_onboarding(
         // also seeded the decoy could overrun the floor and leak the persona via
         // latency. With the seed done here, both personas' login paths only OPEN
         // an existing DB (well within the floor). Best-effort — on failure the
-        // first duress login falls back to seeding (the prior behavior).
+        // first duress login falls back to seeding (the prior behavior), so a
+        // failure here does not make the setup incomplete (P2: "The decoy is
+        // created at the first duress login if it was not").
         {
             let mut duress_config = state.config.clone();
             duress_config.database.path = crate::setup::persona_db_path(
                 &state.config,
                 sovereign_core::auth::PersonaKind::Duress,
             );
-            match crate::setup::create_db(&duress_config).await {
-                Ok(ddb) => {
-                    if let Err(e) = crate::duress::seed_duress_db(&ddb, &state.config.p2p.device_name).await {
+            // v0.0.12 item 22 (D6): stamped with the duress persona's own peer
+            // id, derived from its device key. Without it, no pre-seed: the
+            // first duress login seeds the decoy with that id.
+            let duress_identity = crate::duress::duress_identity(&auth_store, duress.as_bytes());
+            match (crate::setup::create_db(&duress_config).await, duress_identity) {
+                (Ok(ddb), Some(identity)) => {
+                    if let Err(e) = crate::duress::seed_duress_db(&ddb, &identity).await {
                         tracing::warn!("duress decoy pre-seed at onboarding failed (continuing): {e}");
                     }
                 }
-                Err(e) => {
+                (Ok(_), None) => {
+                    tracing::warn!("duress decoy pre-seed at onboarding skipped: no duress identity (continuing)");
+                }
+                (Err(e), _) => {
                     tracing::warn!("duress decoy DB pre-create at onboarding failed (continuing): {e}");
                 }
             }
         }
 
-        // Save canary phrase if provided
-        if let Some(ref phrase) = data.canary_phrase {
-            if let Ok(auth_result) = auth_store.authenticate(password.as_bytes()) {
-                let canary =
-                    sovereign_crypto::canary::CanaryStore::encrypt(phrase, auth_result.kek.as_bytes())
-                        .str_err()?;
-                canary
-                    .save(&crypto_dir.join("canary.store"))
-                    .str_err()?;
-            }
-        }
+        // The safety phrase and the typing profile are encrypted under the
+        // KEK: one authentication serves both. Its failure is a failure of
+        // both steps (before, it skipped them silently).
+        let wants_canary = data.canary_phrase.is_some();
+        let wants_keystrokes = !data.keystrokes.is_empty();
+        if wants_canary || wants_keystrokes {
+            match auth_store.authenticate(password.as_bytes()) {
+                Ok(auth_result) => {
+                    // Save canary phrase if provided
+                    if let Some(ref phrase) = data.canary_phrase {
+                        let saved = sovereign_crypto::canary::CanaryStore::encrypt(
+                            phrase,
+                            auth_result.kek.as_bytes(),
+                        )
+                        .and_then(|canary| canary.save(&crypto_dir.join("canary.store")))
+                        .str_err();
+                        after_store("safety phrase", saved, store_written, &mut incomplete)?;
+                    }
 
-        // Save keystroke reference if enrollment data provided
-        if !data.keystrokes.is_empty() {
-            if let Ok(auth_result) = auth_store.authenticate(password.as_bytes()) {
-                let profiles: Vec<sovereign_crypto::keystroke::TypingProfile> = data
-                    .keystrokes
-                    .iter()
-                    .map(|samples| sovereign_crypto::keystroke::TypingProfile {
-                        // Finding 20: a malformed sample decodes as unusable and is skipped.
-                        samples: samples
-                            .iter()
-                            .filter(|s| s.is_usable())
-                            .map(|s| sovereign_crypto::keystroke::KeystrokeSample {
-                                key: s.key.clone(),
-                                press_ms: s.press_ms,
-                                release_ms: s.release_ms,
-                            })
-                            .collect(),
-                    })
-                    .collect();
-                let reference =
-                    sovereign_crypto::keystroke::KeystrokeReference::from_enrollments(&profiles);
-                if let Some(ref reference) = reference {
-                    let encrypted = reference.encrypt(auth_result.kek.as_bytes())
-                        .str_err()?;
-                    let ks_json =
-                        serde_json::to_string(&encrypted).str_err()?;
-                    std::fs::write(crypto_dir.join("keystroke.store"), ks_json)
-                        .str_err()?;
+                    // Save keystroke reference if enrollment data provided
+                    if wants_keystrokes {
+                        let saved =
+                            save_typing_profile(&data.keystrokes, &auth_result.kek, &crypto_dir);
+                        after_store("typing profile", saved, store_written, &mut incomplete)?;
+                    }
+                }
+                Err(e) => {
+                    after_store(
+                        "safety phrase / typing profile",
+                        Err(format!("authentication for the KEK failed: {e}")),
+                        store_written,
+                        &mut incomplete,
+                    )?;
                 }
             }
         }
@@ -630,7 +785,20 @@ pub async fn complete_onboarding(
         // without the encryption feature) there are no sample documents.
         let docs = state.docs().await;
         match &docs {
-            Ok(docs) => crate::seed::seed_if_empty(state.db.as_ref(), docs).await.str_err()?,
+            Ok(docs) => after_store(
+                "sample documents",
+                crate::seed::seed_if_empty(state.db.as_ref(), docs).await.str_err(),
+                store_written,
+                &mut incomplete,
+            )?,
+            // With an account, sample documents asked for and not seeded
+            // (the session did not install) make the setup incomplete.
+            Err(e) if store_written => after_store(
+                "sample documents",
+                Err(format!("no document service: {e}")),
+                store_written,
+                &mut incomplete,
+            )?,
             Err(e) => tracing::warn!("sample documents not seeded: {e}"),
         }
 
@@ -642,7 +810,11 @@ pub async fn complete_onboarding(
             sovereign_core::auth::PersonaKind::Primary,
         );
         if let Err(e) = crate::seed::seed_profile_and_history(&orchestrator_profile_dir) {
-            tracing::warn!("Profile/history seed failed: {e}");
+            if store_written {
+                after_store("sample history", Err(e.to_string()), store_written, &mut incomplete)?;
+            } else {
+                tracing::warn!("Profile/history seed failed: {e}");
+            }
         }
 
         // PII seed needs the AccountKey to encrypt vault values, so it
@@ -650,17 +822,57 @@ pub async fn complete_onboarding(
         // install_session has populated AppState.account_key.
         #[cfg(feature = "encryption")]
         if let (Some(ak), Ok(docs)) = (state.account_key().await, &docs) {
-            crate::seed::seed_pii_if_empty(state.db.as_ref(), docs, &ak)
-                .await
-                .str_err()?;
+            after_store(
+                "sample PII",
+                crate::seed::seed_pii_if_empty(state.db.as_ref(), docs, &ak).await.str_err(),
+                store_written,
+                &mut incomplete,
+            )?;
         }
     }
 
-    // Write onboarding_done marker
-    std::fs::create_dir_all(profile_dir).str_err()?;
-    std::fs::write(profile_dir.join("onboarding_done"), "1")
-        .str_err()?;
+    // Write onboarding_done marker — only when every step succeeded: its
+    // absence beside auth.store is what makes the first login show P2's
+    // notice (and write it then).
+    if !incomplete {
+        let marker = std::fs::create_dir_all(profile_dir)
+            .and_then(|()| std::fs::write(profile_dir.join("onboarding_done"), "1"))
+            .str_err();
+        after_store("marker", marker, store_written, &mut incomplete)?;
+    }
 
+    Ok(OnboardingOutcome { incomplete })
+}
+
+/// Encrypt and write the typing profile enrolled during onboarding
+/// (`crypto/keystroke.store`). Nothing is written when no sample is usable.
+#[cfg(feature = "encryption")]
+fn save_typing_profile(
+    keystrokes: &[Vec<KeystrokeSampleDto>],
+    kek: &sovereign_crypto::kek::Kek,
+    crypto_dir: &std::path::Path,
+) -> Result<(), String> {
+    let profiles: Vec<sovereign_crypto::keystroke::TypingProfile> = keystrokes
+        .iter()
+        .map(|samples| sovereign_crypto::keystroke::TypingProfile {
+            // Finding 20: a malformed sample decodes as unusable and is skipped.
+            samples: samples
+                .iter()
+                .filter(|s| s.is_usable())
+                .map(|s| sovereign_crypto::keystroke::KeystrokeSample {
+                    key: s.key.clone(),
+                    press_ms: s.press_ms,
+                    release_ms: s.release_ms,
+                })
+                .collect(),
+        })
+        .collect();
+    let reference = sovereign_crypto::keystroke::KeystrokeReference::from_enrollments(&profiles);
+    if let Some(ref reference) = reference {
+        let encrypted = reference.encrypt(kek.as_bytes()).str_err()?;
+        let ks_json = serde_json::to_string(&encrypted).str_err()?;
+        std::fs::write(crypto_dir.join("keystroke.store"), ks_json).str_err()?;
+    }
     Ok(())
 }
 

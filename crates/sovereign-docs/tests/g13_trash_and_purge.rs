@@ -203,6 +203,11 @@ async fn g13_purge_from_trash_purges_only_that_document() {
 async fn g13_thirty_days_in_the_trash_purges_and_not_a_day_before() {
     let w = world("g13-expiry").await;
     let s = &w.s;
+    // The purge a host runs at unlock, before anything is trashed (item 3,
+    // L10: the first purge records when this build started counting; a
+    // document trashed before it gets 30 days from it). Added by the item-3
+    // test author; the guarantee under test is unchanged.
+    s.svc.purge_expired().await.unwrap();
     s.svc.trash(&w.a).await.unwrap();
     s.clock.advance(Duration::days(30) - Duration::seconds(1));
     let r = s.svc.purge_expired().await.unwrap();

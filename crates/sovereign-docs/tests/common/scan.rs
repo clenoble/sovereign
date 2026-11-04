@@ -4,9 +4,13 @@
 //! A scan reads `crates/*/src/**/*.rs` as text. To look only at calls in
 //! production code it first **blanks** comments and the contents of string and
 //! character literals (newlines kept, so line numbers stay true), then blanks
-//! every item under `#[cfg(test)]` (a `mod tests { … }`, a test-only helper
-//! `fn`, a test-only `use`). A file declared as a test-only module
-//! (`#[cfg(test)] mod name;`) is skipped whole.
+//! every item under `#[cfg(test)]` or `#[cfg(all(test, …))]` (a
+//! `mod tests { … }`, a test-only helper `fn`, a test-only `use`). A file
+//! declared as a test-only module is skipped whole: `#[cfg(test)] mod name;`,
+//! and also with other attributes between the two, among them
+//! `#[path = "file.rs"]` (the shell declares `editor_default_tests.rs` and
+//! `lot1_tests.rs` that way; until 2026-10-24 such a file was read as
+//! production code, and a store call in a test tripped the S5-10 guard).
 //!
 //! A call is `.name(` or `::name(` (whitespace allowed before the parenthesis).
 //! A definition (`fn name(`), a string such as `"delete_document"` (an action
@@ -156,22 +160,51 @@ pub fn blank(src: &str) -> String {
     out.into_iter().collect()
 }
 
-/// `blank`ed text with every `#[cfg(test)]` item blanked too, and the names of
-/// the test-only modules this file declares without a body (`mod name;`).
+/// `blank`ed text with every test-only item blanked too (under `#[cfg(test)]`
+/// or `#[cfg(all(test, …))]`), and the test-only modules this file declares
+/// without a body: `name` for `mod name;`, or the path as written when a
+/// `#[path = "…"]` attribute stands between the `cfg` and the `mod` (it ends
+/// in `.rs`, which no module name does).
 pub fn production(src: &str) -> (String, Vec<String>) {
     let text = blank(src);
+    // `blank` keeps every character in place, so the original text gives back
+    // the string literal it blanked (a `#[path = "…"]` value).
+    let orig: Vec<char> = src.chars().collect();
     let b: Vec<char> = text.chars().collect();
     let mut out = b.clone();
     let mut test_mods = vec![];
-    let marker: Vec<char> = "#[cfg(test)]".chars().collect();
+    let markers: [Vec<char>; 2] = ["#[cfg(test)]".chars().collect(), "#[cfg(all(test,".chars().collect()];
     let mut i = 0;
-    while i + marker.len() <= b.len() {
-        if b[i..i + marker.len()] != marker[..] {
+    while i < b.len() {
+        let Some(marker) = markers.iter().find(|m| i + m.len() <= b.len() && b[i..i + m.len()] == m[..]) else {
             i += 1;
             continue;
+        };
+        // Past the cfg attribute (brackets matched), then past any further
+        // attribute on the same item (`#[path = "…"]`, `#[allow(…)]`).
+        let mut j = attr_end(&b, i).unwrap_or(i + marker.len());
+        let mut path: Option<String> = None;
+        loop {
+            let mut k = j;
+            while k < b.len() && b[k].is_whitespace() {
+                k += 1;
+            }
+            if k + 1 < b.len() && b[k] == '#' && b[k + 1] == '[' {
+                let end = attr_end(&b, k).unwrap_or(b.len());
+                let attr: String = b[k..end].iter().filter(|c| !c.is_whitespace()).collect();
+                if attr.starts_with("#[path=") {
+                    let lit: String = orig[k..end].iter().collect();
+                    if let (Some(a), Some(z)) = (lit.find('"'), lit.rfind('"')) {
+                        if z > a {
+                            path = Some(lit[a + 1..z].to_string());
+                        }
+                    }
+                }
+                j = end;
+            } else {
+                break;
+            }
         }
-        // The item: up to its first `;` (no body) or its body's closing brace.
-        let mut j = i + marker.len();
         // a declaration `mod name;`
         let rest: String = b[j..b.len().min(j + 200)].iter().collect();
         let trimmed = rest.trim_start();
@@ -179,9 +212,10 @@ pub fn production(src: &str) -> (String, Vec<String>) {
             let name: String = after.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
             let tail = after.trim_start()[name.len()..].trim_start();
             if tail.starts_with(';') {
-                test_mods.push(name);
+                test_mods.push(path.clone().unwrap_or(name));
             }
         }
+        // The item: up to its first `;` (no body) or its body's closing brace.
         let mut depth = 0usize;
         while j < b.len() {
             match b[j] {
@@ -205,6 +239,25 @@ pub fn production(src: &str) -> (String, Vec<String>) {
         i = j + 1;
     }
     (out.into_iter().collect(), test_mods)
+}
+
+/// The index just past the `]` that closes the attribute starting at `at`
+/// (`#[`), brackets matched; `None` if it does not close.
+fn attr_end(b: &[char], at: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (k, c) in b.iter().enumerate().skip(at + 1) {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(k + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Lines (1-based) where `name` is called in `prod` (a `production` text).
@@ -240,6 +293,11 @@ pub fn production_files(crate_dir: &Path) -> Vec<(PathBuf, String)> {
         let dir = f.parent().unwrap();
         let base = if ["lib", "main", "mod"].contains(&stem.as_str()) { dir.to_path_buf() } else { dir.join(&stem) };
         for m in mods {
+            if m.ends_with(".rs") {
+                // `#[path = "…"]`: relative to the declaring file's directory.
+                test_only.insert(dir.join(&m));
+                continue;
+            }
             test_only.insert(base.join(format!("{m}.rs")));
             test_only.insert(base.join(&m));
         }

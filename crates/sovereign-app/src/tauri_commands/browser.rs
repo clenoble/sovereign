@@ -405,9 +405,11 @@ pub async fn save_web_page(
         _ => {
             // Create or find a "Web" thread for browsed content (created
             // through the one thread-write path, stamped: THREAD-sync S1).
-            match state.db.find_thread_by_name("Web").await {
-                Ok(Some(t)) => t.id_string().unwrap_or_default(),
-                _ => docs
+            // The thread named exactly "Web" (v0.0.12 item 6, A1: never "Web
+            // clippings"); two live threads with that name are refused.
+            match sovereign_db::existing_thread_for_find_or_create(state.db.as_ref(), "Web").await? {
+                Some(id) => id,
+                None => docs
                     .thread_create("Web", "Browsed web content")
                     .await
                     .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?,

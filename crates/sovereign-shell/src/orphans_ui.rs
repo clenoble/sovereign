@@ -245,8 +245,10 @@ impl ThreadChooser {
         dialog.set_label(self.title.clone());
         dialog.set_modal();
         dialog.set_children(vec![HINT, LIST, CANCEL]);
+        // v0.0.12 rc2 (V0012-rc2-labels-spoken, L1): a `Label` is spoken by
+        // its value, so the hint's text goes there.
         let mut hint = Node::new(Role::Label);
-        hint.set_label(if self.threads.is_empty() {
+        hint.set_value(if self.threads.is_empty() {
             "There is no thread to move into. Escape cancels; choose New thread instead.".to_string()
         } else {
             "Up and Down choose a thread, Enter moves into it, Escape cancels.".to_string()

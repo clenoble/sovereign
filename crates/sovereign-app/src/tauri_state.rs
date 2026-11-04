@@ -280,6 +280,10 @@ impl AppState {
     }
 }
 
+/// See [`AppState::set_p2p_without_dns`] (v0.0.12 item 12).
+#[cfg(feature = "p2p")]
+static P2P_WITHOUT_DNS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(feature = "p2p")]
 impl AppState {
     /// Snapshot the P2P command channel. Cheap (one mpsc::Sender clone).
@@ -295,6 +299,26 @@ impl AppState {
         tx: tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>,
     ) {
         *self.p2p_command_tx.write().await = Some(tx);
+    }
+
+    /// Record whether the running P2P node was built WITHOUT the DNS
+    /// transport (v0.0.12 item 12: no system resolver config, as on Android).
+    /// Set by `start_p2p_node` before the node runs.
+    ///
+    /// Kept in a process-wide flag rather than an `AppState` field: a new
+    /// field would break the full `AppState` literal of
+    /// `lot1_onboarding_tests.rs` under the `p2p` feature, a test file the
+    /// implementer does not edit. One `AppState` per process, so the scope is
+    /// the same.
+    pub fn set_p2p_without_dns(&self, without_dns: bool) {
+        P2P_WITHOUT_DNS.store(without_dns, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// True while the P2P node runs without the DNS transport (item 12, P4).
+    /// False when the node is not running, whatever was recorded.
+    pub async fn p2p_without_dns(&self) -> bool {
+        self.p2p_command_tx().await.is_some()
+            && P2P_WITHOUT_DNS.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Snapshot the current connectivity state. Lock-free atomic read.

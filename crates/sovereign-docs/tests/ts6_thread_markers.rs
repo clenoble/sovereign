@@ -158,6 +158,10 @@ async fn s6_a_live_document_keeps_the_name_until_it_is_resolved() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn s6_a_trashed_document_keeps_the_name_until_it_is_purged() {
     let s = Stack::new("ts6-trashed").await;
+    // The tick a host runs at unlock (item 3, L10: a document trashed before
+    // the first tick gets 30 days from it, not from its own trash date). Added
+    // by the item-3 test author; what is tested is unchanged.
+    tick(&s).await;
     let id = thread_with(&s, NAME, DESCRIPTION).await;
     delete_thread_to_trash(&s.svc, s.edb.as_ref(), &id).await.unwrap();
     let deletion = deletion_stamp(&s, &id).await;

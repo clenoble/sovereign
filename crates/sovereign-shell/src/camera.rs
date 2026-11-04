@@ -15,9 +15,6 @@ impl Camera {
     pub(crate) fn visible_x(&self, w: f64) -> (f64, f64) {
         ((-self.offset_x) / self.zoom, (w - self.offset_x) / self.zoom)
     }
-    pub(crate) fn visible_y(&self, h: f64) -> (f64, f64) {
-        ((-self.offset_y) / self.zoom, (h - self.offset_y) / self.zoom)
-    }
     pub(crate) fn zoom_toward(&mut self, cx: f64, cy: f64, factor: f64) {
         let wx = (cx - self.offset_x) / self.zoom;
         let wy = (cy - self.offset_y) / self.zoom;

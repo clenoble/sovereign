@@ -405,16 +405,21 @@ pub async fn list_all_skills(
 
 /// Moves a document to the trash through the document service (C-DOC
 /// adoption step 5, S5-1): recoverable for 30 days, then purged by the host's
-/// purge tick. Nothing is hard-deleted here.
+/// purge tick. Nothing is hard-deleted here. Answers what it did (v0.0.12
+/// item 9, T3): `"trashed"`, or `"already_in_trash"` when the document was
+/// there already (the phone then offers no Undo).
 #[tauri::command]
 pub async fn delete_document(
     webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
-) -> Result<(), String> {
+) -> Result<crate::doc_trash::DeleteOutcome, String> {
     state.require_unlocked(&webview).await?;
     let docs = state.docs().await?;
-    docs.trash(&id).await.map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))
+    docs.trash(&id)
+        .await
+        .map(crate::doc_trash::DeleteOutcome::from)
+        .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))
 }
 
 

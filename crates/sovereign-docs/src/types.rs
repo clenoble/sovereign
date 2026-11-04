@@ -488,6 +488,24 @@ pub struct PurgeReport {
     pub pii_records: usize,
 }
 
+/// What emptying the trash as shown did (v0.0.12 item 9, T1): what it
+/// purged, and the shown documents it left alone because they were no
+/// longer in the trash (restored or purged meanwhile, here or elsewhere).
+#[derive(Clone, Debug, Default)]
+pub struct EmptiedTrash {
+    pub purged: PurgeReport,
+    /// Shown, no longer in the trash: left alone, in the order shown.
+    pub skipped: Vec<DocId>,
+}
+
+/// What a delete did (v0.0.12 item 9, T3): it moved the document to the
+/// trash, or found it there already (a deletion made elsewhere, or earlier).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrashOutcome {
+    Trashed,
+    AlreadyInTrash,
+}
+
 /// What the one-time migration did.
 #[derive(Clone, Debug, Default)]
 pub struct MigrationReport {
@@ -504,6 +522,11 @@ pub struct MigrationReport {
     /// the migration's): what an interrupted run converted, counted by the
     /// run that finishes (adoption step 6, M3). Included in `already_v2`.
     pub previously_migrated: Vec<DocId>,
+    /// The document rows that exist but cannot be decrypted (v0.0.12 item 7,
+    /// V1): left exactly as they are, counted in the notice, listed in the
+    /// completion record and retried after a version change (V3). Apart from
+    /// `unreadable` (rows that decrypt and do not parse, V6).
+    pub undecryptable: Vec<DocId>,
     pub failed: Vec<(DocId, String)>,
 }
 
@@ -672,6 +695,12 @@ pub enum DocError {
     /// document text in it).
     #[error("{0}")]
     OrphanRefused(String),
+    /// A move of a document to a thread (v0.0.12 item 15, M1), or a restore
+    /// into a thread, refused with nothing changed: the thread does not exist
+    /// or was deleted, or the document is already in it. The text says why,
+    /// for the notice (no document text in it).
+    #[error("{0}")]
+    MoveRefused(String),
 }
 
 // ------------------------------------------------- Debug without the text --

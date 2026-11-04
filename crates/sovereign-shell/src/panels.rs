@@ -14,10 +14,17 @@ use vello::Scene;
 use sovereign_core::profile::BubbleStyle;
 use sovereign_db::schema::{MessageDirection, PiiKind, ReviewState};
 use sovereign_db::traits::GraphDB;
+use sovereign_editor::Fonts;
 
-use crate::canvas::{lane_color, Card};
+use crate::canvas::{hue_color, Card};
+use crate::chat_field::{ChatField, FieldMode, MESSAGE_PLACEHOLDER, SEARCH_PLACEHOLDER};
+use crate::clip::FieldClipboard;
 use crate::text::{draw_text, Brush, TextShaper};
 use crate::theme::pal;
+
+/// One node of an accessibility tree as the shell builds it: (role, label,
+/// value, focused). `App::build_a11y_tree` turns them into AccessKit nodes.
+pub(crate) type A11yItem = (accesskit::Role, String, String, bool);
 
 // ---- Document window (first chrome panel — roll-our-own on vello 0.9) ----
 
@@ -455,9 +462,9 @@ pub(crate) async fn load_inbox(db: &Arc<dyn GraphDB>) -> Option<Inbox> {
 
         let mut name_of: HashMap<String, String> = HashMap::new();
         for c in &contacts_raw {
-            if let Some(id) = &c.id {
+            if let Some(id) = c.id_string() {
                 let n = decrypt_name(&c.name, &c.name_nonce).unwrap_or_else(|| "\u{1f512}".to_string());
-                name_of.insert(id.to_string(), n);
+                name_of.insert(id, n);
             }
         }
 
@@ -494,7 +501,7 @@ pub(crate) async fn load_inbox(db: &Arc<dyn GraphDB>) -> Option<Inbox> {
         let mut convs: Vec<InboxConv> = Vec::with_capacity(convs_raw.len());
         let mut conv_index_of: HashMap<String, usize> = HashMap::new();
         for c in &convs_raw {
-            let cid = c.id.as_ref().map(|t| t.to_string()).unwrap_or_default();
+            let cid = c.id_string().unwrap_or_default();
             let mut idxs = by_conv.remove(&cid).unwrap_or_default();
             idxs.sort_by_key(|&i| msgs_raw[i].sent_at);
             let tab_label = if c.title_nonce.is_none() && !c.title.is_empty() {
@@ -514,7 +521,7 @@ pub(crate) async fn load_inbox(db: &Arc<dyn GraphDB>) -> Option<Inbox> {
             if c.is_owned {
                 continue; // your own identity isn't a correspondent
             }
-            let id = c.id.as_ref().map(|t| t.to_string()).unwrap_or_default();
+            let id = c.id_string().unwrap_or_default();
             let name = decrypt_name(&c.name, &c.name_nonce)
                 .unwrap_or_else(|| format!("\u{1f512} {}", short_id(&id)));
             let name_ok = c.name_nonce.is_none() && !c.name.is_empty();
@@ -523,14 +530,14 @@ pub(crate) async fn load_inbox(db: &Arc<dyn GraphDB>) -> Option<Inbox> {
             } else {
                 '?'
             };
-            let color = lane_color(crate::app::avatar_hue_index(&id));
+            let color = hue_color(crate::app::avatar_hue_index(&id));
 
             let mut conv_indices: Vec<usize> = Vec::new();
             let mut unread = 0u32;
             let mut chans: Vec<String> = Vec::new();
             for craw in &convs_raw {
                 if craw.participant_contact_ids.iter().any(|p| p == &id) {
-                    let cid = craw.id.as_ref().map(|t| t.to_string()).unwrap_or_default();
+                    let cid = craw.id_string().unwrap_or_default();
                     if let Some(&ci) = conv_index_of.get(&cid) {
                         conv_indices.push(ci);
                         unread += craw.unread_count;
@@ -596,7 +603,7 @@ pub(crate) fn synthetic_inbox() -> Inbox {
     fn m(sender: &str, subject: Option<&str>, body: &str, time: &str, outbound: bool) -> MsgRow {
         MsgRow { sender: sender.into(), subject: subject.map(|s| s.into()), body: body.into(), time: time.into(), outbound }
     }
-    let color = |s: &str| lane_color(crate::app::avatar_hue_index(s));
+    let color = |s: &str| hue_color(crate::app::avatar_hue_index(s));
     let msgs = vec![
         // 0..3 — Alice, email
         m("Alice Chen", Some("Architecture discussion"), "I reviewed the architecture doc — the component separation looks solid. Should we keep the DB abstraction as a trait or move to concrete types?", "Jun 16, 09:12", false),
@@ -810,10 +817,36 @@ pub(crate) fn hist_restore_rect(bar: Rect) -> Rect {
     Rect::new(x0, y0, x0 + w, y0 + 30.0)
 }
 
+/// What a History row says of a version whose integrity check failed (H4),
+/// on the drawn row and in its accessible text alike.
+pub(crate) const HIST_UNVERIFIABLE: &str = "can\u{2019}t be verified";
+
 pub(crate) struct CommitRow {
+    /// The version's id as the document service gives it (its raw store id),
+    /// passed back unchanged to `restore_version`.
     pub(crate) commit_id: String,
     pub(crate) when: String,
+    /// What the row shows and announces: the stored message, with a peer's
+    /// id replaced by the device's name (v0.0.12 item 14, R1;
+    /// [`HistoryPanel::name_devices`]).
     pub(crate) message: String,
+    /// The message as stored, unchanged (R1: the mapping is the display only).
+    pub(crate) stored_message: String,
+    /// The version's integrity check failed (`MacState::Invalid`): the row
+    /// says so, and the service refuses to restore it. Unsigned (older)
+    /// versions are not marked.
+    pub(crate) unverifiable: bool,
+}
+
+impl CommitRow {
+    /// The row's second line: its date, and the integrity mark when it fails.
+    pub(crate) fn when_line(&self) -> String {
+        if self.unverifiable {
+            format!("{} \u{00b7} {HIST_UNVERIFIABLE}", self.when)
+        } else {
+            self.when.clone()
+        }
+    }
 }
 
 pub(crate) struct HistoryPanel {
@@ -827,14 +860,63 @@ pub(crate) struct HistoryPanel {
     restore_lbl: Option<Layout<Brush>>,
     empty_lbl: Option<Layout<Brush>>,
     rows: Vec<(Layout<Brush>, Layout<Brush>)>, // (message, when)
+    /// The text each row's message line draws: its message, cut with "…" to
+    /// one line at the row's width (R2).
+    drawn: Vec<String>,
 }
+
+/// A History row's message size, and its second line's.
+const HIST_MSG_PX: f32 = 14.0;
+const HIST_WHEN_PX: f32 = 12.0;
+/// The row's text inset from its left edge (and kept on its right).
+const HIST_TEXT_X: f64 = 14.0;
+/// The message line's top, in the row.
+const HIST_MSG_Y: f64 = 7.0;
+/// The time line's top, in the row, when the message line leaves room.
+const HIST_WHEN_Y: f64 = 27.0;
+
 impl HistoryPanel {
+    /// R1: each row's shown message, from its stored one, with a peer's id
+    /// replaced by the device's name (`names`: peer id → name, as
+    /// `App::device_names` gives them), "this device" for `own_id`, or a
+    /// short form for a device no longer paired. Reshapes the rows.
+    pub(crate) fn name_devices(&mut self, names: &std::collections::HashMap<String, String>, own_id: &str) {
+        for c in self.commits.iter_mut() {
+            c.message = crate::history_device::shown_message(&c.stored_message, names, own_id);
+        }
+        self.rows.clear();
+        self.drawn.clear();
+    }
+
+    /// The text row `i`'s message line draws, as last shaped (R2).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn drawn_message(&self, i: usize) -> String {
+        self.drawn.get(i).cloned().unwrap_or_default()
+    }
+
+    /// After `ensure_shaped` at `row.width()`: the rectangles row `i`'s
+    /// message line and time line occupy when the row is drawn at `row`
+    /// (from their shaped layouts, as `draw_history` places them).
+    pub(crate) fn row_line_rects(&self, i: usize, row: Rect) -> (Rect, Rect) {
+        let Some((msg, when)) = self.rows.get(i) else {
+            let r = Rect::new(row.x0, row.y0, row.x0, row.y0);
+            return (r, r);
+        };
+        let x = row.x0 + HIST_TEXT_X;
+        let my = row.y0 + HIST_MSG_Y;
+        let m = Rect::new(x, my, x + msg.width() as f64, my + msg.height() as f64);
+        // The time line goes under the message line, whatever its height.
+        let wy = (row.y0 + HIST_WHEN_Y).max(m.y1 + 1.0);
+        let t = Rect::new(x, wy, x + when.width() as f64, wy + when.height() as f64);
+        (m, t)
+    }
+
     /// Readable lines for the accessibility tree.
     pub(crate) fn a11y_lines(&self) -> Vec<String> {
         if self.commits.is_empty() {
             return vec!["No saved versions yet".into()];
         }
-        self.commits.iter().map(|c| format!("{} \u{2014} {}", c.when, c.message)).collect()
+        self.commits.iter().map(|c| format!("{} \u{2014} {}", c.when_line(), c.message)).collect()
     }
 
     pub(crate) fn ensure_shaped(&mut self, shaper: &mut TextShaper, inner_w: f64) {
@@ -847,10 +929,20 @@ impl HistoryPanel {
         if self.rows.len() != self.commits.len() || width_changed {
             self.inner_w = inner_w;
             let tw = (inner_w - 20.0) as f32;
+            // R2: the message on one line, cut with "…" at the row's width
+            // (its inset kept on both sides), never wrapping over the time
+            // line under it.
+            let mw = (inner_w - 2.0 * HIST_TEXT_X).max(1.0);
+            self.drawn = self
+                .commits
+                .iter()
+                .map(|c| crate::history_device::cut_to_width(shaper, &c.message, mw, HIST_MSG_PX))
+                .collect();
             self.rows = self
                 .commits
                 .iter()
-                .map(|c| (shaper.shape(&c.message, tw, 14.0), shaper.shape(&c.when, tw, 12.0)))
+                .zip(self.drawn.iter())
+                .map(|(c, d)| (shaper.shape(d, 1.0e6, HIST_MSG_PX), shaper.shape(&c.when_line(), tw, HIST_WHEN_PX)))
                 .collect();
         }
     }
@@ -859,19 +951,28 @@ impl HistoryPanel {
     }
 }
 
-/// Load a document's version history (most recent first). Always returns a panel
-/// (an empty list still opens, with an empty state).
-pub(crate) async fn load_history(db: &Arc<dyn GraphDB>, doc_id: &str, doc_title: &str) -> HistoryPanel {
-    let raw = db.list_document_commits(doc_id).await.unwrap_or_default();
-    let commits = raw
-        .iter()
-        .map(|c| CommitRow {
-            commit_id: c.id.as_ref().map(|t| t.to_string()).unwrap_or_default(),
-            when: c.timestamp.format("%Y-%m-%d %H:%M").to_string(),
-            message: if c.message.is_empty() { "(no message)".into() } else { c.message.clone() },
+/// Load a document's version history (most recent first) from the document
+/// service (v0.0.12 lot 1a): the rows carry the service's own version ids, so
+/// "Use this version" hands `restore_version` an id it parses (H1), and each
+/// row its integrity (H4). An empty list still opens, with its empty state;
+/// a store error is an error, never an empty History (H3).
+pub(crate) async fn load_history(
+    docs: &sovereign_docs::DocumentService,
+    doc_id: &str,
+    doc_title: &str,
+) -> Result<HistoryPanel, sovereign_docs::DocError> {
+    let versions = docs.versions(doc_id).await?;
+    let commits = versions
+        .into_iter()
+        .map(|v| CommitRow {
+            commit_id: v.commit_id,
+            when: v.timestamp.format("%Y-%m-%d %H:%M").to_string(),
+            stored_message: v.message.clone(),
+            message: if v.message.is_empty() { "(no message)".into() } else { v.message },
+            unverifiable: v.mac == sovereign_docs::MacState::Invalid,
         })
         .collect();
-    HistoryPanel {
+    Ok(HistoryPanel {
         doc_id: doc_id.to_string(),
         doc_title: doc_title.to_string(),
         commits,
@@ -882,7 +983,8 @@ pub(crate) async fn load_history(db: &Arc<dyn GraphDB>, doc_id: &str, doc_title:
         restore_lbl: None,
         empty_lbl: None,
         rows: Vec::new(),
-    }
+        drawn: Vec::new(),
+    })
 }
 
 pub(crate) fn draw_history(scene: &mut Scene, hp: &HistoryPanel, bounds: Rect) {
@@ -910,8 +1012,13 @@ pub(crate) fn draw_history(scene: &mut Scene, hp: &HistoryPanel, bounds: Rect) {
             scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(54, 50, 40), None, &Rect::new(list_vp.x0, ry, list_vp.x1, ry + HIST_ROW_H - 1.0));
             scene.fill(Fill::NonZero, Affine::IDENTITY, accent, None, &Rect::new(list_vp.x0, ry, list_vp.x0 + 3.0, ry + HIST_ROW_H - 1.0));
         }
-        draw_text(scene, msg, Affine::translate((list_vp.x0 + 14.0, ry + 7.0)), title_color);
-        draw_text(scene, when, Affine::translate((list_vp.x0 + 14.0, ry + 27.0)), dim);
+        // R2: the two lines where `row_line_rects` says they are.
+        let (mr, wr) = hp.row_line_rects(i, Rect::new(list_vp.x0, ry, list_vp.x1, ry + HIST_ROW_H));
+        draw_text(scene, msg, Affine::translate((mr.x0, mr.y0)), title_color);
+        // A version that fails its integrity check: its second line carries
+        // the words (H4), drawn in the warning colour as well.
+        let unverifiable = hp.commits.get(i).is_some_and(|c| c.unverifiable);
+        draw_text(scene, when, Affine::translate((wr.x0, wr.y0)), if unverifiable { pal().accent_warm } else { dim });
         scene.fill(Fill::NonZero, Affine::IDENTITY, pal().divider, None, &Rect::new(list_vp.x0, ry + HIST_ROW_H - 1.0, list_vp.x1, ry + HIST_ROW_H));
     }
     if hp.commits.is_empty() {
@@ -1597,7 +1704,46 @@ pub(crate) struct AlertsPanel {
     /// Documents whose thread was deleted (S5-12 W5), below the alerts.
     orphans: crate::orphans::OrphansSection,
     orphan_shaped: Option<OrphanShaped>,
+    /// Documents that could not be read (v0.0.12 item 7, V2), below the
+    /// orphans: what the one-time conversion found and could not decrypt.
+    unreadable: Vec<UnreadableLine>,
+    unreadable_shaped: Option<UnreadableShaped>,
 }
+
+/// The heading and the meaning of the Alerts window's list of documents that
+/// could not be read (v0.0.12 item 7, V2), worded in `sovereign-docs` for
+/// both hosts (V2b, B1).
+const UNREADABLE_HEADING: &str = sovereign_docs::UNREADABLE_HEADING;
+const UNREADABLE_MEANING: &str = sovereign_docs::UNREADABLE_MEANING;
+
+/// One document that could not be read: its line, a short id and its last
+/// modified date, no title (none can be read). Worded by `sovereign-docs`
+/// (V2b, B1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UnreadableLine(String);
+
+impl UnreadableLine {
+    pub(crate) fn of(u: &sovereign_docs::UndecryptableDocument) -> UnreadableLine {
+        UnreadableLine(sovereign_docs::unreadable_line(u))
+    }
+
+    /// The line, in words (shown and read).
+    pub(crate) fn text(&self) -> String {
+        self.0.clone()
+    }
+}
+
+/// The list's shaped text: heading, meaning, and each line.
+struct UnreadableShaped {
+    lines_of: Vec<UnreadableLine>,
+    heading: Layout<Brush>,
+    meaning: Layout<Brush>,
+    lines: Vec<Layout<Brush>>,
+}
+
+/// Heights in the list of documents that could not be read.
+const UNREADABLE_HEAD_H: f64 = 30.0;
+const UNREADABLE_LINE_H: f64 = 22.0;
 
 /// The section's shaped text: heading, each line's notice and origin, each
 /// group's label, and the buttons' labels (line, then group; in `ACTIONS`
@@ -1632,7 +1778,40 @@ impl AlertsPanel {
             shaped: Vec::new(),
             orphans: crate::orphans::OrphansSection::empty(),
             orphan_shaped: None,
+            unreadable: Vec::new(),
+            unreadable_shaped: None,
         }
+    }
+
+    /// The panel with the list of documents that could not be read
+    /// (v0.0.12 item 7, V2).
+    pub(crate) fn with_unreadable(mut self, lines: Vec<UnreadableLine>) -> Self {
+        self.unreadable = lines;
+        self
+    }
+
+    /// The documents that could not be read, as listed.
+    pub(crate) fn unreadable(&self) -> &[UnreadableLine] {
+        &self.unreadable
+    }
+
+    /// Where the list of documents that could not be read starts in the
+    /// list's content (below the alerts and the orphans).
+    fn unreadable_top(&self) -> f64 {
+        if self.orphans.count() == 0 {
+            self.rows.len() as f64 * ALERT_ROW_H
+        } else {
+            self.orphans_top() + self.orphans.height()
+        }
+    }
+
+    /// Its height (none when empty).
+    fn unreadable_h(&self) -> f64 {
+        if self.unreadable.is_empty() {
+            return 0.0;
+        }
+        let meaning = self.unreadable_shaped.as_ref().map(|s| s.meaning.height() as f64 + 8.0).unwrap_or(UNREADABLE_LINE_H);
+        UNREADABLE_HEAD_H + meaning + self.unreadable.len() as f64 * UNREADABLE_LINE_H
     }
 
     /// The panel with the section "Documents whose thread was deleted".
@@ -1714,6 +1893,19 @@ impl AlertsPanel {
     pub(crate) fn a11y_lines(&self) -> Vec<String> {
         let mut out = self.alert_a11y_lines();
         out.extend(self.orphans.a11y_lines());
+        out.extend(self.unreadable_a11y_lines());
+        out
+    }
+
+    /// The list of documents that could not be read, for a screen reader:
+    /// its heading, what it means, and each document (v0.0.12 item 7, V2).
+    fn unreadable_a11y_lines(&self) -> Vec<String> {
+        if self.unreadable.is_empty() {
+            return vec![];
+        }
+        let n = self.unreadable.len();
+        let mut out = vec![format!("{UNREADABLE_HEADING} ({n})."), UNREADABLE_MEANING.to_string()];
+        out.extend(self.unreadable.iter().enumerate().map(|(i, l)| format!("{} of {n}: {}.", i + 1, l.text())));
         out
     }
 
@@ -1787,6 +1979,15 @@ impl AlertsPanel {
                 group_btns: crate::orphans::ACTIONS.iter().map(|a| shaper.shape(a.group_label(), 220.0, 12.0)).collect(),
             });
         }
+        if width_changed || self.unreadable_shaped.as_ref().map(|u| &u.lines_of) != Some(&self.unreadable) {
+            let tw = (inner_w - 24.0).max(120.0) as f32;
+            self.unreadable_shaped = Some(UnreadableShaped {
+                lines_of: self.unreadable.clone(),
+                heading: shaper.shape(UNREADABLE_HEADING, tw, 14.5),
+                meaning: shaper.shape(UNREADABLE_MEANING, tw, 12.5),
+                lines: self.unreadable.iter().map(|l| shaper.shape(&l.text(), tw, 13.0)).collect(),
+            });
+        }
         if self.shaped.len() != self.rows.len() || width_changed {
             self.inner_w = inner_w;
             let tw = (inner_w - 24.0).max(120.0) as f32;
@@ -1807,19 +2008,31 @@ impl AlertsPanel {
     }
 
     pub(crate) fn content_h(&self) -> f64 {
-        if self.orphans.count() == 0 {
+        if self.orphans.count() == 0 && self.unreadable.is_empty() {
             return self.rows.len().max(1) as f64 * ALERT_ROW_H + 8.0;
         }
-        self.orphans_top() + self.orphans.height() + 8.0
+        self.unreadable_top() + self.unreadable_h() + 8.0
     }
 }
 
 /// The open alerts, with each document's title and each device's name, and
 /// the documents whose thread was deleted (S5-12). A section that cannot be
 /// read is left empty: the alerts load as before.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn load_alerts(
     docs: &sovereign_docs::DocumentService,
     device_names: &HashMap<String, String>,
+) -> AlertsPanel {
+    load_alerts_as(docs, device_names, "").await
+}
+
+/// [`load_alerts`], naming the devices as History does (item 22, D5): "this
+/// device" for `own_id` (this persona's peer id), a paired device's name, a
+/// display name from before item 22 as it is.
+pub(crate) async fn load_alerts_as(
+    docs: &sovereign_docs::DocumentService,
+    device_names: &HashMap<String, String>,
+    own_id: &str,
 ) -> AlertsPanel {
     let mut rows = Vec::new();
     for a in docs.alerts().await.unwrap_or_default() {
@@ -1827,13 +2040,22 @@ pub(crate) async fn load_alerts(
             Ok(v) => v.labelled_title(),
             Err(_) => String::new(),
         };
-        let device = device_names.get(&a.device).cloned().unwrap_or_else(|| a.device.clone());
+        let device = crate::history_device::device_label(&a.device, device_names, own_id);
         rows.push(AlertRow { doc_id: a.id, title, device, finding: a.finding, previous_version: a.previous_version });
     }
-    let orphans = crate::orphans::OrphansSection::load(docs, device_names)
+    let orphans = crate::orphans::OrphansSection::load_as(docs, device_names, own_id)
         .await
         .unwrap_or_else(|_| crate::orphans::OrphansSection::empty());
-    AlertsPanel::new(rows).with_orphans(orphans)
+    // v0.0.12 item 7, V2: what the one-time conversion found and could not
+    // decrypt, from this persona's store (a list that cannot be read is left
+    // empty, as the orphans are).
+    let unreadable = sovereign_docs::unlock_migration_undecryptable(docs)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(UnreadableLine::of)
+        .collect();
+    AlertsPanel::new(rows).with_orphans(orphans).with_unreadable(unreadable)
 }
 
 /// Sample alerts for screenshot/debug (SHELL_OPEN_ALERTS=1).
@@ -1881,7 +2103,7 @@ pub(crate) fn draw_alerts(scene: &mut Scene, ap: &AlertsPanel, bounds: Rect) {
         draw_text(scene, l, Affine::translate((header.x0 + DW_PAD, header.y0 + 14.0)), pal().text);
     }
     scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &body_vp);
-    if ap.rows.is_empty() && ap.orphans.count() == 0 {
+    if ap.rows.is_empty() && ap.orphans.count() == 0 && ap.unreadable.is_empty() {
         if let Some(e) = &ap.empty_lbl {
             draw_text(scene, e, Affine::translate((body_vp.x0 + 4.0, body_vp.y0 + 8.0)), dim);
         }
@@ -1931,11 +2153,36 @@ pub(crate) fn draw_alerts(scene: &mut Scene, ap: &AlertsPanel, bounds: Rect) {
         scene.fill(Fill::NonZero, Affine::IDENTITY, pal().divider, None, &Rect::new(row.x0, row.y1 - 1.0, row.x1, row.y1));
     }
     draw_orphans_section(scene, ap, list_vp);
+    draw_unreadable_section(scene, ap, list_vp);
     scene.pop_layer();
     scene.pop_layer();
     draw_scrollbar(scene, &bounds, &list_vp, ap.content_h(), ap.scroll);
     scene.pop_layer(); // panel clip
     scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &panel_rr);
+}
+
+/// The list "Documents that could not be read" (v0.0.12 item 7, V2), below
+/// the orphans: its heading, what it means, and each document by short id
+/// and date. Nothing to act on: Sovereign tries again after its next update.
+fn draw_unreadable_section(scene: &mut Scene, ap: &AlertsPanel, list_vp: Rect) {
+    let Some(sh) = &ap.unreadable_shaped else { return };
+    if ap.unreadable.is_empty() || sh.lines.len() != ap.unreadable.len() {
+        return;
+    }
+    let mut y = list_vp.y0 - ap.scroll + ap.unreadable_top();
+    scene.fill(Fill::NonZero, Affine::IDENTITY, pal().divider, None, &Rect::new(list_vp.x0, y + 6.0, list_vp.x1, y + 7.0));
+    draw_text(scene, &sh.heading, Affine::translate((list_vp.x0 + 4.0, y + 12.0)), pal().text);
+    y += UNREADABLE_HEAD_H;
+    draw_text(scene, &sh.meaning, Affine::translate((list_vp.x0 + 4.0, y)), pal().text_body);
+    y += sh.meaning.height() as f64 + 8.0;
+    for l in &sh.lines {
+        if y + UNREADABLE_LINE_H >= list_vp.y0 && y <= list_vp.y1 {
+            let bar = Rect::new(list_vp.x0, y + 3.0, list_vp.x0 + 3.0, y + UNREADABLE_LINE_H - 3.0);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, ALERT_PILL, None, &bar);
+            draw_text(scene, l, Affine::translate((list_vp.x0 + 12.0, y + 3.0)), pal().text);
+        }
+        y += UNREADABLE_LINE_H;
+    }
 }
 
 /// The section "Documents whose thread was deleted" (S5-12 W5), below the
@@ -2356,6 +2603,40 @@ pub(crate) fn device_forget_btn(row: Rect) -> Rect {
     Rect::new(x1 - bw, by0, x1, by0 + bh)
 }
 
+/// "Rename" on the "This device" line (v0.0.12 item 19, N3): under Sync now.
+pub(crate) fn device_rename_this_btn(body: Rect) -> Rect {
+    let sync = devices_sync_btn(body);
+    let (bw, bh) = (sync.width(), 24.0);
+    Rect::new(sync.x1 - bw, sync.y1 + 8.0, sync.x1, sync.y1 + 8.0 + bh)
+}
+
+/// A paired device's "Rename" (N5), just left of its Forget.
+pub(crate) fn device_rename_btn(row: Rect) -> Rect {
+    let forget = device_forget_btn(row);
+    let bw = 70.0;
+    Rect::new(forget.x0 - 8.0 - bw, forget.y0, forget.x0 - 8.0, forget.y1)
+}
+
+/// Where this device's name is drawn in the identity block (the rename
+/// field opens over it, N3).
+pub(crate) fn devices_name_rect(body: Rect) -> Rect {
+    let x0 = body.x0 + 30.0;
+    Rect::new(x0, body.y0 + 10.0, (x0 + 260.0).min(body.x1 - 8.0).max(x0 + 1.0), body.y0 + 34.0)
+}
+
+/// Where a paired device's name is drawn in its row (its rename field opens
+/// over it, N5).
+pub(crate) fn device_row_name_rect(row: Rect) -> Rect {
+    let x0 = row.x0 + 12.0;
+    Rect::new(x0, row.y0 + 4.0, (x0 + 220.0).min(row.x1 - 8.0).max(x0 + 1.0), row.y0 + 24.0)
+}
+
+/// The Rename buttons' accessible names (N6).
+pub(crate) const RENAME_THIS_DEVICE: &str = "Rename this device";
+pub(crate) fn rename_device_button(name: &str) -> String {
+    format!("Rename {name}")
+}
+
 pub(crate) struct DeviceRow {
     pub(crate) peer_id: String,
     pub(crate) name: String,
@@ -2377,6 +2658,9 @@ pub(crate) struct DevicesPanel {
     sync_lbl: Option<Layout<Brush>>,
     pair_lbl: Option<Layout<Brush>>,
     forget_lbl: Option<Layout<Brush>>,
+    rename_lbl: Option<Layout<Brush>>,
+    /// N4's sentence, under this device's name.
+    keep_lbl: Option<Layout<Brush>>,
     empty_lbl: Option<Layout<Brush>>,
     rows_shaped: Vec<(Layout<Brush>, Layout<Brush>)>, // (name, peer+status meta)
     dirty: bool,                                       // identity strings changed
@@ -2398,10 +2682,39 @@ impl DevicesPanel {
         v
     }
 
+    /// The accessibility items of the panel as drawn (v0.0.12 item 19): this
+    /// device's line, N4's sentence under it, its Rename button; then each
+    /// paired device's line and its Rename button (N6).
+    pub(crate) fn a11y_items(&self) -> Vec<A11yItem> {
+        use accesskit::Role;
+        let lines = self.a11y_lines();
+        let mut v: Vec<A11yItem> = Vec::new();
+        let mut lines = lines.into_iter();
+        if let Some(first) = lines.next() {
+            v.push((Role::Label, first, String::new(), false));
+        }
+        v.push((Role::Label, crate::device_name::KEEP_LEARNED.into(), String::new(), false));
+        v.push((Role::Button, RENAME_THIS_DEVICE.into(), String::new(), false));
+        if self.rows.is_empty() {
+            v.extend(lines.map(|l| (Role::Label, l, String::new(), false)));
+        } else {
+            for (r, line) in self.rows.iter().zip(lines) {
+                v.push((Role::Label, line, String::new(), false));
+                v.push((Role::Button, rename_device_button(&r.name), String::new(), false));
+            }
+        }
+        v
+    }
+
     pub(crate) fn ensure_shaped(&mut self, shaper: &mut TextShaper, inner_w: f64) {
         let width_changed = (inner_w - self.inner_w).abs() > 0.5;
+        if self.keep_lbl.is_none() || width_changed {
+            let kw = (inner_w - 40.0 - 120.0).max(160.0) as f32;
+            self.keep_lbl = Some(shaper.shape(crate::device_name::KEEP_LEARNED, kw, 11.0));
+        }
         if self.title_lbl.is_none() {
             self.title_lbl = Some(shaper.shape("Devices & Sync", 4000.0, 16.0));
+            self.rename_lbl = Some(shaper.shape("Rename", 80.0, 12.0));
             self.sync_lbl = Some(shaper.shape("Sync now", 200.0, 12.5));
             self.pair_lbl = Some(shaper.shape("Pair a device\u{2026}", 200.0, 12.5));
             self.forget_lbl = Some(shaper.shape("Forget", 80.0, 12.0));
@@ -2421,7 +2734,7 @@ impl DevicesPanel {
         }
         if self.rows_shaped.len() != self.rows.len() || width_changed {
             self.inner_w = inner_w;
-            let tw = (inner_w - 110.0).max(80.0) as f32;
+            let tw = (inner_w - 190.0).max(80.0) as f32;
             self.rows_shaped = self
                 .rows
                 .iter()
@@ -2466,6 +2779,8 @@ pub(crate) fn devices_panel(
         sync_lbl: None,
         pair_lbl: None,
         forget_lbl: None,
+        rename_lbl: None,
+        keep_lbl: None,
         empty_lbl: None,
         rows_shaped: Vec::new(),
         dirty: true,
@@ -2495,6 +2810,18 @@ pub(crate) fn draw_devices(scene: &mut Scene, dp: &DevicesPanel, bounds: Rect) {
     }
     if let Some(l) = &dp.listen_lbl {
         draw_text(scene, l, Affine::translate((id_block.x0 + 30.0, id_block.y0 + 62.0)), dim);
+    }
+    // N4, under this device's name.
+    if let Some(l) = &dp.keep_lbl {
+        draw_text(scene, l, Affine::translate((id_block.x0 + 30.0, id_block.y0 + 82.0)), pal().text_faint);
+    }
+    // N3: Rename this device.
+    let rb = device_rename_this_btn(body_vp);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, pal().surface_alt, None, &RoundedRect::from_rect(rb, 5.0));
+    if let Some(l) = &dp.rename_lbl {
+        let tx = rb.x0 + (rb.width() - l.width() as f64) * 0.5;
+        let ty = rb.y0 + (rb.height() - l.height() as f64) * 0.5;
+        draw_text(scene, l, Affine::translate((tx, ty)), pal().text_body);
     }
 
     // Sync now + Pair buttons (top-right of the identity block).
@@ -2537,6 +2864,14 @@ pub(crate) fn draw_devices(scene: &mut Scene, dp: &DevicesPanel, bounds: Rect) {
         scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(120, 165, 195), None, &Rect::new(row.x0, row.y0 + 6.0, row.x0 + 3.0, row.y1 - 6.0));
         draw_text(scene, name, Affine::translate((row.x0 + 12.0, row.y0 + 6.0)), pal().text);
         draw_text(scene, meta, Affine::translate((row.x0 + 12.0, row.y0 + 25.0)), dim);
+        // N5: Rename, for this device only.
+        let rb = device_rename_btn(row);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, pal().surface_alt, None, &RoundedRect::from_rect(rb, 5.0));
+        if let Some(l) = &dp.rename_lbl {
+            let tx = rb.x0 + (rb.width() - l.width() as f64) * 0.5;
+            let ty = rb.y0 + (rb.height() - l.height() as f64) * 0.5;
+            draw_text(scene, l, Affine::translate((tx, ty)), pal().text_body);
+        }
         let fb = device_forget_btn(row);
         scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(66, 50, 52), None, &RoundedRect::from_rect(fb, 5.0));
         if let Some(l) = &dp.forget_lbl {
@@ -2585,16 +2920,15 @@ pub(crate) struct ChatMsg {
     pub(crate) text: String,
 }
 
-/// Minimal text-input state: an append/backspace buffer with the caret pinned
-/// to the end (arrow-key cursor movement + selection + IME are later polish).
+/// The chat window: its transcript, and its composer — the editor's
+/// single-line field (v0.0.12 item 21, K1).
 pub(crate) struct ChatPanel {
     pub(crate) msgs: Vec<ChatMsg>,
-    pub(crate) input: String,
+    pub(crate) input: ChatField,
     pub(crate) scroll: f64,
     pub(crate) inner_w: f64,
     pub(crate) shaped: Vec<(Role, Layout<Brush>, Layout<Brush>)>, // role, "You"/"Assistant", body
     pub(crate) shaped_len: usize,
-    pub(crate) input_layout: Option<Layout<Brush>>,
     pub(crate) placeholder: Option<Layout<Brush>>,
     pub(crate) label: Option<Layout<Brush>>,
     pub(crate) pending: bool, // awaiting an orchestrator reply
@@ -2612,12 +2946,11 @@ impl ChatPanel {
                        Enter; the first reply loads the model on CPU, so it can take a moment."
                     .to_string(),
             }],
-            input: String::new(),
+            input: ChatField::open(FieldMode::Message, Fonts::System, Box::new(FieldClipboard::default())),
             scroll: f64::MAX, // start pinned to the bottom
             inner_w: 0.0,
             shaped: Vec::new(),
             shaped_len: 0,
-            input_layout: None,
             placeholder: None,
             label: None,
             pending: false,
@@ -2626,23 +2959,23 @@ impl ChatPanel {
             loading_label: None,
         }
     }
-    /// Append the user's message and mark a reply pending; returns the text to
-    /// hand to the orchestrator (None if the input was blank).
-    pub(crate) fn submit(&mut self) -> Option<String> {
-        let text = self.input.trim().to_string();
+    /// Append the user's message `text` (what the composer sent) and mark a
+    /// reply pending; returns the text to hand to the orchestrator, trimmed
+    /// (None if it was blank).
+    pub(crate) fn submit(&mut self, text: &str) -> Option<String> {
+        let text = text.trim().to_string();
         if text.is_empty() {
             return None;
         }
         self.msgs.push(ChatMsg { role: Role::User, text: text.clone() });
         self.pending = true;
-        self.input.clear();
         self.scroll = f64::MAX; // jump to bottom
         Some(text)
     }
     pub(crate) fn ensure_shaped(&mut self, shaper: &mut TextShaper, inner_w: f64) {
         if self.label.is_none() {
             self.label = Some(shaper.shape("Chat", 400.0, 18.0));
-            self.placeholder = Some(shaper.shape("Type a message\u{2026}   (Enter to send)", 400.0, 14.5));
+            self.placeholder = Some(shaper.shape(MESSAGE_PLACEHOLDER, 400.0, 14.5));
             self.pending_label = Some(shaper.shape("Assistant is thinking\u{2026}", 400.0, 13.0));
             self.loading_label =
                 Some(shaper.shape("Loading the model\u{2026} the first reply takes a moment (CPU)", 400.0, 13.0));
@@ -2661,8 +2994,6 @@ impl ChatPanel {
                 .collect();
             self.shaped_len = self.msgs.len();
         }
-        // The input changes per keystroke — re-shape it every frame (short, cheap).
-        self.input_layout = Some(shaper.shape(&self.input, (inner_w - 24.0) as f32, 14.5));
     }
     pub(crate) fn content_h(&self) -> f64 {
         let msgs: f64 = self
@@ -2674,7 +3005,7 @@ impl ChatPanel {
     }
 }
 
-pub(crate) fn draw_chat(scene: &mut Scene, chat: &ChatPanel, bounds: Rect) {
+pub(crate) fn draw_chat(scene: &mut Scene, chat: &mut ChatPanel, bounds: Rect) {
     let panel = bounds;
     let (panel_rr, header, _close, body) =
         draw_window_chrome(scene, bounds, Color::from_rgb8(110, 150, 120));
@@ -2708,30 +3039,21 @@ pub(crate) fn draw_chat(scene: &mut Scene, chat: &ChatPanel, bounds: Rect) {
     scene.pop_layer();
     draw_scrollbar(scene, &panel, &msg_vp, chat.content_h(), chat.scroll);
 
-    // Composer (the text input).
+    // Composer: the editor's field paints its text, caret, selection and
+    // pre-edit (K2); the placeholder is the panel's, unchanged (K5).
     let input_rr = RoundedRect::from_rect(input_rect, 8.0);
     scene.fill(Fill::NonZero, Affine::IDENTITY, pal().input, None, &input_rr);
-    scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().input_border, None, &input_rr);
-    let ty = input_rect.y0 + (CHAT_INPUT_H - 18.0) * 0.5;
-    let tx = input_rect.x0 + 12.0;
-    scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &input_rect);
-    if chat.input.is_empty() {
+    scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &input_rr);
+    chat.input.draw(scene, input_rect, pal().input);
+    if chat.input.shows_placeholder() {
         if let Some(ph) = &chat.placeholder {
+            let ty = input_rect.y0 + (CHAT_INPUT_H - 18.0) * 0.5;
+            let tx = input_rect.x0 + 12.0;
             draw_text(scene, ph, Affine::translate((tx, ty)), pal().text_faint);
         }
-    } else if let Some(il) = &chat.input_layout {
-        draw_text(scene, il, Affine::translate((tx, ty)), pal().text);
     }
-    // Caret pinned to the end of the input text.
-    let caret_x = tx + chat.input_layout.as_ref().map(|l| l.width() as f64).unwrap_or(0.0);
-    scene.stroke(
-        &Stroke::new(1.5),
-        Affine::IDENTITY,
-        pal().caret,
-        None,
-        &Line::new(Point::new(caret_x + 1.0, input_rect.y0 + 11.0), Point::new(caret_x + 1.0, input_rect.y1 - 11.0)),
-    );
     scene.pop_layer();
+    scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().input_border, None, &input_rr);
 
     scene.pop_layer(); // panel clip
     scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &panel_rr);
@@ -2954,8 +3276,12 @@ pub(crate) fn auth_reveal_btn(field: Rect) -> Rect {
     Rect::new(field.x1 - bw - 4.0, field.y0 + 5.0, field.x1 - 4.0, field.y1 - 5.0)
 }
 
+/// The key that shows or hides the locked screens' secrets from any field
+/// (v0.0.12 rc2, V0012-rc2-labels-spoken, L4; `App::locked_key`): Windows'
+/// own reveal key on its sign-in screen. Written out in `AuthForm::copy`.
+pub(crate) const SHOW_KEY: &str = "Alt+F8";
+
 pub(crate) struct AuthForm {
-    pub(crate) onboarding: bool,
     pub(crate) joining: bool, // Phase 2b: join an existing account from another device
     pub(crate) fields: Vec<String>,
     pub(crate) labels: Vec<&'static str>,
@@ -2968,6 +3294,8 @@ pub(crate) struct AuthForm {
     pub(crate) subtitle: Option<Layout<Brush>>,
     pub(crate) hint: Option<Layout<Brush>>,
     pub(crate) busy_lbl: Option<Layout<Brush>>,
+    /// N2's plain words under the join form's device name.
+    pub(crate) seen_by_lbl: Option<Layout<Brush>>,
     pub(crate) show_lbl: Option<Layout<Brush>>,
     pub(crate) hide_lbl: Option<Layout<Brush>>,
     pub(crate) label_layouts: Vec<Layout<Brush>>,
@@ -2976,48 +3304,31 @@ pub(crate) struct AuthForm {
     pub(crate) error_text: String, // tracks what error_layout was shaped for
 }
 impl AuthForm {
+    // First-device setup is the wizard's (`onboarding.rs`); the form has
+    // no setup mode since v0.0.12 ("Decided (2026-10-24)").
     pub(crate) fn login() -> Self {
-        Self::make(false, false, vec![String::new()], vec!["Password"], vec![true])
-    }
-    pub(crate) fn onboarding() -> Self {
-        Self::make(
-            true,
-            false,
-            vec![String::new(), String::new(), String::new(), String::new()],
-            vec![
-                "Password",
-                "Confirm password",
-                "Duress password",
-                "Confirm duress password",
-            ],
-            vec![true, true, true, true],
-        )
+        Self::make(false, vec![String::new()], vec!["Password"], vec![true])
     }
     /// Phase 2b: join an existing account using a pairing code + PIN from
     /// another device, setting a fresh local password here.
     pub(crate) fn join() -> Self {
         Self::make(
-            false,
             true,
-            vec![String::new(), String::new(), String::new(), String::new()],
+            // v0.0.12 item 19, N2: a fifth field, this device's name,
+            // prefilled with the computer's name; not masked.
+            vec![String::new(), String::new(), String::new(), String::new(), crate::device_name::host_name()],
             vec![
                 "Offer from the other device (paste: Ctrl+V)",
                 "Pairing code",
                 "New password for this device",
                 "Duress password (optional)",
+                crate::device_name::FIELD_LABEL,
             ],
-            vec![false, false, true, true],
+            vec![false, false, true, true, false],
         )
     }
-    fn make(
-        onboarding: bool,
-        joining: bool,
-        fields: Vec<String>,
-        labels: Vec<&'static str>,
-        mask: Vec<bool>,
-    ) -> Self {
+    fn make(joining: bool, fields: Vec<String>, labels: Vec<&'static str>, mask: Vec<bool>) -> Self {
         Self {
-            onboarding,
             joining,
             fields,
             labels,
@@ -3030,6 +3341,7 @@ impl AuthForm {
             subtitle: None,
             hint: None,
             busy_lbl: None,
+            seen_by_lbl: None,
             show_lbl: None,
             hide_lbl: None,
             label_layouts: Vec::new(),
@@ -3070,40 +3382,99 @@ impl AuthForm {
         }
         self.mask.get(i).copied().unwrap_or(true)
     }
+    /// The form's title, subtitle and hint, as drawn (and announced). The
+    /// hint names the "show" key, `SHOW_KEY` (v0.0.12 rc2,
+    /// V0012-rc2-labels-spoken, L4: "show to reveal" was its only change, kept
+    /// at the same length so the drawn line does not grow).
+    fn copy(&self) -> (&'static str, &'static str, &'static str) {
+        if self.joining {
+            (
+                "Join from another device",
+                "Paste the code from your other device, enter its PIN, and pick a \
+                 password for THIS device.",
+                "Ctrl+V paste  \u{00b7}  Alt+F8 to show  \u{00b7}  Tab to switch  \u{00b7}  Enter to join  \u{00b7}  click below to create a new account instead",
+            )
+        } else {
+            (
+                "Unlock Sovereign",
+                "Enter your password to decrypt your workspace.",
+                "Ctrl+V to paste your password  \u{00b7}  Alt+F8 to show  \u{00b7}  Enter to unlock",
+            )
+        }
+    }
+
+    /// The name of the form's show/hide toggle, for what it reveals
+    /// (v0.0.12 rc2, V0012-rc2-labels-spoken, L4): one node for the form's
+    /// eyes, which all flip the same `reveal`. `None` without a secret field.
+    pub(crate) fn a11y_show_name(&self) -> Option<&'static str> {
+        let secrets = (0..self.labels.len()).filter(|i| self.is_masked(*i)).count();
+        match (secrets, self.reveal) {
+            (0, _) => None,
+            (1, false) => Some("Show password"),
+            (1, true) => Some("Hide password"),
+            (_, false) => Some("Show passwords"),
+            (_, true) => Some("Hide passwords"),
+        }
+    }
+
+    /// The accessibility items of the form as drawn (v0.0.12 item 20,
+    /// A1–A5): title, copy, each field named by its drawn label, the pairing
+    /// line or the error, the hint. A masked field says its length only, "show"
+    /// on or off (A3); the offer field says what is drawn in it.
+    pub(crate) fn a11y_items(&self) -> Vec<A11yItem> {
+        use accesskit::Role;
+        let (title, subtitle, hint) = self.copy();
+        let mut v: Vec<A11yItem> = vec![
+            (Role::Label, title.into(), String::new(), false),
+            (Role::Label, subtitle.into(), String::new(), false),
+        ];
+        // L4: the show/hide node follows the last secret field.
+        let last_secret = (0..self.labels.len()).rev().find(|i| self.is_masked(*i));
+        for (i, label) in self.labels.iter().enumerate() {
+            let focused = i == self.focus;
+            if self.is_masked(i) {
+                let n = self.fields.get(i).map_or(0, |f| f.chars().count());
+                let len = if n == 0 { String::new() } else { format!("{n} characters") };
+                v.push((Role::PasswordInput, label.to_string(), len, focused));
+            } else {
+                let shown = if i < self.fields.len() { self.field_display(i) } else { String::new() };
+                v.push((Role::TextInput, label.to_string(), shown, focused));
+            }
+            if Some(i) == last_secret {
+                if let Some(name) = self.a11y_show_name() {
+                    v.push((Role::Button, name.into(), String::new(), false));
+                }
+            }
+            // N2: under this device's name, in plain words.
+            if self.joining && i == JOIN_DEVICE_NAME_FIELD {
+                v.push((Role::Label, crate::device_name::SEEN_BY.into(), String::new(), false));
+            }
+        }
+        if self.busy {
+            v.push((Role::Status, PAIRING_LINE.into(), String::new(), false));
+        } else if let Some(e) = self.error.as_deref().filter(|e| !e.trim().is_empty()) {
+            v.push((Role::Alert, e.to_string(), String::new(), false));
+        }
+        v.push((Role::Label, hint.into(), String::new(), false));
+        v
+    }
+
+    /// The name of the form's group in the accessibility tree: its drawn
+    /// title (v0.0.12 rc2, V0012-rc2-setup-step-announced, N4).
+    pub(crate) fn a11y_name(&self) -> &'static str {
+        self.copy().0
+    }
+
     pub(crate) fn ensure_shaped(&mut self, shaper: &mut TextShaper) {
         if self.title.is_none() {
-            let (t, s) = if self.joining {
-                (
-                    "Join from another device",
-                    "Paste the code from your other device, enter its PIN, and pick a \
-                     password for THIS device.",
-                )
-            } else if self.onboarding {
-                (
-                    "Welcome to Sovereign",
-                    "Set a password (12+ chars, mixed case, digit, symbol). The duress \
-                     password unlocks a separate, empty workspace under coercion.",
-                )
-            } else {
-                ("Unlock Sovereign", "Enter your password to decrypt your workspace.")
-            };
+            let (t, s, hint) = self.copy();
             self.title = Some(shaper.shape(t, 460.0, 22.0));
             self.subtitle = Some(shaper.shape(s, 424.0, 13.0));
-            let hint = if self.joining {
-                "Ctrl+V paste  \u{00b7}  show to reveal  \u{00b7}  Tab to switch  \u{00b7}  Enter to join  \u{00b7}  click below to create a new account instead"
-            } else if self.onboarding {
-                "Ctrl+V paste  \u{00b7}  show to reveal  \u{00b7}  Tab to switch  \u{00b7}  Enter to create  \u{00b7}  click below to join from another device"
-            } else {
-                "Ctrl+V to paste your password  \u{00b7}  show to reveal  \u{00b7}  Enter to unlock"
-            };
             self.hint = Some(shaper.shape(hint, 460.0, 12.0));
             self.show_lbl = Some(shaper.shape("show", 60.0, 11.5));
             self.hide_lbl = Some(shaper.shape("hide", 60.0, 11.5));
-            self.busy_lbl = Some(shaper.shape(
-                "Pairing\u{2026}  keep the other device on its pairing screen.",
-                424.0,
-                13.0,
-            ));
+            self.busy_lbl = Some(shaper.shape(PAIRING_LINE, 424.0, 13.0));
+            self.seen_by_lbl = Some(shaper.shape(crate::device_name::SEEN_BY, 424.0, 11.0));
             self.label_layouts = self.labels.iter().map(|l| shaper.shape(l, 400.0, 12.0)).collect();
         }
         // Field contents change per keystroke (masked / visible / offer status).
@@ -3119,7 +3490,16 @@ impl AuthForm {
     }
 }
 
-pub(crate) fn draw_auth(scene: &mut Scene, form: &AuthForm, w: f64, h: f64) {
+/// The join form's field holding this device's name (v0.0.12 item 19, N2):
+/// its fifth, which `App::try_join` sends in `PairHello`.
+pub(crate) const JOIN_DEVICE_NAME_FIELD: usize = 4;
+
+/// The join's handshake line, drawn while it runs.
+const PAIRING_LINE: &str = "Pairing\u{2026}  keep the other device on its pairing screen.";
+
+/// `status`: the shaped line of a derivation in flight (v0.0.12 item 18, B2),
+/// drawn in the error's place.
+pub(crate) fn draw_auth(scene: &mut Scene, form: &AuthForm, status: Option<&Layout<Brush>>, w: f64, h: f64) {
     let (card, field_rects) = auth_layout(w, h, form.fields.len());
     // Full-window background.
     scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(15, 16, 21), None, &Rect::new(0.0, 0.0, w, h));
@@ -3167,6 +3547,12 @@ pub(crate) fn draw_auth(scene: &mut Scene, form: &AuthForm, w: f64, h: f64) {
                 );
             }
         }
+        // N2: under this device's name, in plain words.
+        if form.joining && i == JOIN_DEVICE_NAME_FIELD {
+            if let Some(l) = &form.seen_by_lbl {
+                draw_text(scene, l, Affine::translate((fr.x0, fr.y1 + 4.0)), pal().text_faint);
+            }
+        }
         // Secrets get a show/hide reveal toggle at the right edge.
         if form.is_masked(i) {
             let btn = auth_reveal_btn(*fr);
@@ -3180,11 +3566,14 @@ pub(crate) fn draw_auth(scene: &mut Scene, form: &AuthForm, w: f64, h: f64) {
         }
     }
 
-    // Busy (pairing handshake) takes the error slot; else error + hint.
+    // Busy (pairing handshake) or a derivation's status line takes the error
+    // slot; else error + hint.
     if form.busy {
         if let Some(b) = &form.busy_lbl {
             draw_text(scene, b, Affine::translate((card.x0 + 28.0, card.y1 - 50.0)), accent);
         }
+    } else if let Some(s) = status {
+        draw_text(scene, s, Affine::translate((card.x0 + 28.0, card.y1 - 50.0)), accent);
     } else if let Some(e) = &form.error_layout {
         draw_text(scene, e, Affine::translate((card.x0 + 28.0, card.y1 - 50.0)), Color::from_rgb8(220, 110, 110));
     }
@@ -3811,7 +4200,11 @@ impl RecoveryWizard {
             ],
             RecoveryPhase::Failed => vec![
                 "Recovery could not be completed".into(),
-                self.error.clone().unwrap_or_default(),
+                // What is drawn when there is no error text (never an empty name, A4).
+                self.error
+                    .clone()
+                    .filter(|e| !e.trim().is_empty())
+                    .unwrap_or_else(|| "Something went wrong reaching your guardians.".into()),
             ],
         }
     }
@@ -3972,7 +4365,10 @@ pub(crate) fn draw_recovery_wizard(
                 &format!("{} of {} guardians approved. Recover to unlock your account under the password you already set.", wiz.shares, wiz.threshold),
                 13.0, card.y0 + 52.0, pal().text_dim, maxw,
             );
-            if let Some(e) = &wiz.error {
+            // v0.0.12 item 18, B2: the derivation's status line, in the error's place.
+            if wiz.finalizing {
+                text(scene, shaper, crate::auth_work::SETTING_PASSWORD, 12.0, card.y0 + 120.0, accent, maxw);
+            } else if let Some(e) = &wiz.error {
                 text(scene, shaper, e, 12.0, card.y0 + 120.0, Color::from_rgb8(230, 130, 130), maxw);
             }
             btn(
@@ -4254,43 +4650,36 @@ pub(crate) fn draw_compose_form(scene: &mut Scene, form: &ComposeForm, w: f64, h
 pub(crate) const SEARCH_ROW_H: f64 = 30.0;
 
 pub(crate) struct SearchPanel {
-    pub(crate) query: String,
+    /// The query: the editor's single-line field (v0.0.12 item 21, K1).
+    pub(crate) query: ChatField,
     pub(crate) results: Vec<(usize, String)>, // (card index, title)
     pub(crate) scroll: f64,
     inner_w: f64,
     results_len_shaped: usize,
-    query_shaped: String,
     label: Option<Layout<Brush>>,
     placeholder: Option<Layout<Brush>>,
     hint: Option<Layout<Brush>>,
-    query_layout: Option<Layout<Brush>>,
     result_layouts: Vec<Layout<Brush>>,
 }
 impl SearchPanel {
     pub(crate) fn new() -> Self {
         Self {
-            query: String::new(),
+            query: ChatField::open(FieldMode::Search, Fonts::System, Box::new(FieldClipboard::default())),
             results: Vec::new(),
             scroll: 0.0,
             inner_w: 0.0,
             results_len_shaped: usize::MAX,
-            query_shaped: "\0".into(),
             label: None,
             placeholder: None,
             hint: None,
-            query_layout: None,
             result_layouts: Vec::new(),
         }
     }
     pub(crate) fn ensure_shaped(&mut self, shaper: &mut TextShaper, inner_w: f64) {
         if self.label.is_none() {
             self.label = Some(shaper.shape("Search", 400.0, 18.0));
-            self.placeholder = Some(shaper.shape("Search documents by title\u{2026}  (Enter to ask the AI)", 600.0, 14.5));
+            self.placeholder = Some(shaper.shape(SEARCH_PLACEHOLDER, 600.0, 14.5));
             self.hint = Some(shaper.shape("\u{2191}/\u{2193} unused \u{00b7} click to open \u{00b7} Enter \u{2192} ask AI \u{00b7} Esc to close", 600.0, 12.0));
-        }
-        if self.query != self.query_shaped {
-            self.query_shaped = self.query.clone();
-            self.query_layout = Some(shaper.shape(&self.query, (inner_w - 24.0).max(50.0) as f32, 14.5));
         }
         if self.results.len() != self.results_len_shaped || (inner_w - self.inner_w).abs() >= 0.5 {
             self.inner_w = inner_w;
@@ -4304,7 +4693,7 @@ impl SearchPanel {
     }
 }
 
-pub(crate) fn draw_search(scene: &mut Scene, sp: &SearchPanel, bounds: Rect) {
+pub(crate) fn draw_search(scene: &mut Scene, sp: &mut SearchPanel, bounds: Rect) {
     let panel = bounds;
     let (panel_rr, header, _close, body) =
         draw_window_chrome(scene, bounds, Color::from_rgb8(120, 150, 180));
@@ -4314,30 +4703,29 @@ pub(crate) fn draw_search(scene: &mut Scene, sp: &SearchPanel, bounds: Rect) {
         draw_text(scene, l, Affine::translate((header.x0 + DW_PAD, header.y0 + 13.0)), pal().text);
     }
 
-    // Query input box.
+    // Query input box: the editor's field paints its text, caret, selection
+    // and pre-edit (K2); the placeholder is the panel's, unchanged (K5).
     let input_rr = RoundedRect::from_rect(input, 8.0);
     scene.fill(Fill::NonZero, Affine::IDENTITY, crate::theme::field_fill(&pal()), None, &input_rr);
-    scene.stroke(&Stroke::new(1.4), Affine::IDENTITY, Color::from_rgb8(120, 150, 180), None, &input_rr);
-    let ty = input.y0 + (input.height() - 16.0) * 0.5;
-    let tx = input.x0 + 12.0;
-    scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &input);
-    if sp.query.is_empty() {
+    scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &input_rr);
+    sp.query.draw(scene, input, crate::theme::field_fill(&pal()));
+    if sp.query.shows_placeholder() {
         if let Some(ph) = &sp.placeholder {
+            let ty = input.y0 + (input.height() - 16.0) * 0.5;
+            let tx = input.x0 + 12.0;
             draw_text(scene, ph, Affine::translate((tx, ty)), pal().text_faint);
         }
-    } else if let Some(q) = &sp.query_layout {
-        draw_text(scene, q, Affine::translate((tx, ty)), pal().text);
     }
-    let caret_x = tx + sp.query_layout.as_ref().map(|l| l.width() as f64).unwrap_or(0.0);
-    scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, pal().caret, None, &Line::new(Point::new(caret_x + 1.0, input.y0 + 10.0), Point::new(caret_x + 1.0, input.y1 - 10.0)));
     scene.pop_layer();
+    scene.stroke(&Stroke::new(1.4), Affine::IDENTITY, Color::from_rgb8(120, 150, 180), None, &input_rr);
 
     // Results.
     scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &results);
     if sp.results.is_empty() {
-        let msg = if sp.query.is_empty() { sp.placeholder.as_ref() } else { sp.hint.as_ref() };
+        let query_empty = sp.query.text().is_empty();
+        let msg = if query_empty { sp.placeholder.as_ref() } else { sp.hint.as_ref() };
         // (placeholder already shown in the box; for empty results just show the hint)
-        if !sp.query.is_empty() {
+        if !query_empty {
             if let Some(h) = &sp.hint {
                 let _ = msg;
                 draw_text(scene, h, Affine::translate((results.x0 + 4.0, results.y0 + 8.0)), pal().text_faint);

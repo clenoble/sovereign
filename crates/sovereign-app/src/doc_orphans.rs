@@ -9,7 +9,8 @@
 //! The frontend's bindings (`frontend/src/lib/api/commands.ts`) fix the
 //! command names and shapes: `list_orphaned_documents` → `OrphanDto[]`;
 //! `resolve_orphan { docId, resolution }`; `resolve_orphans_of_thread
-//! { threadId, resolution }` → the number resolved; `resolution` is
+//! { threadId, docIds, resolution }` → the number resolved (`docIds`, the
+//! group's documents as drawn, v0.0.12 item 9); `resolution` is
 //! `{"kind":"move_to","thread_id":…} | {"kind":"new_thread","name":…} |
 //! {"kind":"trash"}`.
 //!
@@ -85,13 +86,30 @@ pub async fn resolve_orphan(docs: &DocumentService, doc_id: &str, resolution: Or
 }
 
 /// The same way out for every document of the deleted thread `thread_id`;
-/// the number of documents resolved.
+/// the number of documents resolved. No command calls it any more (v0.0.12
+/// item 9: a group acts on what it showed, [`resolve_orphans_shown`]).
 pub async fn resolve_orphans_of_thread(
     docs: &DocumentService,
     thread_id: &str,
     resolution: OrphanResolutionDto,
 ) -> Result<usize, String> {
     docs.resolve_orphans_of_thread(thread_id, resolution.into())
+        .await
+        .map(|r| r.documents.len())
+        .map_err(|e| e.to_string())
+}
+
+/// The group's way out for the documents it showed (v0.0.12 item 9, T2):
+/// those of `doc_ids` still waiting in the deleted thread `thread_id`; one
+/// that joined the group after keeps waiting. The number acted on (zero when
+/// none shown still waits).
+pub async fn resolve_orphans_shown(
+    docs: &DocumentService,
+    thread_id: &str,
+    doc_ids: &[String],
+    resolution: OrphanResolutionDto,
+) -> Result<usize, String> {
+    docs.resolve_orphans_shown(thread_id, doc_ids, resolution.into())
         .await
         .map(|r| r.documents.len())
         .map_err(|e| e.to_string())
@@ -129,16 +147,18 @@ pub mod commands {
         super::resolve_orphan(&docs, &doc_id, resolution).await
     }
 
-    /// The same way out for every document of a deleted thread; how many.
+    /// The same way out for every document of a deleted thread that the
+    /// group showed (`doc_ids`, v0.0.12 item 9, T2); how many.
     #[tauri::command]
     pub async fn resolve_orphans_of_thread(
         webview: tauri::Webview,
         state: State<'_, AppState>,
         thread_id: String,
+        doc_ids: Vec<String>,
         resolution: OrphanResolutionDto,
     ) -> Result<usize, String> {
         state.require_unlocked(&webview).await?;
         let docs = state.docs().await?;
-        super::resolve_orphans_of_thread(&docs, &thread_id, resolution).await
+        super::resolve_orphans_shown(&docs, &thread_id, &doc_ids, resolution).await
     }
 }

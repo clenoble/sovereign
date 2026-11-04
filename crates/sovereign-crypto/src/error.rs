@@ -30,6 +30,13 @@ pub enum CryptoError {
     #[error("Refusing to replace an existing file: {0}")]
     AlreadyExists(String),
 
+    /// An `AuthStore` constructor was given a duress passphrase equal to the
+    /// primary one (v0.0.12 lot 1, P4): such a store would always open the
+    /// same persona with that password, whichever it was fixed to. The words
+    /// are the desktop wizard's.
+    #[error("Duress password must differ from your password")]
+    DuressEqualsPrimary,
+
     #[error("Key not found for document: {0}")]
     KeyNotFound(String),
 

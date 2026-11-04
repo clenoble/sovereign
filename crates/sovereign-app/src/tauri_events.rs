@@ -41,6 +41,9 @@ pub struct ActionProposedPayload {
 pub struct ActionExecutedPayload {
     pub action: String,
     pub success: bool,
+    /// The action's outcome, as the one line the UI shows (v0.0.12 item 11):
+    /// only a real change is said as done.
+    pub summary: String,
 }
 
 /// A chat turn's explicit outcome (spec ch. 08), as the one line the UI shows.
@@ -270,10 +273,10 @@ pub fn spawn_event_forwarder(
                     );
                 }
 
-                OrchestratorEvent::ActionExecuted { action, success } => {
+                OrchestratorEvent::ActionExecuted { action, success, outcome } => {
                     let _ = app_handle.emit(
                         "action-executed",
-                        ActionExecutedPayload { action, success },
+                        ActionExecutedPayload { action, success, summary: outcome.summary_line() },
                     );
                 }
 

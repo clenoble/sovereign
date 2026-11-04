@@ -17,8 +17,12 @@
 //!   other differing state is concurrent — the greater stamp becomes current
 //!   on both devices and the other is kept as a version on both (the losing
 //!   device relays its lost state, [`DocumentService::kept_versions`]).
-//! - **Purges** leave a marker with the fingerprint of the purged version; a
-//!   received marker purges only an identical copy.
+//! - **Purges are local** (v0.0.12 item 3, spec ch. 05 *Deletions and
+//!   purges*): a purge leaves a marker holding the id and the stamp of the
+//!   deletion, and what travels is that deletion, never the purge. A received
+//!   deletion moves an older live copy to this device's trash, keeps a later
+//!   live copy or a trashed one, and records itself where there is no copy; a
+//!   purged id comes back only live, with a later stamp.
 
 use std::fmt;
 
@@ -29,8 +33,8 @@ use sovereign_db::traits::GraphDB as _;
 use sovereign_db::DbError;
 use sovereign_docformat::{DocumentV2, SourceForm};
 
-use crate::service::{current_stamp_of, remote_of_row, store_err, Arrival, DocumentService, Stamping};
-use crate::types::{DocError, DocId, PurgeReport, RemoteDocument, RemoteOutcome, Trust};
+use crate::service::{current_stamp_of, put_stamps, remote_of_row, rfc3339, store_err, Arrival, DocumentService, Stamping};
+use crate::types::{ChangeKind, DocError, DocId, RemoteDocument, RemoteOutcome, Trust};
 
 // ------------------------------------------------------------------ stamps --
 
@@ -90,8 +94,9 @@ pub enum WireApplied {
     Applied(RemoteOutcome),
     /// A concurrent state with the lower stamp: kept as a version, not current.
     StoredAsVersion,
-    /// Nothing to do: already known, older than the current state, or the
-    /// purged version of a purged document.
+    /// Nothing to do: already known, older than the current state, or a
+    /// state of a purged id that does not bring it back (in the sender's
+    /// trash, or not later than its deletion).
     Ignored,
     /// The stamp is more than [`MAX_STAMP_AHEAD_SECS`] ahead of this
     /// device's clock: nothing written.
@@ -142,24 +147,40 @@ impl fmt::Debug for WireState {
     }
 }
 
-/// A purge, as it travels: the id, the stamp of the purge and the fingerprint
-/// of the purged version — never its content (C-WIRE *Deletions and purges*).
+/// A purge, as it travels: a deletion — the id and the stamp of the deletion
+/// (the trashed state that was purged), never a fingerprint, a title or
+/// content (spec ch. 05 *Deletions and purges*; v0.0.12 item 3, L2–L3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PurgeMarkerWire {
     pub id: DocId,
     pub stamp: Stamp,
-    pub fingerprint: String,
 }
 
-/// What a received purge marker did here.
+/// What a received deletion (a peer's purge marker) did here. Never a purge:
+/// no version, key or edge is removed by a received deletion (v0.0.12 item 3,
+/// L4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PurgeApplied {
-    /// This device's copy had the purged fingerprint: purged here too.
-    Purged,
-    /// This device's copy differs: kept (it will travel back).
-    KeptDiffers,
-    /// This device had no copy: the marker is recorded.
+    /// This device's live copy was older than the deletion: moved to this
+    /// device's trash, dated now, its content and History kept; its state
+    /// takes the deletion's stamp.
+    Trashed,
+    /// This device's live copy is later than the deletion (restored or edited
+    /// after it): kept live, untouched; it travels back to the device that
+    /// purged, where it comes back.
+    KeptLive,
+    /// This device's copy was already in its trash: kept as it is (its trash
+    /// date and stamp unchanged).
+    KeptInTrash,
+    /// This device has no copy: the deletion is recorded (id and stamp), or
+    /// the one recorded here took the later stamp, or one with a stamp not
+    /// earlier is already here.
     Recorded,
+    /// The marker's stamp is more than [`MAX_STAMP_AHEAD_SECS`] ahead of this
+    /// device's clock: nothing changed, nothing recorded; it applies at a
+    /// later sync once within the bound (v0.0.12 C2). Checked first, whatever
+    /// the copy here.
+    RefusedStampAhead,
 }
 
 /// One document of a guardian backup, with its wire metadata.
@@ -273,17 +294,6 @@ pub fn normalized_hash(state: &RemoteDocument) -> String {
     hex(h.finalize())
 }
 
-/// The fingerprint a purge marker carries: a hash of the purged version's
-/// **title and content** (content normalised to v2, seeded by `id`) and
-/// nothing else — not the thread, trash state, trust or times. **[choice]**
-pub fn purge_fingerprint(id: &str, title: &str, content: &str) -> String {
-    let mut h = Sha256::new();
-    field(&mut h, "sovereign.purge/v1");
-    field(&mut h, title);
-    field(&mut h, &normalized_content(id, content));
-    hex(h.finalize())
-}
-
 /// A provenance as it travels inside a sealed envelope (length-prefixed
 /// tokens; copies nested). [`decode_provenance`] reads it back.
 pub fn encode_provenance(p: &crate::types::Provenance) -> String {
@@ -295,17 +305,15 @@ pub fn decode_provenance(s: &str) -> Option<crate::types::Provenance> {
     crate::service::decode_copy(s)
 }
 
-/// A purge marker as it travels, when it carries a stamp and a fingerprint
-/// (markers from before step 4 do not, and do not travel).
+/// A purge marker row as it travels: a deletion, when it carries a stamp and
+/// is not revoked (markers from before step 4 have no stamp, and do not
+/// travel). A fingerprint a v0.0.11 row may still hold is neither read nor
+/// sent (v0.0.12 item 3, L3, L5).
 pub fn purge_marker_wire(m: &PurgeMarker) -> Option<PurgeMarkerWire> {
     if m.revoked {
         return None;
     }
-    Some(PurgeMarkerWire {
-        id: m.document_id.clone(),
-        stamp: decode_stamp(m.stamp.as_deref()?)?,
-        fingerprint: m.fingerprint.clone()?,
-    })
+    Some(PurgeMarkerWire { id: m.document_id.clone(), stamp: decode_stamp(m.stamp.as_deref()?)? })
 }
 
 /// The wire metadata of a stored row.
@@ -358,8 +366,8 @@ impl DocumentService {
     /// `apply_remote`, plus: the creation time, stamps and author device are
     /// kept; order is by stamp (a stamp too far ahead is refused); a
     /// concurrent state with the lower stamp is stored as a version without
-    /// becoming current; a purged id comes back only as a copy whose
-    /// fingerprint differs from the purged one; no review flag is raised.
+    /// becoming current; a purged id comes back only live, with a stamp later
+    /// than its deletion's (v0.0.12 item 3, L6); no review flag is raised.
     pub async fn apply_wire(&self, remote: RemoteDocument, meta: WireMeta) -> Result<WireOutcome, DocError> {
         let id = remote.id.clone();
         let author = meta.author_device.clone().unwrap_or_else(|| remote.device.clone());
@@ -368,7 +376,11 @@ impl DocumentService {
             counter: 0,
             device: author.clone(),
         });
-        if rstamp.wall_ms > self.device_clock_ms() + MAX_STAMP_AHEAD_SECS * 1000 {
+        // The state's own stamp and its decision stamp alike: either beyond
+        // the bound refuses the document whole, before anything is written
+        // (v0.0.12 C2).
+        let bound = self.device_clock_ms() + MAX_STAMP_AHEAD_SECS * 1000;
+        if rstamp.wall_ms > bound || meta.decision_stamp.as_ref().is_some_and(|ds| ds.wall_ms > bound) {
             return Ok(WireOutcome::of(WireApplied::RefusedStampAhead));
         }
         let _w = self.write_lock.lock().await;
@@ -382,10 +394,15 @@ impl DocumentService {
             Err(e) => return Err(store_err(e)),
         };
         if let Some(m) = self.marker(&id).await? {
-            // A purged id: the purged version never comes back; a differing
-            // copy does, as a new arrival, and the marker is dropped here.
-            let fp = purge_fingerprint(&id, &remote.title, &remote.content);
-            if local.is_some() || m.fingerprint.as_deref().is_none_or(|f| f == fp) {
+            // A purged id (L6): a state in the sender's trash, or a live state
+            // not later than the deletion, is ignored; a live state with a
+            // later stamp comes back as a new arrival, and the marker is
+            // dropped (revoked, so it no longer travels). No fingerprint is
+            // involved. A row still here is a purge under way: ignored. A
+            // marker without a stamp (written before step 4) cannot be
+            // ordered against anything: everything is ignored, as before.
+            let later = m.stamp.as_deref().and_then(decode_stamp).is_some_and(|deletion| rstamp > deletion);
+            if local.is_some() || remote.deleted_at.is_some() || !later {
                 return Ok(WireOutcome::of(WireApplied::Ignored));
             }
             self.store()
@@ -393,6 +410,8 @@ impl DocumentService {
                 .await
                 .map_err(store_err)?;
         }
+        // Both were checked against the bound above, and the device clock
+        // only moves forward: both are taken.
         self.observe_stamp(&rstamp);
         if let Some(ds) = &meta.decision_stamp {
             self.observe_stamp(ds);
@@ -559,57 +578,99 @@ impl DocumentService {
             .collect())
     }
 
-    /// The purge markers this device knows (G27).
+    /// The deletions this device advertises (G27, as amended; v0.0.12 item
+    /// 3, L3): every complete, unrevoked marker with a stamp. A fingerprint a
+    /// v0.0.11 row still holds is erased first (L12), so none is on disk by
+    /// the time the manifest is sent.
     pub async fn purge_markers(&self) -> Result<Vec<PurgeMarkerWire>, DocError> {
-        Ok(self
-            .store()
-            .list_purge_markers()
-            .await
-            .map_err(store_err)?
-            .iter()
-            .filter(|m| m.complete)
-            .filter_map(purge_marker_wire)
-            .collect())
+        let mut rows = self.store().list_purge_markers().await.map_err(store_err)?;
+        if rows.iter().any(|m| m.fingerprint.is_some()) {
+            let _w = self.write_lock.lock().await;
+            self.erase_marker_fingerprints_locked().await?;
+            rows = self.store().list_purge_markers().await.map_err(store_err)?;
+        }
+        Ok(rows.iter().filter(|m| m.complete).filter_map(purge_marker_wire).collect())
     }
 
-    /// Applies a purge marker received from a paired device (G27).
+    /// Applies a deletion received from a paired device (a peer's purge
+    /// marker; v0.0.12 item 3, L4–L5). The stamp bound applies first
+    /// (`RefusedStampAhead`). Then, for id X with stamp S:
+    /// - X live here with a stamp earlier than S: moved to this device's
+    ///   trash as a peer's deletion (dated now, content and History kept, the
+    ///   `Trashed` event), its state taking S;
+    /// - X live here with a stamp not earlier than S: kept live, untouched;
+    /// - X in this device's trash: kept as it is;
+    /// - no copy here: the deletion is recorded (id and S), the later stamp
+    ///   kept when one is already here.
+    ///
+    /// Never a purge.
     pub async fn apply_purge_marker(&self, marker: PurgeMarkerWire) -> Result<PurgeApplied, DocError> {
         let _w = self.write_lock.lock().await;
         self.ensure_clock().await?;
-        self.observe_stamp(&marker.stamp);
+        // A marker beyond the bound is refused before anything else: nothing
+        // changed, nothing recorded (so it is not re-advertised), and the
+        // clock does not move (v0.0.12 C1, C2).
+        if !self.observe_stamp(&marker.stamp) {
+            return Ok(PurgeApplied::RefusedStampAhead);
+        }
         let id = marker.id.clone();
         match self.store().get_document(&id).await {
             Ok(d) => {
-                if purge_fingerprint(&id, &d.title, &d.content) != marker.fingerprint {
-                    return Ok(PurgeApplied::KeptDiffers);
+                if d.deleted_at.is_some() {
+                    return Ok(PurgeApplied::KeptInTrash);
                 }
-                let mut report = PurgeReport::default();
-                self.purge_one_as(&id, Some((marker.stamp.clone(), marker.fingerprint.clone())), &mut report).await?;
-                Ok(PurgeApplied::Purged)
+                let local = current_stamp_of(&d, &self.deps.device);
+                if local >= marker.stamp {
+                    return Ok(PurgeApplied::KeptLive);
+                }
+                // A peer's deletion, as `trash` writes one: no version made,
+                // nothing removed; the state takes the deletion's stamp, so
+                // both devices order it alike.
+                let mut patch = DocumentPatch { deleted_at: Some(Some(rfc3339(self.now()))), ..Default::default() };
+                let stamping = Stamping {
+                    stamp: marker.stamp.clone(),
+                    prev: Some(local.clone()),
+                    history_add: vec![local],
+                    author: marker.stamp.device.clone(),
+                };
+                put_stamps(&mut patch, Some(&d), &stamping);
+                self.store().update_document_fields(&id, patch).await.map_err(store_err)?;
+                self.emit(&id, ChangeKind::Trashed);
+                Ok(PurgeApplied::Trashed)
             }
             Err(DbError::NotFound(_)) | Err(DbError::InvalidId(_)) => {
-                if self.marker(&id).await?.is_none() {
-                    self.record_marker(&marker).await?;
-                }
+                self.record_deletion(&marker).await?;
                 Ok(PurgeApplied::Recorded)
             }
             Err(e) => Err(store_err(e)),
         }
     }
 
-    async fn record_marker(&self, m: &PurgeMarkerWire) -> Result<(), DocError> {
+    /// Records a deletion of an id this device holds no copy of (L4, L13):
+    /// its id and stamp, no fingerprint. When a marker for the id is already
+    /// here, the later stamp is kept, with the existing marker's purge time
+    /// and completion (an interrupted purge here stays one). Returns whether
+    /// anything was written.
+    async fn record_deletion(&self, m: &PurgeMarkerWire) -> Result<bool, DocError> {
+        let existing = self.marker(&m.id).await?;
+        if let Some(e) = &existing {
+            if e.stamp.as_deref().and_then(decode_stamp).is_some_and(|here| here >= m.stamp) {
+                return Ok(false);
+            }
+        }
         self.store()
             .set_purge_marker(PurgeMarker {
                 id: None,
                 document_id: m.id.clone(),
-                purged_at: self.now(),
-                complete: true,
+                purged_at: existing.as_ref().map(|e| e.purged_at).unwrap_or_else(|| self.now()),
+                complete: existing.as_ref().is_none_or(|e| e.complete),
                 stamp: Some(encode_stamp(&m.stamp)),
-                fingerprint: Some(m.fingerprint.clone()),
+                fingerprint: None,
                 revoked: false,
             })
             .await
-            .map_err(store_err)
+            .map_err(store_err)?;
+        Ok(true)
     }
 
     /// Restores a guardian backup (G30): refused with
@@ -631,10 +692,16 @@ impl DocumentService {
         for b in documents {
             let id = b.document.id.clone();
             let author = b.meta.author_device.clone().unwrap_or_else(|| b.document.device.clone());
+            // Restored as stored (a backup is the user's own data); a stamp
+            // beyond the bound is kept on the row but does not move the clock
+            // (`observe_stamp` refuses it; v0.0.12 C2, and C3 at restart).
             let stamping = b.meta.stamp.clone().map(|st| {
                 self.observe_stamp(&st);
                 stamping_of(&b.meta, st, author.clone())
             });
+            if let Some(ds) = &b.meta.decision_stamp {
+                self.observe_stamp(ds);
+            }
             let a = Arrival {
                 stamping,
                 created_at: b.meta.created_at,
@@ -645,10 +712,11 @@ impl DocumentService {
             self.apply_state(&b.document, None, a).await.map_err(BackupError::Doc)?;
             report.restored.push(id);
         }
+        // The backup's markers are deletions (L13): id and stamp, never a
+        // fingerprint, whatever build made the backup.
         for m in markers {
             self.observe_stamp(&m.stamp);
-            if self.marker(&m.id).await.map_err(BackupError::Doc)?.is_none() {
-                self.record_marker(&m).await.map_err(BackupError::Doc)?;
+            if self.record_deletion(&m).await.map_err(BackupError::Doc)? {
                 report.markers += 1;
             }
         }

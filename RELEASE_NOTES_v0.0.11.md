@@ -1,5 +1,15 @@
 # Sovereign GE v0.0.11 — the editor release
 
+> **Correction (2026-10-23).** One line below is wrong: *"A document being edited on another
+> device opens read-only here"* does not work in v0.0.11. If the same document is edited on two
+> desktops at once, each save replaces the other's text. The earlier text is kept in the
+> document's History, but restoring from History on the desktop fails in this release, for every
+> version, not only some (see Known limitations). Its cause is now found, and the fix is planned
+> for v0.0.12.
+>
+> Until then, after restoring a document from the Trash, let it reach your other devices before
+> emptying their Trash: emptied earlier, it can remove the restored copy on every device.
+
 *Your data, your rules.* v0.0.11 brings the new desktop editor to everyone, moves every document
 to one versioned format, and adds a trash you can open, restore from and empty.
 

@@ -223,9 +223,10 @@ pub async fn execute_write_tool(
         "create_document" => execute_create_document(call, db, docs).await,
         "create_thread" => execute_create_thread(call, docs).await,
         "rename_thread" => execute_rename_thread(call, db, docs).await,
-        "move_document" => execute_move_document(call, db).await,
+        "move_document" => execute_move_document(call, db, docs).await,
         _ => WriteToolResult {
             tool_name: call.name.clone(),
+            no_change: None,
             success: false,
             output: format!("Unknown write tool: {}", call.name),
             event: None,
@@ -237,9 +238,27 @@ pub async fn execute_write_tool(
 #[derive(Debug, Clone)]
 pub struct WriteToolResult {
     pub tool_name: String,
+    /// The write did what was asked. False for a failure and for a write that
+    /// had nothing to change (`no_change`).
     pub success: bool,
     pub output: String,
     pub event: Option<sovereign_core::interfaces::OrchestratorEvent>,
+    /// The write had nothing to change (v0.0.12 item 11b, C2): nothing was
+    /// written and nothing stamped; the reason, as the turn's outcome gives it
+    /// ("No change: <tool> (<reason>)").
+    pub no_change: Option<String>,
+}
+
+/// A write that had nothing to change: nothing written, no event; the model is
+/// told so, and the turn's outcome says "No change" with `reason` (item 11b, C2).
+fn no_change(call: &ToolCall, reason: String) -> WriteToolResult {
+    WriteToolResult {
+        tool_name: call.name.clone(),
+        success: false,
+        output: format!("No change: {reason}. Nothing was written."),
+        event: None,
+        no_change: Some(reason),
+    }
 }
 
 async fn execute_create_document(
@@ -256,15 +275,23 @@ async fn execute_create_document(
 
     let thread_name = call.arguments.get("thread_name").and_then(|v| v.as_str());
 
-    // Resolve thread ID
-    let thread = if let Some(tname) = thread_name {
-        db.find_thread_by_name(tname).await.unwrap_or(None)
-    } else {
-        None
-    };
-    // Fallback to first thread if no match or no name given
-    let thread = match thread {
-        Some(t) => Some(t),
+    // Resolve the thread. A thread *named* in the call resolves by its exact
+    // name (v0.0.12 item 6, A1): no exact match → not done, nothing created,
+    // close names offered. Only a call that names no thread falls back to the
+    // first thread.
+    let thread = match thread_name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(tname) => match crate::thread_names::resolve_thread_or_explain(db, tname).await {
+            Ok(t) => Some(t),
+            Err(why) => {
+                return WriteToolResult {
+                    tool_name: call.name.clone(),
+                    no_change: None,
+                    success: false,
+                    output: format!("Document not created: {why}"),
+                    event: None,
+                }
+            }
+        },
         None => db.list_threads().await.unwrap_or_default().into_iter().next(),
     };
 
@@ -275,6 +302,7 @@ async fn execute_create_document(
     let Some(docs) = docs else {
         return WriteToolResult {
             tool_name: call.name.clone(),
+            no_change: None,
             success: false,
             output: "Failed to create document: the workspace is locked".into(),
             event: None,
@@ -297,6 +325,7 @@ async fn execute_create_document(
             let doc_id = created.id;
             WriteToolResult {
                 tool_name: call.name.clone(),
+                no_change: None,
                 success: true,
                 output: format!("Created document '{}' (id: {}) in thread {}", title, doc_id, thread_id),
                 event: Some(sovereign_core::interfaces::OrchestratorEvent::DocumentCreated {
@@ -308,6 +337,7 @@ async fn execute_create_document(
         }
         Err(e) => WriteToolResult {
             tool_name: call.name.clone(),
+            no_change: None,
             success: false,
             output: format!("Failed to create document: {e}"),
             event: None,
@@ -320,6 +350,7 @@ async fn execute_create_document(
 fn locked(call: &ToolCall, what: &str) -> WriteToolResult {
     WriteToolResult {
         tool_name: call.name.clone(),
+        no_change: None,
         success: false,
         output: format!("Failed to {what}: the workspace is locked"),
         event: None,
@@ -339,6 +370,7 @@ async fn execute_create_thread(call: &ToolCall, docs: Option<&sovereign_docs::Do
         Ok(tid) => {
             WriteToolResult {
                 tool_name: call.name.clone(),
+                no_change: None,
                 success: true,
                 output: format!("Created thread '{}' (id: {})", name, tid),
                 event: Some(sovereign_core::interfaces::OrchestratorEvent::ThreadCreated {
@@ -349,6 +381,7 @@ async fn execute_create_thread(call: &ToolCall, docs: Option<&sovereign_docs::Do
         }
         Err(e) => WriteToolResult {
             tool_name: call.name.clone(),
+            no_change: None,
             success: false,
             output: format!("Failed to create thread: {e}"),
             event: None,
@@ -375,22 +408,31 @@ async fn execute_rename_thread(
     if old_name.is_empty() || new_name.is_empty() {
         return WriteToolResult {
             tool_name: call.name.clone(),
+            no_change: None,
             success: false,
             output: "Both old_name and new_name are required.".into(),
             event: None,
         };
     }
 
-    let thread = db.find_thread_by_name(old_name).await.unwrap_or(None);
+    // v0.0.12 item 6, A1: the exact name only.
+    let thread = crate::thread_names::resolve_thread_or_explain(db, old_name).await;
 
-    if let Some(thread) = thread {
+    if let Ok(thread) = &thread {
         let tid = thread.id_string().unwrap_or_default();
+        // v0.0.12 item 11b, C2: the name it already has is no change, as on
+        // the direct path (item 11: compared exactly, so a case-only rename is
+        // a real rename).
+        if new_name.trim() == thread.name.trim() {
+            return no_change(call, format!("the thread is already named '{}'", thread.name));
+        }
         let Some(docs) = docs else { return locked(call, "rename thread") };
         match docs.thread_update(&tid, Some(new_name), None).await {
             Ok(()) => WriteToolResult {
                 tool_name: call.name.clone(),
+                no_change: None,
                 success: true,
-                output: format!("Renamed thread '{}' to '{}'", old_name, new_name),
+                output: format!("Renamed thread '{}' to '{}'", thread.name, new_name),
                 event: Some(sovereign_core::interfaces::OrchestratorEvent::ThreadRenamed {
                     thread_id: tid,
                     name: new_name.to_string(),
@@ -398,22 +440,32 @@ async fn execute_rename_thread(
             },
             Err(e) => WriteToolResult {
                 tool_name: call.name.clone(),
+                no_change: None,
                 success: false,
                 output: format!("Failed to rename thread: {e}"),
                 event: None,
             },
         }
     } else {
+        let why = thread.err().unwrap_or_default();
         WriteToolResult {
             tool_name: call.name.clone(),
+            no_change: None,
             success: false,
-            output: format!("Thread '{}' not found.", old_name),
+            output: format!("Thread not renamed: {why}"),
             event: None,
         }
     }
 }
 
-async fn execute_move_document(call: &ToolCall, db: &dyn GraphDB) -> WriteToolResult {
+/// Moves through the document service's one move (v0.0.12 item 15, M2): a
+/// stamped write of the thread alone, so the move travels. Refused while
+/// there is no service (no unlocked session), as the thread writes are.
+async fn execute_move_document(
+    call: &ToolCall,
+    db: &dyn GraphDB,
+    docs: Option<&sovereign_docs::DocumentService>,
+) -> WriteToolResult {
     let doc_title = call
         .arguments
         .get("document_title")
@@ -428,24 +480,35 @@ async fn execute_move_document(call: &ToolCall, db: &dyn GraphDB) -> WriteToolRe
     if doc_title.is_empty() || thread_name.is_empty() {
         return WriteToolResult {
             tool_name: call.name.clone(),
+            no_change: None,
             success: false,
             output: "Both document_title and thread_name are required.".into(),
             event: None,
         };
     }
 
-    let docs = db.search_documents_by_title(doc_title).await.unwrap_or_default();
-    let doc = docs.first();
-    let thread = db.find_thread_by_name(thread_name).await.unwrap_or(None);
+    // v0.0.12 item 23, T1: the document by its exact title only.
+    let doc_resolved = crate::document_titles::resolve_document_or_explain(db, doc_title).await;
+    let doc = doc_resolved.as_ref().ok();
+    // v0.0.12 item 6, A1: the target thread by its exact name only.
+    let resolved = crate::thread_names::resolve_thread_or_explain(db, thread_name).await;
+    let thread = resolved.as_ref().ok();
 
-    if let (Some(doc), Some(thread)) = (doc, thread.as_ref()) {
+    if let (Some(doc), Some(thread)) = (doc, thread) {
         let doc_id = doc.id_string().unwrap_or_default();
         let tid = thread.id_string().unwrap_or_default();
-        match db.move_document_to_thread(&doc_id, &tid).await {
-            Ok(_) => WriteToolResult {
+        // v0.0.12 item 11b, C2: into the thread it is already in is no change,
+        // as on the direct path (item 11).
+        if doc.thread_id == tid {
+            return no_change(call, format!("'{}' is already in '{}'", doc.title, thread.name));
+        }
+        let Some(docs) = docs else { return locked(call, "move document") };
+        match docs.move_to_thread(&doc_id, &tid).await {
+            Ok(()) => WriteToolResult {
                 tool_name: call.name.clone(),
+                no_change: None,
                 success: true,
-                output: format!("Moved '{}' to thread '{}'", doc_title, thread_name),
+                output: format!("Moved '{}' to thread '{}'", doc.title, thread.name),
                 event: Some(sovereign_core::interfaces::OrchestratorEvent::DocumentMoved {
                     doc_id,
                     new_thread_id: tid,
@@ -453,21 +516,27 @@ async fn execute_move_document(call: &ToolCall, db: &dyn GraphDB) -> WriteToolRe
             },
             Err(e) => WriteToolResult {
                 tool_name: call.name.clone(),
+                no_change: None,
                 success: false,
-                output: format!("Failed to move document: {e}"),
+                output: format!("Failed to move document: {}", crate::docs_host::doc_error_message(&e)),
                 event: None,
             },
         }
     } else {
         let mut msg = String::new();
-        if doc.is_none() {
-            msg.push_str(&format!("Document '{}' not found. ", doc_title));
+        match &doc_resolved {
+            Ok(_) => {}
+            Err(crate::document_titles::Unresolved::NoMatch(why)) => {
+                msg.push_str(&format!("Document '{}' not found: {} ", doc_title.trim(), sentence(why)));
+            }
+            Err(why) => msg.push_str(&format!("Not moved: {} ", sentence(why.message()))),
         }
-        if thread.is_none() {
-            msg.push_str(&format!("Thread '{}' not found.", thread_name));
+        if let Err(why) = &resolved {
+            msg.push_str(&format!("Not moved: {why}"));
         }
         WriteToolResult {
             tool_name: call.name.clone(),
+            no_change: None,
             success: false,
             output: msg,
             event: None,
@@ -564,8 +633,17 @@ async fn execute_get_document(call: &ToolCall, db: &dyn GraphDB) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    let docs = db.search_documents_by_title(title).await.unwrap_or_default();
-    if let Some(doc) = docs.first() {
+    // v0.0.12 item 23, T1: the document by its exact title only — the body of
+    // a document whose title merely contains the given one never reaches the
+    // model.
+    let doc = match crate::document_titles::resolve_document_or_explain(db, title).await {
+        Ok(doc) => doc,
+        Err(crate::document_titles::Unresolved::NoMatch(why)) => {
+            return format!("Document '{}' not found: {}", title.trim(), sentence(&why));
+        }
+        Err(why) => return format!("Document '{}' not read: {}", title.trim(), sentence(why.message())),
+    };
+    {
         let ownership = if doc.is_owned { "owned" } else { "external" };
         // C-DOC adoption step 1: the model reads the document's text through
         // the v2 model (a v1 envelope or a v2 document used to reach it as
@@ -600,8 +678,17 @@ async fn execute_get_document(call: &ToolCall, db: &dyn GraphDB) -> String {
             "Title: {} ({})\nContent:\n{}",
             doc.title, ownership, truncated
         )
+    }
+}
+
+/// `s` ending as a sentence: a full stop added unless it already ends with
+/// one (or a question mark).
+fn sentence(s: &str) -> String {
+    let s = s.trim_end();
+    if s.ends_with(['.', '?', '!']) {
+        s.to_string()
     } else {
-        format!("Document '{title}' not found.")
+        format!("{s}.")
     }
 }
 
@@ -609,11 +696,13 @@ async fn execute_list_documents(call: &ToolCall, db: &dyn GraphDB) -> String {
     let thread_name = call.arguments.get("thread").and_then(|v| v.as_str());
 
     let docs = if let Some(tname) = thread_name {
-        if let Some(thread) = db.find_thread_by_name(tname).await.unwrap_or(None) {
-            let tid = thread.id_string().unwrap_or_default();
-            db.list_documents(Some(&tid)).await.unwrap_or_default()
-        } else {
-            return format!("Thread '{tname}' not found.");
+        // v0.0.12 item 6, A1: the thread by its exact name only.
+        match crate::thread_names::resolve_thread_or_explain(db, tname).await {
+            Ok(thread) => {
+                let tid = thread.id_string().unwrap_or_default();
+                db.list_documents(Some(&tid)).await.unwrap_or_default()
+            }
+            Err(why) => return format!("No documents listed: {why}"),
         }
     } else {
         db.list_documents(None).await.unwrap_or_default()
@@ -903,7 +992,8 @@ mod tests {
         let db = mock_db();
         db.create_document(Document::new("My Notes".into(), "t:1".into(), true)).await.unwrap();
 
-        let call = tool_call("get_document", serde_json::json!({"title": "notes"}));
+        // v0.0.12 item 23, T1: the exact title (case and spaces ignored), never a partial one.
+        let call = tool_call("get_document", serde_json::json!({"title": "my notes"}));
         let result = execute_tool(&call, &db).await;
         assert!(result.success);
         assert!(result.output.contains("My Notes"));
@@ -1067,7 +1157,7 @@ mod tests {
         let id = docs.thread_create("Old Name", "").await.unwrap();
         let before = docs.thread_stamp(&id).await.unwrap();
 
-        let call = tool_call("rename_thread", serde_json::json!({"old_name": "Old", "new_name": "New Name"}));
+        let call = tool_call("rename_thread", serde_json::json!({"old_name": "Old Name", "new_name": "New Name"}));
         let result = execute_write_tool(&call, store.as_ref(), Some(&docs)).await;
         assert!(result.success, "{}", result.output);
         assert!(result.output.contains("Renamed"));
@@ -1087,25 +1177,33 @@ mod tests {
         assert!(db.list_threads().await.unwrap().is_empty());
 
         db.create_thread(Thread::new("Old Name".into(), "".into())).await.unwrap();
-        let call = tool_call("rename_thread", serde_json::json!({"old_name": "Old", "new_name": "New Name"}));
+        let call = tool_call("rename_thread", serde_json::json!({"old_name": "Old Name", "new_name": "New Name"}));
         let result = execute_write_tool(&call, &db, None).await;
         assert!(!result.success);
         assert_eq!(db.list_threads().await.unwrap()[0].name, "Old Name");
     }
 
+    /// v0.0.12 lanes lot, M2 (rewritten by the lot's test author: it moved
+    /// with no document service, through the store's unstamped move): the
+    /// tool moves through the document service — same checks as before, plus
+    /// that the document is in the new thread under a new stamp. Without a
+    /// service: `orchestrator_lanes_tests.rs`.
     #[tokio::test]
     async fn execute_write_tool_move_document() {
-        let db = mock_db();
-        let t1 = db.create_thread(Thread::new("Source".into(), "".into())).await.unwrap();
-        let t2 = db.create_thread(Thread::new("Dest".into(), "".into())).await.unwrap();
-        let tid1 = t1.id_string().unwrap();
-        let _tid2 = t2.id_string().unwrap();
-        db.create_document(Document::new("My Doc".into(), tid1, true)).await.unwrap();
+        use crate::docs_host::{build_document_service, new_user_document, testing};
+        let store = testing::encrypted_memory_store("tool-move-document").await;
+        let docs = build_document_service(store.clone(), Some(testing::account_key()), "t".into());
+        let tid1 = docs.thread_create("Source", "").await.unwrap();
+        let tid2 = docs.thread_create("Dest", "").await.unwrap();
+        let id = docs.create(new_user_document("My Doc", &tid1, "text")).await.unwrap().id;
+        let before = docs.stored_state(&id).await.unwrap().meta.stamp;
 
         let call = tool_call("move_document", serde_json::json!({"document_title": "My Doc", "thread_name": "Dest"}));
-        let result = execute_write_tool(&call, &db, None).await;
-        assert!(result.success);
+        let result = execute_write_tool(&call, store.as_ref(), Some(&docs)).await;
+        assert!(result.success, "{}", result.output);
         assert!(result.output.contains("Moved"));
+        assert_eq!(docs.read(&id).await.unwrap().thread_id, tid2);
+        assert!(docs.stored_state(&id).await.unwrap().meta.stamp > before, "a stamped move: it travels");
     }
 
     // --- strip_think_blocks tests ---

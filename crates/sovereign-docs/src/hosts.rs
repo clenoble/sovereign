@@ -25,6 +25,10 @@ pub const PURGE_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// been in the trash for 30 days or more by the service's clock — the
 /// document, its versions, its key, its edges, leaving a purge marker (G13) —
 /// and keeps the rest. It replaces the mobile host's `purge_deleted` loop.
+/// The 30 days count from the local trash date, floored by "trash since",
+/// which the store's first tick records (v0.0.12 item 3, L8, L10; see
+/// [`DocumentService::purge_expired`]); the tick also erases any fingerprint a
+/// v0.0.11 purge marker still holds (L12).
 ///
 /// It also shrinks deleted threads to their id (THREAD-sync S6, S9): once a
 /// deleted thread's deletion stamp is 30 days old and no document — live or
@@ -77,6 +81,11 @@ pub async fn list_trash_named(
     now: DateTime<Utc>,
 ) -> Result<Vec<TrashListing>, DocError> {
     let entries = docs.list_trash().await?;
+    // The days shown are the days used (v0.0.12 item 3, L11): from the local
+    // trash date, floored by "trash since" once recorded (L10) — the same
+    // term as `purge_expired`. The entry keeps its stored date.
+    let since = docs.trash_since().await?;
+    let term_start = |t: DateTime<Utc>| since.map_or(t, |s| t.max(s));
     let threads: HashMap<String, String> = db
         .list_threads()
         .await
@@ -105,7 +114,12 @@ pub async fn list_trash_named(
             let thread_name = threads.get(&entry.thread_id).cloned();
             let deleted_thread_name =
                 if thread_name.is_none() { deleted.get(&entry.thread_id).cloned() } else { None };
-            TrashListing { thread_name, deleted_thread_name, days_left: days_left(entry.trashed_at, now), entry }
+            TrashListing {
+                thread_name,
+                deleted_thread_name,
+                days_left: days_left(term_start(entry.trashed_at), now),
+                entry,
+            }
         })
         .collect())
 }
@@ -271,22 +285,18 @@ pub async fn restore_to_thread(
             None => "Its thread was deleted: choose a thread to restore it into. Nothing was restored.".into(),
         });
     }
-    let moved = target != view.thread_id;
-    if moved {
-        db.move_document_to_thread(id, target)
-            .await
-            .map_err(|e| format!("The document couldn't be moved to that thread ({e}). Nothing was restored."))?;
-    }
-    if let Err(e) = docs.restore_from_trash(id).await {
-        if moved {
-            let _ = db.move_document_to_thread(id, &view.thread_id).await;
-        }
-        return Err(match e {
-            DocError::NotInTrash(_) => "This document is not in the trash.".into(),
-            other => format!("The document couldn't be restored ({other})."),
-        });
-    }
-    Ok(())
+    // One service operation under one lock (v0.0.12 item 15, M2): out of the
+    // trash and into the thread, one stamped state. The service checks again
+    // under its lock; what it refuses, nothing is restored.
+    docs.restore_from_trash_into(id, target).await.map_err(|e| match e {
+        DocError::NotInTrash(_) => "This document is not in the trash.".to_string(),
+        DocError::Purged(_) | DocError::NotFound(_) => "This document no longer exists.".to_string(),
+        // Only a thread deleted since the check above.
+        DocError::MoveRefused(_) => "That thread does not exist (it was deleted, or never existed): choose an existing \
+                                     thread. Nothing was restored."
+            .to_string(),
+        other => format!("The document couldn't be restored ({other}). Nothing was restored."),
+    })
 }
 
 #[cfg(test)]
