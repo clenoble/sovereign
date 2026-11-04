@@ -921,8 +921,8 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       <a href="https://github.com/clenoble/sovereign" class="btn btn-primary" target="_blank" rel="noopener">
         View on GitHub
       </a>
-      <a href="https://github.com/clenoble/sovereign/releases/tag/v0.0.11" class="btn btn-secondary" target="_blank" rel="noopener">
-        Download v0.0.11
+      <a href="https://github.com/clenoble/sovereign/releases/tag/v0.0.12" class="btn btn-secondary" target="_blank" rel="noopener">
+        Download v0.0.12
       </a>
     </div>
     <p style="margin-top: 16px; font-size: 0.85rem; color: var(--c-text-dim);">
@@ -1019,7 +1019,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
             Once intent is classified as "chat", the system enters a multi-turn agent loop:
           </p>
           <ul class="concept-list">
-            <li><strong>Load history:</strong> Up to 50 prior exchanges (capped at 6,300 characters total).</li>
+            <li><strong>Load history:</strong> Up to 50 prior exchanges, within about 1,000 tokens (about 3,500 characters).</li>
             <li><strong>Gather context:</strong> Documents, threads, contacts relevant to the intent.</li>
             <li><strong>Build prompt:</strong> Format auto-selected per model. System prompt includes UX principles (Action Gravity, plan visibility, conversational confirmation).</li>
             <li><strong>Generate:</strong> Model outputs text + optional tool calls formatted as <code>&lt;tool_call&gt;{...}&lt;/tool_call&gt;</code>.</li>
@@ -1254,9 +1254,9 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       <summary>Tool Sandboxing</summary>
       <div class="details-content">
         <div class="concept-block">
-          <h3>All Six Data-Plane Tools Are Read-Only</h3>
+          <h3>The Data Plane Cannot Act Unseen</h3>
           <p>
-            On the data plane the AI has access to exactly 6 tools, all restricted to Observe level (Level 1):
+            The assistant has ten tools. Six only read, at Observe level (Level 1):
           </p>
           <ul class="concept-list">
             <li><code>search_documents</code> — Search, no write.</li>
@@ -1267,8 +1267,13 @@ p { margin-bottom: 1rem; color: var(--c-text); }
             <li><code>list_contacts</code> — View contact info, no add/modify/export.</li>
           </ul>
           <p style="margin-top: 12px;">
-            A jailbroken model cannot execute <code>delete_document</code> or <code>export_to_email</code> because these functions
-            don't exist in the tool registry at data-plane execution time. Capability denial at compile time.
+            Four write, at Modify level (Level 3): <code>create_document</code>, <code>create_thread</code>,
+            <code>rename_thread</code>, <code>move_document</code>. None deletes, exports or sends anything.
+          </p>
+          <p style="margin-top: 12px;">
+            A write never runs on its own. Once a turn has read content from the workspace or from outside, every write in
+            that turn is proposed to the user, with the reason, whatever trust the action has earned. The check runs at
+            execution, in the action gate. A jailbroken model still cannot delete a document or send it away: no such tool exists.
           </p>
         </div>
       </div>
@@ -1511,8 +1516,8 @@ pub async fn run_skill(
         Sovereign's injection defense rests on three hard barriers designed to resist prompts or model output:
       </p>
       <ul class="concept-list">
-        <li><strong>Structural capability denial:</strong> Data plane has no access to Modify/Transmit/Destruct tools at compile time. Not a prompt instruction—a missing function.</li>
-        <li><strong>Plane enforcement:</strong> Every code path knows if it's executing user input or external data. The check is at the function signature level.</li>
+        <li><strong>Automatically impossible, architecturally visible:</strong> content you did not write can never make the assistant act unseen. A write proposed after external content is never approved automatically; it is shown to you, with the reason. Deleting and exporting are not among the assistant's tools at all.</li>
+        <li><strong>Fencing:</strong> text you did not type reaches the model wrapped as data, never as instructions.</li>
         <li><strong>Detection & surfacing:</strong> Injection attempts are not filtered silently. They're surfaced to the user with full context, preserving autonomy while providing transparency.</li>
       </ul>
       <p style="margin-top: 12px;">
@@ -5153,8 +5158,8 @@ seals a bundle of the account secrets, for passphrase-loss recovery.
                 <tbody>
                     <tr>
                         <td>No data exfiltration</td>
-                        <td>Chat tools are read-only; AI cannot modify user data.</td>
-                        <td>Code (tool interface is read-only), not prompt.</td>
+                        <td>The assistant has no tool that exports or sends data. Its four write tools change only the workspace, and each write is confirmed by the user.</td>
+                        <td>Code: a closed set of tools and the action gate, not a prompt.</td>
                     </tr>
                     <tr>
                         <td>Action gravity</td>
@@ -5236,7 +5241,7 @@ You are a helpful assistant...
                     <tr>
                         <td>Compromised AI Model</td>
                         <td>Can inject instructions into responses</td>
-                        <td>Injection detection, read-only tool interface</td>
+                        <td>Injection detection, fencing, writes confirmed by the user</td>
                     </tr>
                 </tbody>
             </table>
