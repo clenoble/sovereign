@@ -592,7 +592,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       </div>
       <div class="feature-card">
         <div class="feature-icon local" aria-hidden="true">⇥</div>
-        <h3>Bulk Import <span style="font-size:0.7rem; color: var(--c-gold); vertical-align: middle;">NEW in v0.0.9</span></h3>
+        <h3>Bulk Import <span style="font-size:0.7rem; color: var(--c-gold); vertical-align: middle;">built from source</span></h3>
         <p>Bring your whole document tree in on day one. Stub-first funnel: text formats
           (md, txt, csv…) import as editable content, html / pdf / docx / pptx are extracted
           to markdown, and everything else lands as a findable, re-processable stub carrying
@@ -635,7 +635,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
         <div class="feature-icon skills" aria-hidden="true">⬢</div>
         <h3>WASM Skill Plugins</h3>
         <p>Replace monolithic apps with composable skills. Built-in: markdown editor, PDF export,
-          search, image viewer. Third-party skills run in a WASM sandbox with capability-based permissions.</p>
+          search, word count. Third-party skills run in a WASM sandbox with capability-based permissions.</p>
         <a href="#/skills" class="learn-more">Skill system &amp; sandboxing</a>
       </div>
       <div class="feature-card">
@@ -913,7 +913,7 @@ p { margin-bottom: 1rem; color: var(--c-text); }
     <h2 class="section-title" id="cta-title">An experimental prototype — come explore with us</h2>
     <p class="section-desc">
       Sovereign GE is an experimental prototype. Try it, break it, contribute.
-      Built in Rust. 16 crates, ~145K lines, 2,300+ tests. Native Rust desktop shell
+      Built in Rust. 16 crates, ~233K lines. Native Rust desktop shell
       (Vello + wgpu); Svelte 5 + Tauri 2 on mobile.
       Co-developed with <a href="https://claude.ai" target="_blank" rel="noopener" style="color: var(--c-accent);">Claude</a> (Opus 4.6 → 5.5, Fable 5) by Anthropic.
     </p>
@@ -921,8 +921,8 @@ p { margin-bottom: 1rem; color: var(--c-text); }
       <a href="https://github.com/clenoble/sovereign" class="btn btn-primary" target="_blank" rel="noopener">
         View on GitHub
       </a>
-      <a href="https://github.com/clenoble/sovereign/releases/tag/v0.0.12" class="btn btn-secondary" target="_blank" rel="noopener">
-        Download v0.0.12
+      <a href="https://github.com/clenoble/sovereign/releases/tag/v0.0.13" class="btn btn-secondary" target="_blank" rel="noopener">
+        Download v0.0.13
       </a>
     </div>
     <p style="margin-top: 16px; font-size: 0.85rem; color: var(--c-text-dim);">
@@ -1614,7 +1614,7 @@ pub async fn run_skill(
           </p>
           <ul class="concept-list">
             <li><strong>Consecutive approvals tracked:</strong> Each action type (e.g., "edit document") has its own counter.</li>
-            <li><strong>Threshold of 5:</strong> After 5 consecutive approvals for the same action, Sovereign stops asking and auto-executes.</li>
+            <li><strong>Threshold of 5:</strong> After 5 consecutive approvals for the same action, Sovereign stops asking and auto-executes, except adopting a document from outside and any change after a name it could not find, which are always shown.</li>
             <li><strong>Rejection resets counter:</strong> Say "no" once and the counter resets to zero. You must re-approve 5 times.</li>
             <li><strong>Persistent in trust_state.json:</strong> Trust decisions persist across sessions, protected by a keyed MAC so a disk-write attacker can't forge approval counts.</li>
             <li><strong>Levels 4–5 never auto-approve:</strong> Transmit and Destruct always require explicit confirmation, no matter how many times you've approved.</li>
@@ -1637,7 +1637,7 @@ pub async fn run_skill(
           <ul class="concept-list">
             <li><strong>Transmit never auto-approves:</strong> confirmation is hardcoded for Level 4+, regardless of trust state.</li>
             <li><strong>Destruct never auto-approves:</strong> Modal dialog shown every time a Level 5 action is attempted.</li>
-            <li><strong>30-second timeout:</strong> If user doesn't confirm within 30 seconds, action is cancelled. Prevents accidental approval via timeout.</li>
+            <li><strong>Two-minute timeout:</strong> If you don't confirm within about two minutes, the action is cancelled. Prevents accidental approval via timeout.</li>
             <li><strong>Undo window:</strong> All deletions stored for 30 days before permanent purge. User can restore anytime in that window.</li>
           </ul>
           <p style="margin-top: 12px;">
@@ -1854,7 +1854,7 @@ If user rejected:
       <ul class="concept-list">
         <li><strong>Per-action trust:</strong> Not global. Each action (e.g., "edit document") has its own trust threshold.</li>
         <li><strong>Rejection resets:</strong> One "no" resets the counter to zero. Trust must be re-established.</li>
-        <li><strong>Levels 3–4 sacred:</strong> Transmit and Destruct actions never auto-approve, no matter how much trust is built.</li>
+        <li><strong>Levels 4–5 sacred:</strong> Transmit and Destruct actions never auto-approve, no matter how much trust is built.</li>
         <li><strong>30-day undo window:</strong> All deletions are reversible for 30 days. True permanence requires deliberate purge.</li>
         <li><strong>Transparent thresholds:</strong> Users can see which actions are auto-approved and how close they are to auto-approval.</li>
         <li><strong>Consequence-aware:</strong> Friction scales with consequence. Reading has zero friction. Deletion has maximum friction.</li>
@@ -2546,7 +2546,7 @@ sovereign-guardian-app/    // the friend-side app (desktop Tauri)</code></div>
       Imagine your workspace as a living map. Documents on an infinite canvas. Time runs left→right. Projects run top→bottom.
       Owned content is rectangles; external is parallelograms. Every document remembers its complete edit history—automatically,
       invisibly. No save button. No lost work. Rendered by the native Rust shell (Vello + winit + wgpu) on desktop;
-      the Svelte 5 + Tauri 2 app carries the same canvas to mobile.
+      the Svelte 5 + Tauri 2 app carries the same canvas to mobile, where provenance is shown by colour for now.
     </p>
   </div>
 </section>
@@ -2668,7 +2668,7 @@ sovereign-guardian-app/    // the friend-side app (desktop Tauri)</code></div>
             <li><strong>Edit threshold:</strong> After 50 keystrokes or actions, the system auto-commits with a snapshot of the document.</li>
             <li><strong>Time threshold:</strong> If 5 minutes pass since the last commit, commit now (even if only 10 edits).</li>
             <li><strong>On close:</strong> Low-activity docs auto-commit when you navigate away. No data loss.</li>
-            <li><strong>Multi-device divergence:</strong> If you edit the same doc on two devices before syncing, you get a branch. Merge UI lets you reconcile.</li>
+            <li><strong>Multi-device divergence:</strong> If you edit the same doc on two devices before syncing, the later edit is current and the other is kept in History. Merging both is planned.</li>
             <li><strong>Metadata:</strong> Each commit stores: document_id, parent_commit (forming a chain), message (auto-generated or user-written), timestamp, full snapshot.</li>
           </ul>
           <p style="margin-top: 12px;">
@@ -3258,7 +3258,7 @@ pub struct DocumentSnapshot {
             Skills are lightweight tools that read from or write to the graph database without storing state themselves. You own the data; skills are interchangeable views/editors.
           </p>
           <ul class="concept-list">
-            <li><strong>Built-In Skills (24):</strong> Markdown editor, PDF export, word counter, find/replace, duplicate, import, search, image viewer, thread summarizer, PII detector, redactor, and more — compiled Rust, no WASM overhead.</li>
+            <li><strong>Built-In Skills (24):</strong> Markdown editor, PDF export, word counter, find/replace, duplicate, import, search, thread summarizer, PII detector, redactor, and more — compiled Rust, no WASM overhead.</li>
             <li><strong>Third-Party WASM Plugins:</strong> Community skills run in a WebAssembly sandbox using the WASM Component Model (wasmtime). Write skills in Rust, compile to WASM, distribute as portable <code>.wasm</code> bundles.</li>
             <li><strong>Capability-Based Permissions:</strong> Each skill declares required capabilities (<code>read_document</code>, <code>write_document</code>, <code>read_all_documents</code>, etc.). Users see what a skill requests before granting access.</li>
             <li><strong>WIT Interface Contracts:</strong> Skills implement a typed WIT interface — <code>name()</code>, <code>actions()</code>, <code>execute()</code>. Host provides database functions (<code>search-documents</code>, <code>get-document</code>, <code>create-document</code>).</li>
@@ -3275,12 +3275,12 @@ pub struct DocumentSnapshot {
         <div class="concept-block">
           <h3>Nothing Destroyed Until Purged</h3>
           <p>
-            Every node in the database has a deleted_at field. Deletion is not immediate destruction; it's a soft flag. Aligns with Action Gravity level 4 (Destruct).
+            Every node in the database has a deleted_at field. Deletion is not immediate destruction; it's a soft flag. Aligns with Action Gravity level 5 (Destruct).
           </p>
           <ul class="concept-list">
             <li><strong>Soft Delete:</strong> When you "delete" a document, deleted_at is set to the current timestamp. The doc is hidden from normal queries but remains in the database.</li>
             <li><strong>Recovery:</strong> Within a configurable retention window (default 30 days), you can restore any soft-deleted document with a single click.</li>
-            <li><strong>Purge:</strong> After the retention window or on explicit purge, the document is permanently removed. This action requires Level 4 confirmation (irreversible).</li>
+            <li><strong>Purge:</strong> After the retention window or on explicit purge, the document is permanently removed. This action requires Level 5 confirmation (irreversible).</li>
             <li><strong>Audit Trail:</strong> Every soft delete and purge is logged in the audit chain, enabling forensic recovery and accountability.</li>
           </ul>
         </div>
@@ -3310,7 +3310,7 @@ pub struct DocumentSnapshot {
         <tr><th>Field</th><th>Type</th><th>Description</th></tr>
         <tr><td><code>id</code></td><td>Thing</td><td>Unique identifier (generated by SurrealDB).</td></tr>
         <tr><td><code>title</code></td><td>String</td><td>Document title, user-facing.</td></tr>
-        <tr><td><code>content</code></td><td>String (JSON)</td><td>Markdown or structured content. Can include embedded images as base64-encoded JSON.</td></tr>
+        <tr><td><code>content</code></td><td>String (JSON)</td><td>Markdown text and media blocks. An image or video names its encrypted copy in Sovereign's media store, by hash; nothing is embedded.</td></tr>
         <tr><td><code>thread_id</code></td><td>Thing</td><td>Reference to the parent thread.</td></tr>
         <tr><td><code>is_owned</code></td><td>Bool</td><td>true if you created it, false if imported. Guides encryption and export.</td></tr>
         <tr><td><code>created_at</code></td><td>DateTime</td><td>ISO 8601 timestamp.</td></tr>
@@ -3319,7 +3319,7 @@ pub struct DocumentSnapshot {
         <tr><td><code>spatial_y</code></td><td>Float</td><td>Canvas position (vertical).</td></tr>
         <tr><td><code>head_commit</code></td><td>Thing</td><td>Reference to the latest commit in this document's version history.</td></tr>
         <tr><td><code>deleted_at</code></td><td>DateTime (nullable)</td><td>Soft delete timestamp. null = not deleted.</td></tr>
-        <tr><td><code>encryption_nonce</code></td><td>String</td><td>IV/nonce for AES-256-GCM encryption (hex-encoded).</td></tr>
+        <tr><td><code>encryption_nonce</code></td><td>String</td><td>Nonce for XChaCha20-Poly1305 encryption (Base64-encoded).</td></tr>
       </table>
     </div>
 
@@ -3471,7 +3471,7 @@ pub struct DocumentSnapshot {
     Targets iOS 14+ and Android SDK 26+.
   </p>
   <p style="margin-top:16px; display:inline-flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--c-gold); background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); border-radius: var(--radius); padding: 8px 14px;">
-    <span aria-hidden="true">◐</span> Phases 1–4 complete · persistent storage shipped · device pairing and sync do not run on Android yet (since v0.0.9) · camera capture, biometrics, iOS share-sheet pending
+    <span aria-hidden="true">◐</span> Phases 1–4 complete · persistent storage shipped · device pairing and sync run on the local network, and with a server given by its IP address · camera capture, biometrics, iOS share-sheet pending
   </p>
 </div>
 
@@ -3491,7 +3491,7 @@ pub struct DocumentSnapshot {
       The AI chat lives in a bottom sheet with three snap positions — a peek showing your last
       message, a partial view for reading, a full screen for composing. Pinch zooms through
       time; the canvas collapses to a density heatmap at deep zoom. Everything is local and
-      encrypted. Syncing back to your desktop over P2P does not run on Android yet.
+      encrypted. It syncs with your desktop over P2P on the local network.
     </p>
   </div>
 </section>
@@ -3679,7 +3679,7 @@ pub struct DocumentSnapshot {
 
 # Still excluded from mobile:
 # - voice  (cpal-based desktop audio; replaced by Web Audio API)
-# - comms channels (email runs on desktop; native-tls not supported on mobile)
+# - comms channels (dormant on every platform; native-tls not supported on mobile)
 # - web-browse (pixel-bounded child webview unsupported on mobile)</code></div>
     </div>
 
@@ -3733,7 +3733,7 @@ pub struct DocumentSnapshot {
         <tr><td>OS share-sheet — Android (wired), iOS (scaffolded)</td><td style="color: var(--c-owned);">✓ Phase 4</td></tr>
         <tr><td>PII dashboard, Settings, Search, People, Inbox panels</td><td style="color: var(--c-owned);">✓ (desktop panels, mobile-safe layout)</td></tr>
         <tr><td>Persistent storage (SurrealKV-backed SurrealDB)</td><td style="color: var(--c-owned);">✓ v0.0.8</td></tr>
-        <tr><td>P2P device pairing + LAN sync (QR pairing, non-destructive peer-write review)</td><td style="color: var(--c-owned);">✓ v0.0.8 — physical device required (emulator NAT blocks mDNS)</td></tr>
+        <tr><td>P2P device pairing + LAN sync (QR pairing; edits on both devices kept, the other in History)</td><td style="color: var(--c-owned);">✓ v0.0.8 — physical device required (emulator NAT blocks mDNS)</td></tr>
         <tr><td>Camera capture + OCR</td><td style="color: var(--c-gold);">Phase 5</td></tr>
         <tr><td>Biometric vault (Face ID / fingerprint)</td><td style="color: var(--c-gold);">Phase 5</td></tr>
         <tr><td>iOS share-sheet full integration</td><td style="color: var(--c-gold);">Phase 5</td></tr>
@@ -3777,7 +3777,7 @@ pub struct DocumentSnapshot {
       Your documents contain email addresses, phone numbers, bank accounts, and passwords.
       Traditional apps leave this exposed or scan it to a cloud. Sovereign detects personal data
       on-device, encrypts the values into a vault, and replaces them in documents with
-      <code>[pii:token]</code> references. The AI only ever sees tokens — never raw values.
+      <code>[pii:token]</code> references. The assistant's tools see tokens in place of the values Sovereign has found.
       Revealing a value requires a deliberate, gated confirmation. Deleting one is irreversible
       and flagged as such.
     </p>
@@ -3827,7 +3827,7 @@ pub struct DocumentSnapshot {
         <div class="concept-block">
           <h3>Regex Layer + LLM-NER Layer (Both Built)</h3>
           <p>
-            Detection runs in two passes. The first is instant; the second is async and confidence-scored.
+            Detection has two passes. Both are built; only the first, by patterns, runs today.
           </p>
           <ul class="concept-list">
             <li><strong>Regex:</strong> Email, phone, SSN, credit card, IPv4 address.
@@ -4129,7 +4129,7 @@ Review queue (low-confidence) ────────────────  
             They're grouped by what they do:
           </p>
           <ul class="concept-list">
-            <li><strong>Editing:</strong> Markdown editor (toolbar, preview toggle), text editor, find &amp; replace, JSON/YAML formatter.</li>
+            <li><strong>Editing:</strong> Markdown editor (preview toggle), text editor, find &amp; replace, JSON/YAML formatter.</li>
             <li><strong>Analysis:</strong> Word count, readability score, outline extractor, table of contents, link checker, backlink map, orphan finder.</li>
             <li><strong>AI-powered:</strong> Thread summarizer, PII detector, redactor — each calls the local LLM via <code>SkillLlmAccess</code>.</li>
             <li><strong>Export:</strong> PDF export, HTML export, plaintext export.</li>
@@ -4436,7 +4436,7 @@ Review queue (low-confidence) ────────────────  
             <li><strong>1. Identity Firewall Scope <em>(roadmap — not yet implemented)</em>:</strong> Tracking prevention only (cookie isolation, URL param stripping, fingerprint resistance). Designed to block on banking/gov domains. No synthetic identities. Users would be able to override.</li>
             <li><strong>2. No Network Anonymity:</strong> Intentional design choice. Network stack is transparent. Tor is a user install, not a feature. Clear separation of concerns.</li>
             <li><strong>3. Guardian Protocol Transparency:</strong> Single function: shard storage and return. No messaging, no general storage layer, no coordination, no dead-man's switch. Scope is narrowly constrained.</li>
-            <li><strong>4. Audit Log Integrity <em>(partial — hash chain is roadmap)</em>:</strong> Currently append-only JSONL. The goal is a tamper-evident hash chain where each entry includes a hash of the previous entry. User can read and export but not selectively edit or reorder.</li>
+            <li><strong>4. Audit Log Integrity:</strong> The log is encrypted and hash-chained; each entry is bound to its place, so editing or reordering it is detected, and so is a roll-back of the log alone, and a log that fails the check is set aside, never silently used. User can read and export but not selectively edit or reorder.</li>
           </ul>
         </div>
       </div>
@@ -4513,14 +4513,14 @@ Review queue (low-confidence) ────────────────  
     </div>
 
     <div class="deep-section">
-      <h3>Audit Log Integrity <em>(partial — currently append-only JSONL, hash chain is roadmap)</em></h3>
+      <h3>Audit Log Integrity</h3>
       <p>
         Today, Sovereign logs session activity to an append-only JSONL file with automatic rotation.
         The long-term goal is a tamper-evident hash chain that is forensically sound:
       </p>
       <ul class="concept-list">
-        <li><strong>Current State:</strong> Append-only JSONL log. Records user inputs, orchestrator actions, and chat responses. Automatic rotation at 10 MB. No hash chain yet.</li>
-        <li><strong>Goal — Hash Chain:</strong> Each entry would include a hash of the previous entry. Reordering or editing entries would break the chain — tampering would be immediately visible.</li>
+        <li><strong>Current State:</strong> Encrypted append-only log, each entry carrying the hash of the previous one and bound to its place; a sealed record detects a roll-back of the log alone. Records user inputs, orchestrator actions, and chat responses. Automatic rotation at 10 MB.</li>
+        <li><strong>Tamper-evident:</strong> Editing, reordering or removing entries breaks the chain, and a log that fails the check is set aside and a new one starts.</li>
         <li><strong>User Can Read:</strong> Full access to audit logs. No hidden logging.</li>
         <li><strong>Goal — Export &amp; Sharing:</strong> Audit logs could be exported in plaintext, JSON, or cryptographic format for external verification. Proof of existence without proof of content.</li>
         <li><strong>Goal — Delete All:</strong> Bulk deletion available but not selective editing — all-or-nothing.</li>
@@ -4647,7 +4647,7 @@ Review queue (low-confidence) ────────────────  
 
         <section>
             <h2>Encryption Notice</h2>
-            <p>Sovereign includes cryptographic functionality (AES-256-GCM, HKDF, key derivation). Export, import, possession, and use of cryptographic software may be regulated under:</p>
+            <p>Sovereign includes cryptographic functionality (XChaCha20-Poly1305, HKDF, key derivation). Export, import, possession, and use of cryptographic software may be regulated under:</p>
             <ul>
                 <li><strong>United States:</strong> Export Administration Regulations (EAR), controlled by the Bureau of Industry and Security (BIS).</li>
                 <li><strong>European Union:</strong> Dual-Use Regulation (EU 2021/821).</li>
@@ -4837,8 +4837,8 @@ Review queue (low-confidence) ────────────────  
 
             <div class="data-row">
                 <div class="data-row-title">Session Logs</div>
-                <div class="data-row-location">Location: <code>~/.sovereign/logs/</code></div>
-                <p>Timestamped log of actions, tool calls, and AI responses. Used for debugging and user transparency.</p>
+                <div class="data-row-location">Location: <code>~/.sovereign/orchestrator/</code></div>
+                <p>Encrypted, hash-chained log of your conversations with the assistant. A log that fails its check is set aside; you can read, keep or delete it.</p>
             </div>
 
             <div class="data-row">
@@ -4993,13 +4993,13 @@ Review queue (low-confidence) ────────────────  
                 </thead>
                 <tbody>
                     <tr>
-                        <td>0.0.9 (current)</td>
-                        <td>2026-07</td>
+                        <td>0.0.13 (current)</td>
+                        <td>2026-11</td>
                         <td>Until the next release</td>
                         <td>Active — fixes land in the next release</td>
                     </tr>
                     <tr>
-                        <td>&lt; 0.0.9</td>
+                        <td>&lt; 0.0.13</td>
                         <td>2025–2026</td>
                         <td>Superseded</td>
                         <td>Unsupported — please upgrade</td>
@@ -5107,7 +5107,7 @@ Review queue (low-confidence) ────────────────  
 
             <h3>In Scope</h3>
             <ul>
-                <li>All Sovereign crates: <code>sovereign-core</code>, <code>sovereign-db</code>, <code>sovereign-crypto</code>, <code>sovereign-ai</code>, <code>sovereign-skills</code>, <code>sovereign-p2p</code>, <code>sovereign-comms</code>, <code>sovereign-import</code>, <code>sovereign-app</code>, <code>sovereign-shell</code>, <code>sovereign-relay</code>, <code>sovereign-guardian</code>, <code>sovereign-guardian-app</code>;</li>
+                <li>All Sovereign crates: <code>sovereign-core</code>, <code>sovereign-db</code>, <code>sovereign-crypto</code>, <code>sovereign-ai</code>, <code>sovereign-skills</code>, <code>sovereign-p2p</code>, <code>sovereign-comms</code>, <code>sovereign-docs</code>, <code>sovereign-docformat</code>, <code>sovereign-editor</code>, <code>sovereign-import</code>, <code>sovereign-app</code>, <code>sovereign-shell</code>, <code>sovereign-relay</code>, <code>sovereign-guardian</code>, <code>sovereign-guardian-app</code>;</li>
                 <li>Published releases (stable and pre-release);</li>
                 <li>Website (sovereignos.org) and documentation;</li>
                 <li>Official GitHub repositories.</li>
