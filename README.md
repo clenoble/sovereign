@@ -138,7 +138,7 @@ cd frontend && npm test
 
 This is an experimental prototype. Try it, break it, contribute. The most approachable contribution path is writing a new skill — see [doc/writing-skills.md](doc/writing-skills.md) for the WASM Component Model guide, sandbox model, and a worked example.
 
-**Latest release:** [v0.0.12](RELEASE_NOTES_v0.0.12.md) — the corrective release: it corrects what v0.0.11 got wrong (History works again on the desktop), gives every thread its own lane, names your desktops, and makes the assistant act only on what you named. Release notes for every version are in `RELEASE_NOTES_v0.0.*.md`.
+**Latest release:** [v0.0.13](RELEASE_NOTES_v0.0.13.md) — the consolidation release: your images and videos move into Sovereign's encrypted store, a merged thread is kept with its end date, a failed login says what failed, and the desktop's questions and setup can be heard and answered from the keyboard. Release notes for every version are in `RELEASE_NOTES_v0.0.*.md`.
 
 Ideas we haven't built yet: federation, plugin marketplace, collaborative editing, rich document format (WYSIWYG), semantic search via embeddings.
 
