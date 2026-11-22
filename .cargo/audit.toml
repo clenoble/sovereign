@@ -230,4 +230,14 @@ ignore = [
     "RUSTSEC-2026-0563",
     "RUSTSEC-2026-0564",
     "RUSTSEC-2026-0565",
+    # url 2.5.8 — stack overflow in `Url::origin()` on nested `blob:` URLs (published 2026-11-20,
+    # after v0.0.13's gates). Accepted for v0.0.13 by Céline, 2026-11-22 (« je choisis a et oui »,
+    # through the Fable maille). Reached only through `Url::origin()` or `url::quirks::origin`
+    # (`url` 2.5.8, `src/origin.rs` l. 17-25, `lib.rs` l. 883-885). No crate of the lock calls
+    # either, ours included: the 31 packages of the lock that depend on `url`, read at their locked
+    # versions (WSL, 2026-11-22; the laptop's second reading), and `git grep '\.origin()' -- crates/`
+    # (two hits, on our own types). The web views (WebView2, WebKitGTK, Android's WebView) parse a
+    # page's URLs themselves. HARD PRECONDITION: bump url (>= 2.5.9) first in v0.0.14; remove this
+    # then.
+    "RUSTSEC-2026-0592",
 ]
