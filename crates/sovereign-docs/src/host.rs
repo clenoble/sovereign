@@ -264,6 +264,25 @@ pub struct IngestRequest {
     pub document_id: DocId,
     pub path: WritePath,
     pub items: Vec<IngestItem>,
+    /// C-SWEEP SW1 (ch. 09, as stated exactly in v2.0.111): who wrote what is
+    /// ingested. The state of a replaced value follows it: confirmed only for
+    /// [`crate::Origin::Editor`] (a save or a creation in her editor, where she
+    /// sees it happen); suspected for every other origin (the assistant, a
+    /// skill, an import, the sweep). `None` for the writes that have no writer
+    /// origin: the restore of a version and content received by sync (suspected,
+    /// and a record that already exists keeps its state). A copy's ingest is
+    /// never given the editor's origin, though its request carries it (the
+    /// Fable maille, by delegation of Céline, 2026-11-17).
+    ///
+    /// *Seam by the test author of lot LS(a); the service fills it.*
+    pub origin: Option<crate::Origin>,
+    /// C-SWEEP SW2: the version of the state given to ingest, before any value
+    /// is replaced: its normalised hash (C-DOC G28). With the document's id,
+    /// the field and the span, it is the finding's identity, from which the
+    /// token's record id is derived. `None` when the service cannot say.
+    ///
+    /// *Seam by the test author of lot LS(a); the service fills it.*
+    pub version: Option<String>,
 }
 
 /// A field's canonical text after ingest (values replaced by tokens).
@@ -295,6 +314,57 @@ pub trait PiiIngest: Send + Sync {
 pub trait MediaFiles: Send + Sync {
     /// SHA-256 of the file at `path`, lowercase hex; `None` if it cannot be read.
     fn sha256(&self, path: &str) -> Option<String>;
+
+    /// C-MEDIA, the media store (spec ch. 03): copies the medium this device
+    /// holds at `outside` into the media store, in the active persona's area,
+    /// and returns the store's name for it and its hash. After the copy the
+    /// original is not read again. Never asked for a path that a received or
+    /// otherwise hostile state names (ME1, ME4). Copies only a file whose first
+    /// bytes say image or video ([`crate::media::MediaError::NotAMedium`]
+    /// otherwise, and nothing is copied).
+    ///
+    /// *Signature by the test author of lot L1b; the body is the implementer's.*
+    ///
+    /// `mark` is kept with the medium in the store: insertion asks for none.
+    fn copy_into_store(
+        &self,
+        outside: &str,
+        mark: Option<crate::media::MediaMark>,
+    ) -> Result<crate::media::StoredMedium, crate::media::MediaError>;
+
+    /// C-MEDIA, the migration pass: the first bytes of the file at `outside`,
+    /// at most `max` of them (no more than
+    /// [`crate::media::SVG_SNIFF_BYTES`]), read before anything else, so that a file that
+    /// is not an image or a video is never read further. Only ever asked by
+    /// the pass, for a path that passed ME2's lexical refusals.
+    ///
+    /// *Signature by the test author of lot L1b; the body is the implementer's.*
+    fn first_bytes(&self, outside: &str, max: usize) -> Result<Vec<u8>, crate::media::MediaError>;
+
+    /// C-MEDIA, the migration pass at the update: reads the file at `outside`
+    /// in a stream under the cap and, only if its SHA-256 is `expected_sha256`,
+    /// copies it into the store ([`crate::media::MediaError::HashMismatch`]
+    /// otherwise, and nothing is copied), and only if its first bytes say
+    /// image or video ([`crate::media::MediaError::NotAMedium`]). Only ever asked by the pass, for a
+    /// path that passed ME2's lexical refusals.
+    ///
+    /// *Signature by the test author of lot L1b; the body is the implementer's.*
+    ///
+    /// The pass asks for the mark « copied by the migration »
+    /// ([`crate::media::MediaMark::CopiedByMigration`]) on what it copies.
+    fn copy_into_store_checked(
+        &self,
+        outside: &str,
+        expected_sha256: &str,
+        mark: Option<crate::media::MediaMark>,
+    ) -> Result<crate::media::StoredMedium, crate::media::MediaError>;
+
+    /// C-MEDIA: the store's name of the medium of hash `sha256`, if the store
+    /// holds one. A neutralised block resolves by its hash this way. Never
+    /// asked for a path.
+    ///
+    /// *Signature by the test author of lot L1b; the body is the implementer's.*
+    fn store_name_for(&self, sha256: &str) -> Option<String>;
 }
 
 // Debug without the text (C-TEXT g3; guarantee G17): sizes, never text.

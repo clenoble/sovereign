@@ -251,6 +251,49 @@ impl UserProfile {
         }
     }
 
+    /// A fresh profile whose names are all drawn at random: the designation,
+    /// and a nickname taken from it. The duress persona's at setup (C-AREA
+    /// AR2, Céline 2026-11-13: « la persona de contrainte a des noms
+    /// d'appareil et nom de profil random générés automatiquement »): never
+    /// copied from the primary's; the user may change them in that session.
+    pub fn generated() -> Self {
+        let mut p = Self::default_new();
+        p.draw_missing_names();
+        p
+    }
+
+    /// Draws the names this profile lacks, name by name, as [`Self::generated`]
+    /// draws them (C-AREA AR2; the Fable maille by delegation of Céline,
+    /// DEL-0006): no nickname (`None`) gets one taken from the designation;
+    /// a designation is always there (`load` backfills one). A nickname that
+    /// is there, even empty, is the user's and is kept. Whether anything was
+    /// drawn.
+    pub fn draw_missing_names(&mut self) -> bool {
+        if self.nickname.is_some() {
+            return false;
+        }
+        self.nickname = self.designation.split('-').nth(1).map(str::to_string);
+        self.nickname.is_some()
+    }
+
+    /// The duress persona's profile in `dir`, its missing names drawn (see
+    /// [`Self::draw_missing_names`]): no file, a whole profile drawn
+    /// ([`Self::generated`]); a file with no nickname, a nickname drawn and
+    /// the rest kept; a file with its names, kept as it is. Saved only when
+    /// something was drawn. The profile as it now is.
+    pub fn ensure_drawn_in(dir: &Path) -> anyhow::Result<Self> {
+        if !dir.join(PROFILE_FILENAME).exists() {
+            let mut p = Self::generated();
+            p.save(dir)?;
+            return Ok(p);
+        }
+        let mut p = Self::load(dir)?;
+        if p.draw_missing_names() {
+            p.save(dir)?;
+        }
+        Ok(p)
+    }
+
     /// Load a profile from `dir/user_profile.json`.
     /// Returns a fresh default if the file doesn't exist.
     /// Backfills designation for old profiles that lack one.
@@ -295,6 +338,76 @@ impl UserProfile {
     }
 }
 
+/// The file of the device preferences, in the data directory.
+const DEVICE_PREFERENCES_FILENAME: &str = "device_preferences.json";
+
+/// The device preferences read before login (spec ch. 07, C-AREA AR2: the
+/// theme and the bubble style), in a file of their own,
+/// `device_preferences.json`, shared by the personas: the login screen needs
+/// them, and they say nothing of which persona is open. Until v0.0.13 they sat
+/// in `user_profile.json`, which now holds a persona's identity only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DevicePreferences {
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default)]
+    pub bubble_style: BubbleStyle,
+}
+
+impl DevicePreferences {
+    /// The device preferences under the data directory `base`: the file's,
+    /// else those an older install kept in `user_profile.json` (read, never
+    /// written), else `None` (the host applies its defaults).
+    pub fn load(base: &Path) -> Option<Self> {
+        if let Ok(data) = std::fs::read_to_string(base.join(DEVICE_PREFERENCES_FILENAME)) {
+            if let Ok(p) = serde_json::from_str::<Self>(&data) {
+                return Some(p);
+            }
+        }
+        Self::from_legacy_profile(base)
+    }
+
+    /// The theme and bubble style an install before v0.0.13 kept in the
+    /// shared `user_profile.json`.
+    fn from_legacy_profile(base: &Path) -> Option<Self> {
+        let data = std::fs::read_to_string(base.join(PROFILE_FILENAME)).ok()?;
+        let p: UserProfile = serde_json::from_str(&data).ok()?;
+        Some(Self { theme: p.theme, bubble_style: p.bubble_style })
+    }
+
+    /// The one-time move of an older install (C-AREA AR2), at start, before
+    /// any login: when `device_preferences.json` does not exist and the shared
+    /// `user_profile.json` does, the theme and bubble style it holds are
+    /// written to `device_preferences.json`. Nothing is removed from
+    /// `user_profile.json`. Nothing happens on an install that has the file,
+    /// or has neither.
+    pub fn migrate(base: &Path) -> anyhow::Result<()> {
+        if base.join(DEVICE_PREFERENCES_FILENAME).exists() {
+            return Ok(());
+        }
+        match Self::from_legacy_profile(base) {
+            Some(p) => p.save(base),
+            None => Ok(()),
+        }
+    }
+
+    /// Writes the device preferences to `base/device_preferences.json`.
+    pub fn save(&self, base: &Path) -> anyhow::Result<()> {
+        std::fs::create_dir_all(base)?;
+        let json = serde_json::to_string_pretty(self)?;
+        write_owner_only(&base.join(DEVICE_PREFERENCES_FILENAME), json.as_bytes())?;
+        Ok(())
+    }
+
+    /// Loads, changes with `f`, and saves; the host's `defaults` when there is
+    /// nothing to load.
+    pub fn update(base: &Path, defaults: Self, f: impl FnOnce(&mut Self)) -> anyhow::Result<Self> {
+        let mut p = Self::load(base).unwrap_or(defaults);
+        f(&mut p);
+        p.save(base)?;
+        Ok(p)
+    }
+}
 
 #[cfg(test)]
 mod tests {

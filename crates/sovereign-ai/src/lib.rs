@@ -16,6 +16,14 @@ pub mod jiminy_vision;
 #[cfg(any(feature = "jiminy", feature = "vision"))]
 pub mod sidecar;
 pub mod llm;
+pub mod local_time;
+// C-LOG, the diagnosis of a quarantined log (spec ch. 08, DG1-DG6).
+#[cfg(feature = "encrypted-log")]
+pub mod log_diagnosis;
+// C-LOG, the log's format and its one check (spec ch. 08, LG1-LG4, LG6).
+#[cfg(feature = "encrypted-log")]
+pub mod log_format;
+pub mod media_store;
 pub mod model_integrity;
 pub mod orchestrator;
 pub mod peer_audit;

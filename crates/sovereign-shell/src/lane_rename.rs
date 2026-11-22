@@ -120,13 +120,56 @@ pub(crate) fn label_at(p: Point, rects: &[(usize, Rect)]) -> Option<usize> {
     rects.iter().find(|(_, r)| r.contains(p)).map(|(lane, _)| *lane)
 }
 
-/// Recognises a double-click on a lane label (R1), from the presses the shell
-/// sees (`crate::winit_input::click_count` rules).
+/// C-HOST AT8: the thread whose label rect contains `p`, by its id. `rects`
+/// pairs each renamable label's thread id with the rect drawn for it in the
+/// same frame, so a reload that reorders the lanes cannot change which thread
+/// a press names.
+pub(crate) fn label_thread_at(p: Point, rects: &[(String, Rect)]) -> Option<String> {
+    rects.iter().find(|(_, r)| r.contains(p)).map(|(id, _)| id.clone())
+}
+
+/// C-HOST AT8: the renamable label of thread `thread_id`, as the labels are
+/// now: where a rename opened by a double-click (or by a screen reader's
+/// click) starts. `None` when that thread no longer has a renamable label.
+pub(crate) fn label_of_thread<'a>(labels: &'a [LaneLabel], thread_id: &str) -> Option<&'a LaneLabel> {
+    labels.iter().find(|l| l.thread_id == thread_id)
+}
+
+/// Recognises a double-click on a lane label (R1) by the label's thread id
+/// (C-HOST AT8), with the rules of [`LabelClicks`]: two presses on the same
+/// thread's label, close in time and place.
 #[derive(Debug, Default)]
+pub(crate) struct LabelClicksById {
+    last: Option<(Instant, f64, f64, u8, Option<String>)>,
+}
+
+impl LabelClicksById {
+    /// A left press at `p` at `now`, on the label of thread `hit` (`None`: not
+    /// on a label). Returns the thread whose label this press double-clicked.
+    pub(crate) fn press(&mut self, hit: Option<&str>, p: Point, now: Instant) -> Option<String> {
+        let prev = self
+            .last
+            .as_ref()
+            .and_then(|(t, x, y, n, h)| (h.as_deref() == hit).then_some((*t, *x, *y, *n)));
+        let n = click_count(prev, now, p.x, p.y);
+        self.last = Some((now, p.x, p.y, n, hit.map(str::to_string)));
+        match hit {
+            Some(id) if n == 2 => Some(id.to_string()),
+            _ => None,
+        }
+    }
+}
+
+/// Recognises a double-click on a lane label (R1), from the presses the shell
+/// sees (`crate::winit_input::click_count` rules). By lane position; the shell
+/// uses [`LabelClicksById`] since C-HOST AT8.
+#[derive(Debug, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct LabelClicks {
     last: Option<(Instant, f64, f64, u8, Option<usize>)>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl LabelClicks {
     /// A left press at `p` at `now`, on the label of lane `hit` (`None`: not on
     /// a label). Returns the lane whose label this press double-clicked.
@@ -423,7 +466,7 @@ impl LaneRename {
         scene.push_layer(Fill::NonZero, vello::peniko::Mix::Normal, 1.0, Affine::IDENTITY, &r);
         scene.append(&self.scene, Some(Affine::translate((r.x0, r.y0))));
         scene.pop_layer();
-        scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, p.accent, None, &r);
+        scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, crate::theme::focused_field_border(&p), None, &r);
     }
 }
 

@@ -23,7 +23,7 @@ use sovereign_ai::Orchestrator;
 use sovereign_core::config::{AiConfig, AppConfig};
 use sovereign_core::interfaces::OrchestratorEvent;
 use sovereign_core::profile::{BubbleStyle, UserProfile};
-use sovereign_core::security::{ActionDecision, ActionLevel, InjectionDecision, ProposedAction};
+use sovereign_core::security::{ActionDecision, ActionLevel, InjectionDecision, ProposedAction, RequestDecision};
 use sovereign_core::auth::PersonaKind as CorePersona;
 use sovereign_crypto::auth::PasswordPolicy;
 
@@ -33,6 +33,12 @@ use crate::chat_field::{ChatField, FieldStep};
 /// The document editor in the doc window — the only document editor, in every
 /// build (contract E1–E9, `doc/plans/EDITOR-default.md`).
 pub(crate) mod editor_v2;
+// Ch. 12, SQ10 lot C: the bubble-style picker and the right-click menu, in
+// the accessibility tree and answered from the keyboard.
+mod picker_menu_a11y;
+/// The shell's questions and notices for a screen reader and the keyboard
+/// (spec ch. 12, SQ1 to SQ9): what is on top, its keys and its tree.
+pub(crate) mod shell_a11y;
 // The editor in every build, the plain text path removed (contract E1-E9,
 // `doc/plans/EDITOR-default.md`): the tests, written before the code; the
 // implementer does not edit them. A child of `app` so they reach the window
@@ -48,6 +54,10 @@ mod editor_default_tests;
 #[cfg(test)]
 #[path = "lot1_tests.rs"]
 mod lot1_tests;
+// C5 of v0.0.13, the desktop's History that cannot be read (spec ch. 03, HR1, HR2, HR4).
+#[cfg(test)]
+#[path = "c5_history_desktop_tests.rs"]
+mod c5_history_desktop_tests;
 // v0.0.12 items 18 and 20 (the locked screens off the UI thread and saying
 // what they show, `doc/plans/V0012-items18-20-first-run.md`): tests written
 // before the code, by another author; the implementer does not edit them. A
@@ -55,12 +65,47 @@ mod lot1_tests;
 #[cfg(test)]
 #[path = "first_run_tests.rs"]
 mod first_run_tests;
+// C-SUP (v0.0.13 lot LQ, spec ch. 05, *The node's supervision*): tests written
+// before the code, by another author; the implementer does not edit them. A
+// child of `app` for the same reason as `first_run_tests`.
+#[cfg(test)]
+#[path = "csup_tests.rs"]
+mod csup_tests;
+// C-SWEEP (v0.0.13 lot LS(a), spec ch. 09): tests written before the code, by
+// another author; the implementer does not edit them. A child of `app` for the
+// same reason as `first_run_tests`.
+#[cfg(test)]
+#[path = "c_sweep_shell_tests.rs"]
+mod c_sweep_shell_tests;
+
+// C6 (v0.0.13; Céline, 2026-10-28): the shell closes its database before
+// `main` returns. Tests written before the code, by another author; the
+// implementer does not edit them. A child of `app` like `csup_tests`.
+#[cfg(test)]
+#[path = "c6_shutdown_tests.rs"]
+mod c6_shutdown_tests;
+// A join whose node did not start keeps its peer for a restart (lot LQ):
+// the implementer's own tests.
+#[cfg(test)]
+#[path = "join_after_stop_tests.rs"]
+mod join_after_stop_tests;
 // Item 18's worker (B1–B4) with a fake derivation that waits: needs the seams
 // named at the top of the file (`crate::auth_work`, `App::auth_work`,
 // `App::locked_key`), so it does not compile until they exist.
 #[cfg(test)]
 #[path = "first_run_worker_tests.rs"]
 mod first_run_worker_tests;
+// C-AREA (v0.0.13 L1c, spec ch. 07): the duress walk, AR1, AR2, AR5, AR6 —
+// tests written before the code, by another author; the implementer does not
+// edit them. A child of `app` for the same reason as `first_run_tests`.
+#[cfg(test)]
+#[path = "c_area_walk_tests.rs"]
+mod c_area_walk_tests;
+// The walk of what she sees: a trial in observe mode (2026-11-18). A child of
+// `app` to reach `first_run_tests`' setup and login.
+#[cfg(test)]
+#[path = "shown_walk_tests.rs"]
+mod shown_walk_tests;
 // v0.0.12 lanes lot (items 15, 16, 1b: moves through the stamped path, one
 // lane per thread, raw ids, `doc/plans/V0012-lot-lanes.md`): tests written
 // before the code, by another author; the implementer does not edit them. A
@@ -73,6 +118,12 @@ mod lanes_tests;
 #[cfg(test)]
 #[path = "lanes_api_tests.rs"]
 mod lanes_api_tests;
+// v0.0.13 lot L5, B1 (C-MERGE, spec ch. 03, MG2 and MG3 in the shell): tests
+// written before the code by the B1 test author; a child of `app` for the same
+// reason as `lanes_tests`.
+#[cfg(test)]
+#[path = "b1_merge_tests.rs"]
+mod b1_merge_tests;
 // v0.0.12 items 14 and 19 (devices have names, History says them,
 // `doc/plans/V0012-items14-19-devices.md`): tests written before the code, by
 // another author; the implementer does not edit them. Needs the seams named
@@ -80,6 +131,16 @@ mod lanes_api_tests;
 #[cfg(test)]
 #[path = "device_names_tests.rs"]
 mod device_names_tests;
+// v0.0.13, item C3 (PR1, PR2: pairing a device again): tests written before the
+// code, by another author; the implementer does not edit them.
+#[cfg(test)]
+#[path = "same_name_tests.rs"]
+mod same_name_tests;
+// v0.0.13, the review's item 19 (History on both hosts, HN1-HN4): tests written
+// before the code, by another author; the implementer does not edit them.
+#[cfg(test)]
+#[path = "history_names_desktop_tests.rs"]
+mod history_names_desktop_tests;
 // v0.0.12 item 9 (trash and orphan actions act on what was shown, Delete says
 // what it did, "Restore into…" offers every thread,
 // `doc/plans/V0012-item9-act-on-what-was-shown.md`): tests written before the
@@ -162,6 +223,71 @@ mod setup_step_announced_tests;
 #[cfg(test)]
 #[path = "labels_spoken_tests.rs"]
 mod labels_spoken_tests;
+// Ch. 12, L6 (v0.0.13 rc2): on the login and join forms, each secret field is
+// described by the drawn hint. Written before the code by its test author; a
+// child of `app` to read `build_a11y_tree` on a locked `App`.
+#[cfg(test)]
+#[path = "hint_described_tests.rs"]
+mod hint_described_tests;
+// v0.0.13, the Alerts window's lists that cannot be read (spec ch. 03, *What
+// cannot be read is never shown as empty*): tests written before the code, by
+// another author; the implementer does not edit them. A child of `app` to
+// drive `refresh_alerts`, `refresh_orphans`, the Alerts window and the status
+// line on a real `App`.
+#[cfg(test)]
+#[path = "could_not_check_tests.rs"]
+mod could_not_check_tests;
+// v0.0.13 lot L5, contract C-LOG LG5 (spec ch. 08): the log is checked at
+// login, before the assistant is used. Written before the code by its test
+// author; a child of `app` to drive the login on a real `App`.
+#[cfg(test)]
+#[path = "clog_login_tests.rs"]
+mod clog_login_tests;
+// C-LOG's host lot on the desktop (spec ch. 08, DG3, DG4, DG6): the window of
+// what remains readable and the three choices, read and pressed through the
+// accessibility tree. Written before the code by its test author.
+#[cfg(test)]
+#[path = "clog_hosts_shell_tests.rs"]
+mod clog_hosts_shell_tests;
+// Ch. 12, SQ1 to SQ9 (lot A of the shell's accessibility, v0.0.13): the action
+// confirmation, the injection and unsaved-edits prompts, the notices and the
+// trash's toast, heard and answered from the keyboard. Written before the code
+// by its test author.
+#[cfg(test)]
+#[path = "shell_a11y_tests.rs"]
+mod shell_a11y_tests;
+// v0.0.13, lot C of the shell's accessibility (spec ch. 12, SQ10 « C »): the
+// bubble-style picker and the right-click menu in the tree and from the
+// keyboard. Written before the code by its test author.
+#[cfg(test)]
+#[path = "a11y_c_tests.rs"]
+mod a11y_c_tests;
+// Spec ch. 12, SQ10, lot B (v0.0.13): the setup's welcome buttons and its bubble-style and theme
+// choices, the recovery wizard while locked, the pairing offer and the guardian enrolment, in the
+// tree and from the keyboard. Written before the code by lot B's test author; the implementer
+// does not edit them. Every key goes through `App::shell_key`, so the key tests do not pass
+// until it is built.
+#[cfg(test)]
+#[path = "a11y_b_tests.rs"]
+mod a11y_b_tests;
+// Ch. 05, PO1 (v0.0.13): closing the pairing window ends the offer, as the
+// app's closing panel does. Written before the code by its test author.
+#[cfg(test)]
+#[path = "pairing_close_tests.rs"]
+mod pairing_close_tests;
+// Ch. 12, SQ11 (v0.0.13): only the window on top answers, in the tree, to a
+// screen reader, and for the gate's minimum time. Written before the code by
+// its test author.
+#[cfg(test)]
+#[path = "modals_on_top_tests.rs"]
+mod modals_on_top_tests;
+// Ch. 07, login errors say what failed (v0.0.13; Céline, 2026-11-19, through
+// the Fable maille): the login form's words for each failure. Written before
+// the code by its test author; a child of `app` to drive the login on a real
+// `App`, in child processes as `first_run_tests` does.
+#[cfg(test)]
+#[path = "login_errors_tests.rs"]
+mod login_errors_tests;
 // Tests build `App`s on parallel threads; production builds one, on the main
 // thread. NVIDIA's WGL driver faults (STATUS_ACCESS_VIOLATION in
 // `ChoosePixelFormat`, `nvoglv64.dll`) when two wgpu GL instances are created
@@ -185,7 +311,7 @@ use crate::panels::{
     auth_layout, auth_reveal_btn, browser_chrome, chat_split, device_forget_btn, devices_pair_btn, devices_panel,
     devices_sync_btn, draw_auth, draw_browser, draw_chat, draw_devices,
     draw_alerts, draw_doc_window, draw_history, draw_inbox, draw_models, draw_pii, draw_previous_values, draw_search,
-    draw_settings, hist_restore_rect, hist_split, load_alerts_as, load_history, load_inbox, load_pii, load_previous_values,
+    draw_settings, hist_restore_rect, hist_split, load_alerts_as, load_history, load_inbox, load_previous_values,
     alert_row_buttons, alerts_list_vp, model_row_buttons, previous_value_buttons, synthetic_inbox,
     pii_row_buttons, search_split, settings_tab_rects, window_chrome, AuthForm, BrowserPanel, ChatMsg,
     ChatPanel, CommsForm, DeviceRow, DevicesPanel, DocBtn, DocWindow, HistoryPanel, Inbox, ModelBtn,
@@ -198,7 +324,7 @@ use crate::panels::{comms_form_layout, compose_form_layout, draw_comms_form, dra
 use crate::panels::{
     draw_guardian_enroll_modal, draw_injection_prompt, draw_pairing_modal, draw_recovery_wizard,
     guardian_modal_layout, injection_prompt_geom, pairing_modal_layout, recovery_wizard_layout,
-    GuardianEnrollModal, InjectionPrompt, PairingModal, RecoveryPhase, RecoveryWizard,
+    GuardianEnrollModal, InjectionPrompt, PairControl, PairingModal, RecControl, RecoveryPhase, RecoveryWizard,
 };
 
 use sovereign_comms::channel::OutgoingMessage;
@@ -307,11 +433,10 @@ const IDENTITY_UNAVAILABLE: &str = "Your documents could not be opened: this dev
 derived. Restart Sovereign; if it persists, report it.";
 
 /// The notice when a document's versions cannot be read (lot 1a, H3): plain
-/// words, no store text, no id.
-const HISTORY_UNREADABLE: (&str, &str) = (
-    "History not opened",
-    "This document\u{2019}s history could not be read. Nothing was changed; try again in a moment.",
-);
+/// words, no store text, no id. Its body is the document service's sentence
+/// (`sovereign_docs::COULD_NOT_READ_HISTORY`, HR1: worded there, never copied
+/// here), then this tail.
+const HISTORY_UNREADABLE: (&str, &str) = ("History not opened", "Nothing was changed; try again in a moment.");
 
 /// A contact shown as an avatar in the taskbar (loaded once with the workspace
 /// so the per-frame draw needs no DB access / decryption).
@@ -321,10 +446,10 @@ pub(crate) struct TaskbarContact {
 }
 
 /// What clicking a taskbar item does.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum TbKind {
     Launch(WindowKind), // launcher button -> open-or-toggle that window
-    OpenDoc(usize),     // recent-doc pill -> open document for cards[idx]
+    OpenDoc(String),    // pinned-doc pill -> open that document, by id (C-HOST AT8)
     Avatar,             // contact avatar -> open the inbox (contacts live there for now)
 }
 
@@ -543,13 +668,13 @@ enum CtxTarget {
 
 /// An action a context-menu row triggers. The card rows act on the document
 /// the menu was opened on (`CtxTarget::Card`), never on a card position.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum CtxAction {
     Open,                     // open the menu's document in a window
     TogglePin,                // pin/unpin the menu's document (persisted)
     Delete,                   // move the menu's document to the trash — one click, with Undo
     OpenSkills,               // switch the menu to the skills submenu for the same document
-    RunSkill { skill: usize }, // run skills[skill] (registry index) on the menu's document
+    RunSkill { skill: String }, // run the skill of that name on the menu's document (C-HOST AT8: by name, not registry index)
     NewThread,                // create a new thread
     NewDocument(usize),       // create a doc in the lane's thread
 }
@@ -574,9 +699,29 @@ pub(crate) struct Notice {
     body: parley::Layout<crate::text::Brush>,
     /// What the notice says, as text (title, body) — read by the tests (E3:
     /// a notice says why, in plain words, and never the stored content).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Also what a screen reader hears of it (ch. 12, SQ6).
     pub(crate) said: (String, String),
+    /// C-SUP SU2 (rule A): the notice carries the gesture « Restart sync ».
+    restart: bool,
+    /// Ch. 12, SQ6: « Restart sync » has the keyboard (Tab reached it). A
+    /// notice starts with the focus on itself, so a stray Enter presses nothing.
+    restart_focused: bool,
+    /// The number its accessibility nodes carry: a new notice is new nodes,
+    /// which a screen reader announces (ch. 12, SQ6).
+    seq: u64,
 }
+
+/// C-SUP SU2 (DEL-0018, the Fable maille by delegation of Céline,
+/// 2026-11-15): the words for a sync that has stopped, the same on both hosts.
+pub(crate) const SYNC_STOPPED_STATUS: &str = "Sync stopped";
+pub(crate) const SYNC_STOPPED_TITLE: &str = "Sync stopped";
+pub(crate) const SYNC_STOPPED_TEXT: &str = "Sync stopped unexpectedly. Nothing syncs until you restart it.";
+pub(crate) const SYNC_RESTART_GESTURE: &str = "Restart sync";
+/// The id ranges of the pairing offer's, the guardian enrolment's and the
+/// recovery wizard's dialogs in the shell's tree (spec ch. 12, SQ10).
+const PAIRING_NS: u64 = 1 << 45;
+const GUARDIAN_NS: u64 = 1 << 44;
+const RECOVERY_NS: u64 = 1 << 43;
 
 /// A modal confirmation for an AI-proposed write/transmit/destruct action
 /// (Action Gravity, principle #1 + Conversational Confirmation #2). The
@@ -585,7 +730,14 @@ pub(crate) struct ActionPrompt {
     level: ActionLevel,
     badge: parley::Layout<crate::text::Brush>, // "MODIFY" / "TRANSMIT" / "DESTRUCT"
     desc: parley::Layout<crate::text::Brush>,  // the proposal's plain-language description
+    /// The description, as text, for a screen reader (ch. 12, SQ1).
+    said: String,
+    /// The button with the keyboard, from « Reject (Esc) » (ch. 12, SQ3).
+    focus: shell_a11y::DialogFocus,
 }
+
+/// The action confirmation's buttons, left to right as drawn.
+pub(crate) const CONFIRMATION_BUTTONS: [&str; 2] = ["Reject (Esc)", "Approve"];
 
 
 /// What to do once an unsaved-edits prompt is resolved by Save or Discard
@@ -612,7 +764,14 @@ pub(crate) struct UnsavedPrompt {
     then: AfterUnsaved,
     title: parley::Layout<crate::text::Brush>,
     body: parley::Layout<crate::text::Brush>,
+    /// Its title and body, as text, for a screen reader (ch. 12, SQ1).
+    said: (String, String),
+    /// The button with the keyboard, from « Save » (ch. 12, SQ3).
+    focus: shell_a11y::DialogFocus,
 }
+
+/// The unsaved-edits prompt's buttons, left to right as drawn.
+pub(crate) const UNSAVED_BUTTONS: [&str; 3] = ["Keep editing", "Discard", "Save"];
 
 /// Geometry of the unsaved-edits modal: (panel, save, discard, cancel).
 pub(crate) fn unsaved_prompt_geom(w: f64, h: f64) -> (Rect, Rect, Rect, Rect) {
@@ -646,7 +805,7 @@ fn summary_message(data: &str) -> String {
 }
 
 /// Gravity color for an action level (badge + accent): green→amber→orange→red.
-fn level_color(level: ActionLevel) -> Color {
+pub(crate) fn level_color(level: ActionLevel) -> Color {
     match level {
         ActionLevel::Observe => Color::from_rgb8(110, 170, 130),
         ActionLevel::Annotate => Color::from_rgb8(150, 175, 110),
@@ -656,8 +815,20 @@ fn level_color(level: ActionLevel) -> Color {
     }
 }
 
+/// An action level's word in ordinary case, as a screen reader reads it
+/// before the description (ch. 12, SQ1); the badge draws it in capitals.
+pub(crate) fn level_word(level: ActionLevel) -> &'static str {
+    match level {
+        ActionLevel::Observe => "Observe",
+        ActionLevel::Annotate => "Annotate",
+        ActionLevel::Modify => "Modify",
+        ActionLevel::Transmit => "Transmit",
+        ActionLevel::Destruct => "Destruct",
+    }
+}
+
 /// Uppercase label for an action level.
-fn level_label(level: ActionLevel) -> &'static str {
+pub(crate) fn level_label(level: ActionLevel) -> &'static str {
     match level {
         ActionLevel::Observe => "OBSERVE",
         ActionLevel::Annotate => "ANNOTATE",
@@ -786,6 +957,9 @@ pub(crate) struct App {
     // The browser's native wry WebView (the same engine Tauri uses), overlaid on
     // the Browser window's body. Lifecycle managed in `sync_browser_webview`.
     pub(crate) browser: Option<wry::WebView>,
+    /// The browser's profile (C-AREA AR7: « one profile per persona », in that
+    /// persona's area), kept as long as the WebView built over it.
+    pub(crate) browser_context: Option<wry::WebContext>,
     pub(crate) browser_tx: mpsc::Sender<BrowserMsg>,
     pub(crate) browser_rx: mpsc::Receiver<BrowserMsg>,
     // Email (Batch 6): the setup modal + the in-memory account config/password
@@ -851,14 +1025,28 @@ pub(crate) struct App {
     /// The open alerts' notices (C-WIRE 13), newest first: shown in the status
     /// bar and to the screen reader until dismissed in the Alerts window.
     pub(crate) alert_notices: Vec<String>,
+    /// C-SWEEP SW6 (spec ch. 09): the suspected values waiting in this
+    /// session's store (`sovereign_ai::pii::signal::waiting`), which the status
+    /// bar counts. *Seam by the test author of lot LS(a); kept current by the
+    /// implementation.*
+    pub(crate) pii_waiting: usize,
+    /// C-SWEEP SW1: the background passes of the sweep a login leaves (aborted
+    /// at the next login and at a lock).
+    pub(crate) pii_sweep_task: Option<tokio::task::JoinHandle<()>>,
     /// Paired devices on an older version (C-WIRE 12): (peer id, name).
     /// Documents are not exchanged with them; the status bar says so.
     pub(crate) older_peers: Vec<(String, String)>,
     /// Per peer, during a sync round: whether the round said "older version".
     /// A round that completes without saying it clears the notice.
     pub(crate) older_round: std::collections::HashMap<String, bool>,
+    /// Paired devices on a newer version (C-WIRE 12 from the other side): this
+    /// device is the one to update. (peer id, name).
+    pub(crate) newer_peers: Vec<(String, String)>,
     /// Where the status-bar notice was drawn (a click opens what it is about).
     pub(crate) status_notice_rect: Option<Rect>,
+    /// C-SUP: the node ended without the session asking for it, and has not
+    /// been restarted (the status line says « Sync stopped »).
+    pub(crate) sync_stopped: bool,
     // Pairing accept (Phase 2b): the handshake runs off the UI thread and returns
     // here; on Ok we log in with the password the user just set.
     pub(crate) pair_tx: mpsc::Sender<Result<(), String>>,
@@ -888,6 +1076,9 @@ pub(crate) struct App {
     /// prompt on screen (see `approval.rs`).
     pub(crate) action_slot: crate::approval::DecisionSlot,
     pub(crate) injection_slot: crate::approval::DecisionSlot,
+    /// Counts the questions and notices shown: each one's accessibility nodes
+    /// carry its number (ch. 12, SQ1, SQ6; `shell_a11y`).
+    dialog_seq: u64,
     pub(crate) skills: SkillRegistry,         // the 24 built-in skills (run from the menu)
     pub(crate) press_pos: Option<(f64, f64)>, // for click-vs-drag discrimination
     pub(crate) debug_open: bool,              // SHELL_OPEN_DOC=1 -> auto-open first doc (screenshot debug)
@@ -929,6 +1120,19 @@ pub(crate) struct App {
     /// The thread chooser of the section "Documents whose thread was deleted"
     /// (S5-12, in the Alerts window): the thread to move into.
     pub(crate) orphan_modal: Option<crate::orphans_ui::ThreadChooser>,
+    /// PR2 (spec ch. 05; v0.0.13, item C3): the questions « is this device,
+    /// paired under a name a paired device has, that device set up again? »
+    /// waiting for her answer, the first one shown (`same_name.rs`).
+    pub(crate) same_name: std::collections::VecDeque<crate::same_name::SameNameQuestion>,
+    /// C-LOG DG3, DG4 (spec ch. 08): the window of what remains readable of a
+    /// quarantined log, while it is open (`log_window.rs`).
+    pub(crate) log_window: Option<crate::log_window::LogWindow>,
+    /// Where Export finds her Downloads folder, when it was given
+    /// (`log_export_downloads`); `None`: it is looked for.
+    pub(crate) log_downloads: Option<Option<std::path::PathBuf>>,
+    /// C-LOG DG3: the diagnosis tool found a quarantine in the turn under way;
+    /// the reply that comes next offers the window.
+    log_diagnosed: bool,
     /// When the new-thread prompt was opened by the section's "New thread…":
     /// the document(s) its Create moves into the new thread.
     pub(crate) orphan_prompt_target: Option<crate::orphans_ui::OrphanTarget>,
@@ -937,16 +1141,22 @@ pub(crate) struct App {
     /// How many documents the one-time conversion could not read (listed in
     /// the Alerts window, v0.0.12 item 7, V2).
     pub(crate) unreadable_count: usize,
+    /// The sentences of the Alerts window's lists that could not be read when
+    /// last read (spec ch. 03, *What cannot be read is never shown as empty*):
+    /// the status line says them, as it says the counts above.
+    pub(crate) could_not_check: Vec<&'static str>,
     /// The notice after a one-click delete, with its Undo (S5-8).
     pub(crate) delete_notice: Option<crate::delete_notice::DeleteNotice>,
     pub(crate) orch: Arc<tokio::sync::Mutex<Option<Arc<Orchestrator>>>>,
     pub(crate) orch_tx: mpsc::Sender<OrchestratorEvent>,
     pub(crate) orch_rx: mpsc::Receiver<OrchestratorEvent>,
-    // Action-gate decision channel: the UI sends Approve/Reject; the orchestrator
-    // (built lazily) takes the rx via set_decision_rx and blocks on it for
-    // Modify/Transmit/Destruct actions. The rx is moved in on first chat.
-    pub(crate) decision_tx: tokio::sync::mpsc::Sender<ActionDecision>,
-    pub(crate) decision_rx_cell: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<ActionDecision>>>>,
+    // Action-gate decision channel, bound to the proposal (C-HOST AT6): the UI
+    // sends Approve/Reject with the request id of the prompt on screen; the
+    // orchestrator (built lazily) takes the rx via set_request_decision_rx and
+    // applies a decision only to the proposal with that id. The rx is moved in
+    // on first chat.
+    pub(crate) request_decision_tx: tokio::sync::mpsc::Sender<RequestDecision>,
+    pub(crate) decision_rx_cell: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<RequestDecision>>>>,
     // INJECTION-002: the shell sends the user's choice directly (in-process, no
     // IPC). rx moved into the orchestrator by wire_new_orchestrator.
     pub(crate) injection_decision_tx: tokio::sync::mpsc::Sender<InjectionDecision>,
@@ -990,8 +1200,12 @@ pub(crate) struct App {
     pub(crate) lane_labels: Vec<crate::lane_rename::LaneLabel>,
     /// The renamable labels as last drawn (screen rects), for hit-testing.
     pub(crate) label_rects: Vec<(usize, Rect)>,
-    /// The presses on the labels, to recognise a double-click (R1).
-    pub(crate) label_clicks: crate::lane_rename::LabelClicks,
+    /// The same rects, each with the id of the thread its label shows, drawn
+    /// in the same frame: what a press on a label names (C-HOST AT8).
+    pub(crate) label_threads: Vec<(String, Rect)>,
+    /// The presses on the labels, by thread id, to recognise a double-click
+    /// (R1; C-HOST AT8).
+    pub(crate) label_clicks: crate::lane_rename::LabelClicksById,
     /// What was last applied to the winit window: input method allowed, and
     /// its candidate window's area (physical px). See `apply_ime`.
     pub(crate) ime_allowed: bool,
@@ -1005,6 +1219,10 @@ pub(crate) struct App {
     /// The locked screen's show/hide node in the last tree built, which a
     /// screen reader's Click toggles (v0.0.12 rc2, V0012-rc2-labels-spoken, L4).
     pub(crate) a11y_show_node: Option<accesskit::NodeId>,
+    /// The setup's targets in the last tree built (its fields, buttons,
+    /// choices and checkbox), which a screen reader's Click and Focus reach
+    /// (spec ch. 12, SQ10).
+    a11y_wiz_controls: Vec<(accesskit::NodeId, crate::onboarding::WizTarget)>,
     /// The screen reader's action requests (the adapter's `A11yAction` holds
     /// the sender), drained on the UI thread by `about_to_wait`.
     pub(crate) a11y_tx: mpsc::Sender<accesskit::ActionRequest>,
@@ -1012,6 +1230,13 @@ pub(crate) struct App {
     /// The thread whose lane label holds the accessibility focus, after a
     /// screen reader's Focus action on it (N8); cleared by a key or a press.
     pub(crate) a11y_label_focus: Option<String>,
+    /// Ch. 12, SQ10 lot C: the picker's focused control while it is shown.
+    pub(crate) picker_focus: Option<usize>,
+    /// Ch. 12, SQ10 lot C: the right-click menu's focused row while it is open.
+    pub(crate) menu_focus: Option<usize>,
+    /// Ch. 12, SQ10 lot C: the menu was opened or moved by a key, so its focused row
+    /// is drawn with a focus outline (a menu the mouse opened shows its hover only).
+    pub(crate) menu_keyed: bool,
     /// Test seam (v0.0.12 lanes lot tests, `lanes_tests.rs`): the window size
     /// (logical px) a headless `App` reports from `win_size`, which otherwise
     /// has no window to ask. Never set outside tests.
@@ -1031,7 +1256,7 @@ pub(crate) struct App {
 /// here is the structural fix, not just the missing two calls.
 async fn wire_new_orchestrator(
     o: &mut Orchestrator,
-    decision_cell: &Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<ActionDecision>>>>,
+    decision_cell: &Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<RequestDecision>>>>,
     injection_cell: &Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<InjectionDecision>>>>,
     account_key: &Option<Arc<sovereign_crypto::account_key::AccountKey>>,
     docs: &Option<Arc<sovereign_docs::DocumentService>>,
@@ -1041,9 +1266,9 @@ async fn wire_new_orchestrator(
         o.set_document_service(d.clone());
     }
     // Action-gate decision channel: Modify/Transmit/Destruct block for the UI's
-    // Approve/Reject.
+    // Approve/Reject, each bound to its proposal's request id (C-HOST AT6).
     if let Some(rx) = decision_cell.lock().await.take() {
-        o.set_decision_rx(rx);
+        o.set_request_decision_rx(rx);
     }
     // INJECTION-002: a high-severity injection in tool output pauses the agent
     // loop and the user chooses redact / pass-through / abort. Without this the
@@ -1071,11 +1296,16 @@ impl App {
         let mut shaper = TextShaper::new();
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
 
-        // Apply the saved UI theme before anything draws (profile is plaintext
-        // metadata, loadable pre-login). Default to light — the reference design.
-        let theme_name = UserProfile::load(&sovereign_core::sovereign_dir())
-            .map(|p| p.theme)
-            .unwrap_or_else(|_| "light".into());
+        // Apply the saved UI theme before anything draws: the device
+        // preferences, read before login and shared by the personas (C-AREA
+        // AR2, `device_preferences.json`; moved there once from the shared
+        // profile of an older install). Default to light — the reference design.
+        let base = sovereign_core::sovereign_dir();
+        if let Err(e) = sovereign_core::profile::DevicePreferences::migrate(&base) {
+            eprintln!("sovereign-shell: device preferences not migrated: {e}");
+        }
+        let device_prefs = sovereign_core::profile::DevicePreferences::load(&base);
+        let theme_name = device_prefs.as_ref().map(|p| p.theme.clone()).unwrap_or_else(|| "light".into());
         crate::theme::set_palette(crate::theme::palette_for(&theme_name));
 
         // Auth gate: the workspace is locked (and the DB unopened) until login,
@@ -1155,10 +1385,11 @@ impl App {
         let mut ai_config = app_config.ai;
         ai_config.n_gpu_layers = 0;
         let p2p_config = app_config.p2p;
-        // v0.0.12 item 19, N1: this device's name, read at start.
-        let device_name = crate::device_name::resolve(&p2p_config.device_name);
+        // v0.0.12 item 19, N1: this device's name, read at start: before any
+        // login, the primary's (C-AREA AR2: one per persona, read again at login).
+        let device_name = crate::device_name::resolve(None, &p2p_config.device_name);
         let (orch_tx, orch_rx) = mpsc::channel::<OrchestratorEvent>();
-        let (decision_tx, decision_rx) = tokio::sync::mpsc::channel::<ActionDecision>(8);
+        let (request_decision_tx, decision_rx) = tokio::sync::mpsc::channel::<RequestDecision>(8);
         let (injection_decision_tx, injection_decision_rx) =
             tokio::sync::mpsc::channel::<InjectionDecision>(32);
         let (browser_tx, browser_rx) = mpsc::channel::<BrowserMsg>();
@@ -1213,10 +1444,8 @@ impl App {
             frames: 0,
             last_report: Instant::now(),
             anim_start: Instant::now(),
-            // Profile is plaintext metadata (loadable pre-login, like the theme).
-            bubble_style: UserProfile::load(&sovereign_core::sovereign_dir())
-                .map(|p| p.bubble_style)
-                .unwrap_or_default(),
+            // A device preference (loadable pre-login, like the theme).
+            bubble_style: device_prefs.as_ref().map(|p| p.bubble_style).unwrap_or_default(),
             bubble_picker: false,
             theme_name,
             last_visible: 0,
@@ -1225,6 +1454,7 @@ impl App {
             drag_win: None,
             card_drag: None,
             browser: None,
+            browser_context: None,
             browser_tx,
             browser_rx,
             comms_form: None,
@@ -1240,7 +1470,8 @@ impl App {
             debug_injection: crate::dev::flag("SHELL_OPEN_INJECTION"),
             recovery_available: crate::recovery::available(),
             // Email deferred to v0.0.10 (comms::EMAIL_ENABLED): stay unconfigured.
-            email_cfg: if comms::EMAIL_ENABLED { comms::load_email_config() } else { None },
+            // The persona's config is read after login (`load_saved_email`).
+            email_cfg: None,
             email_password: None,
             account_key: None,
             device_key: None,
@@ -1253,9 +1484,14 @@ impl App {
             trash: None,
             trash_modal: None,
             orphan_modal: None,
+            same_name: std::collections::VecDeque::new(),
+            log_window: None,
+            log_downloads: None,
+            log_diagnosed: false,
             orphan_prompt_target: None,
             orphan_count: 0,
             unreadable_count: 0,
+            could_not_check: Vec::new(),
             delete_notice: None,
             p2p: None,
             p2p_config,
@@ -1263,9 +1499,13 @@ impl App {
             device_rename: None,
             sync_status: Vec::new(),
             alert_notices: Vec::new(),
+            pii_waiting: 0,
+            pii_sweep_task: None,
             older_peers: Vec::new(),
             older_round: std::collections::HashMap::new(),
+            newer_peers: Vec::new(),
             status_notice_rect: None,
+            sync_stopped: false,
             pair_tx,
             pair_rx,
             pending_join_password: None,
@@ -1281,6 +1521,7 @@ impl App {
             injection_prompt: None,
             action_slot: crate::approval::DecisionSlot::new(),
             injection_slot: crate::approval::DecisionSlot::new(),
+            dialog_seq: 0,
             skills: build_skill_registry(),
             press_pos: None,
             debug_open: crate::dev::flag("SHELL_OPEN_DOC"),
@@ -1305,7 +1546,7 @@ impl App {
             orch: Arc::new(tokio::sync::Mutex::new(None)),
             orch_tx,
             orch_rx,
-            decision_tx,
+            request_decision_tx,
             decision_rx_cell: Arc::new(tokio::sync::Mutex::new(Some(decision_rx))),
             injection_decision_tx,
             injection_decision_rx_cell: Arc::new(tokio::sync::Mutex::new(Some(injection_decision_rx))),
@@ -1325,16 +1566,21 @@ impl App {
             lane_rename: None,
             lane_labels: Vec::new(),
             label_rects: Vec::new(),
-            label_clicks: crate::lane_rename::LabelClicks::default(),
+            label_threads: Vec::new(),
+            label_clicks: crate::lane_rename::LabelClicksById::default(),
             ime_allowed: false,
             ime_area: None,
             framed: Scene::new(),
             adapter: None,
             a11y_root_focus: accesskit::NodeId(0),
             a11y_show_node: None,
+            a11y_wiz_controls: Vec::new(),
             a11y_tx,
             a11y_rx,
             a11y_label_focus: None,
+            picker_focus: None,
+            menu_focus: None,
+            menu_keyed: false,
             #[cfg(test)]
             test_view: None,
         }
@@ -1361,9 +1607,17 @@ impl App {
                         eprintln!("sovereign-shell: could not write the setup marker after the join: {e}");
                     }
                     // v0.0.12 item 19, N2: the name typed in the join form
-                    // is saved with it (blank: the default stays).
+                    // is saved with it (blank: the default stays). The join
+                    // makes the primary's account, so it is the primary's
+                    // name (C-AREA AR2: before the login, no session holds it).
                     if let Some(name) = self.pending_join_name.take() {
-                        self.set_this_device_name(&name);
+                        match crate::device_name::save(Some(CorePersona::Primary), &name) {
+                            Ok(()) => self.device_name = name,
+                            Err(e) => self.set_notice(
+                                "Device not renamed",
+                                &format!("This device's name could not be saved: {e}"),
+                            ),
+                        }
                     }
                     // Unlocks off the UI thread; `unlock_done` then starts P2P
                     // and kicks the first sync with `pending_join_peer`.
@@ -1450,6 +1704,11 @@ impl App {
             return;
         }
 
+        // C-SUP SU1: the node's end, as its supervisor reported it.
+        if let Some(end) = self.p2p.as_ref().and_then(crate::p2p::P2pHandle::node_end) {
+            self.on_sync_stopped(end);
+        }
+
         // Drain orchestrator events (chat replies stream back on this channel).
         // Replies go to the first Chat window in the stack (if any is open).
         // Drain the orchestrator channel fully, then apply (so methods can take
@@ -1464,13 +1723,22 @@ impl App {
         let mut v2_synced_peer: Option<String> = None; // the peer of that sync, for the open editors
         for ev in events {
             match ev {
-                OrchestratorEvent::ChatResponse { text } => self.push_chat_msg(text),
+                OrchestratorEvent::ChatResponse { text } => {
+                    self.push_chat_msg(text);
+                    // C-LOG DG3: the reply after the diagnosis offers the window.
+                    if std::mem::take(&mut self.log_diagnosed) {
+                        self.offer_readable_log_on_last();
+                    }
+                }
+                OrchestratorEvent::QuarantinedLogDiagnosed => self.log_diagnosed = true,
                 OrchestratorEvent::ActionProposed { proposal } => self.set_action_prompt(proposal),
                 OrchestratorEvent::InjectionDecisionRequested {
                     source, severity, indicators, preview, ..
                 } => {
+                    // Ch. 12, SQ3: the focus starts on « Redact & continue ».
+                    let focus = shell_a11y::DialogFocus::new(self.next_dialog_seq(), 0, 3);
                     self.injection_prompt =
-                        Some(InjectionPrompt { source, severity, indicators, preview });
+                        Some(InjectionPrompt { source, severity, indicators, preview, focus });
                     self.injection_slot.open(Instant::now());
                 }
                 // v0.0.12 rc2 (V0012-rc2-summary-shown, R1, R2, R4): a summary is shown as
@@ -1539,6 +1807,7 @@ impl App {
                 | OrchestratorEvent::ThreadCreated { .. }
                 | OrchestratorEvent::ThreadRenamed { .. }
                 | OrchestratorEvent::DocumentMoved { .. }
+                | OrchestratorEvent::ThreadMerged { .. }
                 | OrchestratorEvent::ThreadDeleted { .. } => reload = true,
                 // P2P (Batch 6c): keep the Devices window live.
                 OrchestratorEvent::SyncStatus { peer_id, status } => {
@@ -1550,6 +1819,7 @@ impl App {
                         && self.older_round.remove(&peer_id) == Some(false)
                     {
                         self.older_peers.retain(|(p, _)| *p != peer_id);
+                        self.newer_peers.retain(|(p, _)| *p != peer_id);
                     }
                     // A completed sync may have written rows into our DB — reload
                     // the canvas so freshly-synced docs/threads show up live.
@@ -1558,6 +1828,9 @@ impl App {
                         reload = true;
                         sync_reload = true;
                         v2_synced_peer = Some(peer_id.clone());
+                        // C-SWEEP SW6: the translator swept what the round
+                        // brought (SW1) before reporting it; the count again.
+                        self.refresh_pii_waiting();
                     }
                     self.note_sync_status(peer_id, status);
                 }
@@ -1574,9 +1847,18 @@ impl App {
                     self.note_older_peer(peer_id, device_name);
                     self.refresh_devices_windows();
                 }
-                OrchestratorEvent::DevicePaired { device_name, .. } => {
+                OrchestratorEvent::ThisDeviceNeedsUpdate { peer_id, device_name } => {
+                    self.note_newer_peer(peer_id, device_name);
                     self.refresh_devices_windows();
-                    self.set_notice("Devices", &format!("Paired with {device_name}."));
+                }
+                OrchestratorEvent::DevicePaired { device_id, device_name } => {
+                    self.refresh_devices_windows();
+                    // PR2: under a name a paired device has, she is asked
+                    // whether it is that device, set up again; the question
+                    // says it paired.
+                    if !self.ask_if_same_name(&device_id, &device_name) {
+                        self.set_notice("Devices", &format!("Paired with {device_name}."));
+                    }
                 }
                 OrchestratorEvent::PairingFailed { reason, .. } => {
                     self.set_notice("Pairing failed", &reason);
@@ -1709,7 +1991,9 @@ impl App {
         if self.debug_open && !self.cards.is_empty() {
             // SHELL_OPEN_DOC: the first document, opened as a click opens it
             // (in the editor, E6).
-            self.open_doc_window(0);
+            if let Some(id) = self.cards.first().map(|c| c.id.clone()) {
+                self.open_doc_by_id(&id);
+            }
             self.debug_open = false;
         }
         if self.debug_inbox {
@@ -1803,7 +2087,9 @@ impl App {
             self.debug_guardian = false;
         }
         if self.debug_injection {
+            let focus = shell_a11y::DialogFocus::new(self.next_dialog_seq(), 0, 3);
             self.injection_prompt = Some(InjectionPrompt {
+                focus,
                 source: "web page: news.example.com".into(),
                 severity: 9,
                 indicators: vec!["role-override token".into(), "instruction density".into()],
@@ -1876,7 +2162,13 @@ impl App {
             let base = if lane % 2 == 0 { pal().lane_even } else { pal().lane_odd };
             let rect = Rect::new(0.0, y, w, y + lane_h);
             self.scene.fill(Fill::NonZero, Affine::IDENTITY, base, None, &rect);
-            self.scene.fill(Fill::NonZero, Affine::IDENTITY, self.lane_color(lane).with_alpha(0.06), None, &rect);
+            // C-MERGE MG2: an ended thread's band stops at its end date.
+            let band_end = match self.lanes.ended_at(lane) {
+                Some(end) => self.cam.w2s_x(x_of_ts(end.timestamp(), self.time_ref)).clamp(0.0, w),
+                None => w,
+            };
+            let band = Rect::new(0.0, y, band_end, y + lane_h);
+            self.scene.fill(Fill::NonZero, Affine::IDENTITY, self.lane_color(lane).with_alpha(0.06), None, &band);
         }
 
         // While dragging a card, highlight the lane under the cursor — only
@@ -1910,7 +2202,8 @@ impl App {
         let card_fill_ext = pal().card_ext;
         let pin_color = pal().pin;
         let badge_fill = pal().accent;
-        let badge_text = pal().on_accent;
+        // TC1: the count badge's text reads on the accent in both themes.
+        let badge_text = crate::theme::text_on_fill(badge_fill);
         // Zoom-reactive decking: front card at its true spot, older cards peek
         // up-left behind it, overflow hidden behind a count badge (see
         // canvas::deck_roles). Paint deeper peeks first so a front sits on top
@@ -2019,16 +2312,22 @@ impl App {
         // hit-testing shares: the renamable ones (a live thread's) are kept for
         // the double-click that opens the rename field (THREAD-name R1).
         self.label_rects.clear();
+        self.label_threads.clear();
         for lane in seen {
-            let name = self.lane_names.get(lane).cloned().unwrap_or_default();
+            let mut name = self.lane_names.get(lane).cloned().unwrap_or_default();
             if name.is_empty() {
                 continue;
+            }
+            // C-MERGE MG2: the ended lane shows its mark after its name.
+            if let Some(e) = self.lanes.ended(lane) {
+                name = format!("{name} \u{00b7} {}", e.mark);
             }
             let y = self.cam.w2s_y(lane as f64 * LANE_H);
             let label = self.shaper.shape(&name, 220.0, 12.0);
             let rect = lane_label_rect(y, label.width() as f64);
-            if self.lane_labels.iter().any(|l| l.lane == lane) {
+            if let Some(l) = self.lane_labels.iter().find(|l| l.lane == lane) {
                 self.label_rects.push((lane, rect));
+                self.label_threads.push((l.thread_id.clone(), rect));
             }
             let pill = RoundedRect::from_rect(rect, 5.0);
             self.scene.fill(Fill::NonZero, Affine::IDENTITY, self.lane_color(lane).with_alpha(0.92), None, &pill);
@@ -2104,7 +2403,7 @@ impl App {
                 }
                 WindowContent::History(hp) => {
                     hp.ensure_shaped(&mut self.shaper, body_w);
-                    let list_h = hist_split(body, hp.selected.is_some()).0.height();
+                    let list_h = hist_split(body, hp.offers_restore()).0.height();
                     hp.scroll = hp.scroll.clamp(0.0, (hp.content_h() - list_h).max(0.0));
                 }
                 WindowContent::Models(mp) => {
@@ -2160,8 +2459,11 @@ impl App {
         self.draw_bubble(w, h);
         self.draw_plus(w, h);
 
-        // Right-click context menu floats above all of it; a result notice and
-        // (most modal of all) an action confirmation are the topmost layers.
+        // The right-click menu floats above the canvas and the windows. Above
+        // it, every window the shell draws as a modal, drawn from the bottom
+        // up in the reverse of the one order of spec ch. 12, SQ11a
+        // (`on_top`): what the eye sees on top is what a click, a key and the
+        // tree reach.
         if self.delete_notice.as_ref().is_some_and(|n| !n.shown(Instant::now())) {
             self.delete_notice = None;
         }
@@ -2171,14 +2473,14 @@ impl App {
         }
         self.draw_context_menu(w, h);
         // The new-thread prompt (N1), above the canvas, the windows and the
-        // menu; notices and confirmations stay above it.
+        // menu.
         if let Some(prompt) = self.new_thread_prompt.as_mut() {
             prompt.set_scale(self.scale * self.ui_scale);
             let cursor = Point::new(self.cursor.0, self.cursor.1);
             prompt.draw(&mut self.scene, &mut self.shaper, w, h, cursor);
         }
         // The rename field over its lane label (R1), above the windows, as
-        // the prompt: it holds the keyboard while open.
+        // the prompt: it holds the keyboard while on top.
         if let Some(label) = self.lane_rename_label() {
             let total = self.scale * self.ui_scale;
             if let Some(field) = self.lane_rename.as_mut() {
@@ -2214,8 +2516,6 @@ impl App {
             let cursor = Point::new(self.cursor.0, self.cursor.1);
             m.draw(&mut self.scene, &mut self.shaper, w, h, cursor);
         }
-        self.draw_notice(w, h);
-        self.draw_action_prompt(w, h);
         if let Some(form) = &mut self.comms_form {
             form.ensure_shaped(&mut self.shaper);
         }
@@ -2245,18 +2545,39 @@ impl App {
             draw_recovery_wizard(&mut self.scene, &mut self.shaper, &wiz, w, h);
             self.recovery_wizard = Some(wiz);
         }
-        if let Some(p) = self.injection_prompt.take() {
-            draw_injection_prompt(&mut self.scene, &mut self.shaper, &p, w, h);
-            self.injection_prompt = Some(p);
-            if self.unsaved_prompt.is_none() {
-                self.injection_slot.mark_shown(Instant::now());
+        // C-LOG DG3: the window of what remains readable.
+        self.draw_log_window(w, h);
+        if self.bubble_picker {
+            let focus = self.picker_focus_now();
+            crate::panels::draw_bubble_picker(&mut self.scene, &mut self.shaper, self.bubble_style, focus, w, h);
+        }
+        // The three windows that arrive by themselves come above every window
+        // the person opened, so that what asks is seen where it asks (SQ11a).
+        self.draw_notice(w, h);
+        // PR2: the same-name question.
+        if !self.locked {
+            if let Some(q) = self.same_name.front() {
+                let cursor = Point::new(self.cursor.0, self.cursor.1);
+                crate::same_name::draw(&mut self.scene, &mut self.shaper, q, w, h, cursor);
             }
         }
-        // Lot 0.3: the unsaved-edits prompt is topmost — it also takes clicks
-        // and keys first.
+        // Lot 0.3: the unsaved-edits prompt.
         self.draw_unsaved_prompt(w, h);
-        if self.bubble_picker {
-            crate::panels::draw_bubble_picker(&mut self.scene, &mut self.shaper, self.bubble_style, w, h);
+        // The window with a deadline, above everything, so that it is never
+        // covered while its time runs (SQ11a); the orchestrator sends one at a
+        // time (ch. 08, AT13). Were both shown, the injection prompt stays
+        // above the confirmation (SQ2).
+        self.draw_action_prompt(w, h);
+        // Ch. 12, SQ4: the injection prompt's focused button shows the focus
+        // outline while it is on top.
+        let injection_on_top = self.on_top() == shell_a11y::OnTop::Injection;
+        if let Some(p) = self.injection_prompt.take() {
+            draw_injection_prompt(&mut self.scene, &mut self.shaper, &p, w, h, injection_on_top);
+            self.injection_prompt = Some(p);
+            // SQ11e: it counts as shown only while it is drawn on top.
+            if injection_on_top {
+                self.injection_slot.mark_shown(Instant::now());
+            }
         }
 
         // Position/show the browser's native WebView over its window body (it's
@@ -2290,7 +2611,14 @@ impl App {
     }
 
     /// First open Chat window's panel, mutably (for streaming replies / input).
-    fn first_chat_mut(&mut self) -> Option<&mut ChatPanel> {
+    pub(crate) fn first_chat(&self) -> Option<&ChatPanel> {
+        self.windows.iter().find_map(|w| match &w.content {
+            WindowContent::Chat(c) => Some(c),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn first_chat_mut(&mut self) -> Option<&mut ChatPanel> {
         self.windows.iter_mut().find_map(|w| match &mut w.content {
             WindowContent::Chat(c) => Some(c),
             _ => None,
@@ -2370,7 +2698,7 @@ impl App {
             }
             WindowKind::Search => WindowContent::Search(SearchPanel::new()),
             WindowKind::Models => WindowContent::Models(self.build_models_panel()),
-            WindowKind::Pii => match self.db.as_ref().map(|d| self.rt.block_on(load_pii(d))) {
+            WindowKind::Pii => match self.load_pii_panel() {
                 Some(pp) => WindowContent::Pii(pp),
                 None => return,
             },
@@ -2518,7 +2846,7 @@ impl App {
         let py0 = cy - pill_h * 0.5;
         let pill_w = 150.0;
         let mut x = pad;
-        for (ci, card) in self.cards.iter().enumerate() {
+        for card in self.cards.iter() {
             if !card.pinned {
                 continue;
             }
@@ -2527,7 +2855,7 @@ impl App {
             }
             let rect = Rect::new(x, py0, x + pill_w, py0 + pill_h);
             let accent = if card.external { external } else { owned };
-            items.push(TbItem { rect, label: crate::canvas::display_title(&card.title).to_string(), kind: TbKind::OpenDoc(ci), accent, active: false });
+            items.push(TbItem { rect, label: crate::canvas::display_title(&card.title).to_string(), kind: TbKind::OpenDoc(card.id.clone()), accent, active: false });
             x += pill_w + gap;
         }
 
@@ -2787,9 +3115,10 @@ impl App {
         );
         let fill = if hovered { pal().accent.with_alpha(0.92) } else { pal().accent };
         self.scene.fill(Fill::NonZero, Affine::IDENTITY, fill, None, &disc);
-        // The "+" glyph: two strokes in the on-accent color.
+        // The "+" glyph: two strokes in the text colour for the disc as seen
+        // (TC1), over the canvas's base.
         let arm = r * 0.46;
-        let on = pal().on_accent;
+        let on = crate::theme::text_on_fill(crate::theme::seen_over(fill, pal().base));
         self.scene.stroke(
             &Stroke::new(2.4),
             Affine::IDENTITY,
@@ -2840,12 +3169,17 @@ impl App {
     /// Set + persist the orchestrator-bubble style (profile is plaintext metadata).
     fn select_bubble_style(&mut self, style: BubbleStyle) {
         self.bubble_style = style;
-        let dir = sovereign_core::sovereign_dir();
-        let mut profile = UserProfile::load(&dir).unwrap_or_else(|_| UserProfile::default_new());
-        profile.bubble_style = style;
-        if let Err(e) = profile.save(&dir) {
+        if let Err(e) = self.save_device_preferences() {
             println!("sovereign-shell: could not save bubble style: {e}");
         }
+    }
+
+    /// The device preferences as shown now (theme, bubble style), saved to
+    /// `device_preferences.json`: shared by the personas, read before login
+    /// (C-AREA AR2).
+    fn save_device_preferences(&self) -> anyhow::Result<()> {
+        sovereign_core::profile::DevicePreferences { theme: self.theme_name.clone(), bubble_style: self.bubble_style }
+            .save(&sovereign_core::sovereign_dir())
     }
 
     /// Lot 0.9: fold queued guardian-enrollment confirmations into the encrypted
@@ -2892,10 +3226,7 @@ impl App {
     fn toggle_theme(&mut self) {
         self.theme_name = if self.theme_name == "light" { "dark".into() } else { "light".into() };
         crate::theme::set_palette(crate::theme::palette_for(&self.theme_name));
-        let dir = sovereign_core::sovereign_dir();
-        let mut profile = UserProfile::load(&dir).unwrap_or_else(|_| UserProfile::default_new());
-        profile.theme = self.theme_name.clone();
-        if let Err(e) = profile.save(&dir) {
+        if let Err(e) = self.save_device_preferences() {
             self.set_notice("Theme not saved", &format!("The theme applies now but won't be remembered: {e}"));
         }
         // Rebuild any open Settings window so the "Theme" row label updates.
@@ -2911,7 +3242,7 @@ impl App {
         let hit = self.taskbar_items(w, h).into_iter().find(|it| it.rect.contains(p)).map(|it| it.kind);
         match hit {
             Some(TbKind::Launch(kind)) => self.focus_or_toggle(kind),
-            Some(TbKind::OpenDoc(idx)) => self.open_doc_window(idx),
+            Some(TbKind::OpenDoc(id)) => self.open_doc_by_id(&id),
             Some(TbKind::Avatar) => self.focus_or_toggle(WindowKind::Inbox),
             None => {}
         }
@@ -2947,12 +3278,15 @@ impl App {
             CtxTarget::Canvas(lane)
         };
         self.ctx_menu = Some(ContextMenu { target, anchor: p });
+        // Ch. 12, SQ10 lot C: a menu opens on its first row.
+        self.menu_focus = None;
+        self.menu_keyed = false;
     }
 
     /// The position of document `id` among the cards as loaded now (a reload
     /// may have moved it, or removed it).
     fn card_index_of(&self, id: &str) -> Option<usize> {
-        self.cards.iter().position(|c| c.id == id)
+        crate::card_menu::card_position(self.cards.iter().map(|c| c.id.as_str()), id)
     }
 
     /// The menu's rows: (label, action, is_danger). Empty when no menu is open.
@@ -2961,9 +3295,9 @@ impl App {
         match &menu.target {
             // Lot 0.1: text-editor "Save" is hidden — run with empty params it
             // would replace any body with "" (doc_writes::MENU_HIDDEN_ACTIONS).
-            CtxTarget::Card(card) if card.in_skills() => crate::doc_writes::menu_skill_entries(&self.skills)
+            CtxTarget::Card(card) if card.in_skills() => crate::doc_writes::menu_skill_names(&self.skills)
                 .into_iter()
-                .map(|(i, label)| (label, CtxAction::RunSkill { skill: i }, false))
+                .map(|(name, label)| (label, CtxAction::RunSkill { skill: name }, false))
                 .collect(),
             CtxTarget::Card(card) => {
                 let pinned = self.card_index_of(card.target_id()).map(|ci| self.cards[ci].pinned).unwrap_or(false);
@@ -2978,7 +3312,8 @@ impl App {
             // with no thread at all), for the thread the lane shows (N2).
             CtxTarget::Canvas(lane) => {
                 let mut rows = vec![("New lane".to_string(), CtxAction::NewThread, false)];
-                if self.lanes.thread_of_lane(*lane).is_some() {
+                // C-MERGE MG3: not on an ended thread's lane.
+                if self.lanes.thread_of_lane(*lane).is_some() && self.lanes.ended_at(*lane).is_none() {
                     rows.push(("New document".to_string(), CtxAction::NewDocument(*lane), false));
                 }
                 rows
@@ -3008,7 +3343,7 @@ impl App {
             .enumerate()
             .map(|(i, (_l, a, d))| {
                 let ry = y0 + PAD + i as f64 * rh;
-                (Rect::new(x0 + PAD, ry, x0 + mw - PAD, ry + rh), *a, *d)
+                (Rect::new(x0 + PAD, ry, x0 + mw - PAD, ry + rh), a.clone(), *d)
             })
             .collect();
         Some((rect, items))
@@ -3033,6 +3368,12 @@ impl App {
                 self.scene.fill(Fill::NonZero, Affine::IDENTITY, tint, None, &hl);
             }
             let color = if *danger { Color::from_rgb8(235, 130, 118) } else { pal().text };
+            // Ch. 12, SQ10 lot C: the row the keyboard holds, with a visible focus
+            // outline (WCAG 2.4.7), once a key opened or moved the menu.
+            if self.menu_keyed && self.menu_focus.is_some_and(|f| items.get(f).is_some_and(|(r, _, _)| r == row_rect)) {
+                let fr = RoundedRect::new(row_rect.x0 - 1.0, row_rect.y0 - 1.0, row_rect.x1 + 1.0, row_rect.y1 + 1.0, 6.0);
+                self.scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, pal().text, None, &fr);
+            }
             let lbl = self.shaper.shape(label, (row_rect.width() - 16.0) as f32, 13.0);
             let ty = row_rect.y0 + (row_rect.height() - lbl.height() as f64) * 0.5;
             crate::text::draw_text(&mut self.scene, &lbl, Affine::translate((row_rect.x0 + 10.0, ty)), color);
@@ -3041,14 +3382,11 @@ impl App {
 
     /// Draw the transient result/error notice popup (centered, topmost).
     fn draw_notice(&mut self, w: f64, h: f64) {
+        let restart = self.notice_restart_rect(w, h);
         let Some(notice) = &self.notice else { return };
         const PW: f64 = 460.0;
-        let title_h = notice.title.height() as f64;
-        let body_h = notice.body.height() as f64;
-        let ph = (16.0 + title_h + 10.0 + body_h + 18.0 + 16.0).min(h - BOTTOM_CHROME - AXIS_H - 20.0);
-        let x0 = ((w - PW) * 0.5).max(8.0);
-        let y0 = ((h - BOTTOM_CHROME - AXIS_H - ph) * 0.5 + AXIS_H).max(AXIS_H + 8.0);
-        let rect = Rect::new(x0, y0, x0 + PW, y0 + ph);
+        let (rect, title_h) = Self::notice_geom(notice, w, h);
+        let (x0, y0) = (rect.x0, rect.y0);
 
         // Dim scrim + panel.
         self.scene.fill(Fill::NonZero, Affine::IDENTITY, pal().scrim.with_alpha(0.35), None, &Rect::new(0.0, 0.0, w, h));
@@ -3059,9 +3397,27 @@ impl App {
         crate::text::draw_text(&mut self.scene, &notice.title, Affine::translate((x0 + 16.0, y0 + 14.0)), pal().text);
         crate::text::draw_text(&mut self.scene, &notice.body, Affine::translate((x0 + 16.0, y0 + 16.0 + title_h + 10.0)), pal().text_body);
         self.scene.pop_layer();
+        // C-SUP SU2: the gesture « Restart sync », beside the stop's notice.
+        if let Some(b) = restart {
+            let br = RoundedRect::from_rect(b, 6.0);
+            self.scene.fill(Fill::NonZero, Affine::IDENTITY, pal().accent, None, &br);
+            let l = self.shaper.shape(SYNC_RESTART_GESTURE, b.width() as f32, 13.0);
+            let tx = b.x0 + (b.width() - l.width() as f64) * 0.5;
+            let ty = b.y0 + (b.height() - l.height() as f64) * 0.5;
+            crate::text::draw_text(&mut self.scene, &l, Affine::translate((tx, ty)), Color::WHITE);
+        }
+        // Ch. 12, SQ6: « Restart sync » shows its focus outline (WCAG 2.4.7)
+        // while it has the keyboard and the notice is on top.
+        if let Some(b) = restart.filter(|_| notice.restart_focused) {
+            if self.on_top() == shell_a11y::OnTop::Notice {
+                crate::panels::focus_outline(&mut self.scene, b);
+            }
+        }
         // Hint footer.
-        let hint = self.shaper.shape("click anywhere to dismiss", (PW - 32.0) as f32, 11.0);
-        crate::text::draw_text(&mut self.scene, &hint, Affine::translate((x0 + 16.0, rect.y1 - 18.0)), pal().text_faint);
+        let hint_text = if restart.is_some() { "click elsewhere to dismiss" } else { "click anywhere to dismiss" };
+        let hint = self.shaper.shape(hint_text, (PW - 32.0) as f32, 11.0);
+        let hint_y = restart.map_or(rect.y1 - 18.0, |b| b.y0 - 18.0);
+        crate::text::draw_text(&mut self.scene, &hint, Affine::translate((x0 + 16.0, hint_y)), pal().text_faint);
     }
 
     /// Handle a left-click while the menu is open: run the row's action, or
@@ -3118,10 +3474,10 @@ impl App {
                 }
             }
             CtxAction::RunSkill { skill } => {
-                let picked = card.map(|c| c.click_skill(skill));
+                let picked = card.map(|c| c.click_skill_named(&skill));
                 self.ctx_menu = None;
-                if let Some((id, si)) = picked {
-                    self.run_skill(&id, si);
+                if let Some((id, name)) = picked {
+                    self.run_skill_named(&id, &name);
                 }
             }
             CtxAction::NewThread => {
@@ -3137,7 +3493,18 @@ impl App {
         }
     }
 
-    /// Run skill `si` (its first action) on the document for card `ci`, surfacing
+    /// Run skill `si` (an index into the registry, its first action) on
+    /// document `doc_id`: the index is turned into the skill's name at once,
+    /// then [`Self::run_skill_named`] runs it. Kept for the `SHELL_RUN_SKILL`
+    /// dev switch and the existing tests; the Skills menu carries the name
+    /// (C-HOST AT8).
+    fn run_skill(&mut self, doc_id: &str, si: usize) {
+        if let Some(name) = self.skills.all_skills().get(si).map(|s| s.name().to_string()) {
+            self.run_skill_named(doc_id, &name);
+        }
+    }
+
+    /// Run skill `skill` (its first action), by its name, on the document `doc_id`, surfacing
     /// the result (or error) in a notice. db/llm aren't wired into the shell yet,
     /// so db/llm-backed skills report an honest error; content-transform skills
     /// (word count, readability, redactor, formatters, exporters, …) work.
@@ -3147,7 +3514,7 @@ impl App {
     /// (`doc_writes::apply_skill_update`: never an emptied text, never a media
     /// change, never a collapsed structure; the prior state and the result
     /// both versioned), and never over a doc window's unsaved edits.
-    fn run_skill(&mut self, doc_id: &str, si: usize) {
+    fn run_skill_named(&mut self, doc_id: &str, skill: &str) {
         let doc_id = doc_id.to_string();
         let Some(docs) = self.docs.clone() else {
             self.set_notice("Skill not run", "The workspace is locked: log in to run skills on documents.");
@@ -3162,7 +3529,8 @@ impl App {
         };
         let skill_doc = SkillDocument { id: doc_id.clone(), title: input.title.clone(), content: input.fields.clone() };
 
-        let (skill_name, action_id) = match self.skills.all_skills().get(si) {
+        // C-HOST AT8: the skill by its name, as the menu row carried it.
+        let (skill_name, action_id) = match crate::doc_writes::skill_named(&self.skills, skill) {
             Some(s) => (
                 s.name().to_string(),
                 s.actions().into_iter().next().map(|(id, _)| id).unwrap_or_default(),
@@ -3235,7 +3603,7 @@ impl App {
     }
 
     /// Show a transient, centered result/error popup (dismissed by click / Esc).
-    fn set_notice(&mut self, title: &str, body: &str) {
+    pub(crate) fn set_notice(&mut self, title: &str, body: &str) {
         const NOTICE_W: f32 = 460.0;
         let title_s = title;
         let title = self.shaper.shape(title, NOTICE_W - 32.0, 15.0);
@@ -3243,14 +3611,119 @@ impl App {
         let trimmed: String = body.chars().take(1200).collect();
         let body_l = self.shaper.shape(&trimmed, NOTICE_W - 32.0, 13.0);
         let said = (title_s.to_string(), trimmed);
-        self.notice = Some(Notice { title, body: body_l, said });
+        let seq = self.next_dialog_seq();
+        self.notice = Some(Notice { title, body: body_l, said, restart: false, restart_focused: false, seq });
+    }
+
+    /// C-SWEEP SW6 (spec ch. 09): what a login found in this persona's queue
+    /// (`sovereign_ai::pii::signal::login_signal`, called once the session is
+    /// open). The notice (`login_notice`) shows only when the queue has grown,
+    /// and it yields to every other notice due at that login (the Fable maille,
+    /// by delegation of Céline, 2026-11-17): called after the login's other
+    /// notices, it never replaces one. The status bar's count is kept either
+    /// way.
+    ///
+    /// *Signature by the test author of lot LS(a); the body is the implementer's.*
+    pub(crate) fn pii_login_notice(&mut self, signal: sovereign_ai::pii::signal::LoginSignal) {
+        self.pii_waiting = signal.waiting;
+        if self.notice.is_some() {
+            return;
+        }
+        if let Some((title, body)) = sovereign_ai::pii::signal::login_notice(&signal) {
+            self.set_notice(&title, &body);
+        }
+    }
+
+    /// C-SWEEP SW1 and SW6, at a login once the session is open: one bounded
+    /// pass of the personal-data sweep (the shared routine, SW9) over this
+    /// session's documents, then what the login finds in the queue
+    /// (`login_signal`, which renews the count seen at the last login). What
+    /// the first pass leaves runs in the background, a batch at a time; the
+    /// status bar's count is read again when the PII window or a sync round
+    /// changes it. `None` when the session has no document service.
+    fn pii_sweep_at_login(&mut self) -> Option<sovereign_ai::pii::signal::LoginSignal> {
+        let docs = self.docs.clone()?;
+        let db = self.db.clone()?;
+        let report = self.rt.block_on(sovereign_ai::pii::sweep::run_sweep_pass(&docs, crate::p2p::SWEEP_BATCH));
+        if report.remaining && !report.analysed.is_empty() {
+            let rest = docs.clone();
+            let task = self.rt.spawn(async move {
+                loop {
+                    let r = sovereign_ai::pii::sweep::run_sweep_pass(&rest, crate::p2p::SWEEP_BATCH).await;
+                    if !r.remaining || r.analysed.is_empty() {
+                        break;
+                    }
+                }
+            });
+            if let Some(old) = self.pii_sweep_task.replace(task) {
+                old.abort();
+            }
+        }
+        match self.rt.block_on(sovereign_ai::pii::signal::login_signal(db.as_ref())) {
+            Ok(signal) => Some(signal),
+            Err(e) => {
+                tracing::warn!("personal-data queue: the login's signal could not be read ({e})");
+                self.refresh_pii_waiting();
+                None
+            }
+        }
+    }
+
+    /// C-SWEEP SW6: the status bar's count, read again from this session's
+    /// store (0 without a session).
+    pub(crate) fn refresh_pii_waiting(&mut self) {
+        self.pii_waiting = match self.db.clone() {
+            Some(db) => self.rt.block_on(sovereign_ai::pii::signal::waiting(db.as_ref())).unwrap_or(self.pii_waiting),
+            None => 0,
+        };
+    }
+
+    /// C-SUP SU2: the stop's notice, with the gesture « Restart sync » beside
+    /// it (rule A). Shown once by the stop itself, and again in answer to a
+    /// gesture that needs the node while sync is stopped (DEL-0019). `body`
+    /// is the stop's text, or a failed restart's.
+    fn show_sync_stopped(&mut self, body: &str) {
+        self.set_notice(SYNC_STOPPED_TITLE, body);
+        if let Some(n) = self.notice.as_mut() {
+            n.restart = true;
+        }
+    }
+
+    /// What a gesture that needs the node says when no node runs: the stop's
+    /// notice while sync is stopped (DEL-0019), else `not_running` under
+    /// `title`.
+    fn say_no_node(&mut self, title: &str, not_running: &str) {
+        if self.sync_stopped {
+            self.show_sync_stopped(SYNC_STOPPED_TEXT);
+        } else {
+            self.set_notice(title, not_running);
+        }
+    }
+
+    /// Where the notice's « Restart sync » button is drawn, when it has one.
+    fn notice_restart_rect(&self, w: f64, h: f64) -> Option<Rect> {
+        let notice = self.notice.as_ref().filter(|n| n.restart)?;
+        let (rect, _) = Self::notice_geom(notice, w, h);
+        Some(Rect::new(rect.x1 - 16.0 - 120.0, rect.y1 - 16.0 - 30.0, rect.x1 - 16.0, rect.y1 - 16.0))
+    }
+
+    /// The notice's panel, and the height of its title.
+    fn notice_geom(notice: &Notice, w: f64, h: f64) -> (Rect, f64) {
+        const PW: f64 = 460.0;
+        let title_h = notice.title.height() as f64;
+        let body_h = notice.body.height() as f64;
+        let gesture_h = if notice.restart { 40.0 } else { 0.0 };
+        let ph = (16.0 + title_h + 10.0 + body_h + 18.0 + 16.0 + gesture_h).min(h - BOTTOM_CHROME - AXIS_H - 20.0);
+        let x0 = ((w - PW) * 0.5).max(8.0);
+        let y0 = ((h - BOTTOM_CHROME - AXIS_H - ph) * 0.5 + AXIS_H).max(AXIS_H + 8.0);
+        (Rect::new(x0, y0, x0 + PW, y0 + ph), title_h)
     }
 
     // ---- Action-gate confirmation (Batch 3) -----------------------------
 
     /// Append an assistant message to the first open Chat window (clearing its
     /// "thinking" state). No-op if no Chat window is open.
-    fn push_chat_msg(&mut self, text: String) {
+    pub(crate) fn push_chat_msg(&mut self, text: String) {
         if let Some(chat) = self.first_chat_mut() {
             chat.msgs.push(ChatMsg { role: Role::Assistant, text });
             chat.pending = false;
@@ -3270,8 +3743,19 @@ impl App {
         const PW: f32 = 460.0;
         let badge = self.shaper.shape(level_label(proposal.level), 200.0, 11.5);
         let desc = self.shaper.shape(&proposal.description, PW - 32.0, 15.0);
-        self.pending_action = Some(ActionPrompt { level: proposal.level, badge, desc });
-        self.action_slot.open(Instant::now());
+        // Ch. 12, SQ3: the focus starts on « Reject (Esc) ».
+        let focus = shell_a11y::DialogFocus::new(
+            self.next_dialog_seq(),
+            shell_a11y::CONFIRMATION_REJECT,
+            CONFIRMATION_BUTTONS.len(),
+        );
+        self.pending_action =
+            Some(ActionPrompt { level: proposal.level, badge, desc, said: proposal.description.clone(), focus });
+        // C-HOST AT6: the prompt keeps the proposal's request id, and closes at
+        // the deadline the proposal carries (less the margin), not at a time
+        // counted from now. A proposal that carries no deadline is past it, and
+        // is never answered (fail closed).
+        self.action_slot.open_bound(Instant::now(), chrono::Utc::now(), proposal.request_id, proposal.deadline);
     }
 
     /// Send the user's decision to the (blocked) orchestrator and clear the prompt.
@@ -3280,11 +3764,21 @@ impl App {
     /// `approval::AnswerGate`. A click that would land on a prompt the user has
     /// not seen yet is dropped and the prompt stays; a late one closes it
     /// without sending (the orchestrator has already rejected).
+    ///
+    /// C-HOST AT6: the answer is a `RequestDecision`, bound to the request id
+    /// of the prompt on screen; the orchestrator applies it to that proposal
+    /// only.
     fn decide_action(&mut self, decision: ActionDecision) {
         use crate::approval::AnswerGate;
+        let request = self.action_slot.open_request();
         match self.action_slot.answer(Instant::now()) {
             AnswerGate::Send => {
-                if self.decision_tx.try_send(decision).is_err() {
+                let Some(request_id) = request else {
+                    // Every action prompt is opened bound (set_action_prompt).
+                    self.pending_action = None;
+                    return;
+                };
+                if self.request_decision_tx.try_send(RequestDecision { request_id, decision }).is_err() {
                     self.push_chat_msg("\u{2717} The decision couldn't be delivered \u{2014} the action was not done.".to_string());
                 }
                 self.pending_action = None;
@@ -3311,6 +3805,630 @@ impl App {
         }
     }
 
+    /// A key as `window_event` receives it, for everything ch. 12's SQ1 to SQ10
+    /// reach (the prompts, the notice, the toast, and the windows of SQ10):
+    /// whether the element on top took it. `window_event` calls it before its
+    /// other key handling.
+    ///
+    /// *Signature by lot A's test author; the body is the implementer's.*
+    ///
+    /// A dispatcher: each lot's method answers only for its own element on
+    /// top (`shell_a11y::OnTop`, one element at a time) and returns `None`
+    /// otherwise; the first `Some` is the answer. The lots are tried in the
+    /// order of what is on top, the order `handle_click` uses. Elements no lot
+    /// has brought here keep their own key handling in `window_event`.
+    pub(crate) fn shell_key(
+        &mut self,
+        key: &winit::keyboard::Key,
+        text: Option<&str>,
+        mods: sovereign_editor::input::Modifiers,
+    ) -> bool {
+        // Lot C: the bubble-style picker, when it is on top (SQ11a).
+        if self.on_top() == shell_a11y::OnTop::BubblePicker && self.picker_key(key, mods) {
+            return true;
+        }
+        // Lot B: the locked screens (the setup's welcome and choices, the
+        // recovery wizard while locked), and, once unlocked, the pairing offer,
+        // the guardian enrolment and the recovery wizard. Lot A: the
+        // unsaved-edits prompt, the injection prompt, the action confirmation,
+        // a notice, and on the workspace the toast's Ctrl+Z, above the
+        // right-click menu, which they cover. Each answers only for its own
+        // element on top, so one element answers at a time.
+        if let Some(took) = self.a11y_key_b(key, text, mods) {
+            return took;
+        }
+        if let Some(took) = self.a11y_key_a(key, text, mods) {
+            return took;
+        }
+        // Lot C: the right-click menu, and opening it from the keyboard, on
+        // the workspace only: every window above covers it (SQ11a).
+        if self.on_top() == shell_a11y::OnTop::Workspace && self.menu_key(key, mods) {
+            return true;
+        }
+        false
+    }
+
+    /// Ch. 12, SQ11d: a key pressed, handled as `window_event`'s key arm
+    /// handles it, as if `mods` were held: the whole key path, `shell_key`
+    /// first, then the shell's shortcuts and the windows' own fields.
+    /// `window_event` calls it with `self.mods`.
+    ///
+    /// *Signature by the test author (SQ11's tests); the body is the
+    /// implementer's.*
+    ///
+    /// The keys stay in the window on top (`on_top`, SQ11a): a key it does not
+    /// use is dropped, never passed to what is under it. Two keys pass: the
+    /// zoom always (WCAG 1.4.4), and Ctrl+S under the unsaved-edits prompt,
+    /// which saves as it did. Ctrl+F does not pass: it would open a search
+    /// the window covers.
+    pub(crate) fn key_pressed(
+        &mut self,
+        key: &winit::keyboard::Key,
+        text: Option<&str>,
+        mods: winit::keyboard::ModifiersState,
+    ) {
+        let key_mods = crate::winit_input::editor_modifiers(mods);
+        let ctrl = mods.control_key();
+        // Ch. 12, SQ1 to SQ10: the prompts, the notices and the windows
+        // reached by the keyboard take their keys first. Once, and before the
+        // label focus is cleared below: the right-click menu opens on the lane
+        // label a screen reader focused (SQ10, lot C).
+        if self.shell_key(key, text, key_mods) {
+            return;
+        }
+        // A key takes the focus back from a lane label a screen reader
+        // focused (N8): the shell's own focus applies again.
+        self.a11y_label_focus = None;
+        // Global UI zoom (WCAG resize text) — Ctrl +/- to scale the whole UI,
+        // Ctrl+0 to reset. Works in any mode and under every window (SQ11d).
+        if ctrl {
+            if let Key::Character(s) = key {
+                match s.as_str() {
+                    "=" | "+" => {
+                        self.ui_scale = (self.ui_scale + 0.1).min(3.0);
+                        return;
+                    }
+                    "-" | "_" => {
+                        self.ui_scale = (self.ui_scale - 0.1).max(0.6);
+                        return;
+                    }
+                    "0" => {
+                        self.ui_scale = 1.0;
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let top = self.on_top();
+        if ctrl {
+            if let Key::Character(s) = key {
+                match s.as_str() {
+                    "f" | "F" => {
+                        // Ctrl+F: open-or-toggle a Search window, focused, from
+                        // the workspace only (SQ11d).
+                        if top == shell_a11y::OnTop::Workspace {
+                            self.focus_or_toggle(WindowKind::Search);
+                        }
+                        return;
+                    }
+                    "s" | "S" => {
+                        // Ctrl+S: save the focused document (no-op otherwise);
+                        // under the unsaved-edits prompt it saves, as « Save »
+                        // does. Under any other window it is dropped (SQ11d).
+                        match top {
+                            shell_a11y::OnTop::UnsavedEdits => self.resolve_unsaved(UnsavedChoice::Save),
+                            shell_a11y::OnTop::Workspace | shell_a11y::OnTop::Locked => {
+                                self.v2_command(sovereign_editor::input::Command::Save);
+                            }
+                            _ => {}
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // The window on top keeps what `shell_key` left of its keys.
+        match top {
+            // Their keys were taken in `shell_key`; no other key goes further.
+            shell_a11y::OnTop::Confirmation
+            | shell_a11y::OnTop::Injection
+            | shell_a11y::OnTop::UnsavedEdits
+            | shell_a11y::OnTop::Notice
+            | shell_a11y::OnTop::BubblePicker => return,
+            // PR2: the same-name question holds the keyboard while shown.
+            shell_a11y::OnTop::SameName => {
+                self.same_name_key(key);
+                return;
+            }
+            // C-LOG: the window of what remains readable holds the keyboard.
+            shell_a11y::OnTop::LogWindow => {
+                self.log_window_key(key);
+                return;
+            }
+            // The pairing modal and the guardian enrolment, for the keys
+            // `shell_key` leaves (held with Ctrl, Alt or the logo key):
+            // Esc/Enter close them (no text input).
+            shell_a11y::OnTop::Pairing => {
+                if matches!(key, Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter)) {
+                    self.close_pairing();
+                }
+                return;
+            }
+            shell_a11y::OnTop::Guardian => {
+                if matches!(key, Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter)) {
+                    self.guardian_modal = None;
+                }
+                return;
+            }
+            // The access-recovery wizard, once unlocked or over the locked
+            // gate.
+            shell_a11y::OnTop::Recovery => {
+                self.recovery_rest_key(key, text);
+                return;
+            }
+            shell_a11y::OnTop::Locked if self.recovery_wizard.is_some() => {
+                self.recovery_rest_key(key, text);
+                return;
+            }
+            // The compose modal owns the keyboard while open.
+            shell_a11y::OnTop::Compose => {
+                self.compose_form_key(key, text, ctrl);
+                return;
+            }
+            // The email-setup modal owns the keyboard while open.
+            shell_a11y::OnTop::EmailSetup => {
+                self.comms_form_key(key, text);
+                return;
+            }
+            // A dialog of the section "Documents whose thread was deleted".
+            shell_a11y::OnTop::OrphanChooser => {
+                self.orphan_modal_key(key);
+                return;
+            }
+            // A trash modal: Esc cancels it; the chooser's keys (v0.0.12
+            // item 9, T4).
+            shell_a11y::OnTop::TrashModal => {
+                if matches!(key, Key::Named(NamedKey::Escape)) {
+                    self.cancel_trash_modal_inner();
+                } else {
+                    self.trash_modal_key(key);
+                }
+                return;
+            }
+            // The Rename field of Settings → Devices (N3, N5), the rename
+            // field over a lane label (R2, R3) and the new-thread prompt
+            // (N2-N4) take their own keys: Enter saves or creates, Esc cancels
+            // (both only end an input-method composition first, N7), the rest
+            // goes to the field. A menu left open under one of them only
+            // closes, by Esc.
+            shell_a11y::OnTop::DeviceRename | shell_a11y::OnTop::LaneRename | shell_a11y::OnTop::NewThread
+                if self.ctx_menu.is_some() =>
+            {
+                if matches!(key, Key::Named(NamedKey::Escape)) {
+                    self.ctx_menu = None;
+                }
+                return;
+            }
+            shell_a11y::OnTop::DeviceRename => {
+                self.device_rename_key(key, text, key_mods);
+                return;
+            }
+            shell_a11y::OnTop::LaneRename => {
+                if let Some(step) = self.lane_rename.as_mut().map(|f| f.key(key, text, key_mods)) {
+                    self.rename_step(step);
+                }
+                return;
+            }
+            shell_a11y::OnTop::NewThread => {
+                if let Some(step) = self.new_thread_prompt.as_mut().map(|p| p.key(key, text, key_mods)) {
+                    self.prompt_step(step);
+                }
+                return;
+            }
+            // Esc closes a context menu.
+            shell_a11y::OnTop::Workspace => {
+                if matches!(key, Key::Named(NamedKey::Escape)) && self.ctx_menu.is_some() {
+                    self.ctx_menu = None;
+                    return;
+                }
+            }
+            shell_a11y::OnTop::Locked => {}
+        }
+
+        // A focused document editor owns the keyboard.
+        if !self.locked && self.v2_key(key, text) {
+            return;
+        }
+
+        // The auth gate owns the keyboard while locked.
+        if self.locked {
+            self.locked_key(key, text);
+        }
+        // The TOP (focused) window's text field takes the key when it is
+        // the Chat composer or the Search query: the editor's field
+        // (item 21, K1-K4); App only routes the field's step.
+        else if matches!(self.top_kind(), Some(WindowKind::Chat | WindowKind::Search)) {
+            let mods = key_mods;
+            if let Some(step) = self.top_field_mut().map(|f| f.key(key, text, mods)) {
+                self.field_step(self.windows.len() - 1, step);
+            }
+        } else if matches!(self.top_kind(), Some(WindowKind::Alerts)) {
+            // WCAG 2.1.1: every alert action from the keyboard.
+            let top = self.windows.len() - 1;
+            let view_h = (self.windows[top].bounds.height() - 120.0).max(ALERT_ROW_H);
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.windows.pop();
+                }
+                Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
+                    let down = matches!(key, Key::Named(NamedKey::ArrowDown));
+                    if let WindowContent::Alerts(ap) = &mut self.windows[top].content {
+                        ap.move_focus(down, view_h);
+                    }
+                }
+                Key::Named(NamedKey::Enter) => self.alerts_open(top),
+                Key::Named(NamedKey::Delete) => self.alert_action(top, AlertBtn::Dismiss),
+                Key::Character(c) if c.eq_ignore_ascii_case("o") => self.alerts_open(top),
+                // S5-12: the three ways out for the selected document of the section.
+                Key::Character(c) if c.eq_ignore_ascii_case("m") => {
+                    self.orphan_key(top, crate::orphans::OrphanAction::MoveTo)
+                }
+                Key::Character(c) if c.eq_ignore_ascii_case("n") => {
+                    self.orphan_key(top, crate::orphans::OrphanAction::NewThread)
+                }
+                Key::Character(c) if c.eq_ignore_ascii_case("t") => {
+                    self.orphan_key(top, crate::orphans::OrphanAction::Trash)
+                }
+                Key::Character(c) if c.eq_ignore_ascii_case("v") => self.alert_action(top, AlertBtn::Previous),
+                Key::Character(c) if c.eq_ignore_ascii_case("d") => self.alert_action(top, AlertBtn::Dismiss),
+                Key::Character(c) if c.eq_ignore_ascii_case("a") => {
+                    self.windows.pop();
+                }
+                _ => {}
+            }
+        } else if matches!(self.top_kind(), Some(WindowKind::PreviousValues)) {
+            let top = self.windows.len() - 1;
+            let view_h = (self.windows[top].bounds.height() - 120.0).max(PV_ROW_H);
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.windows.pop();
+                }
+                Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
+                    let down = matches!(key, Key::Named(NamedKey::ArrowDown));
+                    if let WindowContent::PreviousValues(pv) = &mut self.windows[top].content {
+                        pv.move_selection(down, view_h);
+                    }
+                }
+                Key::Named(NamedKey::Enter) => self.previous_value_action(top, PrevBtn::Restore),
+                Key::Named(NamedKey::Delete) => self.previous_value_action(top, PrevBtn::Forget),
+                Key::Character(c) if c.eq_ignore_ascii_case("r") => self.previous_value_action(top, PrevBtn::Restore),
+                Key::Character(c) if c.eq_ignore_ascii_case("x") => self.previous_value_action(top, PrevBtn::Forget),
+                Key::Character(c) if c.eq_ignore_ascii_case("v") => {
+                    self.windows.pop();
+                }
+                _ => {}
+            }
+        } else if matches!(self.top_kind(), Some(WindowKind::Browser)) {
+            // The browser URL bar owns the keyboard (Enter navigates).
+            let top = self.windows.len() - 1;
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.windows.pop();
+                }
+                Key::Named(NamedKey::Enter) => self.browser_navigate(top),
+                Key::Named(NamedKey::Backspace) => {
+                    if let WindowContent::Browser(b) = &mut self.windows[top].content {
+                        b.url.pop();
+                    }
+                }
+                _ => {
+                    if let Some(t) = text {
+                        if let WindowContent::Browser(b) = &mut self.windows[top].content {
+                            for ch in t.chars() {
+                                if !ch.is_control() {
+                                    b.url.push(ch);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    // A fanned-open deck collapses first; otherwise close the
+                    // top window (inbox thread-view backs out first, as before).
+                    // A document window whose editor does not have the
+                    // keyboard closes the way its × does: its editor
+                    // saves first, and asks if that fails (E4).
+                    if self.expanded_deck.is_some() {
+                        self.expanded_deck = None;
+                    } else if let Some(top) = self.windows.len().checked_sub(1) {
+                        match &mut self.windows[top].content {
+                            WindowContent::Inbox(ib) if ib.selected.is_some() => {
+                                ib.selected = None;
+                                ib.thread_scroll = 0.0;
+                            }
+                            WindowContent::Doc(_) => self.request_close_window(top),
+                            _ => {
+                                self.windows.pop();
+                            }
+                        }
+                    }
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("i") => {
+                    self.focus_or_toggle(WindowKind::Inbox);
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("c") => {
+                    self.focus_or_toggle(WindowKind::Chat);
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("s") => {
+                    self.focus_or_toggle(WindowKind::Settings);
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("m") => {
+                    self.focus_or_toggle(WindowKind::Models);
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("p") => {
+                    self.focus_or_toggle(WindowKind::Pii);
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("b") => {
+                    self.focus_or_toggle(WindowKind::Browser);
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("d") => {
+                    self.focus_or_toggle(WindowKind::Devices); // devices & sync
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("a") => {
+                    self.focus_or_toggle(WindowKind::Alerts); // alerts on changes from your devices
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("v") => {
+                    self.focus_or_toggle(WindowKind::PreviousValues); // previous values of synced items
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("e") => {
+                    self.open_comms_form(); // email setup
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("w") => {
+                    self.open_compose(String::new(), String::new()); // write email
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("g") => {
+                    self.open_guardian_enroll(); // F1: enroll a recovery guardian
+                }
+                // Keyboard canvas navigation (WCAG 2.1.1), only when no window is open.
+                other => {
+                    if matches!(self.top_kind(), Some(WindowKind::History)) {
+                        // History from the keyboard (reached from an alert's
+                        // "previous version"): Up/Down choose a version, Enter
+                        // uses it. Other keys keep their global meaning.
+                        self.history_key(other);
+                    } else if self.windows.is_empty() {
+                        // Arrows, zoom keys, home, fit (N4: the stop applies).
+                        self.canvas_key(other);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The access-recovery wizard's keys that `recovery_key` (through
+    /// `shell_key`) leaves, those held with Ctrl, Alt or the logo key. Esc
+    /// closes it (recovery keeps running); the SetPassword phase takes the
+    /// new passphrase. Inert while its new password is being set (B2).
+    fn recovery_rest_key(&mut self, key: &Key, text: Option<&str>) {
+        let Some(phase) = self.recovery_wizard.as_ref().map(|w| w.phase) else { return };
+        if self.auth_job.is_some() {
+            return;
+        }
+        match key {
+            Key::Named(NamedKey::Escape) => self.recovery_wizard = None,
+            Key::Named(NamedKey::Enter) => match phase {
+                RecoveryPhase::SetPassword => self.recovery_password_submit(),
+                RecoveryPhase::Ready => self.recovery_finalize(),
+                RecoveryPhase::Awaiting => self.recovery_spawn_poll(),
+                RecoveryPhase::Failed => {}
+            },
+            Key::Named(NamedKey::Backspace) if phase == RecoveryPhase::SetPassword => {
+                if let Some(w) = &mut self.recovery_wizard {
+                    w.new_password.pop();
+                }
+            }
+            _ => {
+                if phase == RecoveryPhase::SetPassword {
+                    if let (Some(t), Some(w)) = (text, &mut self.recovery_wizard) {
+                        w.new_password.extend(t.chars().filter(|ch| !ch.is_control()));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The compose modal's keys while it is on top (Ctrl+Enter sends).
+    fn compose_form_key(&mut self, key: &Key, text: Option<&str>, ctrl: bool) {
+        match key {
+            Key::Named(NamedKey::Escape) => self.compose_form = None,
+            Key::Named(NamedKey::Tab) => {
+                if let Some(f) = &mut self.compose_form {
+                    f.focus = (f.focus + 1) % 3;
+                }
+            }
+            Key::Named(NamedKey::Enter) => {
+                if ctrl {
+                    self.compose_send();
+                } else if let Some(f) = &mut self.compose_form {
+                    if f.focus == 2 {
+                        f.body.push('\n'); // newline in the body
+                    } else {
+                        f.focus += 1; // To/Subject -> next field
+                    }
+                }
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(f) = &mut self.compose_form {
+                    match f.focus {
+                        0 => {
+                            f.to.pop();
+                        }
+                        1 => {
+                            f.subject.pop();
+                        }
+                        _ => {
+                            f.body.pop();
+                        }
+                    }
+                }
+            }
+            _ => {
+                if let (Some(t), Some(f)) = (text, &mut self.compose_form) {
+                    for ch in t.chars().filter(|ch| !ch.is_control()) {
+                        match f.focus {
+                            0 => f.to.push(ch),
+                            1 => f.subject.push(ch),
+                            _ => f.body.push(ch),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The email-setup modal's keys while it is on top.
+    fn comms_form_key(&mut self, key: &Key, text: Option<&str>) {
+        match key {
+            Key::Named(NamedKey::Escape) => self.comms_form = None,
+            Key::Named(NamedKey::Enter) => self.comms_form_sync(),
+            Key::Named(NamedKey::Tab) => {
+                if let Some(form) = &mut self.comms_form {
+                    form.focus = (form.focus + 1) % form.fields.len();
+                }
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(form) = &mut self.comms_form {
+                    let f = form.focus;
+                    form.fields[f].pop();
+                }
+            }
+            _ => {
+                if let (Some(t), Some(form)) = (text, &mut self.comms_form) {
+                    let f = form.focus;
+                    form.fields[f].extend(t.chars().filter(|ch| !ch.is_control()));
+                }
+            }
+        }
+    }
+
+    /// SQ10, lot B: a key for the setup's steps of buttons or choices, the
+    /// recovery wizard, the pairing offer or the guardian enrolment, when one
+    /// of them is on top: `Some(took)`, else `None`. Keys held with Ctrl, Alt
+    /// or the logo key keep their handling of today (the zoom, the shortcuts);
+    /// AltGr (Ctrl and Alt together) types, as it does today.
+    fn a11y_key_b(
+        &mut self,
+        key: &winit::keyboard::Key,
+        text: Option<&str>,
+        mods: sovereign_editor::input::Modifiers,
+    ) -> Option<bool> {
+        if mods.meta || mods.ctrl != mods.alt {
+            return None;
+        }
+        // Only for the element on top, as `on_top` reads it.
+        match self.on_top() {
+            shell_a11y::OnTop::Pairing => Some(self.pairing_key(key, mods.shift)),
+            shell_a11y::OnTop::Guardian => Some(self.guardian_key(key)),
+            shell_a11y::OnTop::Recovery => Some(self.recovery_key(key, text, mods.shift)),
+            // The locked screen: the recovery wizard while locked, else the setup.
+            shell_a11y::OnTop::Locked => {
+                if self.recovery_wizard.is_some() {
+                    Some(self.recovery_key(key, text, mods.shift))
+                } else if self.auth_job.is_none() && self.wizard.is_some() {
+                    self.setup_key(key, mods.shift)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The tree of lot B's modal window on top, with its id range: the
+    /// pairing offer, the guardian enrolment or the recovery wizard, which is
+    /// also on top of the locked gate (SQ11a, SQ11b).
+    fn b_dialog_tree(&self) -> Option<(TreeUpdate, u64)> {
+        match self.on_top() {
+            shell_a11y::OnTop::Pairing => self.pairing_modal.as_ref().map(|m| (m.accessibility_tree(), PAIRING_NS)),
+            shell_a11y::OnTop::Guardian => self.guardian_modal.as_ref().map(|m| (m.accessibility_tree(), GUARDIAN_NS)),
+            shell_a11y::OnTop::Recovery | shell_a11y::OnTop::Locked => {
+                self.recovery_wizard.as_ref().map(|w| (w.accessibility_tree(), RECOVERY_NS))
+            }
+            _ => None,
+        }
+    }
+
+    /// A screen reader's action on one of lot B's controls (SQ10, SQ5): Click
+    /// does what a click does, Focus moves the keyboard there and presses
+    /// nothing. Whether it was one of them.
+    fn a11y_action_b(&mut self, target: NodeId, action: Action) -> bool {
+        let ns = target.0 & !((1u64 << 32) - 1);
+        let local = NodeId(target.0 & ((1u64 << 32) - 1));
+        match ns {
+            PAIRING_NS => {
+                if let Some(c) = PairingModal::a11y_control(local) {
+                    match action {
+                        Action::Click => self.pairing_press(c),
+                        Action::Focus => {
+                            if let Some(m) = &mut self.pairing_modal {
+                                m.focus = c;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                true
+            }
+            GUARDIAN_NS => {
+                if GuardianEnrollModal::a11y_is_done(local) && action == Action::Click {
+                    self.a11y_b_close_enrolment();
+                }
+                true
+            }
+            RECOVERY_NS => {
+                // B2: inert while its new password is being set.
+                if let (Some(c), None) = (RecoveryWizard::a11y_control(local), &self.auth_job) {
+                    match action {
+                        Action::Click => self.recovery_press(c),
+                        Action::Focus => {
+                            if let Some(w) = &mut self.recovery_wizard {
+                                w.set_focus(c);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                true
+            }
+            _ => {
+                use crate::onboarding::WizTarget;
+                let Some(&(_, t)) = self.a11y_wiz_controls.iter().find(|(id, _)| *id == target) else {
+                    return false;
+                };
+                if !self.locked || self.wizard.is_none() {
+                    return false;
+                }
+                match (action, t) {
+                    (Action::Click, WizTarget::Choice(a) | WizTarget::Press(a)) => self.wiz_press(a),
+                    (Action::Click, WizTarget::Reveal(_)) => self.wiz_press(crate::onboarding::WizAction::ToggleReveal),
+                    (Action::Focus, _) => {
+                        if let Some(w) = self.wizard.as_mut() {
+                            w.set_target_focus(t);
+                        }
+                    }
+                    _ => {}
+                }
+                true
+            }
+        }
+    }
+
     /// Geometry of the action-prompt modal: (panel, approve button, reject button).
     fn action_prompt_geom(&self, w: f64, h: f64) -> Option<(Rect, Rect, Rect)> {
         let p = self.pending_action.as_ref()?;
@@ -3331,9 +4449,9 @@ impl App {
     /// proposal description, and Approve / Reject buttons.
     fn draw_action_prompt(&mut self, w: f64, h: f64) {
         let Some((panel, approve, reject)) = self.action_prompt_geom(w, h) else { return };
-        // Lot 0.7: it counts as seen only when nothing modal covers it (the
-        // injection and unsaved-edits prompts are drawn above it).
-        if self.injection_prompt.is_none() && self.unsaved_prompt.is_none() {
+        // Lot 0.7, ch. 12 SQ11e: it counts as shown only while it is drawn on
+        // top, nothing covering it.
+        if self.on_top() == shell_a11y::OnTop::Confirmation {
             self.action_slot.mark_shown(Instant::now());
         }
         let Some(p) = &self.pending_action else { return };
@@ -3350,7 +4468,7 @@ impl App {
         let bw = p.badge.width() as f64 + 18.0;
         let badge_rect = Rect::new(panel.x0 + 16.0, panel.y0 + 16.0, panel.x0 + 16.0 + bw, panel.y0 + 16.0 + 20.0);
         self.scene.fill(Fill::NonZero, Affine::IDENTITY, accent, None, &RoundedRect::from_rect(badge_rect, 5.0));
-        crate::text::draw_text(&mut self.scene, &p.badge, Affine::translate((badge_rect.x0 + 9.0, badge_rect.y0 + 4.0)), pal().on_accent);
+        crate::text::draw_text(&mut self.scene, &p.badge, Affine::translate((badge_rect.x0 + 9.0, badge_rect.y0 + 4.0)), crate::theme::text_on_fill(accent));
 
         // Description.
         crate::text::draw_text(&mut self.scene, &p.desc, Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0 + 22.0 + 14.0)), pal().text);
@@ -3362,14 +4480,23 @@ impl App {
         let reject_bg = if reject.contains(cursor) { pal().border } else { pal().surface_alt };
         self.scene.fill(Fill::NonZero, Affine::IDENTITY, reject_bg, None, &RoundedRect::from_rect(reject, 7.0));
 
-        let approve_lbl = self.shaper.shape("Approve", 200.0, 13.5);
-        let reject_lbl = self.shaper.shape("Reject (Esc)", 200.0, 13.5);
+        let approve_lbl = self.shaper.shape(CONFIRMATION_BUTTONS[shell_a11y::CONFIRMATION_APPROVE], 200.0, 13.5);
+        let reject_lbl = self.shaper.shape(CONFIRMATION_BUTTONS[shell_a11y::CONFIRMATION_REJECT], 200.0, 13.5);
         let ay = approve.y0 + (approve.height() - approve_lbl.height() as f64) * 0.5;
         let ax = approve.x0 + (approve.width() - approve_lbl.width() as f64) * 0.5;
-        crate::text::draw_text(&mut self.scene, &approve_lbl, Affine::translate((ax, ay)), pal().on_accent);
+        crate::text::draw_text(&mut self.scene, &approve_lbl, Affine::translate((ax, ay)), crate::theme::text_on_fill(crate::theme::seen_over(abg, pal().modal)));
         let ry = reject.y0 + (reject.height() - reject_lbl.height() as f64) * 0.5;
         let rx = reject.x0 + (reject.width() - reject_lbl.width() as f64) * 0.5;
         crate::text::draw_text(&mut self.scene, &reject_lbl, Affine::translate((rx, ry)), pal().text);
+        // Ch. 12, SQ4: the button with the keyboard shows its focus outline
+        // (WCAG 2.4.7), while the confirmation is on top.
+        if self.on_top() == shell_a11y::OnTop::Confirmation {
+            let focused = match self.pending_action.as_ref().map(|p| p.focus.at()) {
+                Some(shell_a11y::CONFIRMATION_APPROVE) => approve,
+                _ => reject,
+            };
+            crate::panels::focus_outline(&mut self.scene, focused);
+        }
     }
 
     /// Flip a card's pin state and persist it (low-gravity, reversible).
@@ -3451,7 +4578,7 @@ impl App {
     fn refresh_trash(&mut self) {
         self.trash = match (self.docs.clone(), self.db.clone()) {
             (Some(docs), Some(db)) => {
-                match self.rt.block_on(crate::trash::TrashView::load(&docs, db.as_ref(), chrono::Utc::now())) {
+                match self.rt.block_on(crate::trash::TrashView::load(&docs, db.as_ref(), sovereign_core::clock::now())) {
                     Ok(view) => Some(view),
                     Err(e) => {
                         println!("sovereign-shell: the trash couldn't be read: {e}");
@@ -3493,7 +4620,7 @@ impl App {
                     return;
                 }
                 let Some(mut view) = self.trash.take() else { return };
-                let r = self.rt.block_on(view.restore(&docs, db.as_ref(), &id, chrono::Utc::now()));
+                let r = self.rt.block_on(view.restore(&docs, db.as_ref(), &id, sovereign_core::clock::now()));
                 self.trash = Some(view);
                 match r {
                     Ok(()) => self.load_workspace_now(),
@@ -3532,7 +4659,8 @@ impl App {
             .block_on(db.list_threads())
             .unwrap_or_default()
             .into_iter()
-            .filter(|t| t.deleted_at.is_none())
+            // C-MERGE MG3: no chooser offers an ended thread.
+            .filter(|t| t.deleted_at.is_none() && !t.is_ended())
             .filter_map(|t| t.id_string().map(|id| (id, t.name)))
             .collect();
         let lanes = self.lanes.thread_ids();
@@ -3574,7 +4702,7 @@ impl App {
         let Some(TrashModal::ChooseThread { target, threads, .. }) = self.trash_modal.take() else { return };
         let Some((into, name)) = threads.get(i).cloned() else { return };
         let Some(mut view) = self.trash.take() else { return };
-        let now = chrono::Utc::now();
+        let now = sovereign_core::clock::now();
         let r = match &target {
             RestoreTarget::One(id) => self.rt.block_on(view.restore_into(&docs, db.as_ref(), id, &into, now)).map(|()| 1),
             RestoreTarget::Group(tid) => self.rt.block_on(view.restore_group_into(&docs, db.as_ref(), tid, &into, now)),
@@ -3693,11 +4821,12 @@ impl App {
         }
     }
 
-    /// A double-click on lane `lane`'s label: the rename field over it, the
-    /// current name selected (THREAD-name R1). It carries the thread's id, so
+    /// A double-click on the label of thread `thread_id`: the rename field
+    /// over it, the current name selected (THREAD-name R1). It starts from the
+    /// thread's id (C-HOST AT8), never the lane's position, and carries it, so
     /// a reload under it does not retarget it.
-    fn open_lane_rename(&mut self, lane: usize) {
-        let Some(label) = self.lane_labels.iter().find(|l| l.lane == lane).cloned() else { return };
+    fn open_lane_rename(&mut self, thread_id: &str) {
+        let Some(label) = crate::lane_rename::label_of_thread(&self.lane_labels, thread_id).cloned() else { return };
         self.ctx_menu = None;
         if let Some(mut prompt) = self.new_thread_prompt.take() {
             prompt.close();
@@ -3780,26 +4909,19 @@ impl App {
     /// Whether the new-thread prompt is open with nothing drawn above it
     /// that takes input first (a modal, a notice, a menu).
     fn prompt_on_top(&self) -> bool {
-        self.new_thread_prompt.is_some() && self.nothing_above_fields()
+        self.on_top() == shell_a11y::OnTop::NewThread && self.ctx_menu.is_none()
     }
 
     /// Whether the rename field over a lane label is open with nothing drawn
     /// above it that takes input first (THREAD-name R1–R3).
     fn rename_on_top(&self) -> bool {
-        self.lane_rename.is_some()
-            && self.new_thread_prompt.is_none()
-            && self.orphan_modal.is_none()
-            && self.nothing_above_fields()
+        self.on_top() == shell_a11y::OnTop::LaneRename && self.ctx_menu.is_none()
     }
 
     /// Whether the Rename field of Settings → Devices is open with nothing
     /// drawn above it that takes input first (v0.0.12 item 19).
     fn device_rename_on_top(&self) -> bool {
-        self.device_rename.is_some()
-            && self.new_thread_prompt.is_none()
-            && self.lane_rename.is_none()
-            && self.orphan_modal.is_none()
-            && self.nothing_above_fields()
+        self.on_top() == shell_a11y::OnTop::DeviceRename && self.ctx_menu.is_none()
     }
 
     /// The current name of what `target` renames: this device's name (N3),
@@ -3884,7 +5006,7 @@ impl App {
     /// without a restart. The document service's identity is not touched
     /// (N1b).
     fn set_this_device_name(&mut self, name: &str) {
-        if let Err(e) = crate::device_name::save(name) {
+        if let Err(e) = crate::device_name::save(self.persona, name) {
             self.set_notice("Device not renamed", &format!("This device's name could not be saved: {e}"));
             return;
         }
@@ -3899,8 +5021,13 @@ impl App {
     /// stored name in this device's paired list. Every place that names it
     /// reads that list: the device list, History, the alerts, the orphans.
     fn rename_paired_device(&mut self, peer_id: &str, name: &str) {
+        if self.is_duress_session() {
+            // No node and nothing paired (C-AREA AR3, AR4): as a list without it.
+            self.set_notice("Device not renamed", "This device is no longer paired.");
+            return;
+        }
         let Some(h) = self.p2p.as_ref() else {
-            self.set_notice("Device not renamed", "Sync isn't running. Log in to start the P2P node.");
+            self.say_no_node("Device not renamed", "Sync isn't running. Log in to start the P2P node.");
             return;
         };
         match h.rename_paired(&self.rt, peer_id, name) {
@@ -3915,6 +5042,9 @@ impl App {
             }
         }
         if let Some(entry) = self.older_peers.iter_mut().find(|(p, _)| p == peer_id) {
+            entry.1 = name.to_string();
+        }
+        if let Some(entry) = self.newer_peers.iter_mut().find(|(p, _)| p == peer_id) {
             entry.1 = name.to_string();
         }
         self.refresh_devices_windows();
@@ -3961,24 +5091,6 @@ impl App {
         }
     }
 
-    /// Nothing drawn above the new-thread prompt or the rename field that
-    /// takes input first (a lock, a modal, a notice, a menu).
-    fn nothing_above_fields(&self) -> bool {
-        !self.locked
-            && self.unsaved_prompt.is_none()
-            && self.comms_form.is_none()
-            && self.compose_form.is_none()
-            && self.pairing_modal.is_none()
-            && self.guardian_modal.is_none()
-            && self.recovery_wizard.is_none()
-            && self.injection_prompt.is_none()
-            && !self.bubble_picker
-            && self.pending_action.is_none()
-            && self.notice.is_none()
-            && self.ctx_menu.is_none()
-            && self.trash_modal.is_none()
-    }
-
     /// The top window's text field: the chat composer or the search query
     /// (v0.0.12 item 21).
     fn top_field(&self) -> Option<&ChatField> {
@@ -4000,12 +5112,7 @@ impl App {
     /// Whether the top window's composer or search query takes the input
     /// method: no prompt, rename field or modal above it (K2).
     fn chat_field_on_top(&self) -> bool {
-        self.new_thread_prompt.is_none()
-            && self.lane_rename.is_none()
-            && self.device_rename.is_none()
-            && self.orphan_modal.is_none()
-            && self.nothing_above_fields()
-            && self.top_field().is_some()
+        self.on_top() == shell_a11y::OnTop::Workspace && self.ctx_menu.is_none() && self.top_field().is_some()
     }
 
     /// An input for the top window's field (input method, …); its step is
@@ -4102,6 +5209,10 @@ impl App {
     /// then reload. Nothing on the Unfiled lane (N3: not offered there); a
     /// notice when there is no thread at all.
     fn new_document(&mut self, lane: usize) {
+        // C-MERGE MG3: an ended thread takes no new document (not offered).
+        if self.lanes.ended_at(lane).is_some() {
+            return;
+        }
         let tid = match self.lanes.lane(lane) {
             Some(LaneKind::Thread(t)) => t.to_string(),
             Some(LaneKind::Unfiled) => return,
@@ -4131,8 +5242,8 @@ impl App {
         if let Ok(out) = created {
             // Cards carry the raw id, as the service does (I1).
             let new_id = out.id;
-            if let Some(idx) = self.cards.iter().position(|c| c.id == new_id) {
-                self.open_doc_window(idx);
+            if self.card_index_of(&new_id).is_some() {
+                self.open_doc_by_id(&new_id);
                 // Its window starts on the title, selected, so the name is
                 // typed first (title contract T3). (No window if the editor
                 // could not open it: then the top window is another one.)
@@ -4176,6 +5287,10 @@ impl App {
             }
         }
         let lane = self.lane_at_y(screen_y)?;
+        // C-MERGE MG3: over an ended lane, its live end; none, no target.
+        if self.lanes.ended_at(lane).is_some() {
+            return self.lanes.ended(lane).and_then(|e| e.live_end.as_ref()).map(|(id, _)| id.clone());
+        }
         self.lanes.thread_of_lane(lane).map(str::to_string)
     }
 
@@ -4187,10 +5302,22 @@ impl App {
     fn drop_card_on_lane(&mut self, id: &str, cursor_y: f64) {
         let Some(ci) = self.card_index_of(id) else { return };
         let Some(card) = self.cards.get(ci) else { return };
-        let Some(tid) = self.drop_target_thread(cursor_y) else { return };
+        // C-MERGE MG3: a drop on an ended lane goes to its live end, and says
+        // so; with no live end it is refused, and said.
+        let ended = self.lane_at_y(cursor_y).filter(|_| cursor_y >= AXIS_H).and_then(|lane| {
+            let name = self.lane_names.get(lane).cloned().unwrap_or_default();
+            self.lanes.ended(lane).cloned().map(|e| (name, e))
+        });
+        let Some(tid) = self.drop_target_thread(cursor_y) else {
+            if let Some((name, e)) = ended.filter(|(_, e)| e.live_end.is_none()) {
+                self.set_notice("Not moved", &sovereign_db::no_live_end_words(name.trim(), &e.target));
+            }
+            return;
+        };
         if self.lanes.thread_of_lane(card.lane) == Some(tid.as_str()) {
             return; // dropped back on its own thread's lane
         }
+        let title = crate::canvas::display_title(&card.title).to_string();
         let id = card.id.clone();
         let Some(docs) = self.docs.clone() else {
             self.set_notice("Not moved", "The workspace is locked.");
@@ -4202,6 +5329,18 @@ impl App {
             return;
         }
         self.load_workspace_now();
+        // C-MERGE MG3, the words (the Fable maille, by delegation of Céline,
+        // 2026-11-17): the document did not go where it was dropped.
+        if let Some((name, e)) = ended {
+            let end = e.live_end.map(|(_, n)| n).unwrap_or_default();
+            let name = name.trim();
+            let said = if end == e.target {
+                format!("'{title}' is now in '{end}' ('{name}' was merged into it).")
+            } else {
+                format!("'{title}' is now in '{end}' ('{name}' was merged into '{}', which has ended too).", e.target)
+            };
+            self.set_notice("Moved", &said);
+        }
     }
 
     // ---- Documents written outside the editor ----------------------------
@@ -4214,8 +5353,12 @@ impl App {
     fn reload_stored(&mut self, doc_id: &str) {
         let Some(db) = self.db.clone() else { return };
         let Ok(doc) = self.rt.block_on(db.get_document(doc_id)) else { return };
+        // C-SWEEP SW5: the card shows its tokens as their labels, as when it
+        // is loaded, never their stored form.
+        let shown = self.rt.block_on(crate::canvas::shown_text(self.docs.as_deref(), doc_id, &doc.content));
         if let Some(card) = self.cards.iter_mut().find(|c| c.id == doc_id) {
             card.set_stored(doc.content);
+            card.body = shown;
         }
     }
 
@@ -4235,13 +5378,17 @@ impl App {
             _ => return,
         };
         let name = self.cards.iter().find(|c| c.id == doc_id).map(|c| crate::canvas::display_title(&c.title).to_string()).unwrap_or_default();
-        let title = self.shaper.shape("Unsaved edits", 428.0, 15.0);
-        let body = self.shaper.shape(
-            &format!("\u{201c}{}\u{201d} has edits that aren't saved. Save them, discard them, or go back to editing.", one_line(&name, 60)),
-            428.0,
-            13.0,
+        let title_s = "Unsaved edits";
+        let body_s = format!(
+            "\u{201c}{}\u{201d} has edits that aren't saved. Save them, discard them, or go back to editing.",
+            one_line(&name, 60)
         );
-        self.unsaved_prompt = Some(UnsavedPrompt { doc_id, then, title, body });
+        let title = self.shaper.shape(title_s, 428.0, 15.0);
+        let body = self.shaper.shape(&body_s, 428.0, 13.0);
+        // Ch. 12, SQ3: the focus starts on « Save » (Enter keeps its meaning).
+        let focus = shell_a11y::DialogFocus::new(self.next_dialog_seq(), shell_a11y::UNSAVED_SAVE, UNSAVED_BUTTONS.len());
+        let said = (title_s.to_string(), body_s);
+        self.unsaved_prompt = Some(UnsavedPrompt { doc_id, then, title, body, said, focus });
     }
 
     /// Close window `wi` (its × button, or Esc). A document window's editor
@@ -4319,7 +5466,11 @@ impl App {
         let ty = panel.y0 + 16.0 + p.title.height() as f64 + 10.0;
         crate::text::draw_text(&mut self.scene, &p.body, Affine::translate((panel.x0 + 16.0, ty)), pal().text_body);
         self.scene.pop_layer();
-        for (rect, label, primary) in [(save, "Save", true), (discard, "Discard", false), (cancel, "Keep editing", false)] {
+        for (rect, label, primary) in [
+            (save, UNSAVED_BUTTONS[shell_a11y::UNSAVED_SAVE], true),
+            (discard, UNSAVED_BUTTONS[shell_a11y::UNSAVED_DISCARD], false),
+            (cancel, UNSAVED_BUTTONS[shell_a11y::UNSAVED_KEEP_EDITING], false),
+        ] {
             let hot = rect.contains(cursor);
             let bg = match (primary, hot) {
                 (true, true) => pal().accent,
@@ -4331,8 +5482,18 @@ impl App {
             let lbl = self.shaper.shape(label, 200.0, 13.5);
             let lx = rect.x0 + (rect.width() - lbl.width() as f64) * 0.5;
             let ly = rect.y0 + (rect.height() - lbl.height() as f64) * 0.5;
-            let color = if primary { pal().on_accent } else { pal().text };
+            let color = if primary { crate::theme::text_on_fill(crate::theme::seen_over(bg, pal().modal)) } else { pal().text };
             crate::text::draw_text(&mut self.scene, &lbl, Affine::translate((lx, ly)), color);
+        }
+        // Ch. 12, SQ4: the button with the keyboard shows its focus outline
+        // (WCAG 2.4.7); the prompt is on top whenever it is shown.
+        if self.on_top() == shell_a11y::OnTop::UnsavedEdits {
+            let focused = match self.unsaved_prompt.as_ref().map(|p| p.focus.at()) {
+                Some(shell_a11y::UNSAVED_KEEP_EDITING) => cancel,
+                Some(shell_a11y::UNSAVED_DISCARD) => discard,
+                _ => save,
+            };
+            crate::panels::focus_outline(&mut self.scene, focused);
         }
     }
 
@@ -4361,7 +5522,8 @@ impl App {
             }
             Err(e) => {
                 println!("sovereign-shell: History of a document could not be read: {e}");
-                self.set_notice(HISTORY_UNREADABLE.0, HISTORY_UNREADABLE.1);
+                let said = format!("{} {}", sovereign_docs::COULD_NOT_READ_HISTORY, HISTORY_UNREADABLE.1);
+                self.set_notice(HISTORY_UNREADABLE.0, &said);
             }
         }
     }
@@ -4407,10 +5569,19 @@ impl App {
                 return;
             }
         }
-        if let Err(e) = self.rt.block_on(docs.restore_version(doc_id, commit_id)) {
+        match self.rt.block_on(docs.restore_version(doc_id, commit_id)) {
             // Integrity check failed or DB error — surface it, change nothing.
-            self.set_notice("Not restored", &sovereign_ai::docs_host::doc_error_message(&e));
-            return;
+            Err(e) => {
+                self.set_notice("Not restored", &sovereign_ai::docs_host::doc_error_message(&e));
+                return;
+            }
+            // HN4 (spec ch. 12): the version chosen has the current title and
+            // content; the service wrote nothing, and the desktop says so.
+            Ok(outcome) if !outcome.changed => {
+                self.set_notice("Already current", sovereign_docs::history_names::ALREADY_CURRENT);
+                return;
+            }
+            Ok(_) => {}
         }
         // Update the card and any open editor on this id.
         self.reload_stored(doc_id);
@@ -4665,137 +5836,155 @@ impl App {
             return;
         }
 
-        // Lot 0.3: the unsaved-edits prompt is modal — only its buttons act.
-        if self.unsaved_prompt.is_some() {
-            let (_panel, save, discard, cancel) = unsaved_prompt_geom(w, h);
-            if save.contains(p) {
-                self.resolve_unsaved(UnsavedChoice::Save);
-            } else if discard.contains(p) {
-                self.resolve_unsaved(UnsavedChoice::Discard);
-            } else if cancel.contains(p) {
-                self.resolve_unsaved(UnsavedChoice::Cancel);
-            }
-            return;
-        }
-
-        // The email-setup / compose modals consume clicks.
-        if self.comms_form.is_some() {
-            self.handle_comms_form_click(p, w, h);
-            return;
-        }
-        if self.compose_form.is_some() {
-            self.handle_compose_click(p, w, h);
-            return;
-        }
-        // The pairing modal: Copy code, Done, or click-away. (The offer stays
-        // armed on the node until it expires or a new one replaces it.)
-        if self.pairing_modal.is_some() {
-            let (card, _qr, copy, done) = pairing_modal_layout(w, h);
-            if copy.contains(p) {
-                if let Some(m) = &mut self.pairing_modal {
-                    m.copied = crate::clip::set_text(&m.code);
+        // Ch. 12, SQ11a, SQ11d: a click reaches the window on top, in the one
+        // order of what is on top (`on_top`), and nothing under it.
+        match self.on_top() {
+            // Handled above.
+            shell_a11y::OnTop::Locked => return,
+            // An action confirmation is modal — only its buttons act; clicks
+            // outside them are swallowed (she must decide).
+            shell_a11y::OnTop::Confirmation => {
+                if let Some((_panel, approve, reject)) = self.action_prompt_geom(w, h) {
+                    if approve.contains(p) {
+                        self.decide_action(ActionDecision::Approve);
+                    } else if reject.contains(p) {
+                        self.decide_action(ActionDecision::Reject("Declined by user".into()));
+                    }
                 }
-            } else if done.contains(p) || !card.contains(p) {
-                self.pairing_modal = None;
+                return;
             }
-            return;
-        }
-        // The guardian-enrollment modal: Done or click-away. (The offer stays
-        // armed on the node until it expires or a new one replaces it.)
-        if self.guardian_modal.is_some() {
-            let (card, _qr, done) = guardian_modal_layout(w, h);
-            if done.contains(p) || !card.contains(p) {
-                self.guardian_modal = None;
-            }
-            return;
-        }
-
-        // The access-recovery wizard (post-login path — e.g. the debug overlay).
-        if self.handle_recovery_click(p, w, h) {
-            return;
-        }
-
-        // The bubble-style picker: click a swatch to choose; Done / click-away closes.
-        if self.bubble_picker {
-            let (card, cells, close) = crate::panels::bubble_picker_layout(w, h);
-            if let Some((_, style)) = cells.into_iter().find(|(cell, _)| cell.contains(p)) {
-                self.select_bubble_style(style);
-            } else if close.contains(p) || !card.contains(p) {
-                self.bubble_picker = false;
-            }
-            return;
-        }
-
-        // INJECTION-002: the injection gate is modal and drawn above the action
-        // prompt, so it takes clicks first (lot 0.7) — its three buttons
-        // are the only way out (a click elsewhere is swallowed; the user must
-        // choose). No choice ⇒ orchestrator times out to Redact.
-        if self.injection_prompt.is_some() {
-            let (_panel, redact, pass, abort) = injection_prompt_geom(w, h);
-            if redact.contains(p) {
-                self.decide_injection(InjectionDecision::Redact);
-            } else if pass.contains(p) {
-                self.decide_injection(InjectionDecision::PassThrough);
-            } else if abort.contains(p) {
-                self.decide_injection(InjectionDecision::Abort);
-            }
-            return;
-        }
-
-        // An action confirmation is modal — only its buttons act.
-        if self.pending_action.is_some() {
-            if let Some((_panel, approve, reject)) = self.action_prompt_geom(w, h) {
-                if approve.contains(p) {
-                    self.decide_action(ActionDecision::Approve);
-                } else if reject.contains(p) {
-                    self.decide_action(ActionDecision::Reject("Declined by user".into()));
+            // INJECTION-002: the injection gate is modal — its three buttons
+            // are the only way out (a click elsewhere is swallowed; she must
+            // choose). No choice: the orchestrator times out to Redact.
+            shell_a11y::OnTop::Injection => {
+                let (_panel, redact, pass, abort) = injection_prompt_geom(w, h);
+                if redact.contains(p) {
+                    self.decide_injection(InjectionDecision::Redact);
+                } else if pass.contains(p) {
+                    self.decide_injection(InjectionDecision::PassThrough);
+                } else if abort.contains(p) {
+                    self.decide_injection(InjectionDecision::Abort);
                 }
+                return;
             }
-            return; // clicks outside the buttons are swallowed (must decide)
-        }
-
-        // A result notice is modal-topmost — any click dismisses it.
-        if self.notice.is_some() {
-            self.notice = None;
-            return;
-        }
-
-        // A trash modal (thread to restore into, Empty trash's confirmation).
-        if self.trash_modal.is_some() {
-            self.handle_trash_modal_click(p, w, h);
-            return;
-        }
-        // A dialog of the section "Documents whose thread was deleted".
-        if self.orphan_modal.is_some() {
-            self.handle_orphan_modal_click(p, w, h);
-            return;
-        }
-
-        // The new-thread prompt: Create creates, a click outside closes it
-        // (N2, N3). A click in its field was the field's at the press.
-        if let Some(prompt) = self.new_thread_prompt.as_mut() {
-            let in_field = prompt.layout(w, h).field.contains(p);
-            let step = if in_field { crate::new_thread::PromptStep::Open } else { prompt.click(p, w, h) };
-            self.prompt_step(step);
-            return;
-        }
-
-        // The rename field over a lane label: a click outside closes it,
-        // renaming nothing (R2). A click in its field was the field's at the
-        // press.
-        if let Some(field) = self.lane_rename.as_mut() {
-            let step = if field.contains(p) { crate::lane_rename::RenameStep::Open } else { field.click(p) };
-            self.rename_step(step);
-            return;
-        }
-
-        // The Rename field of Settings → Devices: a click outside closes it,
-        // renaming nothing; a click in it was the field's at the press.
-        if let Some(field) = self.device_rename.as_ref() {
-            if !field.contains(p) {
-                self.device_rename_step(crate::device_rename::RenameStep::Cancel);
+            // Lot 0.3: the unsaved-edits prompt is modal — only its buttons act.
+            shell_a11y::OnTop::UnsavedEdits => {
+                let (_panel, save, discard, cancel) = unsaved_prompt_geom(w, h);
+                if save.contains(p) {
+                    self.resolve_unsaved(UnsavedChoice::Save);
+                } else if discard.contains(p) {
+                    self.resolve_unsaved(UnsavedChoice::Discard);
+                } else if cancel.contains(p) {
+                    self.resolve_unsaved(UnsavedChoice::Cancel);
+                }
+                return;
             }
-            return;
+            // PR2: the same-name question: only its buttons and its list act.
+            shell_a11y::OnTop::SameName => {
+                self.same_name_click(p, w, h);
+                return;
+            }
+            // A result notice: any click closes it and reaches nothing under
+            // it, except on its « Restart sync » button (C-SUP SU2, SU3: the
+            // user's gesture).
+            shell_a11y::OnTop::Notice => {
+                if self.notice_restart_rect(w, h).is_some_and(|r| r.contains(p)) {
+                    self.restart_sync();
+                    return;
+                }
+                self.notice = None;
+                return;
+            }
+            // The bubble-style picker: click a swatch to choose; Done / click-away closes.
+            shell_a11y::OnTop::BubblePicker => {
+                let (card, cells, close) = crate::panels::bubble_picker_layout(w, h);
+                if let Some((_, style)) = cells.into_iter().find(|(cell, _)| cell.contains(p)) {
+                    self.select_bubble_style(style);
+                } else if close.contains(p) || !card.contains(p) {
+                    self.bubble_picker = false;
+                }
+                return;
+            }
+            // C-LOG DG3: the window of what remains readable.
+            shell_a11y::OnTop::LogWindow => {
+                self.log_window_click(p, w, h);
+                return;
+            }
+            // The access-recovery wizard (post-login path — e.g. the debug overlay).
+            shell_a11y::OnTop::Recovery => {
+                self.handle_recovery_click(p, w, h);
+                return;
+            }
+            // The guardian-enrollment modal: Done or click-away. (The offer stays
+            // armed on the node until it expires or a new one replaces it.)
+            shell_a11y::OnTop::Guardian => {
+                let (card, _qr, done) = guardian_modal_layout(w, h);
+                if done.contains(p) || !card.contains(p) {
+                    self.guardian_modal = None;
+                }
+                return;
+            }
+            // The pairing modal: Copy code, Done, or click-away. (The offer stays
+            // armed on the node until it expires or a new one replaces it.)
+            shell_a11y::OnTop::Pairing => {
+                let (card, _qr, copy, done) = pairing_modal_layout(w, h);
+                if copy.contains(p) {
+                    self.pairing_press(PairControl::Copy);
+                } else if done.contains(p) || !card.contains(p) {
+                    self.close_pairing();
+                }
+                return;
+            }
+            // The email compose and setup modals consume clicks.
+            shell_a11y::OnTop::Compose => {
+                self.handle_compose_click(p, w, h);
+                return;
+            }
+            shell_a11y::OnTop::EmailSetup => {
+                self.handle_comms_form_click(p, w, h);
+                return;
+            }
+            // A dialog of the section "Documents whose thread was deleted".
+            shell_a11y::OnTop::OrphanChooser => {
+                self.handle_orphan_modal_click(p, w, h);
+                return;
+            }
+            // A trash modal (thread to restore into, Empty trash's confirmation).
+            shell_a11y::OnTop::TrashModal => {
+                self.handle_trash_modal_click(p, w, h);
+                return;
+            }
+            // The Rename field of Settings → Devices: a click outside closes it,
+            // renaming nothing; a click in it was the field's at the press.
+            shell_a11y::OnTop::DeviceRename => {
+                if let Some(field) = self.device_rename.as_ref() {
+                    if !field.contains(p) {
+                        self.device_rename_step(crate::device_rename::RenameStep::Cancel);
+                    }
+                }
+                return;
+            }
+            // The rename field over a lane label: a click outside closes it,
+            // renaming nothing (R2). A click in its field was the field's at
+            // the press.
+            shell_a11y::OnTop::LaneRename => {
+                if let Some(field) = self.lane_rename.as_mut() {
+                    let step = if field.contains(p) { crate::lane_rename::RenameStep::Open } else { field.click(p) };
+                    self.rename_step(step);
+                }
+                return;
+            }
+            // The new-thread prompt: Create creates, a click outside closes it
+            // (N2, N3). A click in its field was the field's at the press.
+            shell_a11y::OnTop::NewThread => {
+                if let Some(prompt) = self.new_thread_prompt.as_mut() {
+                    let in_field = prompt.layout(w, h).field.contains(p);
+                    let step = if in_field { crate::new_thread::PromptStep::Open } else { prompt.click(p, w, h) };
+                    self.prompt_step(step);
+                }
+                return;
+            }
+            shell_a11y::OnTop::Workspace => {}
         }
 
         // The delete notice's Undo (S5-8), while it is shown.
@@ -4812,7 +6001,10 @@ impl App {
             match self.fan_card_at(px, py) {
                 Some(ci) => {
                     self.expanded_deck = None;
-                    self.open_doc_window(ci);
+                    // C-HOST AT8: the card hit names its document by id.
+                    if let Some(id) = self.cards.get(ci).map(|c| c.id.clone()) {
+                        self.open_doc_by_id(&id);
+                    }
                 }
                 None => self.expanded_deck = None,
             }
@@ -4827,7 +6019,10 @@ impl App {
         // The status-bar notice opens what it is about (C-WIRE 13 / 12).
         if let Some(r) = self.status_notice_rect {
             if r.contains(p) {
-                let alerts = !self.alert_notices.is_empty() || self.orphan_count > 0 || self.unreadable_count > 0;
+                let alerts = !self.alert_notices.is_empty()
+                    || self.orphan_count > 0
+                    || self.unreadable_count > 0
+                    || !self.could_not_check.is_empty();
                 let kind = if alerts { WindowKind::Alerts } else { WindowKind::Devices };
                 if self.window_index_of(kind).is_none() {
                     self.focus_or_toggle(kind);
@@ -4868,6 +6063,13 @@ impl App {
                 self.request_close_window(wi);
                 return;
             }
+            // C-LOG DG3: « Show what remains readable » below a chat message.
+            if let WindowContent::Chat(c) = &self.windows[wi].content {
+                if c.control_rects.iter().any(|r| r.contains(p)) {
+                    self.open_log_window();
+                    return;
+                }
+            }
             // Doc header buttons (History) live in the header bar.
             let doc_btns = match &self.windows[wi].content {
                 WindowContent::Doc(d) => Some(d.buttons(bounds)),
@@ -4891,11 +6093,12 @@ impl App {
             // History window: select a version row, or confirm a restore. Handled
             // here (not in the content match) because restore needs `&mut self`.
             if matches!(&self.windows[wi].content, WindowContent::History(_)) {
-                let (selected, scroll, n) = match &self.windows[wi].content {
-                    WindowContent::History(hp) => (hp.selected, hp.scroll, hp.commits.len()),
+                let (selected, scroll, n, offered) = match &self.windows[wi].content {
+                    WindowContent::History(hp) => (hp.selected, hp.scroll, hp.commits.len(), hp.offers_restore()),
                     _ => unreachable!(),
                 };
-                let (list, bar) = hist_split(body, selected.is_some());
+                // HR4: the bar, and its click, only for a version that is offered.
+                let (list, bar) = hist_split(body, offered);
                 if let (Some(sel), Some(bar)) = (selected, bar) {
                     if hist_restore_rect(bar).contains(p) {
                         let (doc_id, commit_id) = match &self.windows[wi].content {
@@ -5217,13 +6420,15 @@ impl App {
                     let (_input, results) = search_split(body);
                     if results.contains(p) {
                         let row = ((py - results.y0 + sp.scroll) / SEARCH_ROW_H).floor();
-                        let card_idx = if row >= 0.0 {
-                            sp.results.get(row as usize).map(|&(i, _)| i)
+                        // C-HOST AT8: the result row carries the document's
+                        // id; a reload since the search cannot retarget it.
+                        let doc_id = if row >= 0.0 {
+                            sp.results.get(row as usize).map(|(id, _)| id.clone())
                         } else {
                             None
                         };
-                        if let Some(ci) = card_idx {
-                            self.open_doc_window(ci);
+                        if let Some(id) = doc_id {
+                            self.open_doc_by_id(&id);
                         }
                     }
                 }
@@ -5244,7 +6449,10 @@ impl App {
         if let Some(front_id) = self.deck_badge_at(px, py, w, h) {
             self.expanded_deck = Some(front_id);
         } else if let Some(i) = self.card_at(px, py, w, h) {
-            self.open_doc_window(i);
+            // C-HOST AT8: the card hit names its document by id.
+            if let Some(id) = self.cards.get(i).map(|c| c.id.clone()) {
+                self.open_doc_by_id(&id);
+            }
         }
     }
 
@@ -5339,12 +6547,23 @@ impl App {
 
     // ---- PII dashboard (Batch 5) ----------------------------------------
 
+    /// The PII window's content: the shared review's groups, then the vault
+    /// (`load_pii_window`). `None` without a workspace.
+    fn load_pii_panel(&self) -> Option<PiiPanel> {
+        let db = self.db.clone()?;
+        let review = match (self.docs.clone(), self.account_key.clone()) {
+            (Some(docs), Some(key)) => Some(sovereign_ai::pii::review::PiiReview::new(docs, key)),
+            _ => None,
+        };
+        Some(self.rt.block_on(crate::panels::load_pii_window(review.as_ref(), &db)))
+    }
+
     /// Rebuild any open PII window (after a review / delete).
     fn refresh_pii_panels(&mut self) {
-        let Some(db) = self.db.clone() else { return };
+        self.refresh_pii_waiting();
         for i in 0..self.windows.len() {
             if matches!(&self.windows[i].content, WindowContent::Pii(_)) {
-                let pp = self.rt.block_on(load_pii(&db));
+                let Some(pp) = self.load_pii_panel() else { return };
                 self.windows[i].content = WindowContent::Pii(pp);
             }
         }
@@ -5354,6 +6573,24 @@ impl App {
     /// + each peer's latest sync status). Shows a "sync off" identity card if
     /// the node isn't running (no-auth, or P2P start failed).
     pub(crate) fn build_devices_panel(&mut self) -> DevicesPanel {
+        // This device's name as the open persona keeps it (C-AREA AR2, one per
+        // persona), read when the panel is built; before any login, the name
+        // read at start (the configuration's, never a persona's).
+        if self.persona.is_some() {
+            self.device_name = crate::device_name::resolve(self.persona, &self.p2p_config.device_name);
+        }
+        if self.is_duress_session() {
+            // C-AREA AR3, AR4: no node runs and nothing is paired; the panel is
+            // that of this persona's own identity with an empty list.
+            return devices_panel(true, self.own_peer_id(), self.device_name.clone(), String::new(), Vec::new());
+        }
+        let unreadable = self.p2p.as_ref().and_then(|h| h.paired_unreadable(&self.rt));
+        let mut dp = self.build_devices_panel_inner();
+        dp.unreadable = unreadable;
+        dp
+    }
+
+    fn build_devices_panel_inner(&mut self) -> DevicesPanel {
         match &self.p2p {
             Some(h) => {
                 let listen = h.listen_addrs().join("  ");
@@ -5394,8 +6631,13 @@ impl App {
 
     /// Manually trigger a sync against every paired device.
     fn p2p_sync_now(&mut self) {
+        if self.is_duress_session() {
+            // C-AREA AR4: nothing is paired, so nothing to sync with.
+            self.set_notice("Sync", "No paired devices to sync with yet \u{2014} pair one first.");
+            return;
+        }
         let Some(h) = self.p2p.as_ref() else {
-            self.set_notice("Sync", "Sync isn't running. Log in to start the P2P node.");
+            self.say_no_node("Sync", "Sync isn't running. Log in to start the P2P node.");
             return;
         };
         let n = h.sync_now(&self.rt);
@@ -5405,7 +6647,7 @@ impl App {
     }
 
     /// Forget a paired device (drops its sealing key + allow-list entry).
-    fn p2p_forget(&mut self, peer_id: &str) {
+    pub(crate) fn p2p_forget(&mut self, peer_id: &str) {
         if let Some(h) = self.p2p.as_ref() {
             h.forget(&self.rt, peer_id);
         }
@@ -5417,8 +6659,16 @@ impl App {
     /// handshake when the other device proves the PIN; `PairingCompleted` then
     /// flows through the translator → DevicePaired → the Devices window updates.
     fn open_pairing(&mut self) {
+        if self.is_duress_session() {
+            // C-AREA AR3, AR4 (Céline, 2026-11-13: « Le même leurre que les
+            // gardiens »): the usual screen, a code and a QR of the real form,
+            // waiting forever; nothing is armed and no node runs.
+            let offer = crate::p2p::decoy_pairing_offer(self.own_peer_id(), self.device_name.clone());
+            self.pairing_modal = Some(PairingModal::new(offer.code, offer.pin));
+            return;
+        }
         let Some(h) = self.p2p.as_ref() else {
-            self.set_notice("Pairing", "Sync isn't running. Log in to start the P2P node.");
+            self.say_no_node("Pairing", "Sync isn't running. Log in to start the P2P node.");
             return;
         };
         match h.arm_pairing_offer(&self.rt) {
@@ -5426,6 +6676,26 @@ impl App {
                 self.pairing_modal = Some(PairingModal::new(offer.code, offer.pin));
             }
             Err(e) => self.set_notice("Pairing", &format!("Couldn't start pairing: {e}")),
+        }
+    }
+
+    /// Ch. 05, PO1: closes the pairing window by any of its gestures (« Done »,
+    /// a click outside, Escape, Enter), and ends the offer it showed, as the
+    /// app's closing panel does.
+    ///
+    /// *Signature by the test author; the body is the implementer's.*
+    pub(crate) fn close_pairing(&mut self) {
+        if self.pairing_modal.take().is_none() {
+            return;
+        }
+        // The duress decoy runs no node: it armed nothing, so it disarms nothing.
+        // Otherwise the node forgets the offer, so a code seen on the closed window
+        // can no longer be redeemed; the node refuses a proof that arrives after.
+        // By the send that waits, as the offer was armed (`SetPairingOffer`): a full
+        // queue must not drop it. A closed channel means no node, so nothing to disarm.
+        if let Some(h) = self.p2p.as_ref() {
+            let tx = h.command_tx.clone();
+            let _ = self.rt.block_on(tx.send(sovereign_p2p::P2pCommand::ClearPairingOffer));
         }
     }
 
@@ -5440,8 +6710,15 @@ impl App {
             self.set_notice("Recovery", crate::crypto::ENROLL_NEEDS_LOGIN);
             return;
         };
+        if self.is_duress_session() {
+            // A duress session runs no node (C-AREA AR4): the decoy is built
+            // from this persona's own identity, with no address.
+            let offer = crate::p2p::decoy_guardian_offer(self.own_peer_id(), self.device_name.clone(), Vec::new());
+            self.guardian_modal = Some(GuardianEnrollModal::new(offer.qr_payload, offer.code, offer.slot_ordinal));
+            return;
+        }
         let Some(h) = self.p2p.as_ref() else {
-            self.set_notice("Recovery", crate::crypto::ENROLL_SYNC_NOT_RUNNING);
+            self.say_no_node("Recovery", crate::crypto::ENROLL_SYNC_NOT_RUNNING);
             return;
         };
         // Guardian recovery is the primary's (spec ch. 07, v2.0.29): a duress
@@ -5638,6 +6915,7 @@ impl App {
                 // Same unlock sequence as try_login.
                 self.db = Some(db.clone() as Arc<dyn GraphDB>);
                 self.persona = Some(persona);
+                self.read_persona_device_name();
                 self.account_key = Some(account_key);
                 self.device_key = Some(device_key);
                 self.kek = Some(kek);
@@ -5683,55 +6961,188 @@ impl App {
         let Some(phase) = self.recovery_wizard.as_ref().map(|wz| wz.phase) else {
             return false;
         };
-        let (_card, _field, primary, secondary, check_now, reveal) =
+        let (_card, field, primary, secondary, check_now, reveal) =
             recovery_wizard_layout(w, h, phase);
-        match phase {
-            RecoveryPhase::SetPassword => {
-                if reveal.contains(p) {
-                    if let Some(wz) = &mut self.recovery_wizard {
-                        wz.reveal = !wz.reveal;
-                    }
-                } else if primary.contains(p) {
-                    self.recovery_password_submit();
-                } else if secondary.contains(p) {
-                    self.recovery_wizard = None; // Cancel before anything started
-                }
-            }
-            RecoveryPhase::Awaiting => {
-                if check_now.contains(p) {
-                    self.recovery_spawn_poll();
-                } else if primary.contains(p) {
-                    self.recovery_wizard = None; // Close (recovery keeps running)
-                } else if secondary.contains(p) {
-                    self.cancel_recovery();
-                }
-            }
-            RecoveryPhase::Ready => {
-                // No password field here anymore — Ready is a confirm.
-                if primary.contains(p) {
-                    self.recovery_finalize();
-                } else if secondary.contains(p) {
-                    self.cancel_recovery();
-                }
-            }
-            RecoveryPhase::Failed => {
-                if primary.contains(p) {
-                    self.cancel_recovery();
-                    self.open_recovery(); // Start over
-                } else if secondary.contains(p) {
-                    self.recovery_wizard = None;
-                }
-            }
+        // The toggle is drawn inside the field: tested first. A click in the
+        // field gives it the keyboard back (SQ10); it presses nothing.
+        let hit = [
+            (reveal, RecControl::Reveal),
+            (field, RecControl::Field),
+            (check_now, RecControl::CheckNow),
+            (primary, RecControl::Primary),
+            (secondary, RecControl::Secondary),
+        ]
+        .into_iter()
+        .find(|(r, c)| r.contains(p) && self.recovery_wizard.as_ref().is_some_and(|wz| wz.controls().contains(c)));
+        if let Some((_, c)) = hit {
+            self.recovery_press(c);
         }
         true
     }
 
-    /// Set a PII record's review state (Confirmed / Dismissed) and refresh.
-    fn review_pii(&mut self, id: &str, state: sovereign_db::schema::ReviewState) {
-        if let Some(db) = self.db.clone() {
-            if let Err(e) = self.rt.block_on(db.update_pii_record_review_state(id, state)) {
-                self.set_notice("Not saved", &format!("The review couldn't be saved: {e}"));
+    /// What pressing one of the recovery wizard's controls does — a click, a
+    /// screen reader's Click, Enter or Space on it (spec ch. 12, SQ5, SQ10).
+    fn recovery_press(&mut self, c: RecControl) {
+        let Some(phase) = self.recovery_wizard.as_ref().map(|wz| wz.phase) else {
+            return;
+        };
+        match (phase, c) {
+            (_, RecControl::Field) => {
+                if let Some(wz) = &mut self.recovery_wizard {
+                    wz.set_focus(RecControl::Field);
+                }
             }
+            (RecoveryPhase::SetPassword, RecControl::Reveal) => {
+                if let Some(wz) = &mut self.recovery_wizard {
+                    wz.reveal = !wz.reveal;
+                }
+            }
+            (RecoveryPhase::SetPassword, RecControl::Primary) => self.recovery_password_submit(),
+            // Cancel before anything started.
+            (RecoveryPhase::SetPassword, RecControl::Secondary) => self.recovery_wizard = None,
+            (RecoveryPhase::Awaiting, RecControl::CheckNow) => self.recovery_spawn_poll(),
+            // Close (recovery keeps running).
+            (RecoveryPhase::Awaiting, RecControl::Primary) => self.recovery_wizard = None,
+            (RecoveryPhase::Awaiting | RecoveryPhase::Ready, RecControl::Secondary) => self.cancel_recovery(),
+            (RecoveryPhase::Ready, RecControl::Primary) => self.recovery_finalize(),
+            // Start over.
+            (RecoveryPhase::Failed, RecControl::Primary) => {
+                self.cancel_recovery();
+                self.open_recovery();
+            }
+            (RecoveryPhase::Failed, RecControl::Secondary) => self.recovery_wizard = None,
+            _ => {}
+        }
+    }
+
+    /// The recovery wizard's keys (spec ch. 12, SQ10): it owns the keyboard
+    /// while open. Escape closes it (recovery keeps running), whatever holds
+    /// the focus; Tab and Shift+Tab walk its controls; Enter in the field keeps
+    /// its meaning (start the recovery), elsewhere Enter and Space press the
+    /// focused control; the field takes the typing while it holds the focus.
+    fn recovery_key(&mut self, key: &Key, text: Option<&str>, shift: bool) -> bool {
+        // B2: inert while its new password is being set.
+        if self.auth_job.is_some() {
+            return true;
+        }
+        let Some(focus) = self.recovery_wizard.as_ref().map(|wz| wz.focused()) else {
+            return false;
+        };
+        let in_field = focus == RecControl::Field;
+        match key {
+            Key::Named(NamedKey::Escape) => self.recovery_wizard = None,
+            Key::Named(NamedKey::Tab) => {
+                if let Some(wz) = &mut self.recovery_wizard {
+                    wz.move_focus(shift);
+                }
+            }
+            Key::Named(NamedKey::Enter) if in_field => self.recovery_password_submit(),
+            Key::Named(NamedKey::Enter) => self.recovery_press(focus),
+            Key::Named(NamedKey::Space) if !in_field => self.recovery_press(focus),
+            Key::Named(NamedKey::Backspace) if in_field => {
+                if let Some(wz) = &mut self.recovery_wizard {
+                    wz.new_password.pop();
+                }
+            }
+            _ if in_field => {
+                if let (Some(t), Some(wz)) = (text, &mut self.recovery_wizard) {
+                    wz.new_password.extend(t.chars().filter(|ch| !ch.is_control()));
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// What pressing one of the pairing offer's buttons does — a click, a
+    /// screen reader's Click, Enter or Space on it (spec ch. 12, SQ5, SQ10).
+    /// (The offer stays armed on the node until it expires or a new one
+    /// replaces it.)
+    fn pairing_press(&mut self, c: PairControl) {
+        match c {
+            PairControl::Copy => {
+                if let Some(m) = &mut self.pairing_modal {
+                    m.copied = crate::clip::set_text(&m.code);
+                }
+            }
+            PairControl::Done => self.a11y_b_close_pairing(),
+        }
+    }
+
+    /// Closes the pairing offer for lot B's keys and screen reader, through
+    /// `close_pairing`, which also ends the offer on the node (ch. 05, PO1).
+    fn a11y_b_close_pairing(&mut self) {
+        self.close_pairing();
+    }
+
+    /// The pairing offer's keys (SQ10): it owns the keyboard while open (no
+    /// text input). Escape closes it; Tab and Shift+Tab move between « Copy
+    /// code » and « Done »; Enter and Space press the focused one.
+    fn pairing_key(&mut self, key: &Key, shift: bool) -> bool {
+        let _ = shift; // two buttons: either way is the other one
+        let Some(focus) = self.pairing_modal.as_ref().map(|m| m.focus) else {
+            return false;
+        };
+        match key {
+            Key::Named(NamedKey::Escape) => self.a11y_b_close_pairing(),
+            Key::Named(NamedKey::Tab) => {
+                if let Some(m) = &mut self.pairing_modal {
+                    m.focus = if focus == PairControl::Copy { PairControl::Done } else { PairControl::Copy };
+                }
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) => self.pairing_press(focus),
+            _ => {}
+        }
+        true
+    }
+
+    /// The guardian enrolment's keys (SQ10): it owns the keyboard while open
+    /// (no text input). « Done » is its only control, so Tab stays on it;
+    /// Enter and Space press it; Escape closes, as today.
+    fn guardian_key(&mut self, key: &Key) -> bool {
+        if matches!(key, Key::Named(NamedKey::Escape | NamedKey::Enter | NamedKey::Space)) {
+            self.a11y_b_close_enrolment();
+        }
+        true
+    }
+
+    /// Closes the guardian enrolment for lot B's keys and screen reader (its
+    /// one place to do so), as its « Done » does today: the offer stays armed
+    /// on the node until it expires.
+    fn a11y_b_close_enrolment(&mut self) {
+        self.guardian_modal = None;
+    }
+
+    /// Set a PII record's review state (Confirmed / Dismissed) and refresh.
+    ///
+    /// C-SWEEP SW5: through the shared review (`PiiReview`), as the phone does:
+    /// a dismissal restores the value as written, one version per document,
+    /// and it is stamped as her review so that it travels. Without a document
+    /// service or an account key (no open session), the state alone, as before.
+    fn review_pii(&mut self, id: &str, state: sovereign_db::schema::ReviewState) {
+        use sovereign_db::schema::ReviewState;
+        let ids = [id.to_string()];
+        let result = match (self.docs.clone(), self.account_key.clone()) {
+            (Some(docs), Some(key)) => {
+                let review = sovereign_ai::pii::review::PiiReview::new(docs, key);
+                self.rt
+                    .block_on(async {
+                        match state {
+                            ReviewState::Confirmed => review.confirm(&ids).await,
+                            ReviewState::Dismissed => review.dismiss(&ids).await,
+                            ReviewState::Unreviewed => review.take_back_confirmation(&ids).await,
+                        }
+                    })
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }
+            _ => match self.db.clone() {
+                Some(db) => self.rt.block_on(db.update_pii_record_review_state(id, state)).map_err(|e| e.to_string()),
+                None => Ok(()),
+            },
+        };
+        if let Err(e) = result {
+            self.set_notice("Not saved", &format!("The review couldn't be saved: {e}"));
         }
         self.refresh_pii_panels();
     }
@@ -5811,9 +7222,11 @@ impl App {
             self.alert_notices.clear();
             self.orphan_count = 0;
             self.unreadable_count = 0;
+            self.could_not_check.clear();
             return;
         };
         self.alert_notices = ap.rows.iter().map(|r| r.notice()).collect();
+        self.could_not_check = ap.could_not_check().to_vec();
         let orphans = ap.take_orphans();
         self.orphan_count = orphans.count();
         let unreadable = ap.unreadable().to_vec();
@@ -5832,7 +7245,8 @@ impl App {
                     previous_version: r.previous_version.clone(),
                 }).collect())
                 .with_orphans(section)
-                .with_unreadable(unreadable.clone());
+                .with_unreadable(unreadable.clone())
+                .with_could_not_check(self.could_not_check.clone());
                 if let Some(k) = keep {
                     if let Some(j) = fresh.rows.iter().position(|r| r.doc_id == k) {
                         fresh.selected = j;
@@ -5856,10 +7270,16 @@ impl App {
         };
         let names = self.device_names();
         let own = self.own_peer_id();
-        let Ok(section) = self.rt.block_on(crate::orphans::OrphansSection::load_as(&docs, &names, &own)) else { return };
+        // Spec ch. 03, *What cannot be read is never shown as empty*: a list
+        // that cannot be read is said, and the one read before is not kept.
+        let read = self.rt.block_on(crate::orphans::OrphansSection::load_as(&docs, &names, &own));
+        let failed = read.is_err();
+        let section = read.unwrap_or_else(|_| crate::orphans::OrphansSection::empty());
+        crate::panels::mark_could_not_check(&mut self.could_not_check, sovereign_docs::COULD_NOT_CHECK_ORPHANS, failed);
         self.orphan_count = section.count();
         for w in self.windows.iter_mut() {
             if let WindowContent::Alerts(ap) = &mut w.content {
+                ap.set_could_not_check(sovereign_docs::COULD_NOT_CHECK_ORPHANS, failed);
                 let keep = ap.orphans().selected_line().map(|l| l.id.clone());
                 let mut fresh = section.clone();
                 fresh.selected = keep.and_then(|k| fresh.lines().iter().position(|l| l.id == k));
@@ -5927,7 +7347,8 @@ impl App {
                     .block_on(db.list_threads())
                     .unwrap_or_default()
                     .into_iter()
-                    .filter(|t| t.deleted_at.is_none())
+                    // C-MERGE MG3: no chooser offers an ended thread.
+                    .filter(|t| t.deleted_at.is_none() && !t.is_ended())
                     .filter_map(|t| t.id_string().map(|id| (id, t.name)))
                     .collect();
                 self.orphan_modal =
@@ -6161,9 +7582,11 @@ impl App {
         }
     }
 
-    /// Opens a document by id (focusing its window when already open).
+    /// Opens a document by id (focusing its window when already open). Every
+    /// production path that opens a document window goes through here
+    /// (C-HOST AT8): the id is resolved to the card as loaded now.
     fn open_doc_by_id(&mut self, doc_id: &str) {
-        match self.cards.iter().position(|c| c.id == doc_id) {
+        match self.card_index_of(doc_id) {
             Some(ci) => self.open_doc_window(ci),
             None => self.set_notice("Not on the canvas", "This document is not on the canvas (it may be in the trash)."),
         }
@@ -6207,7 +7630,8 @@ impl App {
             }
             Key::Named(NamedKey::Enter) => {
                 let target = match &self.windows[top].content {
-                    WindowContent::History(hp) => {
+                    // HR4: Enter uses only a version that is offered.
+                    WindowContent::History(hp) if hp.offers_restore() => {
                         hp.selected.and_then(|i| hp.commits.get(i)).map(|c| (hp.doc_id.clone(), c.commit_id.clone()))
                     }
                     _ => None,
@@ -6220,13 +7644,15 @@ impl App {
         }
     }
 
-    /// Re-reads any open Previous values window.
+    /// Re-reads any open Previous values window, keeping the notice it says.
     fn refresh_previous_values(&mut self) {
         let Some(db) = self.db.clone() else { return };
         let names = self.device_names();
         for i in 0..self.windows.len() {
-            if matches!(&self.windows[i].content, WindowContent::PreviousValues(_)) {
-                let pv = self.rt.block_on(load_previous_values(&db, &names));
+            if let WindowContent::PreviousValues(old) = &self.windows[i].content {
+                let said = old.notice().map(str::to_string);
+                let mut pv = self.rt.block_on(load_previous_values(&db, &names));
+                pv.set_notice(said);
                 self.windows[i].content = WindowContent::PreviousValues(pv);
             }
         }
@@ -6240,12 +7666,20 @@ impl App {
         }) else {
             return;
         };
+        // The notice the window says after this action: a restore's outcome
+        // (spec ch. 05, *A restore that fails is said*), none after a removal.
+        let mut said = None;
         match btn {
-            PrevBtn::Restore if can_restore => match self.p2p.as_ref() {
-                Some(h) if h.restore_row(&id) => {}
-                Some(_) => self.set_notice("Not restored", "The sync service could not be reached."),
-                None => self.set_notice("Not restored", "Sync is not running: the previous value can't be restored now."),
-            },
+            PrevBtn::Restore if can_restore => {
+                let Some(db) = self.db.clone() else { return };
+                let command_tx = self.p2p.as_ref().map(|h| h.command_tx.clone());
+                let outcome = self.rt.block_on(sovereign_p2p::node::restore_previous_value(
+                    command_tx.as_ref(),
+                    db.as_ref(),
+                    &id,
+                ));
+                said = outcome.notice();
+            }
             PrevBtn::Restore => self.set_notice("Not restored", "This kind of item can't be restored."),
             PrevBtn::Forget => {
                 if let Some(db) = self.db.clone() {
@@ -6254,6 +7688,9 @@ impl App {
                     }
                 }
             }
+        }
+        if let Some(WindowContent::PreviousValues(pv)) = self.windows.get_mut(wi).map(|w| &mut w.content) {
+            pv.set_notice(said);
         }
         self.refresh_previous_values();
     }
@@ -6274,9 +7711,53 @@ impl App {
         self.note_sync_status(peer_id, "older version: update it to sync documents".into());
     }
 
+    /// A paired device runs a newer version (C-WIRE 12 from the other side):
+    /// this device is the one to update. Kept for the status bar until a sync
+    /// with that device no longer says so. Wording **[choice]**, in the
+    /// register of the older-device notice.
+    fn note_newer_peer(&mut self, peer_id: String, device_name: String) {
+        self.older_round.insert(peer_id.clone(), true);
+        let name = if device_name.is_empty() { peer_id.clone() } else { device_name };
+        let first = !self.newer_peers.iter().any(|(p, _)| *p == peer_id);
+        if first {
+            self.set_notice(
+                "This device needs an update",
+                &format!("This device runs an older version of Sovereign than {name}. Update this device to sync documents with it; other data still syncs."),
+            );
+            self.newer_peers.push((peer_id.clone(), name));
+        }
+        self.note_sync_status(peer_id, "this device runs an older version: update it to sync documents".into());
+    }
+
     /// The notice the status bar shows (and the screen reader reads first):
     /// alerts before an older device.
     pub(crate) fn status_notice(&self) -> Option<(String, bool)> {
+        let rest = self.status_notice_rest();
+        if !self.sync_stopped {
+            return rest;
+        }
+        // C-SUP SU2: a sync that has stopped comes first, then what the line
+        // would say without it, so an alert still open is still shown (the
+        // Fable maille, by delegation of Céline, 2026-11-16).
+        Some(match rest {
+            Some((rest, _)) => (format!("{SYNC_STOPPED_STATUS}; {rest}"), true),
+            None => (SYNC_STOPPED_STATUS.to_string(), true),
+        })
+    }
+
+    /// What the status line says when sync has not stopped, with the
+    /// personal-data count beside it (C-SWEEP SW6: « {n} personal data to
+    /// review », never replacing another notice).
+    fn status_notice_rest(&self) -> Option<(String, bool)> {
+        let pii = sovereign_ai::pii::signal::status_words(self.pii_waiting);
+        match (self.status_notice_before_pii(), pii) {
+            (Some((line, urgent)), Some(p)) => Some((format!("{line}; {p}"), urgent)),
+            (None, Some(p)) => Some((p, false)),
+            (line, None) => line,
+        }
+    }
+
+    fn status_notice_before_pii(&self) -> Option<(String, bool)> {
         // S5-12 W5: how many documents whose thread was deleted wait.
         let orphans = crate::orphans::status_segment(self.orphan_count);
         // v0.0.12 item 7, V2: documents that could not be read, listed in
@@ -6286,10 +7767,11 @@ impl App {
             1 => Some("1 document could not be read".to_string()),
             n => Some(format!("{n} documents could not be read")),
         };
-        let orphans = match (orphans, unreadable) {
-            (Some(o), Some(u)) => Some(format!("{o}; {u}")),
-            (o, u) => o.or(u),
-        };
+        // Spec ch. 03: a list of the Alerts that could not be read is said
+        // here too, as something to see, never as nothing.
+        let segments: Vec<String> =
+            orphans.into_iter().chain(unreadable).chain(self.could_not_check.iter().map(|s| s.to_string())).collect();
+        let orphans = (!segments.is_empty()).then(|| segments.join("; "));
         let tail = orphans.as_ref().map(|s| format!("; {s}")).unwrap_or_default();
         match self.alert_notices.len() {
             0 => {}
@@ -6298,6 +7780,9 @@ impl App {
         }
         if let Some(seg) = orphans {
             return Some((format!("{seg} \u{2014} press A to see"), false));
+        }
+        if !self.newer_peers.is_empty() {
+            return Some(("This device runs an older version: update it to sync documents".to_string(), false));
         }
         match self.older_peers.as_slice() {
             [] => None,
@@ -6318,15 +7803,26 @@ impl App {
         }
     }
 
+    /// Spec ch. 12, SQ11g: whether the Browser window's page is shown. The web
+    /// view is a native window over the shell's drawing, so SQ11a's drawing
+    /// order does not reach it: it is shown only while the workspace is on top
+    /// (no window of SQ11a open, the screens not locked), the Browser window is
+    /// the top one of the workspace's windows, and no right-click menu is open.
+    pub(crate) fn browser_page_shown(&self) -> bool {
+        self.on_top() == shell_a11y::OnTop::Workspace
+            && matches!(self.windows.last().map(|w| &w.content), Some(WindowContent::Browser(_)))
+            && self.ctx_menu.is_none()
+    }
+
     /// Keep the native WebView aligned with the Browser window: build it lazily,
-    /// size it to the window body, show it only when the Browser window is on top
-    /// and no modal is up, and drop it when the window closes.
+    /// size it to the window body, show it only when `browser_page_shown` says
+    /// so (SQ11g), and drop it only when no Browser window is left. Hiding it
+    /// keeps the page: when it is shown again it is the same page, not reloaded.
     fn sync_browser_webview(&mut self) {
         let Some(bi) = self.windows.iter().position(|w| matches!(w.content, WindowContent::Browser(_))) else {
             self.browser = None; // window gone -> remove the child webview
             return;
         };
-        let is_top = bi == self.windows.len() - 1;
         let body = browser_chrome(self.windows[bi].bounds).body;
 
         if self.browser.is_none() {
@@ -6340,7 +7836,17 @@ impl App {
             const INIT_JS: &str = "(function(){function p(){try{window.ipc.postMessage(JSON.stringify({u:location.href,t:document.title,x:(document.body?document.body.innerText:'').slice(0,16000)}))}catch(e){}}if(document.readyState==='complete'){p()}else{window.addEventListener('load',p)}})();";
             let tx = self.browser_tx.clone();
             let RenderState::Active { window, .. } = &self.state else { return };
-            let built = wry::WebViewBuilder::new()
+            // C-AREA AR7 (Céline, 2026-11-13: « Un profil par persona »): the
+            // WebView keeps its cookies, cache and storage in the open
+            // persona's own area, never in the platform's default profile.
+            // No session, no profile: the browser is not built (v2.0.87).
+            let Some(profile) = self.browser_profile_dir() else { return };
+            if let Err(e) = std::fs::create_dir_all(&profile) {
+                println!("browser: no profile directory: {e}");
+                return;
+            }
+            let context = self.browser_context.insert(wry::WebContext::new(Some(profile)));
+            let built = wry::WebViewBuilder::new_with_web_context(context)
                 .with_url(&url)
                 .with_bounds(rect)
                 .with_initialization_script(INIT_JS)
@@ -6377,8 +7883,8 @@ impl App {
         }
         // The webview stays visible during drag (it repositions each frame with a
         // brief transient lag that snaps back on release — not worth blanking).
-        // It's only hidden when not the top window or a modal is up.
-        let show = is_top && self.notice.is_none() && self.pending_action.is_none() && self.ctx_menu.is_none();
+        // Whether it is shown is SQ11g's one answer, and nothing else.
+        let show = self.browser_page_shown();
         let rect = self.webview_rect(body);
         if let Some(wv) = &self.browser {
             let _ = wv.set_bounds(rect);
@@ -6554,7 +8060,7 @@ impl App {
             username,
             display_name: None,
         };
-        if let Err(e) = comms::save_email_config(&cfg) {
+        if let Err(e) = comms::save_email_config(self.persona, &cfg) {
             if let Some(form) = &mut self.comms_form {
                 form.status = Some(format!("Couldn't save config: {e}"));
             }
@@ -6579,7 +8085,7 @@ impl App {
         if !comms::EMAIL_ENABLED {
             return; // email deferred to v0.0.10 — don't load config or decrypt the password
         }
-        self.email_cfg = comms::load_email_config();
+        self.email_cfg = comms::load_email_config(self.persona);
         if let (Some(db), Some(key)) = (self.db.clone(), self.account_key.clone()) {
             self.email_password = self.rt.block_on(comms::load_email_password(&db, &key));
         }
@@ -6601,6 +8107,10 @@ impl App {
     /// goes on as when the service is unavailable, with a notice.
     fn install_document_service(&mut self, store: Arc<sovereign_db::encrypted::EncryptedGraphDB>) {
         self.v2_leave_store();
+        // C-SWEEP SW1: the previous session's sweep ends with it.
+        if let Some(task) = self.pii_sweep_task.take() {
+            task.abort();
+        }
         let identity = match self.stamp_identity() {
             Ok(identity) => identity,
             Err(why) => {
@@ -6625,9 +8135,20 @@ impl App {
         // v0.0.12 item 7, V3: the shell's own build version, which the
         // one-time conversion records and compares (it retries what it could
         // not decrypt only under another version).
+        // C-MEDIA: the media store of this persona's area, sealed under its
+        // KEK through its store (which keeps the KEK).
+        // Its folder is under the persona's own state directory, from the
+        // shell's one function for it (no new path under the Sovereign
+        // directory, C-AREA AR8).
+        let state_dir = crate::crypto::orchestrator_state_paths(self.persona).dir;
+        let media = Arc::new(sovereign_ai::docs_host::FileMedia::in_area(
+            sovereign_core::auth::media_store_dir_in(&state_dir),
+            store.clone(),
+        ));
         let docs = Arc::new(
             sovereign_ai::docs_host::build_document_service(store, self.account_key.clone(), identity)
-                .with_build_version(env!("CARGO_PKG_VERSION")),
+                .with_build_version(env!("CARGO_PKG_VERSION"))
+                .with_media(media),
         );
         self.docs = Some(docs.clone());
         self.start_purge_ticks(docs.clone());
@@ -6653,10 +8174,23 @@ impl App {
         }
         let rt = self.rt.handle().clone();
         let tx = self.orch_tx.clone();
+        let media_tx = self.orch_tx.clone();
+        // C-MEDIA: the media migration pass runs first, in the same background
+        // task (the login never waits for it, SIDECHANNEL-001). The order before
+        // sync is the service's: it runs the pass before it applies any received
+        // state. What the pass did, or that it failed, is said as a notice.
+        let media = sovereign_docs::media_pass_task(docs.clone(), move |text| {
+            let _ = media_tx.send(OrchestratorEvent::DocumentsMigrated { text });
+        });
         let mut handle = None;
         sovereign_docs::start_unlock_migration(
             docs,
-            |task| handle = Some(rt.spawn(task)),
+            |task| {
+                handle = Some(rt.spawn(async move {
+                    media.await;
+                    task.await;
+                }))
+            },
             move |notice| {
                 let _ = tx.send(OrchestratorEvent::DocumentsMigrated { text: notice.text() });
             },
@@ -6716,16 +8250,104 @@ impl App {
         }
     }
 
+    /// C-SUP (spec ch. 05, *The node's supervision*): the node ended without
+    /// the session asking for it (SU1, reported by its supervisor). The status
+    /// line says « Sync stopped », and once per stop a notice says « Sync
+    /// stopped unexpectedly. Nothing syncs until you restart it. », with the
+    /// gesture « Restart sync » (SU2). Why it ended goes to the log. Nothing
+    /// restarts the node (SU3).
+    ///
+    /// *Signature by the C-SUP test author (lot LQ); the body is the
+    /// implementer's.*
+    pub(crate) fn on_sync_stopped(&mut self, end: sovereign_p2p::supervision::NodeEnd) {
+        use sovereign_p2p::supervision::NodeEnd;
+        // Why, to the log only. A panic's message can quote document text,
+        // which the shell never writes (spec ch. 12, *Crash messages*): its
+        // location is already on stderr, from the panic hook.
+        let why = match &end {
+            NodeEnd::Returned => "its task returned".to_string(),
+            NodeEnd::Failed(reason) => format!("its task failed: {reason}"),
+            NodeEnd::Panicked(_) => "its task panicked (message withheld: it can quote document text)".to_string(),
+        };
+        eprintln!("sovereign-shell: the P2P node ended unexpectedly: {why}");
+        // The handle goes with its node; nothing starts another (SU3).
+        self.p2p = None;
+        self.sync_stopped = true;
+        self.show_sync_stopped(SYNC_STOPPED_TEXT);
+        self.refresh_devices_windows();
+    }
+
+    /// C-SUP: the user's gesture « Restart sync » (SU3): a fresh node with the
+    /// open session's keys, never in a duress session (SU4). A restart that
+    /// fails says « Sync could not be restarted: {reason} » (SU2).
+    ///
+    /// *Signature by the C-SUP test author (lot LQ); the body is the
+    /// implementer's.*
+    pub(crate) fn restart_sync(&mut self) {
+        // C-AREA AR4: a duress session runs no node, so it has none to restart.
+        if self.is_duress_session() || self.p2p.is_some() {
+            return;
+        }
+        match self.bring_up_node() {
+            Ok(()) => {
+                self.sync_stopped = false;
+                // A join whose start had failed: its first sync now.
+                self.pair_sync_pending_join();
+                if self.notice.as_ref().is_some_and(|n| n.restart) {
+                    self.notice = None;
+                }
+                self.refresh_alerts();
+                self.refresh_devices_windows();
+            }
+            // DEL-0019: a failed restart leaves the stopped state as it was,
+            // the gesture still beside the notice.
+            Err(reason) => {
+                eprintln!("sovereign-shell: P2P restart failed: {reason}");
+                self.show_sync_stopped(&format!("Sync could not be restarted: {reason}"));
+            }
+        }
+    }
+
+    /// The first sync of a join, direct-dialing the source peer from the
+    /// offer, once a node is up. With no node, the join's peer is kept.
+    fn pair_sync_pending_join(&mut self) {
+        let Some(h) = &self.p2p else { return };
+        if let Some((peer_id, addrs)) = self.pending_join_peer.take() {
+            h.pair_sync(&self.rt, peer_id, addrs);
+        }
+    }
+
     pub(crate) fn start_p2p(&mut self) {
         if self.p2p.is_some() {
             return;
         }
+        // C-AREA AR4 (Céline, 2026-11-13: « Aucun moteur »): a duress session
+        // runs no node: nothing is announced, nothing can pair or sync.
+        if self.is_duress_session() {
+            return;
+        }
+        if self.db.is_none() || self.device_key.is_none() || self.account_key.is_none() {
+            return; // no-auth: no keys, no sync
+        }
+        // A start that fails is said as a stop (Céline, 2026-11-16); why, to
+        // the log only.
+        if let Err(e) = self.bring_up_node() {
+            eprintln!("sovereign-shell: P2P start failed: {e}");
+            self.on_sync_stopped(sovereign_p2p::supervision::NodeEnd::Failed(e));
+        }
+        // Alerts left open in an earlier session (C-WIRE 13).
+        self.refresh_alerts();
+    }
+
+    /// Starts the node with the open session's keys: the login's start, and
+    /// the gesture « Restart sync ». Callers keep the duress check (AR4).
+    fn bring_up_node(&mut self) -> Result<(), String> {
         let (Some(db), Some(dk), Some(ak)) = (
             self.db.clone(),
             self.device_key.clone(),
             self.account_key.clone(),
         ) else {
-            return; // no-auth: no keys, no sync
+            return Err("this session's keys are not available".to_string());
         };
         let mut cfg = crate::p2p::p2p_config_from_app(&self.p2p_config);
         cfg.enabled = true; // the shell opts in by running the node
@@ -6749,12 +8371,17 @@ impl App {
                     handle.local_peer_id,
                     handle.listen_addrs()
                 );
+                // C-AREA AR3 (ch. 03, *What cannot be read is never shown as
+                // empty*): a paired list that could not be read is kept as it
+                // is, and the failure is said.
+                if handle.paired_unreadable(&self.rt).is_some() {
+                    self.set_notice("Paired devices", crate::panels::PAIRED_UNREADABLE);
+                }
                 self.p2p = Some(handle);
+                Ok(())
             }
-            Err(e) => println!("sovereign-shell: P2P start failed: {e}"),
+            Err(e) => Err(e),
         }
-        // Alerts left open in an earlier session (C-WIRE 13).
-        self.refresh_alerts();
     }
 
     /// Record a per-peer sync-status line for the Devices window (latest wins).
@@ -7331,12 +8958,16 @@ impl App {
                 }
                 self.db = Some(db.clone() as Arc<dyn GraphDB>);
                 self.persona = Some(persona);
+                self.read_persona_device_name();
                 self.account_key = Some(account_key);
                 self.device_key = Some(device_key);
                 self.kek = Some(kek);
                 self.install_document_service(db);
                 self.locked = false;
                 self.auth_form.error = None;
+                // C-LOG LG5: the conversation log is checked now, before the
+                // assistant is used, not when the assistant is first built.
+                self.check_session_log_at_login();
                 self.arm_model_integrity(); // MODELTRUST-001: TOFU for unlisted models
                 self.load_workspace_now();
                 self.frame_now(); // default: lanes ~3/4 height, centered, "now" centered
@@ -7351,12 +8982,10 @@ impl App {
                 self.v2_seed_pii_test();
                 // The login that ends a join: kick the first sync immediately,
                 // direct-dialing the source peer from the offer — don't wait
-                // for mDNS discovery.
-                if let Some((peer_id, addrs)) = self.pending_join_peer.take() {
-                    if let Some(h) = &self.p2p {
-                        h.pair_sync(&self.rt, peer_id, addrs);
-                    }
-                }
+                // for mDNS discovery. Taken only once a node is up: if the
+                // start failed, the join's peer and addresses wait for a
+                // restart that succeeds (`restart_sync`).
+                self.pair_sync_pending_join();
                 // B5b (lot 1's P2 on the desktop): auth.store with the
                 // setup-started record and without the setup-complete marker
                 // is a setup that was interrupted. Said once, after the login
@@ -7371,6 +9000,12 @@ impl App {
                         eprintln!("sovereign-shell: could not write the setup marker: {e}");
                     }
                 }
+                // C-SWEEP SW1, SW6: once the session is open, the sweep, then
+                // the queue's notice, after the login's other notices (it
+                // yields to them).
+                if let Some(signal) = self.pii_sweep_at_login() {
+                    self.pii_login_notice(signal);
+                }
             }
             Err(e) => {
                 self.pending_join_peer = None;
@@ -7382,10 +9017,73 @@ impl App {
         }
     }
 
+    /// C-LOG LG5 (spec ch. 08): at login, the open persona's conversation
+    /// log is checked under its key, before the assistant is used. A log that
+    /// does not verify is quarantined now and the person is told, in the
+    /// chat, as the assistant says it. The assistant, when it is first built,
+    /// runs the same check again; it finds the fresh log, and says nothing.
+    /// If the quarantine cannot be done, that later install fails closed and
+    /// says so, as before.
+    fn check_session_log_at_login(&mut self) {
+        let Some(ak) = self.account_key.clone() else { return };
+        let paths = crate::crypto::orchestrator_state_paths(self.persona);
+        match sovereign_ai::session_log::quarantine_unverifiable(
+            &paths.dir,
+            ak.derive_session_log_key(),
+            Some(&paths.beacon),
+        ) {
+            Ok(Some(_)) => {
+                // The notice is shown, opening the chat if none is open (as a summary is).
+                if self.window_index_of(WindowKind::Chat).is_none() {
+                    self.focus_or_toggle(WindowKind::Chat);
+                }
+                self.push_chat_msg(format!(
+                    "\u{2717} session log not done \u{2014} {}",
+                    sovereign_ai::session_log::QUARANTINE_NOTICE
+                ));
+                // C-LOG DG3: the notice offers « Show what remains readable ».
+                self.offer_readable_log_on_last();
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("sovereign-shell: the conversation log could not be quarantined at login: {e}"),
+        }
+    }
+
+    /// Whether the open session is the duress persona's.
+    pub(crate) fn is_duress_session(&self) -> bool {
+        self.persona == Some(CorePersona::Duress)
+    }
+
+    /// The embedded browser's profile directory for the open session: the
+    /// open persona's own (`crypto::persona_browser_profile_dir`), and **none
+    /// before any login** (C-AREA AR2, v2.0.87: « A process with no session
+    /// has no identity directory »; AR7: « one profile per persona »).
+    /// `sync_browser_webview` takes the WebView's profile from here.
+    ///
+    /// Signature by the C-AREA test author (`l1c-tests-v7`); its body is the
+    /// implementer's.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn browser_profile_dir(&self) -> Option<std::path::PathBuf> {
+        self.persona.map(crate::crypto::persona_browser_profile_dir)
+    }
+
+    /// At login: this device's name as the persona that opened knows it
+    /// (C-AREA AR2: one per persona; never another persona's).
+    fn read_persona_device_name(&mut self) {
+        self.draw_duress_names_if_none();
+        self.device_name = crate::device_name::resolve(self.persona, &self.p2p_config.device_name);
+    }
+
     /// Designation for the onboarding Welcome step — the persisted one if a
-    /// profile exists, else a freshly generated one.
+    /// profile exists, else a freshly generated one. **On a device that has
+    /// an account, a fresh one, always** (C-AREA AR2, v2.0.88: the commands
+    /// that answer an account's designation are refused once the device has
+    /// an account): no file is read, so nothing of a persona's is shown.
     fn onboard_designation(&self) -> String {
         use sovereign_core::profile::UserProfile;
+        if auth_store_exists() {
+            return UserProfile::default_new().designation;
+        }
         UserProfile::load(&sovereign_core::sovereign_dir())
             .map(|p| p.designation)
             .unwrap_or_else(|_| UserProfile::default_new().designation)
@@ -7398,19 +9096,49 @@ impl App {
     /// so they stay the same from one read to the next — never another
     /// persona's values (spec ch. 07, v2.0.29). Device preferences (theme,
     /// bubble style) stay in the shared profile at the data directory.
+    ///
+    /// **No persona, no profile** (C-AREA AR2, v2.0.87: « A process with no
+    /// session has no identity directory »): before any login, `None`. A
+    /// persona of its own with no file yet gets names drawn at random
+    /// (`UserProfile::generated`), never the primary's. A profile that cannot
+    /// be read, or names that cannot be kept, give `None` for either persona
+    /// (Settings shows « (not set) »), and the file is left as it is: never a
+    /// name drawn on the spot and lost, which would change at each opening.
     fn identity_profile(&self) -> Option<UserProfile> {
         let base = sovereign_core::sovereign_dir();
-        let dir = sovereign_core::auth::identity_profile_dir(
-            &base,
-            self.persona.unwrap_or(CorePersona::Primary),
-        );
-        let mut profile = UserProfile::load(&dir).ok()?;
-        if dir != base && !dir.join("user_profile.json").exists() {
-            if let Err(e) = profile.save(&dir) {
-                eprintln!("sovereign-shell: could not save profile defaults: {e}");
+        let dir = sovereign_core::auth::identity_profile_dir(&base, self.persona?);
+        // The duress persona's names are drawn name by name (DEL-0006):
+        // the whole profile when it has none, a missing nickname otherwise.
+        if self.persona == Some(CorePersona::Duress) {
+            return match UserProfile::ensure_drawn_in(&dir) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("sovereign-shell: the profile could not be read or kept: {e}");
+                    None
+                }
+            };
+        }
+        UserProfile::load(&dir).ok()
+    }
+
+    /// At a duress login (C-AREA AR2, v2.0.87: « An install set up before
+    /// v0.0.13 never passes through setup again: there, the same draw happens
+    /// at the first duress login that finds no names of its own »): the
+    /// duress persona's device name and profile names, drawn at random when it
+    /// has none, in its own area. A persona that has them keeps them.
+    fn draw_duress_names_if_none(&mut self) {
+        if self.persona != Some(CorePersona::Duress) {
+            return;
+        }
+        // Name by name (the Fable maille by delegation of Céline, DEL-0006):
+        // the device name when it has no file of its own; the profile whole
+        // when it has none, else only a missing nickname.
+        if crate::device_name::path_of(self.persona).is_some_and(|p| !p.exists()) {
+            if let Err(e) = crate::device_name::save(self.persona, &crate::device_name::generated()) {
+                eprintln!("sovereign-shell: could not save this device's name: {e}");
             }
         }
-        Some(profile)
+        let _ = self.identity_profile();
     }
 
     /// Start the first-device onboarding wizard when locked with no account yet
@@ -7432,6 +9160,56 @@ impl App {
             let dark = self.theme_name == "dark";
             self.wizard = Some(crate::onboarding::OnboardingWizard::new(self.onboard_designation(), dark));
         }
+    }
+
+    /// The setup's keys (spec ch. 12, SQ10): Tab and Shift+Tab walk the
+    /// step's stops in the drawn order (a group of choices is one stop,
+    /// entered on its checked choice); the arrows move inside a group; Enter
+    /// and Space press the focused button or choice, as a click does. What it
+    /// does not take goes on to `locked_key`, with today's meaning: Enter and
+    /// typing in a field, Enter on the step's group, Escape (Back). A button
+    /// holding the focus takes no text.
+    fn setup_key(&mut self, key: &Key, shift: bool) -> Option<bool> {
+        use crate::onboarding::WizTarget;
+        let w = self.wizard.as_mut()?;
+        let focused = w.focused_target();
+        let on_control = matches!(focused, Some(WizTarget::Choice(_) | WizTarget::Press(_) | WizTarget::Reveal(_)));
+        match key {
+            Key::Named(NamedKey::Tab) => {
+                w.move_target_focus(shift);
+                Some(true)
+            }
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => Some(w.move_in_group(1)).filter(|m| *m),
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => Some(w.move_in_group(-1)).filter(|m| *m),
+            Key::Named(NamedKey::Enter | NamedKey::Space) => match focused {
+                Some(WizTarget::Choice(a) | WizTarget::Press(a)) => {
+                    self.wiz_press(a);
+                    Some(true)
+                }
+                Some(WizTarget::Reveal(_)) => {
+                    self.wiz_press(crate::onboarding::WizAction::ToggleReveal);
+                    Some(true)
+                }
+                _ => None,
+            },
+            Key::Named(NamedKey::Escape) => {
+                w.control_focus = None;
+                None
+            }
+            _ if on_control => Some(true),
+            _ => None,
+        }
+    }
+
+    /// What pressing a setup control by key or screen reader does: what its
+    /// click does. The primary takes it only when a click could (the
+    /// password step's Next waits for a valid password).
+    fn wiz_press(&mut self, a: crate::onboarding::WizAction) {
+        use crate::onboarding::WizAction;
+        if matches!(a, WizAction::Next | WizAction::Finish) && !self.wizard.as_ref().is_some_and(|w| w.can_advance()) {
+            return;
+        }
+        self.handle_wiz_action(a);
     }
 
     /// Enter in the wizard: move to the next field if there is one, else trigger
@@ -7506,6 +9284,7 @@ impl App {
                     } else {
                         w.step += 1;
                         w.focus = 0;
+                        w.control_focus = None;
                         w.error = None;
                         false
                     }
@@ -7533,6 +9312,7 @@ impl App {
                 }
                 w.step = (w.step + 1).min(WIZ_STEPS - 1);
                 w.focus = 0;
+                w.control_focus = None;
                 w.error = None;
             }
             WizAction::Back => {
@@ -7540,6 +9320,7 @@ impl App {
                     if w.step > 0 {
                         w.step -= 1;
                         w.focus = 0;
+                        w.control_focus = None;
                         w.error = None;
                     }
                 }
@@ -7556,7 +9337,8 @@ impl App {
             }
             WizAction::FocusField(i) => {
                 if let Some(w) = self.wizard.as_mut() {
-                    w.focus = i;
+                    // The field takes the keyboard back from a button (SQ10).
+                    w.set_target_focus(crate::onboarding::WizTarget::Field(i));
                 }
             }
             WizAction::ToggleReveal => {
@@ -7615,8 +9397,18 @@ impl App {
                 if store_written || auth_store_exists() {
                     self.wizard = None;
                     self.auth_form = AuthForm::login();
-                    self.auth_form.error =
-                        Some(format!("Your account was created, but it could not be opened: {error}. Enter your password to try again."));
+                    // `{error}` is the cause alone, never the login's own
+                    // sentence around it (spec ch. 07, login errors, LE2, LE3).
+                    let cause = match error.downcast_ref::<sovereign_crypto::login_error::LoginFailure>() {
+                        Some(failure) => failure.cause_alone().to_string(),
+                        None => sovereign_crypto::login_error::scrub_paths(
+                            &format!("{error}"),
+                            &[&sovereign_core::sovereign_dir()],
+                        ),
+                    };
+                    self.auth_form.error = Some(format!(
+                        "Your account was created, but it could not be opened: {cause}. Enter your password to try again."
+                    ));
                     return;
                 }
                 let Some(w) = self.wizard.as_mut() else {
@@ -7651,31 +9443,42 @@ impl App {
         // Lot 0.3: anything that fails to persist is reported once set-up ends.
         let mut setup_errors: Vec<String> = Vec::new();
         {
-            use sovereign_core::profile::UserProfile;
+            use sovereign_core::profile::{DevicePreferences, UserProfile};
             let id_dir = sovereign_core::auth::identity_profile_dir(&dir, persona);
             let nick = wiz.nickname.trim();
             let nickname = (!nick.is_empty()).then(|| nick.to_string());
-            let mut p = UserProfile::load(&dir).unwrap_or_else(|_| UserProfile::default_new());
-            p.bubble_style = wiz.bubble;
-            p.theme = if wiz.theme_dark { "dark".into() } else { "light".into() };
-            if id_dir == dir {
-                p.nickname = nickname.clone();
-            }
-            if let Err(e) = p.save(&dir) {
+            let prefs = DevicePreferences {
+                theme: if wiz.theme_dark { "dark".into() } else { "light".into() },
+                bubble_style: wiz.bubble,
+            };
+            if let Err(e) = prefs.save(&dir) {
                 setup_errors.push(format!("profile: {e}"));
             }
-            if id_dir != dir {
-                let mut q = UserProfile::load(&id_dir).unwrap_or_else(|_| UserProfile::default_new());
-                q.nickname = nickname;
-                if let Err(e) = q.save(&id_dir) {
+            let mut q = UserProfile::load(&id_dir).unwrap_or_else(|_| UserProfile::default_new());
+            q.nickname = nickname;
+            if let Err(e) = q.save(&id_dir) {
+                setup_errors.push(format!("profile: {e}"));
+            }
+            // C-AREA AR2 (Céline, 2026-11-13: « la persona de contrainte a des
+            // noms d'appareil et nom de profil random générés automatiquement »):
+            // the duress persona's own names, drawn at random now, never copied
+            // from the primary's. Kept if it has some already.
+            if persona == CorePersona::Primary {
+                let duress_dir = sovereign_core::auth::identity_profile_dir(&dir, CorePersona::Duress);
+                if let Err(e) = UserProfile::ensure_drawn_in(&duress_dir) {
                     setup_errors.push(format!("profile: {e}"));
+                }
+                if crate::device_name::path_of(Some(CorePersona::Duress)).is_some_and(|p| !p.exists()) {
+                    if let Err(e) = crate::device_name::save(Some(CorePersona::Duress), &crate::device_name::generated()) {
+                        setup_errors.push(format!("this device's name: {e}"));
+                    }
                 }
             }
         }
         // v0.0.12 item 19, N2: this device's name, saved with the setup
         // (blank: the default stays).
         if let Some(name) = crate::device_name::clean(&wiz.device_name) {
-            if let Err(e) = crate::device_name::save(&name) {
+            if let Err(e) = crate::device_name::save(Some(persona), &name) {
                 setup_errors.push(format!("this device's name: {e}"));
             } else {
                 self.device_name = name;
@@ -7724,12 +9527,16 @@ impl App {
         } else {
             self.seed_starter_lanes();
         }
-        if !setup_errors.is_empty() {
-            self.set_notice("Set-up incomplete", &format!("Not saved:\n{}", setup_errors.join("\n")));
-        }
         self.load_workspace_now();
         self.frame_now();
         self.start_p2p();
+        // After the start: the list is said nowhere else, so it wins over a
+        // failed start's notice; the stop stays in the status line, and its
+        // notice returns at the first gesture that needs the node (the Fable
+        // maille, by delegation of Céline, 2026-11-16).
+        if !setup_errors.is_empty() {
+            self.set_notice("Set-up incomplete", &format!("Not saved:\n{}", setup_errors.join("\n")));
+        }
         // H-shell1: don't print the persona kind (see login path).
         let _ = persona;
         println!("sovereign-shell: onboarded via wizard (seeded={})", wiz.seed_sample);
@@ -7863,9 +9670,9 @@ impl App {
         let q = sp.query.text().to_lowercase();
         sp.results.clear();
         if !q.is_empty() {
-            for (i, card) in self.cards.iter().enumerate() {
+            for card in self.cards.iter() {
                 if card.title.to_lowercase().contains(&q) {
-                    sp.results.push((i, crate::canvas::display_title(&card.title).to_string()));
+                    sp.results.push((card.id.clone(), crate::canvas::display_title(&card.title).to_string()));
                     if sp.results.len() >= 100 {
                         break;
                     }
@@ -7919,33 +9726,8 @@ impl App {
         // (role, label, value, focused)
         let mut items: Vec<(AkRole, String, String, bool)> = Vec::new();
 
-        // A topmost pairing modal is announced first (the PIN read aloud is OK —
-        // it's a short-lived, deliberately-shared code).
-        if let Some(m) = &self.pairing_modal {
-            for line in m.a11y_lines() {
-                items.push((AkRole::Label, line, String::new(), false));
-            }
-        }
-        if let Some(m) = &self.guardian_modal {
-            for line in m.a11y_lines() {
-                items.push((AkRole::Label, line, String::new(), false));
-            }
-        }
-        if let Some(wiz) = &self.recovery_wizard {
-            for line in wiz.a11y_lines() {
-                items.push((AkRole::Label, line, String::new(), false));
-            }
-            // v0.0.12 items 18+20 (B2, B4): its status line while the new
-            // password is set; else the error it draws, as an alert (the
-            // Failed phase already says its error among its lines).
-            if wiz.finalizing {
-                items.push((AkRole::Status, crate::auth_work::SETTING_PASSWORD.into(), String::new(), false));
-            } else if let Some(e) = wiz.error.as_deref().filter(|e| !e.trim().is_empty()) {
-                if wiz.phase != RecoveryPhase::Failed {
-                    items.push((AkRole::Alert, e.to_string(), String::new(), false));
-                }
-            }
-        }
+        // The pairing offer, the guardian enrolment and the recovery wizard
+        // are modal dialogs of their own, announced first (`b_dialogs`, below).
         // C-WIRE 13 / 12: the alert notice and the older-device notice, read
         // whatever window is open.
         if !self.locked {
@@ -8074,6 +9856,23 @@ impl App {
         let mut nodes: Vec<(NodeId, Node)> = Vec::with_capacity(items.len() + 1);
         let mut child_ids: Vec<NodeId> = Vec::with_capacity(items.len());
         let mut focus = ROOT;
+        // Spec ch. 12, SQ10, SQ11b: lot B's modal window when it is on top
+        // (the pairing offer, the guardian enrolment, the recovery wizard,
+        // also over the locked gate), a dialog inlined under its own range,
+        // announced first; its focus is applied below, so that nothing under
+        // it takes it back. The PIN read aloud is OK: a short-lived,
+        // deliberately shared code.
+        let mut b_focus: Option<NodeId> = None;
+        if let Some((tree, ns)) = self.b_dialog_tree() {
+            let (dialog, d_nodes, d_focus) = crate::new_thread::inline_tree(tree, ns);
+            nodes.extend(d_nodes);
+            child_ids.push(dialog);
+            b_focus = Some(d_focus);
+        }
+        // The setup's targets (SQ10): each takes a screen reader's Focus, as
+        // well as its Click.
+        let wiz_targets = if self.locked { self.wizard.as_ref().map_or(Vec::new(), |w| w.a11y_targets()) } else { Vec::new() };
+        let mut wiz_control_ids: Vec<(NodeId, crate::onboarding::WizTarget)> = Vec::new();
         let screen_at = screen.as_ref().map(|s| s.0);
         let id_base = screen.as_ref().map_or(0, |s| LOCKED_SCREEN_NS | s.1 << 32);
         let mut screen_children: Vec<NodeId> = Vec::new();
@@ -8087,6 +9886,10 @@ impl App {
             self.auth_form.a11y_show_name().map(str::to_string)
         };
         let mut show_node: Option<NodeId> = None;
+        // L6: on the login and join forms (not the setup wizard), each secret
+        // field is described by the form's drawn hint.
+        let secret_hint: Option<&'static str> =
+            if self.locked && self.wizard.is_none() { Some(self.auth_form.a11y_hint()) } else { None };
         let n_items = items.len();
         let mut items = items.into_iter();
         for i in 0..=n_items {
@@ -8116,12 +9919,23 @@ impl App {
                 if !value.is_empty() {
                     n.set_value(value);
                 }
+                if role == AkRole::PasswordInput && screen_at.is_some_and(|at| i >= at) {
+                    if let Some(hint) = secret_hint {
+                        n.set_description(hint);
+                    }
+                }
             }
             if matches!(role, AkRole::TextInput | AkRole::PasswordInput) {
                 n.add_action(Action::Focus);
             }
             if matches!(role, AkRole::Button | AkRole::DefaultButton | AkRole::RadioButton | AkRole::CheckBox) {
                 n.add_action(Action::Click);
+            }
+            if screen_at.is_some_and(|at| i >= at) && crate::onboarding::is_target_role(role) {
+                if let Some(t) = wiz_targets.get(wiz_control_ids.len()) {
+                    n.add_action(Action::Focus);
+                    wiz_control_ids.push((id, *t));
+                }
             }
             if foc {
                 focus = id;
@@ -8165,66 +9979,105 @@ impl App {
                 if self.a11y_label_focus.as_deref() == Some(l.thread_id.as_str()) {
                     focus = id;
                 }
+                // C-MERGE MG2: an ended lane's mark is also its label,
+                // after its name.
+                let mut n = n;
+                if let Some(e) = self.lanes.ended(l.lane) {
+                    n.set_label(format!("{}{}, {}", crate::lane_rename::LABEL_BUTTON_PREFIX, l.name, e.mark));
+                }
                 nodes.push((id, n));
                 child_ids.push(id);
             }
         }
-        // The rename field over a lane label (R4): a text input "Thread
-        // name", inlined under its own id range, holding the focus while open.
-        if !self.locked && self.new_thread_prompt.is_none() {
-            if let Some(field) = self.lane_rename.as_mut() {
-                let (root, field_nodes, field_focus) =
-                    crate::new_thread::inline_tree(field.accessibility_tree(), LANE_RENAME_NS);
-                nodes.extend(field_nodes);
-                child_ids.push(root);
-                focus = field_focus;
-            }
+        // C-LOG DG3: the controls below the chat's messages, read with the
+        // workspace.
+        for (id, n) in self.log_control_nodes() {
+            nodes.push((id, n));
+            child_ids.push(id);
         }
-        // The Rename field of Settings → Devices (N6): a text input named
-        // "This device's name" or "Name of {name}", holding the focus.
-        if !self.locked && self.new_thread_prompt.is_none() && self.lane_rename.is_none() {
-            if let Some(field) = self.device_rename.as_mut() {
-                let (root, field_nodes, field_focus) =
-                    crate::new_thread::inline_tree(field.accessibility_tree(), DEVICE_RENAME_NS);
-                nodes.extend(field_nodes);
-                child_ids.push(root);
-                focus = field_focus;
+        // Ch. 12, SQ11b, SQ11f: the workspace above (the top window's content,
+        // the lanes' labels, the document's own tree, the status line) stays in
+        // the tree, readable. Of the windows the shell draws as a modal, only
+        // the one on top (`on_top`, SQ11a) is in it, holding the focus: a
+        // covered one leaves the tree, and comes back with the focus it kept.
+        let mut top_tree: Option<(NodeId, Vec<(NodeId, Node)>, NodeId)> = None;
+        match self.on_top() {
+            // Ch. 12, SQ10 lot C: the right-click menu, holding the focus while
+            // it is open; every window above covers it.
+            shell_a11y::OnTop::Workspace => {
+                top_tree = self.menu_a11y_nodes().map(|(n, menu, f)| (menu, n, f));
             }
+            // Ch. 12, SQ1, SQ2, SQ6: the question or notice on top, a modal
+            // dialog. A notice's « Restart sync » (C-SUP SU2) is a button
+            // inside it.
+            shell_a11y::OnTop::Confirmation
+            | shell_a11y::OnTop::Injection
+            | shell_a11y::OnTop::UnsavedEdits
+            | shell_a11y::OnTop::Notice => top_tree = self.shell_dialog_tree(),
+            // PR2: the same-name question, a modal dialog with its two buttons.
+            shell_a11y::OnTop::SameName => {
+                if let Some(q) = self.same_name.front() {
+                    top_tree = Some(crate::new_thread::inline_tree(q.accessibility_tree(), crate::same_name::SAME_NAME_NS));
+                }
+            }
+            // Ch. 12, SQ10 lot C: the bubble-style picker.
+            shell_a11y::OnTop::BubblePicker => {
+                top_tree = self.picker_a11y_nodes().map(|(n, dialog, f)| (dialog, n, f));
+            }
+            // C-LOG DG3: the window of what remains readable.
+            shell_a11y::OnTop::LogWindow => {
+                top_tree = self.log_window_tree().map(|t| crate::new_thread::inline_tree(t, crate::log_window::LOG_WINDOW_NS));
+            }
+            // S5-12: the section's thread chooser, a modal dialog with its list
+            // of threads.
+            shell_a11y::OnTop::OrphanChooser => {
+                top_tree = self.orphan_modal.as_ref().map(|m| crate::new_thread::inline_tree(m.accessibility_tree(), ORPHAN_CHOOSER_NS));
+            }
+            // The trash's modal (v0.0.12 item 9, T4): the thread chooser, a
+            // modal dialog with its list of threads, or the Empty trash
+            // confirmation.
+            shell_a11y::OnTop::TrashModal => {
+                top_tree = self.trash_modal.as_ref().map(|m| crate::new_thread::inline_tree(m.accessibility_tree(), TRASH_MODAL_NS));
+            }
+            // The Rename field of Settings → Devices (N6): a text input named
+            // "This device's name" or "Name of {name}".
+            shell_a11y::OnTop::DeviceRename => {
+                top_tree = self.device_rename.as_mut().map(|f| crate::new_thread::inline_tree(f.accessibility_tree(), DEVICE_RENAME_NS));
+            }
+            // The rename field over a lane label (R4): a text input "Thread
+            // name".
+            shell_a11y::OnTop::LaneRename => {
+                top_tree = self.lane_rename.as_mut().map(|f| crate::new_thread::inline_tree(f.accessibility_tree(), LANE_RENAME_NS));
+            }
+            // The new-thread prompt (N5): its dialog, every frame its whole tree.
+            shell_a11y::OnTop::NewThread => {
+                top_tree = self
+                    .new_thread_prompt
+                    .as_mut()
+                    .map(|p| crate::new_thread::inline_tree(p.accessibility_tree(), crate::new_thread::PROMPT_NS));
+            }
+            // Lot B's windows, above (`b_focus`). The email forms are not shown
+            // in v0.0.13 (email is switched off, SQ10).
+            shell_a11y::OnTop::Locked
+            | shell_a11y::OnTop::Pairing
+            | shell_a11y::OnTop::Guardian
+            | shell_a11y::OnTop::Recovery
+            | shell_a11y::OnTop::Compose
+            | shell_a11y::OnTop::EmailSetup => {}
         }
-        // The new-thread prompt (N5): its dialog inlined under its own id
-        // range, holding the focus while it is open. Every frame its whole
-        // tree, as the shell's own items.
-        if !self.locked {
-            if let Some(prompt) = self.new_thread_prompt.as_mut() {
-                let (dialog, prompt_nodes, prompt_focus) =
-                    crate::new_thread::inline_tree(prompt.accessibility_tree(), crate::new_thread::PROMPT_NS);
-                nodes.extend(prompt_nodes);
-                child_ids.push(dialog);
-                focus = prompt_focus;
-            }
+        if let Some((window, w_nodes, w_focus)) = top_tree {
+            nodes.extend(w_nodes);
+            child_ids.push(window);
+            focus = w_focus;
         }
-        // The trash's modal (v0.0.12 item 9, T4): the thread chooser, a modal
-        // dialog with its list of threads, or the Empty trash confirmation,
-        // holding the focus while it is open.
-        if !self.locked {
-            if let Some(m) = &self.trash_modal {
-                let (dialog, modal_nodes, modal_focus) =
-                    crate::new_thread::inline_tree(m.accessibility_tree(), TRASH_MODAL_NS);
-                nodes.extend(modal_nodes);
-                child_ids.push(dialog);
-                focus = modal_focus;
-            }
+        if let Some(f) = b_focus {
+            focus = f;
         }
-        // S5-12: the section's thread chooser, a modal dialog with its list
-        // of threads, holding the focus while it is open.
-        if !self.locked {
-            if let Some(m) = &self.orphan_modal {
-                let (dialog, chooser_nodes, chooser_focus) =
-                    crate::new_thread::inline_tree(m.accessibility_tree(), ORPHAN_CHOOSER_NS);
-                nodes.extend(chooser_nodes);
-                child_ids.push(dialog);
-                focus = chooser_focus;
-            }
+        // SQ7: the trash's toast while a click would reach it, a status and
+        // its « Undo (Ctrl+Z) »; it never takes the focus.
+        for (id, n) in self.toast_nodes() {
+            nodes.push((id, n));
+            child_ids.push(id);
         }
         let mut root = Node::new(AkRole::Window);
         root.set_label("Sovereign");
@@ -8234,40 +10087,109 @@ impl App {
         all.extend(nodes);
         self.a11y_root_focus = focus;
         self.a11y_show_node = show_node;
+        self.a11y_wiz_controls = wiz_control_ids;
         TreeUpdate { nodes: all, tree: Some(Tree::new(ROOT)), tree_id: TreeId::ROOT, focus }
     }
 
     /// An accessibility action from the screen reader (the adapter's
-    /// `A11yAction`, drained by `about_to_wait`). Handled today: the lane
-    /// labels' buttons — Focus gives the label the focus and scrolls its lane
+    /// `A11yAction`, drained by `about_to_wait`), taken only by the window on
+    /// top (ch. 12, SQ11c). While locked: the setup's controls (SQ10, lot B),
+    /// and Click on the screen's show/hide node, which toggles the reveal
+    /// (v0.0.12 rc2, V0012-rc2-labels-spoken, L4). The questions and the
+    /// notice (SQ5, SQ6): Click does what a click on the button does, through
+    /// the same checks, and Focus gives a question's button the keyboard. The
+    /// same-name question, the log window, the picker and lot B's windows take
+    /// theirs. With no window on top, the workspace's
+    /// (`workspace_a11y_action`). Anything else is ignored.
+    pub(crate) fn a11y_action(&mut self, request: accesskit::ActionRequest) {
+        let (target, action) = (request.target_node, request.action);
+        // Ch. 12, SQ11c: only the window on top (`on_top`, SQ11a) takes an
+        // action; a Click or a Focus on anything under it (another window, a
+        // lane's label, any control of the workspace) is dropped.
+        let ns = target.0 & !((1u64 << 32) - 1);
+        match self.on_top() {
+            shell_a11y::OnTop::Locked => {
+                // The recovery wizard over the locked gate takes them all.
+                if self.recovery_wizard.is_some() {
+                    if ns == RECOVERY_NS {
+                        self.a11y_action_b(target, action);
+                    }
+                    return;
+                }
+                if self.a11y_action_b(target, action) {
+                    return;
+                }
+                if action == Action::Click && self.a11y_show_node == Some(target) {
+                    self.toggle_locked_reveal();
+                }
+            }
+            // Ch. 12, SQ10 lot B.
+            shell_a11y::OnTop::Pairing if ns == PAIRING_NS => {
+                self.a11y_action_b(target, action);
+            }
+            shell_a11y::OnTop::Guardian if ns == GUARDIAN_NS => {
+                self.a11y_action_b(target, action);
+            }
+            shell_a11y::OnTop::Recovery if ns == RECOVERY_NS => {
+                self.a11y_action_b(target, action);
+            }
+            // Ch. 12, SQ5, SQ6: the questions and the notice (with « Restart
+            // sync »), as a click on them.
+            shell_a11y::OnTop::Confirmation
+            | shell_a11y::OnTop::Injection
+            | shell_a11y::OnTop::UnsavedEdits
+            | shell_a11y::OnTop::Notice => {
+                self.shell_a11y_action(target, action);
+            }
+            shell_a11y::OnTop::SameName => {
+                self.same_name_a11y_action(target, action);
+            }
+            shell_a11y::OnTop::LogWindow if ns == crate::log_window::LOG_WINDOW_NS => {
+                self.log_window_a11y_action(target, action);
+            }
+            // Ch. 12, SQ10 lot C.
+            shell_a11y::OnTop::BubblePicker => {
+                self.picker_a11y_action(target, action);
+            }
+            shell_a11y::OnTop::Workspace => self.workspace_a11y_action(target, action),
+            // The other windows take no screen reader's action yet, and
+            // nothing under them does.
+            _ => {}
+        }
+    }
+
+    /// A screen reader's action on the workspace, when no window is on top:
+    /// the toast's « Undo (Ctrl+Z) » (SQ7), a chat's « Show what remains
+    /// readable » (C-LOG DG3), the right-click menu's rows (SQ10, lot C), and
+    /// the lanes' labels: Focus gives the label the focus and scrolls its lane
     /// into view (N8: the tree holds every lane, visible or not); Click opens
     /// the rename field over it, as a double-click on the label does (R1).
-    /// While locked, only Click on the screen's show/hide node, which toggles
-    /// the reveal (v0.0.12 rc2, V0012-rc2-labels-spoken, L4).
-    /// Anything else is ignored.
-    pub(crate) fn a11y_action(&mut self, request: accesskit::ActionRequest) {
-        if self.locked {
-            if request.action == Action::Click && self.a11y_show_node == Some(request.target_node) {
-                self.toggle_locked_reveal();
-            }
+    fn workspace_a11y_action(&mut self, target: NodeId, action: Action) {
+        if self.shell_a11y_action(target, action) {
+            return;
+        }
+        if self.log_window_a11y_action(target, action) {
+            return;
+        }
+        if self.menu_a11y_action(target, action) {
             return;
         }
         let Some(label) = self
             .lane_labels
             .iter()
-            .find(|l| crate::lane_rename::label_node_id(LANE_LABEL_NS, &l.thread_id) == request.target_node)
+            .find(|l| crate::lane_rename::label_node_id(LANE_LABEL_NS, &l.thread_id) == target)
             .cloned()
         else {
             return;
         };
-        match request.action {
+        match action {
             Action::Focus => {
                 self.a11y_label_focus = Some(label.thread_id.clone());
                 self.scroll_lane_into_view(label.lane);
             }
             Action::Click => {
                 self.scroll_lane_into_view(label.lane);
-                self.open_lane_rename(label.lane);
+                self.open_lane_rename(&label.thread_id);
             }
             _ => {}
         }
@@ -8498,10 +10420,10 @@ impl ApplicationHandler for App {
                     let (vw, vh) = self.win_size().unwrap_or((0.0, 0.0));
                     // A press off the lane labels ends a double-click on one
                     // (R1); a press on one is counted where it is handled.
-                    if crate::lane_rename::label_at(p, &self.label_rects).is_none() {
+                    if crate::lane_rename::label_thread_at(p, &self.label_threads).is_none() {
                         self.label_clicks.press(None, p, Instant::now());
                     }
-                    if self.unsaved_prompt.is_some() || self.comms_form.is_some() || self.compose_form.is_some() || self.pairing_modal.is_some() || self.guardian_modal.is_some() || self.recovery_wizard.is_some() || self.injection_prompt.is_some() || self.bubble_picker || self.pending_action.is_some() || self.notice.is_some() || self.ctx_menu.is_some() || self.trash_modal.is_some() || self.new_thread_prompt.is_some() || self.orphan_modal.is_some() || self.lane_rename.is_some() || self.device_rename.is_some() {
+                    if self.unsaved_prompt.is_some() || self.comms_form.is_some() || self.compose_form.is_some() || self.pairing_modal.is_some() || self.guardian_modal.is_some() || self.recovery_wizard.is_some() || self.injection_prompt.is_some() || self.bubble_picker || self.pending_action.is_some() || self.notice.is_some() || self.ctx_menu.is_some() || self.trash_modal.is_some() || self.new_thread_prompt.is_some() || self.orphan_modal.is_some() || self.lane_rename.is_some() || self.device_rename.is_some() || self.same_name_open() || self.log_window_open() {
                         // Modal/menu open: no drag/pan — release dismisses or acts.
                         self.dragging = false;
                         // The new-thread prompt's field takes a press (caret,
@@ -8546,12 +10468,13 @@ impl ApplicationHandler for App {
                             f.press(p, mods);
                         }
                         self.dragging = false; // a window has focus, not the canvas
-                    } else if let Some(lane) = crate::lane_rename::label_at(p, &self.label_rects) {
+                    } else if let Some(thread) = crate::lane_rename::label_thread_at(p, &self.label_threads) {
                         // Press on a renamable lane label (drawn above the
                         // cards): the second press of a double-click opens
                         // the rename field over it (R1); otherwise it pans.
-                        if let Some(lane) = self.label_clicks.press(Some(lane), p, Instant::now()) {
-                            self.open_lane_rename(lane);
+                        // By the thread's id, not the lane's position (AT8).
+                        if let Some(thread) = self.label_clicks.press(Some(&thread), p, Instant::now()) {
+                            self.open_lane_rename(&thread);
                             self.dragging = false;
                         } else {
                             self.dragging = true;
@@ -8623,6 +10546,11 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
+                // Ch. 12, SQ11d: a click follows the order of what is on top; no
+                // menu opens under a window.
+                if self.on_top() != shell_a11y::OnTop::Workspace {
+                    return;
+                }
                 self.open_context_menu();
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -8664,7 +10592,14 @@ impl ApplicationHandler for App {
                 };
                 let p = Point::new(self.cursor.0, self.cursor.1);
                 let (vw, vh) = self.win_size().unwrap_or((0.0, 0.0));
-                if let Some(m) = self.orphan_modal.as_mut() {
+                if self.same_name_open() {
+                    // PR2's question takes the wheel (its list scrolls);
+                    // nothing under it scrolls.
+                    self.same_name_wheel(p, vw, vh, lines.round() as i64);
+                } else if self.log_window_open() {
+                    // C-LOG: the window of what remains readable takes the wheel.
+                    self.log_window_wheel(lines);
+                } else if let Some(m) = self.orphan_modal.as_mut() {
                     // The section's thread chooser takes the wheel (its list scrolls).
                     if m.contains(vw, vh, p) {
                         m.scroll(lines.round() as i64);
@@ -8713,443 +10648,10 @@ impl ApplicationHandler for App {
                 event: KeyEvent { logical_key, text, state: ElementState::Pressed, .. },
                 ..
             } => {
-                // A key takes the focus back from a lane label a screen reader
-                // focused (N8): the shell's own focus applies again.
-                self.a11y_label_focus = None;
-                // Global UI zoom (WCAG resize text) — Ctrl +/- to scale the whole
-                // UI, Ctrl+0 to reset. Works in any mode (auth, chat, canvas).
-                if self.ctrl_down {
-                    if let Key::Character(s) = &logical_key {
-                        match s.as_str() {
-                            "=" | "+" => {
-                                self.ui_scale = (self.ui_scale + 0.1).min(3.0);
-                                return;
-                            }
-                            "-" | "_" => {
-                                self.ui_scale = (self.ui_scale - 0.1).max(0.6);
-                                return;
-                            }
-                            "0" => {
-                                self.ui_scale = 1.0;
-                                return;
-                            }
-                            "f" | "F" => {
-                                // Ctrl+F: open-or-toggle a Search window, focused.
-                                // It closes an open new-thread prompt (N3).
-                                if let Some(mut prompt) = self.new_thread_prompt.take() {
-                                    prompt.close();
-                                }
-                                if let Some(mut field) = self.lane_rename.take() {
-                                    field.close();
-                                }
-                                if !self.locked {
-                                    self.focus_or_toggle(WindowKind::Search);
-                                }
-                                return;
-                            }
-                            "s" | "S" => {
-                                // Ctrl+S: save the focused document (no-op otherwise).
-                                if self.unsaved_prompt.is_some() {
-                                    self.resolve_unsaved(UnsavedChoice::Save);
-                                } else {
-                                    self.v2_command(sovereign_editor::input::Command::Save);
-                                }
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                // Lot 0.3: the unsaved-edits prompt owns the keyboard. Esc goes
-                // back to editing (nothing lost); Enter saves.
-                if self.unsaved_prompt.is_some() {
-                    match &logical_key {
-                        Key::Named(NamedKey::Escape) => self.resolve_unsaved(UnsavedChoice::Cancel),
-                        Key::Named(NamedKey::Enter) => self.resolve_unsaved(UnsavedChoice::Save),
-                        _ => {}
-                    }
-                    return;
-                }
-
-                // The pairing modal: Esc/Enter close it (no text input).
-                if self.pairing_modal.is_some() {
-                    if matches!(&logical_key, Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter)) {
-                        self.pairing_modal = None;
-                    }
-                    return;
-                }
-                // The guardian-enroll modal: Esc/Enter close it (no text input).
-                if self.guardian_modal.is_some() {
-                    if matches!(&logical_key, Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter)) {
-                        self.guardian_modal = None;
-                    }
-                    return;
-                }
-
-                // The access-recovery wizard owns the keyboard while open. Esc
-                // closes it (recovery keeps running); the SetPassword phase takes
-                // the new passphrase.
-                if let Some(phase) = self.recovery_wizard.as_ref().map(|w| w.phase) {
-                    // B2: inert while its new password is being set.
-                    if self.auth_job.is_some() {
-                        return;
-                    }
-                    match &logical_key {
-                        Key::Named(NamedKey::Escape) => self.recovery_wizard = None,
-                        Key::Named(NamedKey::Enter) => match phase {
-                            RecoveryPhase::SetPassword => self.recovery_password_submit(),
-                            RecoveryPhase::Ready => self.recovery_finalize(),
-                            RecoveryPhase::Awaiting => self.recovery_spawn_poll(),
-                            RecoveryPhase::Failed => {}
-                        },
-                        Key::Named(NamedKey::Backspace) if phase == RecoveryPhase::SetPassword => {
-                            if let Some(w) = &mut self.recovery_wizard {
-                                w.new_password.pop();
-                            }
-                        }
-                        _ => {
-                            if phase == RecoveryPhase::SetPassword {
-                                if let Some(t) = &text {
-                                    if let Some(w) = &mut self.recovery_wizard {
-                                        for ch in t.chars() {
-                                            if !ch.is_control() {
-                                                w.new_password.push(ch);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return;
-                }
-
-                // The bubble-style picker: Esc/Enter close it.
-                if self.bubble_picker {
-                    if matches!(&logical_key, Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter)) {
-                        self.bubble_picker = false;
-                    }
-                    return;
-                }
-
-                // The compose modal owns the keyboard while open.
-                if self.compose_form.is_some() {
-                    match &logical_key {
-                        Key::Named(NamedKey::Escape) => self.compose_form = None,
-                        Key::Named(NamedKey::Tab) => {
-                            if let Some(f) = &mut self.compose_form {
-                                f.focus = (f.focus + 1) % 3;
-                            }
-                        }
-                        Key::Named(NamedKey::Enter) => {
-                            if self.ctrl_down {
-                                self.compose_send();
-                            } else if let Some(f) = &mut self.compose_form {
-                                if f.focus == 2 {
-                                    f.body.push('\n'); // newline in the body
-                                } else {
-                                    f.focus += 1; // To/Subject -> next field
-                                }
-                            }
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            if let Some(f) = &mut self.compose_form {
-                                match f.focus {
-                                    0 => { f.to.pop(); }
-                                    1 => { f.subject.pop(); }
-                                    _ => { f.body.pop(); }
-                                }
-                            }
-                        }
-                        _ => {
-                            if let Some(t) = &text {
-                                if let Some(f) = &mut self.compose_form {
-                                    for ch in t.chars() {
-                                        if !ch.is_control() {
-                                            match f.focus {
-                                                0 => f.to.push(ch),
-                                                1 => f.subject.push(ch),
-                                                _ => f.body.push(ch),
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return;
-                }
-
-                // The email-setup modal owns the keyboard while open.
-                if self.comms_form.is_some() {
-                    match &logical_key {
-                        Key::Named(NamedKey::Escape) => self.comms_form = None,
-                        Key::Named(NamedKey::Enter) => self.comms_form_sync(),
-                        Key::Named(NamedKey::Tab) => {
-                            if let Some(form) = &mut self.comms_form {
-                                form.focus = (form.focus + 1) % form.fields.len();
-                            }
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            if let Some(form) = &mut self.comms_form {
-                                let f = form.focus;
-                                form.fields[f].pop();
-                            }
-                        }
-                        _ => {
-                            if let Some(t) = &text {
-                                if let Some(form) = &mut self.comms_form {
-                                    let f = form.focus;
-                                    for ch in t.chars() {
-                                        if !ch.is_control() {
-                                            form.fields[f].push(ch);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return;
-                }
-
-                // INJECTION-002: the gate owns the keyboard while open. Enter and
-                // Esc both choose Redact — the safe default; a stray key must
-                // never let untrusted content pass.
-                if self.injection_prompt.is_some() {
-                    if matches!(&logical_key, Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter)) {
-                        self.decide_injection(InjectionDecision::Redact);
-                    }
-                    return;
-                }
-
-                // Esc on a pending action rejects it (the orchestrator is blocked
-                // on the decision channel), then notices / context menus close.
-                if matches!(logical_key, Key::Named(NamedKey::Escape)) {
-                    if self.pending_action.is_some() {
-                        self.decide_action(ActionDecision::Reject("Declined by user".into()));
-                        return;
-                    }
-                    if self.notice.is_some() || self.ctx_menu.is_some() {
-                        self.notice = None;
-                        self.ctx_menu = None;
-                        return;
-                    }
-                    if self.trash_modal.is_some() {
-                        self.cancel_trash_modal_inner();
-                        return;
-                    }
-                }
-                // A trash modal owns the keyboard (Esc acts above; the
-                // chooser's keys, v0.0.12 item 9, T4).
-                if self.trash_modal.is_some() {
-                    self.trash_modal_key(&logical_key);
-                    return;
-                }
-                // So does a dialog of the section "Documents whose thread was deleted".
-                if self.orphan_modal.is_some() {
-                    self.orphan_modal_key(&logical_key);
-                    return;
-                }
-
-                // The new-thread prompt owns the keyboard while open: Enter
-                // creates, Esc cancels (both only end an input-method
-                // composition first, N7), the rest goes to its field (N2-N4).
-                if self.prompt_on_top() {
-                    let mods = crate::winit_input::editor_modifiers(self.mods);
-                    if let Some(step) = self.new_thread_prompt.as_mut().map(|p| p.key(&logical_key, text.as_deref(), mods)) {
-                        self.prompt_step(step);
-                    }
-                    return;
-                }
-                // So does the rename field over a lane label: Enter saves, Esc
-                // cancels (both only end a composition first), the rest goes
-                // to its field (R2, R3).
-                if self.rename_on_top() {
-                    let mods = crate::winit_input::editor_modifiers(self.mods);
-                    if let Some(step) = self.lane_rename.as_mut().map(|f| f.key(&logical_key, text.as_deref(), mods)) {
-                        self.rename_step(step);
-                    }
-                    return;
-                }
-                // So does the Rename field of Settings → Devices (N3, N5).
-                if self.device_rename_on_top() {
-                    let mods = crate::winit_input::editor_modifiers(self.mods);
-                    self.device_rename_key(&logical_key, text.as_deref(), mods);
-                    return;
-                }
-
-                // A focused document editor owns the keyboard.
-                if !self.locked && self.v2_key(&logical_key, text.as_deref()) {
-                    return;
-                }
-
-                // The auth gate owns the keyboard while locked.
-                if self.locked {
-                    self.locked_key(&logical_key, text.as_deref());
-                }
-                // The TOP (focused) window's text field takes the key when it is
-                // the Chat composer or the Search query: the editor's field
-                // (item 21, K1-K4); App only routes the field's step.
-                else if matches!(self.top_kind(), Some(WindowKind::Chat | WindowKind::Search)) {
-                    let mods = crate::winit_input::editor_modifiers(self.mods);
-                    if let Some(step) = self.top_field_mut().map(|f| f.key(&logical_key, text.as_deref(), mods)) {
-                        self.field_step(self.windows.len() - 1, step);
-                    }
-                } else if matches!(self.top_kind(), Some(WindowKind::Alerts)) {
-                    // WCAG 2.1.1: every alert action from the keyboard.
-                    let top = self.windows.len() - 1;
-                    let view_h = (self.windows[top].bounds.height() - 120.0).max(ALERT_ROW_H);
-                    match &logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            self.windows.pop();
-                        }
-                        Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
-                            let down = matches!(logical_key, Key::Named(NamedKey::ArrowDown));
-                            if let WindowContent::Alerts(ap) = &mut self.windows[top].content {
-                                ap.move_focus(down, view_h);
-                            }
-                        }
-                        Key::Named(NamedKey::Enter) => self.alerts_open(top),
-                        Key::Named(NamedKey::Delete) => self.alert_action(top, AlertBtn::Dismiss),
-                        Key::Character(ref c) if c.eq_ignore_ascii_case("o") => self.alerts_open(top),
-                        // S5-12: the three ways out for the selected document of the section.
-                        Key::Character(ref c) if c.eq_ignore_ascii_case("m") => {
-                            self.orphan_key(top, crate::orphans::OrphanAction::MoveTo)
-                        }
-                        Key::Character(ref c) if c.eq_ignore_ascii_case("n") => {
-                            self.orphan_key(top, crate::orphans::OrphanAction::NewThread)
-                        }
-                        Key::Character(ref c) if c.eq_ignore_ascii_case("t") => {
-                            self.orphan_key(top, crate::orphans::OrphanAction::Trash)
-                        }
-                        Key::Character(ref c) if c.eq_ignore_ascii_case("v") => self.alert_action(top, AlertBtn::Previous),
-                        Key::Character(ref c) if c.eq_ignore_ascii_case("d") => self.alert_action(top, AlertBtn::Dismiss),
-                        Key::Character(ref c) if c.eq_ignore_ascii_case("a") => {
-                            self.windows.pop();
-                        }
-                        _ => {}
-                    }
-                } else if matches!(self.top_kind(), Some(WindowKind::PreviousValues)) {
-                    let top = self.windows.len() - 1;
-                    let view_h = (self.windows[top].bounds.height() - 120.0).max(PV_ROW_H);
-                    match &logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            self.windows.pop();
-                        }
-                        Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
-                            let down = matches!(logical_key, Key::Named(NamedKey::ArrowDown));
-                            if let WindowContent::PreviousValues(pv) = &mut self.windows[top].content {
-                                pv.move_selection(down, view_h);
-                            }
-                        }
-                        Key::Named(NamedKey::Enter) => self.previous_value_action(top, PrevBtn::Restore),
-                        Key::Named(NamedKey::Delete) => self.previous_value_action(top, PrevBtn::Forget),
-                        Key::Character(ref c) if c.eq_ignore_ascii_case("r") => self.previous_value_action(top, PrevBtn::Restore),
-                        Key::Character(ref c) if c.eq_ignore_ascii_case("x") => self.previous_value_action(top, PrevBtn::Forget),
-                        Key::Character(ref c) if c.eq_ignore_ascii_case("v") => {
-                            self.windows.pop();
-                        }
-                        _ => {}
-                    }
-                } else if matches!(self.top_kind(), Some(WindowKind::Browser)) {
-                    // The browser URL bar owns the keyboard (Enter navigates).
-                    let top = self.windows.len() - 1;
-                    match &logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            self.windows.pop();
-                        }
-                        Key::Named(NamedKey::Enter) => self.browser_navigate(top),
-                        Key::Named(NamedKey::Backspace) => {
-                            if let WindowContent::Browser(b) = &mut self.windows[top].content {
-                                b.url.pop();
-                            }
-                        }
-                        _ => {
-                            if let Some(t) = &text {
-                                if let WindowContent::Browser(b) = &mut self.windows[top].content {
-                                    for ch in t.chars() {
-                                        if !ch.is_control() {
-                                            b.url.push(ch);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    match logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            // A fanned-open deck collapses first; otherwise close the
-                            // top window (inbox thread-view backs out first, as before).
-                            // A document window whose editor does not have the
-                            // keyboard closes the way its × does: its editor
-                            // saves first, and asks if that fails (E4).
-                            if self.expanded_deck.is_some() {
-                                self.expanded_deck = None;
-                            } else if let Some(top) = self.windows.len().checked_sub(1) {
-                                match &mut self.windows[top].content {
-                                    WindowContent::Inbox(ib) if ib.selected.is_some() => {
-                                        ib.selected = None;
-                                        ib.thread_scroll = 0.0;
-                                    }
-                                    WindowContent::Doc(_) => self.request_close_window(top),
-                                    _ => {
-                                        self.windows.pop();
-                                    }
-                                }
-                            }
-                        }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("i") => {
-                            self.focus_or_toggle(WindowKind::Inbox);
-                        }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("c") => {
-                            self.focus_or_toggle(WindowKind::Chat);
-                        }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("s") => {
-                            self.focus_or_toggle(WindowKind::Settings);
-                        }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("m") => {
-                            self.focus_or_toggle(WindowKind::Models);
-                        }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("p") => {
-                            self.focus_or_toggle(WindowKind::Pii);
-                        }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("b") => {
-                            self.focus_or_toggle(WindowKind::Browser);
-                        }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("d") => {
-                            self.focus_or_toggle(WindowKind::Devices); // devices & sync
-                        }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("a") => {
-                            self.focus_or_toggle(WindowKind::Alerts); // alerts on changes from your devices
-                        }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("v") => {
-                            self.focus_or_toggle(WindowKind::PreviousValues); // previous values of synced items
-                        }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("e") => {
-                            self.open_comms_form(); // email setup
-                        }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("w") => {
-                            self.open_compose(String::new(), String::new()); // write email
-                        }
-                        Key::Character(ref s) if s.eq_ignore_ascii_case("g") => {
-                            self.open_guardian_enroll(); // F1: enroll a recovery guardian
-                        }
-                        // Keyboard canvas navigation (WCAG 2.1.1), only when no window is open.
-                        other => {
-                            if matches!(self.top_kind(), Some(WindowKind::History)) {
-                                // History from the keyboard (reached from an alert's
-                                // "previous version"): Up/Down choose a version, Enter
-                                // uses it. Other keys keep their global meaning.
-                                self.history_key(&other);
-                            } else if self.windows.is_empty() {
-                                // Arrows, zoom keys, home, fit (N4: the stop applies).
-                                self.canvas_key(&other);
-                            }
-                        }
-                    }
-                }
+                // Ch. 12, SQ11d: the whole key path is `key_pressed`: the
+                // elements of SQ1 to SQ10 first, then the shell's shortcuts and
+                // the window on top.
+                self.key_pressed(&logical_key, text.as_deref(), self.mods);
             }
             WindowEvent::RedrawRequested => self.render(),
             _ => {}
@@ -9180,8 +10682,72 @@ impl ApplicationHandler for App {
     /// can be pasted after it has quit. A crash or a kill clears nothing.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         editor_v2::forget_clipboard();
+        // C-SUP SU5: the application's exit ends the node and says nothing.
+        if let Some(h) = self.p2p.take() {
+            h.stop_node(&self.rt);
+        }
     }
 }
+
+/// C6: what [`App::close_before_exit`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExitClose {
+    /// Whether the shell held no handle on the store any more when it
+    /// returned: P2P stopped, the other tasks that hold the database ended,
+    /// its own handle dropped. `false` when the bound ran out first, a task
+    /// still holding one. (Whether the storage engine then closes its files is
+    /// the engine's: surrealdb 2.6.5 keeps a RocksDB store whose indexes were
+    /// defined open after its last handle is dropped, measured 2026-11-17.)
+    pub(crate) handles_released: bool,
+}
+
+impl App {
+    /// C6 (Céline, 2026-10-28: « éviter un crash ou une possible corruption,
+    /// même si rare, et ça coûte peu »): the shell closes its database before
+    /// `main` returns. It stops P2P, then the other tasks that hold the
+    /// database, then drops the handle, and returns within `bound` whatever a
+    /// task does: a stuck task never turns quitting into a frozen window.
+    ///
+    /// *Signature by the C6 test author; the body is the implementer's.*
+    ///
+    /// P2P ends as it ends anywhere: Shutdown, then its own grace
+    /// (`NODE_STOP_GRACE`), while the App still holds its handle. `bound`
+    /// applies to what follows (the Fable maille, by delegation of Céline,
+    /// 2026-11-17): the App's own handles are dropped, its tasks cancelled,
+    /// and its runtime is given `bound` to end; a blocking task still running
+    /// then is left behind rather than waited for.
+    pub(crate) fn close_before_exit(mut self, bound: std::time::Duration) -> ExitClose {
+        if let Some(h) = self.p2p.take() {
+            h.stop_node(&self.rt);
+        }
+        let store = self.db.as_ref().map(Arc::downgrade);
+        for task in [self.purge_task.take(), self.migration_task.take()].into_iter().flatten() {
+            task.abort();
+        }
+        // The runtime outlives the App's other fields: it is taken out, so that
+        // every handle the App holds is dropped first, and then ended with a
+        // bound. A current-thread runtime, never started, takes its place.
+        let rt = match tokio::runtime::Builder::new_current_thread().build() {
+            Ok(placeholder) => std::mem::replace(&mut self.rt, placeholder),
+            Err(e) => {
+                tracing::warn!("the exit could not end the runtime on its own ({e}); the App is dropped whole");
+                drop(self);
+                return ExitClose { handles_released: store.map_or(true, |w| w.strong_count() == 0) };
+            }
+        };
+        drop(self);
+        rt.shutdown_timeout(bound);
+        let handles_released = store.map_or(true, |w| w.strong_count() == 0);
+        if !handles_released {
+            tracing::warn!("the exit's bound ran out: a task still held the store");
+        }
+        ExitClose { handles_released }
+    }
+}
+
+/// C6: how long the exit gives the shell's tasks and runtime to end, after
+/// P2P's own grace (the Fable maille, by delegation of Céline, 2026-11-17).
+pub(crate) const EXIT_CLOSE_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Headless one-frame render to a PNG (no window / no desktop needed) — the D6
 /// fallback for visual debugging where interactive screen-capture is blocked.
@@ -9235,7 +10801,8 @@ pub(crate) fn run_shot(path: String) {
             app.ctx_menu = Some(ContextMenu { target, anchor });
         }
     }
-    // SHELL_RUN_SKILL=<index>: run that skill on the first doc + show the notice.
+    // SHELL_RUN_SKILL=<index>: run that skill (its registry index, a dev
+    // switch) on the first doc + show the notice.
     if let Some(idx) = crate::dev::var("SHELL_RUN_SKILL") {
         if let Ok(si) = idx.parse::<usize>() {
             if let Some(id) = app.cards.first().map(|c| c.id.clone()) {
@@ -9279,6 +10846,11 @@ pub(crate) fn run_shot(path: String) {
             doc_id: None,
             thread_id: None,
             description: desc.into(),
+            target: sovereign_core::security::ActionTarget::default(),
+            request_id: sovereign_core::security::RequestId::default(),
+            // As the orchestrator would: its wait, from now (C-HOST AT6).
+            deadline: chrono::Utc::now()
+                + chrono::Duration::from_std(crate::approval::ORCHESTRATOR_DECISION_TIMEOUT).unwrap_or_default(),
         });
     }
     // SHELL_OPEN_MODELS=1: open the Models & trust window (screenshot debug).

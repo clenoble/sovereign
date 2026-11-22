@@ -7,7 +7,7 @@
 //! fallback lane*).
 //!
 //! The frontend's bindings (`frontend/src/lib/api/commands.ts`) fix the
-//! command names and shapes: `list_orphaned_documents` → `OrphanDto[]`;
+//! command names and shapes: `list_orphaned_documents` → `{ orphans: OrphanDto[], could_not_check }`;
 //! `resolve_orphan { docId, resolution }`; `resolve_orphans_of_thread
 //! { threadId, docIds, resolution }` → the number resolved (`docIds`, the
 //! group's documents as drawn, v0.0.12 item 9); `resolution` is
@@ -79,6 +79,38 @@ pub async fn list_orphaned_documents(
         .collect())
 }
 
+/// The documents whose thread was deleted as `list_orphaned_documents`
+/// returns them: the list, or, when it could not be read, the sentence said
+/// in its place (spec ch. 03, *What cannot be read is never shown as empty*).
+#[derive(Clone, Debug, Serialize)]
+pub struct OrphansDto {
+    /// Empty when they could not be read.
+    pub orphans: Vec<OrphanDto>,
+    /// `sovereign_docs::COULD_NOT_CHECK_ORPHANS` when they could not be read;
+    /// `None` when they were.
+    pub could_not_check: Option<String>,
+}
+
+/// What the command `list_orphaned_documents` returns once the caller is
+/// checked: `docs` is the session's document service, or why there is none
+/// (`AppState::docs`). No service is a refusal (`Err`), never a "could not
+/// check": the frontend reads a refusal as nothing to show.
+pub async fn orphans_listing(
+    docs: Result<std::sync::Arc<DocumentService>, String>,
+    device_names: &HashMap<String, String>,
+) -> Result<OrphansDto, String> {
+    let docs = docs?;
+    // Spec ch. 03, *What cannot be read is never shown as empty*: with a
+    // session, a failure is the list's read, said in its place.
+    Ok(match list_orphaned_documents(&docs, device_names).await {
+        Ok(orphans) => OrphansDto { orphans, could_not_check: None },
+        Err(e) => {
+            tracing::warn!("{e}");
+            OrphansDto { orphans: Vec::new(), could_not_check: Some(sovereign_docs::COULD_NOT_CHECK_ORPHANS.into()) }
+        }
+    })
+}
+
 /// One way out for one document (W4). Refused: nothing changes, and the
 /// error says why, for the notice.
 pub async fn resolve_orphan(docs: &DocumentService, doc_id: &str, resolution: OrphanResolutionDto) -> Result<(), String> {
@@ -121,16 +153,15 @@ pub async fn resolve_orphans_shown(
 pub mod commands {
     use tauri::State;
 
-    use super::{OrphanDto, OrphanResolutionDto};
+    use super::{OrphanResolutionDto, OrphansDto};
     use crate::tauri_state::AppState;
 
     /// The documents whose thread was deleted (S5-12), with device names.
     #[tauri::command]
-    pub async fn list_orphaned_documents(webview: tauri::Webview, state: State<'_, AppState>) -> Result<Vec<OrphanDto>, String> {
+    pub async fn list_orphaned_documents(webview: tauri::Webview, state: State<'_, AppState>) -> Result<OrphansDto, String> {
         state.require_unlocked(&webview).await?;
-        let docs = state.docs().await?;
         let names = crate::tauri_commands::sync_alerts::device_names(&state).await;
-        super::list_orphaned_documents(&docs, &names).await
+        super::orphans_listing(state.docs().await, &names).await
     }
 
     /// One way out for one document: move it, put it in a new thread, or

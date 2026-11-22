@@ -12,9 +12,23 @@ pub enum SovereignRequest {
     /// Push a sync manifest to a peer.
     PushManifest(manifest::EncryptedManifest),
     /// Request specific commits by ID.
-    GetCommits { commit_ids: Vec<String> },
+    GetCommits {
+        commit_ids: Vec<String>,
+        /// C-WIRE 12 (spec v2.0.91): the requester's wire version. A request
+        /// built by v0.0.12 has no such field and reads as `None`. The
+        /// answering side judges by it: none, lower or higher is refused for
+        /// documents, and the refusal is said.
+        #[serde(default)]
+        wire_version: Option<u32>,
+    },
     /// Push encrypted commits to a peer.
-    PushCommits { commits: Vec<sync::EncryptedCommit> },
+    PushCommits {
+        commits: Vec<sync::EncryptedCommit>,
+        /// C-WIRE 12 (spec v2.0.91): the requester's wire version, as for
+        /// `GetCommits`.
+        #[serde(default)]
+        wire_version: Option<u32>,
+    },
     /// Request specific rows from a non-document table.
     GetRows {
         table: sync::SyncTable,
@@ -81,6 +95,48 @@ pub enum SovereignRequest {
     /// `guardian_enroll::receipt_mac`). Only on this does the owner mark
     /// the guardian enrolled.
     GuardianComplete { offer_id: String, receipt: Vec<u8> },
+}
+
+impl SovereignRequest {
+    /// C-WIRE 12 (v2.0.91): a request for documents, as this build sends it:
+    /// carrying this build's wire version.
+    ///
+    /// *Signature by the C-WIRE test author (lot L1b); the body is the
+    /// implementer's, and so is the node's use of it at its two send sites.*
+    pub fn get_commits(commit_ids: Vec<String>) -> Self {
+        SovereignRequest::GetCommits { commit_ids, wire_version: Some(crate::wire::WIRE_VERSION) }
+    }
+
+    /// C-WIRE 12 (v2.0.91): a push of documents, as this build sends it:
+    /// carrying this build's wire version.
+    ///
+    /// *Signature by the C-WIRE test author (lot L1b); the body is the
+    /// implementer's.*
+    pub fn push_commits(commits: Vec<sync::EncryptedCommit>) -> Self {
+        SovereignRequest::PushCommits { commits, wire_version: Some(crate::wire::WIRE_VERSION) }
+    }
+
+    /// C-WIRE 12 (v2.0.91): whether this request carries documents, so that
+    /// the answering side judges it by its wire version. Every later request
+    /// that carries a document joins this list (and the test that names them).
+    ///
+    /// *Signature by the C-WIRE test author (lot L1b); the body is the
+    /// implementer's.*
+    pub fn carries_documents(&self) -> bool {
+        self.documents_wire_version().is_some()
+    }
+
+    /// For a request that carries documents, the wire version it carries
+    /// (`Some(None)`: it carries none, as v0.0.12 builds it); `None` for any
+    /// other request. A new document-carrying variant is named here.
+    pub fn documents_wire_version(&self) -> Option<Option<u32>> {
+        match self {
+            SovereignRequest::GetCommits { wire_version, .. } | SovereignRequest::PushCommits { wire_version, .. } => {
+                Some(*wire_version)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Top-level response type for the Sovereign sync protocol.

@@ -27,6 +27,12 @@ pub const WORKFLOW_QUERY: &str = "query";
 pub const WORKFLOW_CHAT: &str = "chat";
 
 fn scoped(workflow: &str, action: &str) -> String {
+    // C-MERGE MG6: the approvals counted while a merge was level 5 (v0.0.12)
+    // do not count; a merge's trust starts at zero in v0.0.13, under a key of
+    // its own. The old entry stays in the file, read by nothing.
+    if action == "merge_threads" {
+        return format!("{workflow}:{action}:keeps-source");
+    }
     format!("{workflow}:{action}")
 }
 
@@ -151,9 +157,14 @@ impl TrustTracker {
     /// accumulated in the given workflow.
     /// Only Level 3 (Modify) actions can be auto-approved.
     /// Level 4 (Transmit) and Level 5 (Destruct) never auto-approve.
+    /// Adopting an external document never does either: it needs her explicit
+    /// action (spec ch. 08; Céline, 2026-11-17).
     pub fn should_auto_approve(&self, workflow: &str, action: &str, level: ActionLevel) -> bool {
         // Only Level 3 can be auto-approved through trust
         if level != ActionLevel::Modify {
+            return false;
+        }
+        if action == "adopt" {
             return false;
         }
 
@@ -542,5 +553,34 @@ mod tests {
         assert!(!loaded.should_auto_approve(WORKFLOW_QUERY, "create_thread", ActionLevel::Modify));
         assert!(!loaded.should_auto_approve(WORKFLOW_CHAT, "create_thread", ActionLevel::Modify));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Spec ch. 08, *Conversational confirmation*: an external document is
+    /// never adopted through earned trust (Céline, 2026-11-17: « jamais
+    /// d'adoption de doc externe sans action explicite de l'utilisateur, donc
+    /// jamais via la confiance acquise »). The rule sits where earned trust is
+    /// granted (the Fable maille, by delegation, 2026-11-17): a verified tracker
+    /// with five fresh approvals of `adopt` never grants it, whatever the
+    /// workflow; the same approvals of `move_document` do.
+    ///
+    /// Written before the code by another author; the implementer does not
+    /// edit this test.
+    #[test]
+    fn adopt_is_never_granted_by_earned_trust_whatever_the_workflow() {
+        for workflow in [WORKFLOW_QUERY, WORKFLOW_CHAT] {
+            let mut tracker = TrustTracker::with_threshold(5);
+            for _ in 0..5 {
+                tracker.record_approval(workflow, "adopt");
+                tracker.record_approval(workflow, "move_document");
+            }
+            assert!(
+                tracker.should_auto_approve(workflow, "move_document", ActionLevel::Modify),
+                "{workflow}: the control, the same approvals of another level-3 action are granted"
+            );
+            assert!(
+                !tracker.should_auto_approve(workflow, "adopt", ActionLevel::Modify),
+                "{workflow}: adopt is never granted by earned trust"
+            );
+        }
     }
 }

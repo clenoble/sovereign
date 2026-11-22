@@ -66,6 +66,41 @@ The idle sweep that rescans stored content for personal data was unwired in May 
 rewired. Céline, 2026-10-09: the question is not only re-enabling it but what is done with what
 it finds, and it belongs with the browser decision (credentials taken from the PII manager).
 
+## D5 — The desktop shell's undecided UI choices
+
+**Status:** Open — listed 2026-10-17 by the parity triage between the native shell and the frozen
+Tauri desktop. No decision exists for any of them, and none has a priority. Collected here on
+2026-11-04, so that each is decided before a lot builds near it.
+
+1. **Rendered markdown** in the document window and in the chat, and a **format toolbar**. The
+   editor edits markdown source, and today its marks stay visible, dimmed (ch. 12).
+2. **Select or open on a click**, and **bringing a card into view** from search and from the
+   taskbar: the "go to" half of the earlier two-step model has no replacement.
+3. **Taskbar launchers** for personal data, the browser, devices, alerts and guardians; and what
+   **Ctrl+N** and **Ctrl+B** do.
+4. **A document the assistant creates opening by itself.**
+5. **Sync on returning to the window**, since the shell has no periodic poll.
+6. **A preview of a version before restoring it.**
+7. **Whether the sync alerts replace the "edited on both devices" list**, or the shell must also
+   handle `SyncConflict` (ch. 05).
+8. **Voice and vision in the shell at all**, and in what order relative to the wake-word
+   dependency's precondition (ch. 14).
+9. **Small ones:**
+   - on-screen zoom buttons;
+   - message times;
+   - an unread dot on the inbox;
+   - confirmation and refresh when a model is deleted;
+   - copying the device id;
+   - a camera scan when joining;
+   - skills filtered by document type.
+10. **Where a skill's file output goes:** a save dialog, a document, or a folder. Needed before the
+    exports can work (ch. 11).
+11. **Multi-line chat messages** (Shift+Enter, a multi-line composer): left as a question for Céline,
+    for later, when the composer became a real text field (2026-10-24; ch. 12).
+
+**Blocks:** each one blocks only its own feature. Rows 3 and 4 touch the email work of v0.0.14 (an
+inbox launcher, a mail the assistant drafts).
+
 ## Roadmap and release bar
 
 **Status:** Partly settled.
@@ -74,8 +109,22 @@ it finds, and it belongs with the browser decision (credentials taken from the P
   acceptance test — Céline lives in it for a week; whatever stops daily use defines the v0.1
   backlog — has not been run.
 - **v0.0.10** is the stabilisation release that follows the 2026-10-09 audit (decided
-  2026-10-10). The comms release — email together with its deferred hardening, Signal after
-  (ch. 13) — moves to a later release, not yet numbered.
+  2026-10-10). **v0.0.11** is the editor release, and **v0.0.12** the corrective release that
+  answers the cloud review of v0.0.11 (published 2026-11-04).
+- **v0.0.13, then v0.0.14:** two releases, one after the other (Céline, 2026-11-13: « et oui pour
+  les 2 releases successives »). Until that day, v0.0.13 was to carry everything:
+  - Céline, 2026-10-30: messaging is what blocks daily use; email only, Signal and WhatsApp later.
+  - Céline, 2026-11-01: « on fait une grosse v0.0.13 », nothing cut.
+- **v0.0.13 is the consolidation release.** It carries:
+  - C-HOST whole (ch. 08; 2026-11-04);
+  - the fixes chosen from the cloud review of v0.0.12;
+  - the promised items: a merged thread kept, and the session log's sandbox;
+  - the first part of the personal-data sweep, on documents (ch. 09).
+- **v0.0.14 is the email release.** Its email is read-only, fetched by each device, with no write
+  to the server (Céline, 2026-11-13; ch. 13). It is born behind the network gate (ch. 02). It also
+  carries the sweep's second part, on messages. Sending comes later.
+- **The week of trial (v0.1's acceptance test)** follows the email release, since mail is what it
+  is for.
 - **Phase 2** is crowd data backup (ch. 06).
 - **Community contribution model**: skills grow from spec-as-seeds (ch. 11). Release timeline
   (alpha, beta, stable): not set.
@@ -83,10 +132,12 @@ it finds, and it belongs with the browser decision (credentials taken from the P
 ## Resolved since v1.3
 
 - *Tech stack* (v1.3 Q2 said Iced 0.14): native shell on vello/parley on desktop, Tauri/Svelte on mobile — ch. 02.
-- *Testing* (v1.3 Q7 said 367 tests, no CI): about 1,200 Rust tests and a GitHub CI exist;
-  `cargo test --workspace` is the gate. It did not compile from June to October 2026
-  without anyone noticing; since 2026-10-09 `_check.bat` checks test code too
-  (`--all-targets`). GitHub CI reports only on the mirror, after a push, and tests 3 of the 13
-  crates (it builds neither shipped binary), so it is not a release gate by itself.
+- *Testing* (v1.3 Q7 said 367 tests, no CI): about 3,000 Rust tests (test functions in the
+  crates' sources, counted 2026-11-13) and a GitHub CI exist; `cargo test --workspace` is the
+  gate. It did not compile from June to October 2026 without anyone noticing; since 2026-10-09
+  `_check.bat` checks test code too (`--all-targets`). GitHub CI reports only on the mirror,
+  after a push. It runs every crate's tests (`sovereign-ai`'s own tests without its default
+  features, so without llama.cpp; the workspace run still compiles llama.cpp through the shell), and checks the shell and the APK's `mobile` feature set as they ship; it
+  builds no release binary, so it is not a release gate by itself.
 - *Bootstrap* (v1.3 Q6): 24 core skills and stub-first bulk import — ch. 11, ch. 03.
 - *Spatial navigation and timeline* (v1.3 Q3, Q5): ch. 12; branching is not built (ch. 03).

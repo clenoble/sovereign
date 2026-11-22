@@ -28,8 +28,8 @@ impl DeleteNotice {
         DeleteNotice { doc_id, shown_at, undone: false }
     }
 
-    /// The document it is about.
-    #[cfg_attr(not(test), allow(dead_code))] // read by the tests; `App` needs only Undo
+    /// The document it is about (its accessibility nodes are numbered by it,
+    /// ch. 12, SQ7).
     pub(crate) fn doc_id(&self) -> &str {
         &self.doc_id
     }

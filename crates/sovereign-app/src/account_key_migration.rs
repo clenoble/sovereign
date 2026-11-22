@@ -333,10 +333,11 @@ mod tests {
             stored_secret: true,
             confidence: 1.0,
             sources: vec![],
-            discovered_at: chrono::Utc::now(),
+            discovered_at: sovereign_core::clock::now(),
             last_revealed_at: None,
             use_count: 0,
             review_state: ReviewState::Confirmed,
+            review_stamp: None,
             deleted_at: None,
         }
     }

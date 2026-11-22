@@ -2,7 +2,8 @@
 
 import type { FullDocument, CommitSummary } from '$lib/api/commands';
 import {
-	getDocument,
+	getDocument as apiGetDocument,
+	getDocumentLabelled,
 	saveDocument as apiSave,
 	closeDocument as apiClose,
 	listCommits as apiListCommits,
@@ -18,6 +19,11 @@ export interface OpenPanel {
 	zIndex: number;
 	mode: 'edit' | 'preview' | 'history';
 	commits: CommitSummary[];
+	/** The backend's sentence when the versions could not be read (item C5:
+	 *  said in their place, never « No saved versions yet »); null when they
+	 *  were read, or not asked yet. Optional, so that a panel built elsewhere
+	 *  (the tests' fixtures) needs no change. */
+	historyNotRead?: string | null;
 	commitsLoaded: boolean;
 	selectedCommit: number | null;
 	skillsOverflowOpen: boolean;
@@ -34,6 +40,29 @@ export interface OpenPanel {
 
 let nextZ = 100;
 let openCount = 0;
+
+/** C-SWEEP SW5 (spec ch. 09; Céline, 2026-11-17: « Étiquettes sur
+ *  téléphone »): a document as read, with its title and text labelled by the
+ *  backend (`get_document_labelled`), which the reader shows instead of the
+ *  stored tokens. If the labels cannot be read, the reader shows each token as
+ *  the generic label (`shownTitle`, `shownText`). */
+async function getDocument(id: string): Promise<FullDocument> {
+	const doc = await apiGetDocument(id);
+	await label(doc);
+	return doc;
+}
+
+/** Sets `doc`'s labelled title and text as the backend computes them now. */
+async function label(doc: FullDocument): Promise<void> {
+	try {
+		const labelled = await getDocumentLabelled(doc.id);
+		doc.labelled_title = labelled.title;
+		doc.labelled_body = labelled.body;
+	} catch {
+		doc.labelled_title = undefined;
+		doc.labelled_body = undefined;
+	}
+}
 
 /** Reactive array of open document panels. */
 export const panels: OpenPanel[] = $state([]);
@@ -57,6 +86,7 @@ export async function openById(id: string) {
 			zIndex: nextZ++,
 			mode: 'edit',
 			commits: [],
+			historyNotRead: null,
 			commitsLoaded: false,
 			selectedCommit: null,
 			skillsOverflowOpen: false,
@@ -100,6 +130,7 @@ export async function save(id: string, explicit = false, retried = false) {
 			panel.doc.title = stored.title;
 			panel.doc.body = stored.body;
 			panel.dirty = false;
+			await label(panel.doc);
 		}
 	} catch (e) {
 		const msg = String(e);
@@ -204,6 +235,7 @@ export function updateBody(id: string, body: string) {
 	const panel = panels.find((p) => p.doc.id === id);
 	if (panel) {
 		panel.doc.body = body;
+		panel.doc.labelled_body = undefined;
 		panel.dirty = true;
 	}
 }
@@ -213,6 +245,7 @@ export function updateTitle(id: string, title: string) {
 	const panel = panels.find((p) => p.doc.id === id);
 	if (panel) {
 		panel.doc.title = title;
+		panel.doc.labelled_title = undefined;
 		panel.dirty = true;
 	}
 }
@@ -246,18 +279,26 @@ export async function loadCommits(id: string) {
 	const panel = panels.find((p) => p.doc.id === id);
 	if (!panel || panel.commitsLoaded) return;
 	try {
-		const commits = await apiListCommits(id);
-		panel.commits = commits;
+		const listed = await apiListCommits(id);
+		panel.commits = listed.commits;
+		panel.historyNotRead = listed.could_not_read ?? null;
 		panel.commitsLoaded = true;
 	} catch (e) {
+		// A refusal (a locked session) is not « could not be read » (item C5).
 		console.error('Failed to load commits:', e);
 	}
 }
 
-/** Restore a document to a specific commit. */
-export async function restoreVersion(id: string, commitId: string) {
+/** Restore a document to a specific commit. Returns the backend's sentence
+ *  when the version chosen was already the current one (spec ch. 12, HN4):
+ *  then nothing was written, and the panel stays as it is, in its History, for
+ *  the caller to say it. Null otherwise. */
+export async function restoreVersion(id: string, commitId: string): Promise<string | null> {
 	try {
-		const doc = await apiRestoreCommit(id, commitId);
+		const restored = await apiRestoreCommit(id, commitId);
+		if (restored.already_current) return restored.already_current;
+		const doc = restored.document;
+		await label(doc);
 		const panel = panels.find((p) => p.doc.id === id);
 		if (panel) {
 			panel.doc = doc;
@@ -268,6 +309,7 @@ export async function restoreVersion(id: string, commitId: string) {
 	} catch (e) {
 		console.error('Failed to restore commit:', e);
 	}
+	return null;
 }
 
 /** Ids print as `table:key` or `table:⟨key⟩` depending on the path. */

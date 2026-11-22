@@ -18,8 +18,12 @@
 		setBrowserVisible,
 		assessReliability,
 		saveWebPage,
-		extractFormFields
+		extractFormFields,
+		threadForName,
+		rememberThreadChoice
 	} from '$lib/api/commands';
+	import type { ThreadOffered } from '$lib/api/commands';
+	import ThreadChooser from './ThreadChooser.svelte';
 	import { piiState, loadPii } from '$lib/stores/pii.svelte';
 
 	function triggerSignupCapture() {
@@ -132,19 +136,46 @@
 		}
 	}
 
+	/** Item 9, FC1 and FC2: the « Web » thread is asked about when two live
+	 *  threads carry the name and no choice holds; nothing is saved before
+	 *  she answers. */
+	const WEB = 'Web';
+	let asking = $state<{ name: string; threads: ThreadOffered[] } | null>(null);
+
 	async function handleSave() {
 		try {
-			const r = browser.reliability;
-			await saveWebPage(
-				browser.url,
-				browser.title || 'Untitled Page',
-				browser.extractedText,
-				undefined,
-				r?.classification,
-				r?.final_score,
-				r ? JSON.stringify(r.raw_assessment) : undefined
-			);
-			canvasRefresh();
+			const t = await threadForName(WEB);
+			if (t.kind === 'ask') {
+				asking = { name: t.name, threads: t.threads };
+				return;
+			}
+			await savePage(t.kind === 'use' ? t.id : undefined);
+		} catch (e) {
+			console.error('Save failed:', e);
+		}
+	}
+
+	async function savePage(threadId: string | undefined) {
+		const r = browser.reliability;
+		await saveWebPage(
+			browser.url,
+			browser.title || 'Untitled Page',
+			browser.extractedText,
+			threadId,
+			r?.classification,
+			r?.final_score,
+			r ? JSON.stringify(r.raw_assessment) : undefined
+		);
+		canvasRefresh();
+	}
+
+	async function pickThread(id: string) {
+		const q = asking;
+		asking = null;
+		if (!q) return;
+		try {
+			await rememberThreadChoice(q.name, id);
+			await savePage(id);
 		} catch (e) {
 			console.error('Save failed:', e);
 		}
@@ -211,6 +242,14 @@
 			>Save to Sovereign</button>
 		</div>
 	</div>
+	{#if asking}
+		<ThreadChooser
+			name={asking.name}
+			threads={asking.threads}
+			onpick={pickThread}
+			oncancel={() => (asking = null)}
+		/>
+	{/if}
 </div>
 
 <style>

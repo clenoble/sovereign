@@ -63,13 +63,13 @@ beforeEach(() => {
 	mockTauriCommand('list_threads', () => threads);
 	mockTauriCommand('canvas_load', () => ({ documents: [], threads, relationships: [], milestones: [] }));
 	mockTauriCommand('list_previous_values', () => []);
-	mockTauriCommand('list_sync_alerts', () => []);
+	mockTauriCommand('list_sync_alerts', () => ({ alerts: [], could_not_check: null }));
 	waiting = [
 		orphanDto('document:a', 'Alpha', 'thread:gone', 'Old drafts'),
 		orphanDto('document:b', 'Beta', 'thread:gone', 'Old drafts'),
 		orphanDto('document:c', 'Gamma', 'thread:other', 'Other')
 	];
-	mockTauriCommand('list_orphaned_documents', () => waiting);
+	mockTauriCommand('list_orphaned_documents', () => ({ orphans: waiting, could_not_check: null }));
 });
 
 async function load() {
@@ -136,7 +136,7 @@ describe('SyncAlerts — documents whose thread was deleted (W5)', () => {
 	});
 
 	it('leaves the peer alerts as they are (W6)', async () => {
-		mockTauriCommand('list_sync_alerts', () => [alertDto]);
+		mockTauriCommand('list_sync_alerts', () => ({ alerts: [alertDto], could_not_check: null }));
 		const { container, dialog } = await openSheet();
 		expect(container.querySelector('[role="alert"]')?.textContent).toContain('A change from Laptop to “Notes x” looks suspicious');
 		expect(within(dialog).getAllByText('Open the document').length).toBe(1);

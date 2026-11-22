@@ -11,7 +11,13 @@
 	 */
 	import { app } from '$lib/stores/app.svelte';
 	import { contactsState } from '$lib/stores/contacts.svelte';
-	import { unreviewedCount, loadPii, piiState } from '$lib/stores/pii.svelte';
+	import { loadPii, piiState } from '$lib/stores/pii.svelte';
+	import { piiSignal, piiStatusWords } from '$lib/stores/piiReview.svelte';
+
+	// C-SWEEP SW6 (spec ch. 09): the suspected values waiting, said in words
+	// on the PII tab (its text and its accessible name), whether or not the
+	// dashboard was opened.
+	let piiWaiting = $derived(piiStatusWords());
 
 	let totalUnread = $derived(
 		contactsState.contacts.reduce((sum, c) => sum + c.unread_count, 0)
@@ -64,11 +70,16 @@
 		{/if}
 	</button>
 
-	<button class="tab" onclick={togglePii} aria-label="PII dashboard">
+	<button
+		class="tab"
+		onclick={togglePii}
+		aria-label={piiWaiting ? `PII dashboard: ${piiWaiting}` : 'PII dashboard'}
+	>
 		<span class="icon">🔒</span>
 		<span class="label">PII</span>
-		{#if unreviewedCount() > 0}
-			<span class="badge">{unreviewedCount() > 99 ? '99+' : unreviewedCount()}</span>
+		{#if piiWaiting}
+			<span class="badge" aria-hidden="true">{piiSignal.waiting > 99 ? '99+' : piiSignal.waiting}</span>
+			<span class="sr-only">{piiWaiting}</span>
 		{/if}
 	</button>
 
@@ -115,6 +126,14 @@
 		line-height: 1;
 	}
 
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
+	}
 	.label {
 		font-size: 0.6rem;
 	}

@@ -1,4 +1,4 @@
-use pulldown_cmark::{html, Options, Parser};
+use pulldown_cmark::{html, Event, LinkType, Options, Parser, Tag, TagEnd};
 
 use crate::manifest::Capability;
 use crate::markdown_util::sanitize_filename;
@@ -54,16 +54,68 @@ impl CoreSkill for HtmlExportSkill {
     }
 }
 
+/// The document's Markdown as HTML (spec ch. 11; v0.0.13, the review's item
+/// 23). Markdown's formatting is rendered; what the document holds is never
+/// run: raw HTML, as a block or inline, is text shown as written, and a link
+/// whose address is not `http`, `https`, `mailto`, relative or a fragment
+/// keeps its text and shows its address as text after it.
 fn render_html(markdown: &str) -> String {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
     opts.insert(Options::ENABLE_FOOTNOTES);
-    let parser = Parser::new_ext(markdown, opts);
+    // For each open link: `None` when it stays a link, else what is written
+    // after its text in its place (empty for an autolink, whose text is its
+    // address already).
+    let mut links: Vec<Option<String>> = Vec::new();
+    let events = Parser::new_ext(markdown, opts).filter_map(|event| match event {
+        Event::Html(raw) | Event::InlineHtml(raw) => Some(Event::Text(raw)),
+        Event::Start(Tag::HtmlBlock) => Some(Event::Start(Tag::Paragraph)),
+        Event::End(TagEnd::HtmlBlock) => Some(Event::End(TagEnd::Paragraph)),
+        Event::Start(Tag::Link { link_type, dest_url, title, id }) => {
+            if link_address_is_safe(&dest_url) {
+                links.push(None);
+                Some(Event::Start(Tag::Link { link_type, dest_url, title, id }))
+            } else {
+                let after = match link_type {
+                    LinkType::Autolink | LinkType::Email => String::new(),
+                    _ => format!(" ({dest_url})"),
+                };
+                links.push(Some(after));
+                None
+            }
+        }
+        Event::End(TagEnd::Link) => match links.pop().flatten() {
+            None => Some(Event::End(TagEnd::Link)),
+            Some(after) if after.is_empty() => None,
+            Some(after) => Some(Event::Text(after.into())),
+        },
+        other => Some(other),
+    });
     let mut out = String::new();
-    html::push_html(&mut out, parser);
+    html::push_html(&mut out, events);
     out
+}
+
+/// Whether a link's address may stay a link: `http`, `https` and `mailto`, or
+/// an address with no scheme (relative, or a fragment). Read as a browser
+/// reads it: tabs and line breaks anywhere, and leading spaces and control
+/// characters, do not count; a scheme's case does not matter.
+fn link_address_is_safe(address: &str) -> bool {
+    let read: String = address
+        .trim_start_matches(|c: char| c == ' ' || c.is_ascii_control())
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let end = read.find(['/', '?', '#']).unwrap_or(read.len());
+    match read[..end].find(':') {
+        None => true,
+        Some(colon) => {
+            let scheme = read[..colon].to_ascii_lowercase();
+            matches!(scheme.as_str(), "http" | "https" | "mailto")
+        }
+    }
 }
 
 fn wrap_standalone(title: &str, body_html: &str) -> String {
@@ -120,6 +172,11 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
+
+// v0.0.13, the review's item 23: tests written before the code, by another
+// author; the implementer does not edit them. At src/skills/html_export/.
+#[cfg(test)]
+mod html_export_tests;
 
 #[cfg(test)]
 mod tests {

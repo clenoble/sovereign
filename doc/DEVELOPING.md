@@ -57,9 +57,9 @@ Build on the native filesystem, not a network mount. Use `-j 4` (or `-j 2`) so W
 out of memory. `rm -rf` a target directory before copying into it.
 
 **Running the desktop shell on Linux under X11** needs `libxkbcommon-x11` (`libxkbcommon-x11-0` on
-Debian and Ubuntu). Without it the shell panics at start, while Wayland runs. Found on WSLg with
-`WAYLAND_DISPLAY` unset (WSL, claude-coord 0028, 2026-10-28). Users need it too: the release notes
-say so.
+Debian and Ubuntu). Without it the shell refuses to start and says so on stderr (it panicked until
+v0.0.13), while Wayland runs. Found on WSLg with `WAYLAND_DISPLAY` unset (WSL, 2026-10-28). Users
+need it too: the release notes say so.
 
 ### Feature notes
 

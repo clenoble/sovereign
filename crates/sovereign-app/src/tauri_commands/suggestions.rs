@@ -30,14 +30,27 @@ pub async fn list_pending_suggestions(
         .await
         .str_err()?;
 
+    // SW5: a suggestion names its documents as shown, by the view the other
+    // listings use, so it reads the same whether it came by this list or by
+    // the event (the Fable maille, by delegation of Céline, 2026-11-17).
+    let docs = state.docs().await.ok();
+    let shown = |id: String| {
+        let docs = docs.clone();
+        async move {
+            match docs {
+                Some(docs) => docs.read(&id).await.map(|v| v.labelled_title()).unwrap_or_default(),
+                None => String::new(),
+            }
+        }
+    };
     let mut dtos = Vec::new();
     for s in suggestions {
         let sugg_id = s.id_string().unwrap_or_default();
         let from_id = s.out.as_ref().map(|t| sovereign_db::schema::thing_to_raw(t)).unwrap_or_default();
         let to_id = s.in_.as_ref().map(|t| sovereign_db::schema::thing_to_raw(t)).unwrap_or_default();
 
-        let from_title = state.db.get_document(&from_id).await.map(|d| d.title).unwrap_or_default();
-        let to_title = state.db.get_document(&to_id).await.map(|d| d.title).unwrap_or_default();
+        let from_title = shown(from_id.clone()).await;
+        let to_title = shown(to_id.clone()).await;
 
         dtos.push(SuggestionDto {
             id: sugg_id,

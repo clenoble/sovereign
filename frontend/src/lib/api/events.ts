@@ -1,7 +1,7 @@
 /** Listen for Tauri events emitted by the Rust backend. */
 
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { pushAssistant, pushSystem } from '$lib/stores/chat.svelte';
+import { chat, pushAssistant, pushSystem } from '$lib/stores/chat.svelte';
 import { app, type BubbleState } from '$lib/stores/app.svelte';
 import { openById } from '$lib/stores/documents.svelte';
 import { refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
@@ -29,12 +29,15 @@ import {
 import { onDevicePaired, onPairingFailed } from '$lib/stores/pairing.svelte';
 import {
 	onPeerNeedsUpdate,
+	onThisDeviceNeedsUpdate,
 	onSyncRoundCompleted,
 	onSyncRoundStarted,
 	reloadSyncAlerts,
 	reloadUnreadable
 } from '$lib/stores/syncAlerts.svelte';
 import { showMigrationNotice } from '$lib/stores/migrationNotice.svelte';
+import { onSyncStopped } from '$lib/stores/syncStopped.svelte';
+import { loadPiiSignal } from '$lib/stores/piiReview.svelte';
 import type { PendingShare } from '$lib/stores/app.svelte';
 import type { ReliabilityResultDto } from '$lib/api/commands';
 
@@ -219,12 +222,29 @@ interface PairingFailedPayload {
 }
 
 /** Subscribe to all backend events. Returns an unlisten function. */
+/** C-LOG DG3: set by `quarantined-log-diagnosed`, read by the reply that
+ *  comes next. */
+let logDiagnosed = false;
+
+/** C-LOG DG3: the last chat message offers « Show what remains readable ». */
+function markLastReadableLog() {
+	const last = chat.messages.at(-1);
+	if (!last) return;
+	chat.messages = [...chat.messages.slice(0, -1), { ...last, offersReadableLog: true }];
+}
+
 export async function subscribeToEvents(): Promise<UnlistenFn> {
+	logDiagnosed = false;
 	const unlisteners: UnlistenFn[] = [];
 
 	unlisteners.push(
 		await listen<ChatResponsePayload>('chat-response', (e) => {
 			pushAssistant(e.payload.text);
+			// C-LOG DG3: the reply after the diagnosis offers the window.
+			if (logDiagnosed) {
+				logDiagnosed = false;
+				markLastReadableLog();
+			}
 			// The robot speaks the reply via the Jiminy sidecar; light the mic
 			// "speaking" indicator for the duration of delivery.
 			markSpeaking(e.payload.text);
@@ -266,8 +286,18 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 	);
 
 	unlisteners.push(
+		// C-LOG DG3: the diagnosis tool found a quarantine in this turn; its
+		// reply, which comes next, offers the window.
+		await listen('quarantined-log-diagnosed', () => {
+			logDiagnosed = true;
+		})
+	);
+
+	unlisteners.push(
 		await listen<ActionRejectedPayload>('action-rejected', (e) => {
 			pushSystem(`Rejected: ${e.payload.action} — ${e.payload.reason}`);
+			// C-LOG DG3: the quarantine notice offers the window.
+			if (e.payload.action === 'session log') markLastReadableLog();
 			app.pendingAction = null;
 		})
 	);
@@ -473,6 +503,9 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 				onSyncRoundCompleted(peer_id);
 				// A change received in this round may have raised an alert.
 				reloadSyncAlerts();
+				// C-SWEEP SW1, SW6: the backend swept what the round brought
+				// before reporting it; the queue's count again.
+				void loadPiiSignal().catch(() => {});
 				// A paired peer just pushed rows into our DB. Refresh the
 				// canvas + contacts so synced threads/docs/contacts appear
 				// without a manual reload (the "it didn't land on mobile"
@@ -502,10 +535,24 @@ export async function subscribeToEvents(): Promise<UnlistenFn> {
 			onPeerNeedsUpdate(e.payload.peer_id, e.payload.device_name);
 		})
 	);
+	// C-WIRE 12 from the other side: a paired device on a newer version, so
+	// this device is the one to update (same payload: the newer device).
+	unlisteners.push(
+		await listen<PeerNeedsUpdatePayload>('this-device-needs-update', (e) => {
+			onThisDeviceNeedsUpdate(e.payload.peer_id, e.payload.device_name);
+		})
+	);
 	// C-WIRE 13: the background model verdict raised an alert.
 	unlisteners.push(
 		await listen('sync-alerts-changed', () => {
 			reloadSyncAlerts();
+		})
+	);
+	// C-SUP SU2: the node ended without the session asking for it; the
+	// status line says « Sync stopped », and the notice shows once.
+	unlisteners.push(
+		await listen('sync-stopped', () => {
+			onSyncStopped();
 		})
 	);
 	// C-DOC adoption step 6 (M2): the one-time migration to document format

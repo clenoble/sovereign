@@ -71,6 +71,11 @@ impl PairedDevice {
 pub struct PairingManager {
     devices: HashMap<String, PairedDevice>,
     path: PathBuf,
+    /// Why the list on disk could not be read, when it could not (C-AREA
+    /// AR3, spec ch. 03: *What cannot be read is never shown as empty*). Such
+    /// a manager lists nothing and **never saves**: the file is kept as it
+    /// is, and the host reports the failure.
+    unreadable: Option<String>,
 }
 
 impl PairingManager {
@@ -78,7 +83,35 @@ impl PairingManager {
         Self {
             devices: HashMap::new(),
             path,
+            unreadable: None,
         }
+    }
+
+    /// The list at `path`: an empty one when there is no file, the list when
+    /// it reads, and, when it is there and cannot be read (it does not
+    /// decrypt under `store_key`, or is malformed), a manager that keeps it
+    /// as it is ([`Self::unreadable`]): never an empty list put in its place.
+    pub fn load_or_keep(path: &Path, store_key: &[u8; 32]) -> Self {
+        if !path.exists() {
+            return Self::new(path.to_path_buf());
+        }
+        match Self::load(path, store_key) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("paired devices could not be read ({e}); the file is kept as it is");
+                Self {
+                    devices: HashMap::new(),
+                    path: path.to_path_buf(),
+                    unreadable: Some(e.to_string()),
+                }
+            }
+        }
+    }
+
+    /// Why the list on disk could not be read, if it could not. While this is
+    /// `Some`, [`Self::save`] refuses: the unread file is never replaced.
+    pub fn unreadable(&self) -> Option<&str> {
+        self.unreadable.as_deref()
     }
 
     /// Register a paired device.
@@ -104,6 +137,23 @@ impl PairingManager {
     /// Check if a peer is paired.
     pub fn is_paired(&self, peer_id: &str) -> bool {
         self.devices.contains_key(peer_id)
+    }
+
+    /// PR2 (spec ch. 05): the paired devices, other than `new_peer_id`, that
+    /// hold the name `name` a device just joined under: the ones the source
+    /// side asks about (« is it that device, set up again? »).
+    ///
+    /// The name is compared exactly, as it was learned: two names that differ
+    /// only by case are two names. Oldest pairing first, then by peer id, so
+    /// the list reads the same each time.
+    pub fn same_name(&self, name: &str, new_peer_id: &str) -> Vec<&PairedDevice> {
+        let mut found: Vec<&PairedDevice> = self
+            .devices
+            .values()
+            .filter(|d| d.device_name == name && d.peer_id != new_peer_id)
+            .collect();
+        found.sort_by(|a, b| a.paired_at.cmp(&b.paired_at).then_with(|| a.peer_id.cmp(&b.peer_id)));
+        found
     }
 
     /// Populate any missing per-pair keys by deterministic derivation
@@ -155,6 +205,11 @@ impl PairingManager {
     /// device-derived store key (P1.4 — the file carries pair-key
     /// material). Atomic + owner-only via `fs_private`.
     pub fn save(&self, store_key: &[u8; 32]) -> P2pResult<()> {
+        if let Some(why) = &self.unreadable {
+            return Err(P2pError::PairingError(format!(
+                "the paired devices could not be read ({why}); the file is kept as it is"
+            )));
+        }
         let devices: Vec<&PairedDevice> = self.devices.values().collect();
         let json = serde_json::to_vec(&devices)
             .map_err(|e| P2pError::PairingError(e.to_string()))?;
@@ -236,9 +291,15 @@ impl PairingManager {
         Ok(Self {
             devices,
             path: path.to_path_buf(),
+            unreadable: None,
         })
     }
 }
+
+// v0.0.13, item C3 (PR2): tests written before the code, by another author;
+// the implementer does not edit them. At src/pairing/, no `..` in a path.
+#[cfg(test)]
+mod same_name_tests;
 
 #[cfg(test)]
 mod tests {

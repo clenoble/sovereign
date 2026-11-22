@@ -335,30 +335,64 @@ impl AppConfig {
         vec![project.join("config/default.toml")]
     }
 
-    /// Best-effort project root: compile-time workspace root (dev), then the
-    /// running executable's directory (shipped), then CWD as a last resort.
+    /// Best-effort project root: the workspace in a desktop debug build (dev),
+    /// then the running executable's directory (shipped), then CWD as a last
+    /// resort. A release binary never trusts the builder's folder, and a phone
+    /// build never looks for it (PANDA2 as release owner, 2026-11-17): the
+    /// folder is compiled in only where it can be used, so it is not embedded
+    /// in a shipped binary.
     fn project_root() -> std::path::PathBuf {
-        // 1. Dev/workspace: CARGO_MANIFEST_DIR is crates/sovereign-app/ at
-        //    compile time → up 2 levels. Only trust it if it actually holds the
-        //    workspace layout (absent on an end-user machine).
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        if let Some(root) = manifest.parent().and_then(|p| p.parent()) {
-            if root.join("config").is_dir() || root.join("models").is_dir() {
-                return root.to_path_buf();
-            }
+        #[cfg(all(debug_assertions, not(any(target_os = "android", target_os = "ios"))))]
+        let manifest: Option<&Path> = Some(Path::new(env!("CARGO_MANIFEST_DIR")));
+        #[cfg(not(all(debug_assertions, not(any(target_os = "android", target_os = "ios")))))]
+        let manifest: Option<&Path> = None;
+        // INSTALLER-003: a shipped build anchors to the EXECUTABLE's directory,
+        // NOT the current working directory, so a process launched from an
+        // attacker-controlled CWD can't plant a config/model that gets loaded.
+        let exe = std::env::current_exe().ok();
+        let exe_dir = exe.as_deref().and_then(Path::parent);
+        if let Some(root) = project_root_from(manifest, exe_dir, cfg!(debug_assertions)) {
+            return root;
         }
-        // 2. INSTALLER-003: shipped build → anchor to the EXECUTABLE's directory,
-        //    NOT the current working directory, so a process launched from an
-        //    attacker-controlled CWD can't plant a config/model that gets loaded.
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                return dir.to_path_buf();
-            }
-        }
-        // 3. Last resort (both of the above failed — very rare): CWD.
+        // Last resort (no executable path — very rare): CWD.
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     }
 }
+
+/// The project root, from what the build and the process know. A release
+/// binary never trusts the builder's folder (decided by PANDA2 as release
+/// owner, 2026-11-17): in a debug build, the workspace two levels above
+/// `manifest_dir` (the crate's folder at compile time, `None` when the build
+/// does not know it) when it holds `config/` or `models/`, so dev runs keep
+/// working; otherwise, and always in a release build, `exe_dir`, the running
+/// executable's own folder. `None` when neither applies: the caller then falls
+/// back to the working directory. `debug_build` is `cfg!(debug_assertions)`
+/// at the call site.
+///
+/// *Signature by the test author; the body is the implementer's.*
+pub(crate) fn project_root_from(
+    manifest_dir: Option<&Path>,
+    exe_dir: Option<&Path>,
+    debug_build: bool,
+) -> Option<std::path::PathBuf> {
+    if debug_build {
+        // The manifest folder is crates/<crate>/: the workspace is two levels
+        // up. Trusted only when it holds the workspace's layout.
+        if let Some(root) = manifest_dir.and_then(Path::parent).and_then(Path::parent) {
+            if root.join("config").is_dir() || root.join("models").is_dir() {
+                return Some(root.to_path_buf());
+            }
+        }
+    }
+    exe_dir.map(Path::to_path_buf)
+}
+
+// A release binary never trusts the builder's folder (PANDA2 as release owner,
+// 2026-11-17): tests written before the code, by another author; the
+// implementer does not edit them.
+#[cfg(test)]
+#[path = "config_root_tests.rs"]
+mod config_root_tests;
 
 #[cfg(test)]
 mod tests {

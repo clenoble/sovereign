@@ -24,8 +24,8 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Duration, Utc};
 use sovereign_db::encrypted::{CommitIntegrity, EncryptedGraphDB, UndecryptableDocument};
 use sovereign_db::schema::{
-    raw_to_thing, Commit, Document, DocumentPatch, DocumentSnapshot, PurgeMarker, SourceKind,
-    SourceRef,
+    raw_to_thing, Commit, Document, DocumentPatch, DocumentSnapshot, PiiRecord, PurgeMarker, ReviewState,
+    SourceKind, SourceRef,
 };
 use sovereign_db::traits::GraphDB;
 use sovereign_db::DbError;
@@ -33,7 +33,7 @@ use sovereign_docformat::{BlockId, DocumentV2, FormatError, SourceForm};
 use tokio::sync::Mutex;
 
 use crate::host::{
-    change_amount, CommitContext, CommitDecision, IngestItem, IngestRequest, ServiceDeps, WritePath,
+    change_amount, CommitContext, CommitDecision, IngestItem, IngestRequest, IngestedItem, ServiceDeps, WritePath,
 };
 use crate::types::{
     token_spans, AdoptionCandidate, AdoptionPreview, AdoptionReport, AdoptionSelector, AdoptionSkip,
@@ -77,6 +77,15 @@ pub struct DocumentService {
     /// (v0.0.12 item 7, V3). `None`: no host said (tests, tools) — such a
     /// service never retries.
     pub(crate) build_version: Option<String>,
+    /// C-MEDIA: whether the media migration pass has run on this store since
+    /// the service was built (or its completion record said so). Every entry
+    /// of a received state waits for it (`ensure_media_pass`).
+    pub(crate) media_pass_done: Mutex<bool>,
+    /// HR3 (spec ch. 03, *History, in v0.0.13*): the documents whose history
+    /// this service could not read, whole or one version, since it was built.
+    /// A document leaves at its next good read. Kept in memory only: a new
+    /// session starts at none.
+    pub(crate) histories_not_read: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
 /// What one pass of the one-time conversion covers (v0.0.12 item 7).
@@ -259,8 +268,18 @@ fn writer_tag(origin: &Origin) -> String {
         Origin::Assistant => "assistant".into(),
         Origin::Skill { name } => format!("skill:{name}"),
         Origin::Import => "import".into(),
+        // C-SWEEP (ch. 09): the sweep and her review in the personal-data
+        // window (the Fable maille, by delegation of Céline, 2026-11-17).
+        Origin::PiiSweep => "pii-sweep".into(),
+        Origin::PiiReview => "pii-review".into(),
     }
 }
+
+/// The version a sweep makes, as she sees it in History (C-SWEEP SW1; the
+/// Fable maille, by delegation of Céline, 2026-11-17).
+const SWEEP_VERSION: &str = "Personal-data sweep";
+/// The version her review makes (SW5), same decision.
+const REVIEW_VERSION: &str = "Personal-data review";
 
 fn editor_tag(session: EditSession) -> String {
     format!("editor:{}", session.0)
@@ -317,6 +336,16 @@ fn ingest_items(title: &str, doc: &DocumentV2) -> Vec<IngestItem> {
         }
     }
     items
+}
+
+/// C-SWEEP SW2: the version of a state given to ingest, before any value is
+/// replaced: the normalised hash (C-DOC G28) of `base` with this title and
+/// content. With the document's id, the field and the span, it is a finding's
+/// identity.
+fn version_given(mut base: RemoteDocument, title: &str, doc: &DocumentV2) -> String {
+    base.title = title.to_string();
+    base.content = doc.to_json_string();
+    crate::wire::normalized_hash(&base)
 }
 
 /// The text of every field that can hold a token (title, texts, captions,
@@ -376,6 +405,95 @@ enum ResultVersion {
     /// Never (the migration's result, a tombstone).
     Never,
 }
+
+/// How a write treats the outside paths its content names (C-MEDIA,
+/// [`DocumentService::media_on_write`]).
+#[derive(Clone, Copy)]
+pub(crate) enum MediaRule<'a> {
+    /// Insertion (the test author's reading 2): the user's own editor writing
+    /// a document she owns. A block that names an outside path the stored
+    /// state `before` does not name on that block is copied into the store.
+    Insertion { before: Option<&'a DocumentV2> },
+    /// Any other local write (the assistant, a skill, an import, an editor
+    /// on a document she does not own): such a path is neutralised, never
+    /// read. A path `before` already names on that block is left for the pass.
+    NoCopy { before: Option<&'a DocumentV2> },
+    /// A received state (sync, a restored backup, a Sovereign import, a
+    /// received version kept), a restored version, a write that is neither
+    /// the user's editor nor her own document's creation: every outside path
+    /// is neutralised, before anything else can see it.
+    NeutraliseAll,
+}
+
+/// What the media migration pass learnt of one outside path, the one time it
+/// read it (C-MEDIA: read at most once).
+#[derive(Clone)]
+enum PathOutcome {
+    Copied(crate::media::StoredMedium),
+    Failed(crate::media::NeutralisedReason),
+}
+
+/// The key of the record of what the media migration pass neutralised, in the
+/// persona's store (C-MEDIA). Names the record, nothing about the persona.
+pub const NEUTRALISED_RECORD_KEY: &str = "media_neutralised_record";
+
+/// Whether stored `content` has a media block that names an outside path (or
+/// a video thumbnail's path): what the media migration pass has to look at.
+fn names_outside_media(content: &str, id: &str) -> bool {
+    match DocumentV2::read_seeded(content, id) {
+        Ok((doc, form)) if !matches!(form, SourceForm::NewerVersion { .. }) => doc
+            .blocks()
+            .iter()
+            .any(|b| b.is_media() && (b.media_path().is_some() || b.video_thumbnail_path().is_some())),
+        _ => false,
+    }
+}
+
+/// Which outside path of a media block: its medium's, or a video's thumbnail's
+/// (C-MEDIA: the thumbnail follows the same guards).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Medium,
+    Thumbnail,
+}
+
+/// (path, sha256, store) of one slot of a block.
+fn slot_ref(b: &sovereign_docformat::Block, slot: Slot) -> (Option<String>, Option<String>, Option<String>) {
+    match slot {
+        Slot::Medium => (
+            b.media_path().map(str::to_string),
+            b.media_sha256().map(str::to_string),
+            b.media_store().map(str::to_string),
+        ),
+        Slot::Thumbnail => (b.video_thumbnail_path(), b.video_thumbnail_sha256(), b.video_thumbnail_store()),
+    }
+}
+
+/// Every outside path of `doc`: (block, slot, path, recorded hash, store name).
+fn outside_refs(doc: &DocumentV2) -> Vec<(BlockId, Slot, String, Option<String>, Option<String>)> {
+    let mut out = vec![];
+    for b in doc.blocks().iter().filter(|b| b.is_media()) {
+        for slot in [Slot::Medium, Slot::Thumbnail] {
+            if let (Some(path), sha, store) = slot_ref(b, slot) {
+                out.push((b.id(), slot, path, sha, store));
+            }
+        }
+    }
+    out
+}
+
+/// Sets one slot of a block to name `store` and `sha256`, and no outside path.
+fn set_slot(doc: &mut DocumentV2, id: BlockId, slot: Slot, store: Option<&str>, sha256: Option<&str>) {
+    let _ = match slot {
+        Slot::Medium => doc.set_media_ref(id, store, sha256),
+        Slot::Thumbnail => doc.set_thumbnail_ref(id, store, sha256),
+    };
+}
+
+/// The `last_writer` of a state the media migration pass rewrote (C-MEDIA).
+/// A legacy document it converts at the same time is written as the format
+/// conversion's ([`MIGRATION_WRITER`]).
+pub const MEDIA_MIGRATION_WRITER: &str = "media-migration";
 
 /// One write of a document's state, as planned by an operation.
 struct Write {
@@ -493,6 +611,8 @@ impl DocumentService {
             hlc: std::sync::Mutex::new(None),
             wall_floor: std::sync::atomic::AtomicI64::new(started),
             build_version: None,
+            media_pass_done: Mutex::new(false),
+            histories_not_read: std::sync::Mutex::new(std::collections::BTreeSet::new()),
         }
     }
 
@@ -503,6 +623,14 @@ impl DocumentService {
     /// under another version only.
     pub fn with_build_version(mut self, version: &str) -> Self {
         self.build_version = Some(version.to_string());
+        self
+    }
+
+    /// The service reading and copying media through `media` instead of the
+    /// one it was built with (C-MEDIA): a host gives the shipped media store
+    /// of the active persona's area this way, after building the service.
+    pub fn with_media(mut self, media: std::sync::Arc<dyn crate::host::MediaFiles>) -> Self {
+        self.deps.media = media;
         self
     }
 
@@ -576,6 +704,7 @@ impl DocumentService {
         // Thread writes are stamped by the same clock (THREAD-sync S1).
         for t in self.store().list_threads_including_deleted().await.map_err(store_err)? {
             see(t.stamp.as_deref());
+            see(t.merge_stamp.as_deref());
         }
         let mut g = self.hlc.lock().expect("hlc lock");
         if g.is_none() {
@@ -717,33 +846,82 @@ impl DocumentService {
         self.store().insert_commit(commit).await.map_err(store_err)
     }
 
-    /// Fills `ref.sha256` of media blocks that have none and whose file can
-    /// be read (G18). A present hash is never changed.
-    fn fill_media_hashes(&self, doc: &mut DocumentV2) {
-        let missing: Vec<(BlockId, String)> = doc
-            .blocks()
-            .iter()
-            .filter(|b| b.media_sha256().is_none())
-            .filter_map(|b| b.media_path().map(|p| (b.id(), p.to_string())))
-            .collect();
-        for (id, path) in missing {
-            if let Some(h) = self.deps.media.sha256(&path) {
-                let _ = doc.set_media_sha256(id, &h);
+    /// C-MEDIA (spec ch. 03, *Received content is hostile*; G18's first clause
+    /// as replaced): what a write does with the outside paths its content
+    /// names. No hash is ever computed from such a path (ME2); only
+    /// insertion copies one into the media store, and every other outside
+    /// path the write brings is neutralised: the block keeps its medium's
+    /// store name and hash, and loses the path (and a video's thumbnail
+    /// path). A present hash is never changed.
+    pub(crate) fn media_on_write(&self, doc: &mut DocumentV2, rule: MediaRule<'_>) {
+        for (id, slot, path, sha, store) in outside_refs(doc) {
+            let before = match &rule {
+                MediaRule::Insertion { before } | MediaRule::NoCopy { before } => *before,
+                MediaRule::NeutraliseAll => None,
+            };
+            // A path the stored state already names on this block is a
+            // residual from before the update: left as it is, for the
+            // migration pass (the only reader of such a path).
+            let residual =
+                before.and_then(|d| d.block(id)).and_then(|b| slot_ref(b, slot).0).as_deref() == Some(path.as_str());
+            if residual {
+                continue;
             }
+            // Insertion copies a medium the block names with no hash yet (the
+            // editor never reads files). A block the user's own editor sends
+            // with a hash already present is not an insertion (no editor
+            // computes one): it is left as it is, unread, like a residual (a
+            // present hash is never changed, G18; G10 keeps such a block byte
+            // for byte).
+            let inserting = matches!(rule, MediaRule::Insertion { .. });
+            if inserting && sha.is_some() {
+                continue;
+            }
+            if inserting && crate::media::check_outside_path(&path).is_ok() {
+                if let Ok(m) = self.deps.media.copy_into_store(&path, None) {
+                    set_slot(doc, id, slot, Some(&m.name), Some(&m.sha256));
+                    continue;
+                }
+            }
+            set_slot(doc, id, slot, store.as_deref(), sha.as_deref());
         }
     }
 
     /// Runs personal-data ingest on every text field (G10). On success the
     /// fields hold the hook's canonical text; on failure — or an answer naming
     /// a field it was not given — they are left as given.
-    async fn ingest(&self, id: &str, path: WritePath, title: &mut String, doc: &mut DocumentV2) -> PiiOutcome {
+    ///
+    /// C-SWEEP SW1, SW2: the hook is given the write's origin (`None` for a
+    /// restore and for content received by sync) and the version of the state
+    /// it is given, before any value is replaced: its normalised hash.
+    async fn ingest(
+        &self,
+        id: &str,
+        path: WritePath,
+        origin: Option<Origin>,
+        base: RemoteDocument,
+        title: &mut String,
+        doc: &mut DocumentV2,
+    ) -> PiiOutcome {
         let items = ingest_items(title, doc);
         let given: HashSet<TextField> = items.iter().map(|i| i.field).collect();
-        let request = IngestRequest { document_id: id.to_string(), path, items };
-        let answer = match self.deps.pii.ingest(request).await {
-            Ok(a) => a,
-            Err(e) => return PiiOutcome::Failed { message: e.message },
-        };
+        let version = Some(version_given(base, title, doc));
+        let request = IngestRequest { document_id: id.to_string(), path, items, origin, version };
+        match self.deps.pii.ingest(request).await {
+            Ok(answer) => self.apply_ingest_answer(answer, &given, title, doc),
+            Err(e) => PiiOutcome::Failed { message: e.message },
+        }
+    }
+
+    /// The hook's answer applied to the fields it was given; a failure leaves
+    /// them as given.
+    fn apply_ingest_answer(
+        &self,
+        answer: Vec<IngestedItem>,
+        given: &HashSet<TextField>,
+        title: &mut String,
+        doc: &mut DocumentV2,
+    ) -> PiiOutcome {
         if answer.iter().any(|a| !given.contains(&a.field)) {
             return PiiOutcome::Failed {
                 message: "the personal-data hook answered a field it was not given".into(),
@@ -764,6 +942,22 @@ impl DocumentService {
             }
         }
         PiiOutcome::Scanned
+    }
+
+    /// A new document's state before ingest, for its version (SW2).
+    fn new_state(&self, id: &str, thread_id: &str, trust: Trust, provenance: &Provenance) -> RemoteDocument {
+        RemoteDocument {
+            id: id.to_string(),
+            title: String::new(),
+            content: String::new(),
+            thread_id: thread_id.to_string(),
+            trust: Some(trust),
+            trust_decision: None,
+            provenance: Some(provenance.clone()),
+            modified_at: self.now(),
+            deleted_at: None,
+            device: self.deps.device.clone(),
+        }
     }
 
     fn scan_mark(&self, pii: &PiiOutcome, patch: &mut DocumentPatch) {
@@ -895,6 +1089,8 @@ impl DocumentService {
                 "provenance \"unrecorded\" is never assigned to a new document".into(),
             ));
         }
+        // C-MERGE MG3: an ended thread takes no new document.
+        self.refuse_ended(&new.thread_id).await?;
         let id = format!("document:{}", BlockId::random().to_hex());
         let mut doc = match &new.content {
             NewContent::Text(t) => DocumentV2::from_text(t, &id),
@@ -904,9 +1100,19 @@ impl DocumentService {
             },
         };
         let mut title = new.title.clone();
-        self.fill_media_hashes(&mut doc);
+        // C-MEDIA: only the user's own editor, writing a document she owns
+        // and wrote, inserts; an import, the assistant or a skill never has
+        // its paths copied or read.
+        let inserting = matches!(new.origin, Origin::Editor { .. })
+            && new.trust == Trust::Owned
+            && new.provenance == Provenance::Written;
+        self.media_on_write(
+            &mut doc,
+            if inserting { MediaRule::Insertion { before: None } } else { MediaRule::NeutraliseAll },
+        );
         let path = if new.origin == Origin::Import { WritePath::Import } else { WritePath::Create };
-        let pii = self.ingest(&id, path, &mut title, &mut doc).await;
+        let base = self.new_state(&id, &new.thread_id, new.trust, &new.provenance);
+        let pii = self.ingest(&id, path, Some(new.origin.clone()), base, &mut title, &mut doc).await;
         let content = doc.to_json_string();
         let now = self.now();
         let created_at = new.created_at.unwrap_or(now);
@@ -943,6 +1149,302 @@ impl DocumentService {
     }
 
     // -------------------------------------------------------------- read --
+
+    /// C-MEDIA, *The media store*: the migration pass at the update, once on
+    /// each device, before any sync is applied, for every document whichever
+    /// device wrote it last (v2.0.86, Céline: « Plus simple : copier
+    /// partout »). A block with no recorded hash is neutralised and nothing is
+    /// read for it; a video's thumbnail follows the same guards. For every
+    /// media block that still names an outside path: ME2's lexical
+    /// refusals first; then its first bytes (a file that is not an image or a
+    /// video is neutralised there and never read further); then the file
+    /// is read in a stream under the cap and its hash compared with the block's
+    /// recorded hash; on a match it is copied into the store and the block
+    /// names the store's medium, marked « copied by the migration »; otherwise
+    /// the block is neutralised, counted, and recorded with its reason
+    /// ([`DocumentService::neutralised_media`]). After the pass no outside path
+    /// is left. No received state is applied before it has run on this store.
+    ///
+    /// v2.0.86: an older version in a document's history that names an
+    /// outside path goes through the same rule when it is restored
+    /// (`restore_version`), whichever device wrote it: first bytes, then
+    /// hash, then copy and mark, or neutralise and record.
+    ///
+    /// *Signature by the test author of lot L1b; the body is the implementer's.*
+    ///
+    /// How it is held:
+    /// - **the write lock is taken per document** (as the format conversion
+    ///   does), and each document is read again under it;
+    /// - **a path is read at most once in a pass**, whatever the number of
+    ///   blocks naming it: its first bytes once, its full read once; a later
+    ///   block naming the same path takes the first outcome;
+    /// - **a document's record entries are written before the document**, so
+    ///   a former path is never lost: when the record cannot be written, the
+    ///   pass stops with an error and the document is left as it was, for the
+    ///   next unlock;
+    /// - **the rewrite keeps the document's stamps** (the state is the same,
+    ///   its local form changes), like the format conversion: a peer never
+    ///   receives it as a new state. A legacy document is written in v2 at
+    ///   the same time, as the conversion would, after a version of its prior
+    ///   state;
+    /// - **a block that names a video thumbnail's path only** has it dropped,
+    ///   uncounted: nothing is read for it.
+    pub async fn migrate_media_into_store(&self) -> Result<crate::media::MediaMigrationReport, DocError> {
+        let mut done = self.media_pass_done.lock().await;
+        let report = self.media_pass().await?;
+        *done = true;
+        Ok(report)
+    }
+
+    /// C-MEDIA, "before any sync is applied": every entry of a received state
+    /// (`apply_wire`, `apply_wire_version`, `apply_remote`, `restore_backup`)
+    /// waits for the migration pass on this store. When no pass has run since
+    /// this service was built, and the store's completion record does not say
+    /// one completed, the pass runs here first. A pass that fails holds the
+    /// received state back: nothing is stored.
+    pub(crate) async fn ensure_media_pass(&self) -> Result<(), DocError> {
+        let mut done = self.media_pass_done.lock().await;
+        if *done {
+            return Ok(());
+        }
+        let recorded = self
+            .store()
+            .get_store_record(crate::media_pass::MEDIA_PASS_RECORD_KEY)
+            .await
+            .map_err(store_err)?
+            .is_some();
+        if !recorded {
+            self.media_pass().await?;
+        }
+        *done = true;
+        Ok(())
+    }
+
+    /// The pass itself (see
+    /// [`migrate_media_into_store`](Self::migrate_media_into_store)).
+    pub(crate) async fn media_pass(&self) -> Result<crate::media::MediaMigrationReport, DocError> {
+        let mut report = crate::media::MediaMigrationReport::default();
+        let purging: HashSet<String> = self
+            .store()
+            .list_purge_markers()
+            .await
+            .map_err(store_err)?
+            .into_iter()
+            .filter(|m| !m.revoked)
+            .map(|m| m.document_id)
+            .collect();
+        let docs = self.store().list_documents_including_deleted().await.map_err(store_err)?;
+        let mut seen: HashMap<String, PathOutcome> = HashMap::new();
+        for d in docs {
+            let Some(id) = d.id_string() else { continue };
+            if purging.contains(&id) || !names_outside_media(&d.content, &id) {
+                continue;
+            }
+            self.migrate_media_of(&id, &mut report, &mut seen).await?;
+        }
+        Ok(report)
+    }
+
+    /// The migration pass's rule on the outside paths of `doc` (document
+    /// `id`), whichever device wrote it last (v2.0.86, Céline: « Plus simple :
+    /// copier partout »): ME2's lexical refusals; a path with no recorded hash
+    /// is neutralised and nothing is read; then the first bytes (once), then
+    /// the checked copy under the cap, copied and marked « copied by the
+    /// migration » on a match, else neutralised with its reason. A video's
+    /// thumbnail path follows the same guards. A path is read at most once across
+    /// `seen`. Returns how many were copied, the record entries of what was
+    /// neutralised, and whether `doc` changed. Used by the pass and by
+    /// `restore_version` (v2.0.86: an older version restored follows the same
+    /// rule).
+    fn pass_rule(
+        &self,
+        id: &str,
+        doc: &mut DocumentV2,
+        seen: &mut HashMap<String, PathOutcome>,
+    ) -> (usize, Vec<crate::media::NeutralisedMedium>, bool) {
+        use crate::media::{
+            check_outside_path, is_medium, neutralised_reason_of, MediaMark, NeutralisedMedium, NeutralisedReason,
+            SVG_SNIFF_BYTES,
+        };
+        let mut entries: Vec<NeutralisedMedium> = vec![];
+        let mut copied = 0usize;
+        let mut changed = false;
+        for (block, slot, path, sha, store) in outside_refs(doc) {
+            let outcome: PathOutcome = if check_outside_path(&path).is_err() {
+                PathOutcome::Failed(NeutralisedReason::LexicalRefusal)
+            } else if let Some(expected) = sha.as_deref() {
+                let first = seen.entry(path.clone()).or_insert_with(|| {
+                    // First bytes first, once: a file that is not a medium is
+                    // never read further.
+                    let failed = |e: &crate::media::MediaError| PathOutcome::Failed(neutralised_reason_of(e));
+                    match self.deps.media.first_bytes(&path, SVG_SNIFF_BYTES) {
+                        Err(e) => failed(&e),
+                        Ok(head) if !is_medium(&head) => PathOutcome::Failed(NeutralisedReason::NotAMedium),
+                        Ok(_) => match self.deps.media.copy_into_store_checked(
+                            &path,
+                            expected,
+                            Some(MediaMark::CopiedByMigration),
+                        ) {
+                            Ok(m) => PathOutcome::Copied(m),
+                            Err(e) => failed(&e),
+                        },
+                    }
+                });
+                match first {
+                    PathOutcome::Copied(m) if m.sha256 != expected => PathOutcome::Failed(NeutralisedReason::OtherHash),
+                    other => other.clone(),
+                }
+            } else {
+                // No recorded hash: nothing can vouch for the file, so nothing
+                // is read (v2.0.86).
+                PathOutcome::Failed(NeutralisedReason::NoRecordedHash)
+            };
+            changed = true;
+            match outcome {
+                PathOutcome::Copied(m) => {
+                    set_slot(doc, block, slot, Some(&m.name), Some(&m.sha256));
+                    copied += 1;
+                }
+                PathOutcome::Failed(reason) => {
+                    set_slot(doc, block, slot, store.as_deref(), sha.as_deref());
+                    entries.push(NeutralisedMedium { document: id.to_string(), block, former_path: path, reason });
+                }
+            }
+        }
+        (copied, entries, changed)
+    }
+
+    /// The pass over one document, under the write lock (see
+    /// [`migrate_media_into_store`](Self::migrate_media_into_store)).
+    async fn migrate_media_of(
+        &self,
+        id: &str,
+        report: &mut crate::media::MediaMigrationReport,
+        seen: &mut HashMap<String, PathOutcome>,
+    ) -> Result<(), DocError> {
+        let _w = self.write_lock.lock().await;
+        let d = match self.store().get_document(id).await {
+            Ok(d) => d,
+            Err(DbError::NotFound(_)) | Err(DbError::InvalidId(_)) => return Ok(()),
+            Err(e) => return Err(store_err(e)),
+        };
+        let (mut doc, form) = match DocumentV2::read_seeded(&d.content, id) {
+            Ok((doc, form)) if !matches!(form, SourceForm::NewerVersion { .. }) => (doc, form),
+            _ => return Ok(()),
+        };
+        let (copied, entries, changed) = self.pass_rule(id, &mut doc, seen);
+        if !changed {
+            return Ok(());
+        }
+        if !entries.is_empty() {
+            self.append_neutralised(&entries).await?;
+        }
+        let legacy = !matches!(form, SourceForm::V2);
+        let w = Write {
+            title: d.title.clone(),
+            content: doc.to_json_string(),
+            writer: if legacy { MIGRATION_WRITER } else { MEDIA_MIGRATION_WRITER }.into(),
+            same_session: false,
+            prior_message: if legacy {
+                "Before migration to format v2".into()
+            } else {
+                "Before the media store migration".into()
+            },
+            result: ResultVersion::Never,
+            extra: DocumentPatch::default(),
+            thread_id: d.thread_id.clone(),
+            stamping: None,
+            keep_prior_as_concurrent: None,
+            keep_stamps: true,
+        };
+        self.apply_write(id, &d, w).await?;
+        self.emit(id, ChangeKind::Migrated);
+        report.copied += copied;
+        report.neutralised += entries.len();
+        Ok(())
+    }
+
+    /// Adds `entries` to the record of what the pass neutralised: one store
+    /// record of the persona's store ([`NEUTRALISED_RECORD_KEY`]), sealed by
+    /// the encrypted layer under the persona's keys, never synced and never
+    /// backed up. Written before the document it describes.
+    async fn append_neutralised(&self, entries: &[crate::media::NeutralisedMedium]) -> Result<(), DocError> {
+        let mut all = self.neutralised_media().await?;
+        all.extend(entries.iter().cloned());
+        let list: Vec<serde_json::Value> = all
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "document": e.document,
+                    "block": e.block.to_hex(),
+                    "former_path": e.former_path,
+                    "reason": crate::media::reason_name(e.reason),
+                })
+            })
+            .collect();
+        self.store()
+            .put_store_record(NEUTRALISED_RECORD_KEY, &serde_json::Value::Array(list).to_string())
+            .await
+            .map_err(store_err)
+    }
+
+    /// C-MEDIA, *The media store* (v2.0.84): the record of what the migration
+    /// pass neutralised, one entry per block, every pass included. Read from
+    /// the persona's area; nothing opens a path from it.
+    ///
+    /// *Signature by the test author of lot L1b; the body is the implementer's.*
+    ///
+    /// The record is a store record of the persona's own store (sealed under
+    /// its keys, never synced, never backed up): the service's one seam to the
+    /// persona's area. An entry that cannot be read is an error, never dropped.
+    pub async fn neutralised_media(&self) -> Result<Vec<crate::media::NeutralisedMedium>, DocError> {
+        let Some(raw) = self.store().get_store_record(NEUTRALISED_RECORD_KEY).await.map_err(store_err)? else {
+            return Ok(vec![]);
+        };
+        let unreadable = || DocError::Store("the record of neutralised media cannot be read".into());
+        let list: Vec<serde_json::Value> = serde_json::from_str(&raw).map_err(|_| unreadable())?;
+        list.iter()
+            .map(|v| {
+                let s = |k: &str| v.get(k).and_then(serde_json::Value::as_str);
+                Some(crate::media::NeutralisedMedium {
+                    document: s("document")?.to_string(),
+                    block: BlockId::from_hex(s("block")?)?,
+                    former_path: s("former_path")?.to_string(),
+                    reason: crate::media::reason_of_name(s("reason")?)?,
+                })
+            })
+            .map(|e| e.ok_or_else(unreadable))
+            .collect()
+    }
+
+    /// C-MEDIA, *The media store*: for each media block of `id`, in order,
+    /// whether its medium is in this device's store or not on this device
+    /// (« medium not on this device »: absent, never empty).
+    ///
+    /// *Signature by the test author of lot L1b; the body is the implementer's.*
+    ///
+    /// A medium is found by its hash, never by a name or a path the block
+    /// carries: a block without a hash is not on this device. A document whose
+    /// content cannot be read is an error, never an empty list.
+    pub async fn media_presence(&self, id: &str) -> Result<Vec<(BlockId, crate::media::MediaPresence)>, DocError> {
+        use crate::media::MediaPresence;
+        let d = self.load(id).await?;
+        let doc = match DocumentV2::read_seeded(&d.content, id) {
+            Ok((doc, _)) => doc,
+            Err(FormatError { message }) => {
+                return Err(DocError::ReadOnly { id: id.to_string(), reason: ReadOnlyReason::Unreadable { message } })
+            }
+        };
+        Ok(doc
+            .blocks()
+            .iter()
+            .filter(|b| b.is_media())
+            .map(|b| {
+                let here = b.media_sha256().is_some_and(|h| self.deps.media.store_name_for(h).is_some());
+                (b.id(), if here { MediaPresence::InStore } else { MediaPresence::NotOnThisDevice })
+            })
+            .collect())
+    }
 
     /// The typed view of a document (G15). Readable whatever the stored form;
     /// a trashed document is readable (`trashed_at` set); a purged one is
@@ -1020,7 +1522,103 @@ impl DocumentService {
         if rec.deleted_at.is_some() {
             return Ok(TokenStatus::Placeholder);
         }
-        Ok(TokenStatus::Token { label: format!("[{:?}]", rec.kind) })
+        // Spec ch. 09, SW5: one label form, the model's (`[IBAN]`), never the
+        // code's own name (`[Iban]`).
+        Ok(TokenStatus::Token { label: rec.kind.label().to_string() })
+    }
+
+    // ------------------------------------------------------------- sweep --
+
+    /// C-SWEEP SW1 (ch. 09): the documents not yet analysed for personal data
+    /// (`pii_scanned_at` unset), not in the trash, that the sweep can read, at
+    /// most `limit` of them. Reading never writes.
+    ///
+    /// *Signature by the test author of lot LS(a); the body is the implementer's.*
+    pub async fn unanalysed(&self, limit: usize) -> Result<Vec<DocId>, DocError> {
+        let mut docs: Vec<Document> = self
+            .store()
+            .list_documents(None)
+            .await
+            .map_err(store_err)?
+            .into_iter()
+            .filter(|d| d.deleted_at.is_none() && d.pii_scanned_at.is_none())
+            .filter(|d| {
+                let id = d.id_string().unwrap_or_default();
+                !id.is_empty() && self.writable_doc(&id, d).is_ok()
+            })
+            .collect();
+        // Oldest first, so a pile is swept in the order it was made.
+        docs.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id_string().cmp(&b.id_string())));
+        Ok(docs.into_iter().take(limit).filter_map(|d| d.id_string()).collect())
+    }
+
+    /// C-SWEEP SW1: the sweep of one document, the ingest a save runs, with the
+    /// origin [`Origin::PiiSweep`]: each detected value replaced by its token
+    /// (suspected), the raw original kept encrypted, one new version tagged
+    /// `pii-sweep`, the document marked analysed. A document already analysed
+    /// is left as it is (`changed == false`, no version, no event).
+    ///
+    /// *Signature by the test author of lot LS(a); the body is the implementer's.*
+    ///
+    /// When ingest cannot run, nothing is written and the document stays not
+    /// analysed (`pii` says why). When ingest finds nothing to replace, the
+    /// document is only marked analysed: no version, no event.
+    pub async fn sweep(&self, id: &str) -> Result<SaveOutcome, DocError> {
+        let _w = self.write_lock.lock().await;
+        let d = self.load(id).await?;
+        if d.pii_scanned_at.is_some() {
+            return Ok(SaveOutcome { revision: revision_of(&d), changed: false, version: None, pii: PiiOutcome::NotRun });
+        }
+        if d.deleted_at.is_some() {
+            return Err(DocError::InTrash(id.to_string()));
+        }
+        let mut doc = self.writable_doc(id, &d)?;
+        let mut title = d.title.clone();
+        // SW2: the version analysed is the stored state's normalised hash.
+        let state = remote_of_row(&d, &self.deps.device);
+        let version = crate::wire::normalized_hash(&state);
+        let items = ingest_items(&title, &doc);
+        let given: HashSet<TextField> = items.iter().map(|i| i.field).collect();
+        let request = IngestRequest {
+            document_id: id.to_string(),
+            path: WritePath::Save,
+            items,
+            origin: Some(Origin::PiiSweep),
+            version: Some(version),
+        };
+        let pii = match self.deps.pii.ingest(request).await {
+            Ok(answer) => self.apply_ingest_answer(answer, &given, &mut title, &mut doc),
+            Err(e) => PiiOutcome::Failed { message: e.message },
+        };
+        if !matches!(pii, PiiOutcome::Scanned) {
+            return Ok(SaveOutcome { revision: revision_of(&d), changed: false, version: None, pii });
+        }
+        let content = doc.to_json_string();
+        if title == d.title && content == d.content {
+            let patch = DocumentPatch { pii_scanned_at: Some(Some(self.now())), ..Default::default() };
+            self.store().update_document_fields(id, patch).await.map_err(store_err)?;
+            return Ok(SaveOutcome { revision: revision_of(&d), changed: false, version: None, pii });
+        }
+        // Not her edit: the document's modification time does not move.
+        let mut extra = DocumentPatch::default();
+        self.scan_mark(&pii, &mut extra);
+        let writer = writer_tag(&Origin::PiiSweep);
+        let w = Write {
+            title,
+            content,
+            prior_message: format!("Before {writer}"),
+            writer,
+            same_session: false,
+            result: ResultVersion::Always(SWEEP_VERSION.into()),
+            extra,
+            thread_id: d.thread_id.clone(),
+            stamping: None,
+            keep_prior_as_concurrent: None,
+            keep_stamps: false,
+        };
+        let written = self.apply_write(id, &d, w).await?;
+        self.emit(id, ChangeKind::Saved);
+        Ok(SaveOutcome { revision: written.revision, changed: true, version: written.result, pii })
     }
 
     // -------------------------------------------------------------- save --
@@ -1081,7 +1679,17 @@ impl DocumentService {
             }
         }
         let mut title = edit.title.clone().unwrap_or_else(|| d.title.clone());
-        self.fill_media_hashes(&mut doc);
+        {
+            // C-MEDIA: an editor save of a document she owns is insertion;
+            // every other save copies nothing and reads nothing.
+            let before = self.writable_doc(id, &d).ok();
+            let rule = if matches!(edit.origin, Origin::Editor { .. }) && trust_of(&d) == Trust::Owned {
+                MediaRule::Insertion { before: before.as_ref() }
+            } else {
+                MediaRule::NoCopy { before: before.as_ref() }
+            };
+            self.media_on_write(&mut doc, rule);
+        }
         if title == d.title && doc.to_json_string() == d.content {
             return Ok(SaveOutcome { revision: current, changed: false, version: None, pii: PiiOutcome::NotRun });
         }
@@ -1089,9 +1697,11 @@ impl DocumentService {
         let path = match &edit.origin {
             Origin::Skill { .. } => WritePath::Skill,
             Origin::Import => WritePath::Import,
-            Origin::Editor { .. } | Origin::Assistant => WritePath::Save,
+            // C-SWEEP: her review writes as a save does (SW5).
+            Origin::Editor { .. } | Origin::Assistant | Origin::PiiSweep | Origin::PiiReview => WritePath::Save,
         };
-        let pii = self.ingest(id, path, &mut title, &mut doc).await;
+        let base = remote_of_row(&d, &self.deps.device);
+        let pii = self.ingest(id, path, Some(edit.origin.clone()), base, &mut title, &mut doc).await;
         let content = doc.to_json_string();
         if title == d.title && content == d.content {
             return Ok(SaveOutcome { revision: current, changed: false, version: None, pii });
@@ -1107,6 +1717,10 @@ impl DocumentService {
             Origin::Assistant => (false, ResultVersion::Always("Assistant edit".into())),
             Origin::Skill { name } => (false, ResultVersion::Always(format!("Skill: {name}"))),
             Origin::Import => (false, ResultVersion::Always("Import".into())),
+            // C-SWEEP: shown as « Personal-data sweep » and « Personal-data
+            // review » (the Fable maille, by delegation of Céline, 2026-11-17).
+            Origin::PiiSweep => (false, ResultVersion::Always(SWEEP_VERSION.into())),
+            Origin::PiiReview => (false, ResultVersion::Always(REVIEW_VERSION.into())),
         };
         let writer = writer_tag(&edit.origin);
         let w = Write {
@@ -1237,23 +1851,75 @@ impl DocumentService {
 
     // ---------------------------------------------------------- versions --
 
-    /// The document's versions, newest first, with their integrity.
+    /// The document's versions, newest first, with their integrity. A version
+    /// whose content cannot be read stays in its place, marked (HR4); a list
+    /// that cannot be read is refused with [`crate::COULD_NOT_READ_HISTORY`]
+    /// (HR1). Either failure counts the document for this session (HR3).
     pub async fn versions(&self, id: &str) -> Result<Vec<VersionInfo>, DocError> {
+        let listed = self.history(id).await?;
+        listed
+            .map(|vs| vs.into_iter().map(|(info, _)| info).collect())
+            .ok_or_else(|| DocError::Store(crate::COULD_NOT_READ_HISTORY.to_string()))
+    }
+
+    /// History as a host shows it (spec ch. 03, *History, in v0.0.13*): each
+    /// version with its content when it reads, newest first; `Ok(None)` when
+    /// the list itself could not be read (HR1). A refusal of the document
+    /// (locked, not found, in the trash…) stays an `Err`, never « could not be
+    /// read » (HR2). The mark of a version that cannot be read is made here,
+    /// where it is read (HR4): its nonces stay on its snapshot when the
+    /// encrypted layer could not open it. Counts the document for this
+    /// session, or lets it leave the count after a good read (HR3).
+    pub async fn history(&self, id: &str) -> Result<Option<Vec<(VersionInfo, Option<VersionView>)>>, DocError> {
         self.load(id).await?;
-        let commits = self.store().list_document_commits_checked(id).await.map_err(store_err)?;
-        Ok(commits
+        let commits = match self.store().list_document_commits_checked(id).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("the versions of {id} could not be read: {e}");
+                self.note_history_read(id, false);
+                return Ok(None);
+            }
+        };
+        let out: Vec<(VersionInfo, Option<VersionView>)> = commits
             .into_iter()
-            .map(|(c, integrity)| VersionInfo {
-                commit_id: c.id_string().unwrap_or_default(),
-                message: c.message,
-                timestamp: c.timestamp,
-                mac: match integrity {
-                    CommitIntegrity::Verified => MacState::Verified,
-                    CommitIntegrity::Unsigned => MacState::Unsigned,
-                    CommitIntegrity::Invalid => MacState::Invalid,
-                },
+            .map(|(c, integrity)| {
+                let unreadable = c.snapshot.content_nonce.is_some() || c.snapshot.title_nonce.is_some();
+                let commit_id = c.id_string().unwrap_or_default();
+                let view = (!unreadable).then(|| VersionView {
+                    commit_id: commit_id.clone(),
+                    title: c.snapshot.title.clone(),
+                    doc: DocumentV2::read_seeded(&c.snapshot.content, id).ok().map(|(d, _)| d),
+                });
+                let info = VersionInfo {
+                    commit_id,
+                    message: c.message,
+                    timestamp: c.timestamp,
+                    mac: match integrity {
+                        CommitIntegrity::Verified => MacState::Verified,
+                        CommitIntegrity::Unsigned => MacState::Unsigned,
+                        CommitIntegrity::Invalid => MacState::Invalid,
+                    },
+                    could_not_read: unreadable.then_some(crate::VERSION_COULD_NOT_BE_READ),
+                };
+                (info, view)
             })
-            .collect())
+            .collect();
+        self.note_history_read(id, out.iter().all(|(v, _)| v.could_not_read.is_none()));
+        Ok(Some(out))
+    }
+
+    /// HR3: how many documents' history this session could not read.
+    pub fn histories_not_read(&self) -> usize {
+        self.histories_not_read.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    fn note_history_read(&self, id: &str, good: bool) {
+        let mut set = self.histories_not_read.lock().unwrap_or_else(|e| e.into_inner());
+        if good {
+            set.remove(id);
+        } else {
+            set.insert(id.to_string());
+        }
     }
 
     /// A commit of document `id`, with its integrity; refused when it is not
@@ -1308,8 +1974,19 @@ impl DocumentService {
         let mut title = c.snapshot.title.clone();
         let (content, pii) = match DocumentV2::read_seeded(&c.snapshot.content, id) {
             Ok((mut doc, form)) if !matches!(form, SourceForm::NewerVersion { .. }) => {
-                self.fill_media_hashes(&mut doc);
-                let pii = self.ingest(id, WritePath::RestoreVersion, &mut title, &mut doc).await;
+                // C-MEDIA (v2.0.86): an older version may name outside paths
+                // (from before the update). Restored, it follows the migration
+                // pass's rule, whichever device wrote it: first bytes, then
+                // hash, then copy and mark, or neutralise and record. The
+                // record is written before the restored state.
+                let (_, entries, _) = self.pass_rule(id, &mut doc, &mut HashMap::new());
+                if !entries.is_empty() {
+                    self.append_neutralised(&entries).await?;
+                }
+                // SW1: a restore has no writer origin; what it replaces is
+                // suspected.
+                let base = remote_of_row(&d, &self.deps.device);
+                let pii = self.ingest(id, WritePath::RestoreVersion, None, base, &mut title, &mut doc).await;
                 (doc.to_json_string(), pii)
             }
             // Newer-format or unreadable: written back exactly as it was.
@@ -1641,6 +2318,8 @@ impl DocumentService {
     /// goes through [`DocumentService::apply_wire`], which keeps the sender's
     /// stamps and orders by them.
     pub async fn apply_remote(&self, remote: RemoteDocument) -> Result<RemoteOutcome, DocError> {
+        // C-MEDIA: no received state is applied before the media pass.
+        self.ensure_media_pass().await?;
         let _w = self.write_lock.lock().await;
         let id = remote.id.clone();
         if raw_to_thing(&id).is_none() {
@@ -1671,7 +2350,10 @@ impl DocumentService {
         let mut title = remote.title.clone();
         let mut parsed = match DocumentV2::read_seeded(&remote.content, &id) {
             Ok((mut doc, form)) if !matches!(form, SourceForm::NewerVersion { .. }) => {
-                self.fill_media_hashes(&mut doc);
+                // C-MEDIA: a received state's outside paths are neutralised
+                // when it is applied, before anything else can see them (ME1:
+                // a media field in such a state is data, not a location).
+                self.media_on_write(&mut doc, MediaRule::NeutraliseAll);
                 Some(doc)
             }
             _ => None,
@@ -1724,7 +2406,8 @@ impl DocumentService {
 
         let before_ingest = (title.clone(), converted.clone());
         let pii = match parsed.as_mut() {
-            Some(doc) => self.ingest(&id, WritePath::Sync, &mut title, doc).await,
+            // SW1: content received by sync has no writer origin.
+            Some(doc) => self.ingest(&id, WritePath::Sync, None, remote.clone(), &mut title, doc).await,
             None => PiiOutcome::NotRun,
         };
         let content = parsed.as_ref().map(DocumentV2::to_json_string).unwrap_or(converted);
@@ -1809,7 +2492,8 @@ impl DocumentService {
         }
         let before_ingest = (title.clone(), converted.clone());
         let pii = match parsed.as_mut() {
-            Some(doc) => self.ingest(&id, WritePath::Sync, &mut title, doc).await,
+            // SW1: content received by sync has no writer origin.
+            Some(doc) => self.ingest(&id, WritePath::Sync, None, remote.clone(), &mut title, doc).await,
             None => PiiOutcome::NotRun,
         };
         let content = parsed.as_ref().map(DocumentV2::to_json_string).unwrap_or(converted);
@@ -1958,7 +2642,7 @@ impl DocumentService {
                 return;
             }
         };
-        let mut doc = match DocumentV2::read_seeded(&d.content, id) {
+        let doc = match DocumentV2::read_seeded(&d.content, id) {
             Ok((_, SourceForm::V2)) => {
                 // A write converted it since the listing (G3: not counted).
                 report.already_v2 += 1;
@@ -1978,7 +2662,9 @@ impl DocumentService {
             }
             Ok((doc, _legacy)) => doc,
         };
-        self.fill_media_hashes(&mut doc);
+        // C-MEDIA: the conversion hashes nothing and copies nothing; the
+        // outside paths it carries over are the document's own, left for the
+        // media migration pass.
         let w = Write {
             title: d.title.clone(),
             content: doc.to_json_string(),
@@ -2044,10 +2730,44 @@ impl DocumentService {
         let id = format!("document:{}", BlockId::random().to_hex());
         let mut title = request.title.clone().unwrap_or_else(|| d.title.clone());
         let thread_id = request.thread_id.clone().unwrap_or_else(|| d.thread_id.clone());
+        let thread_id = self.live_end_of(&thread_id).await?;
         let trust = trust_of(&d);
         let provenance = Provenance::Copy { of: source.clone(), from: Box::new(provenance_of(&d)) };
-        self.fill_media_hashes(&mut doc);
-        let pii = self.ingest(&id, WritePath::Create, &mut title, &mut doc).await;
+        // C-MEDIA: a copy copies no medium and reads no path. The source's
+        // own outside paths come with it unread (each is the same block, with
+        // the same path, as in the source): the migration pass is their only
+        // reader, as it is the source's (G20: the copy has the source's
+        // content).
+        let source_doc = self.writable_doc(&source, &d)?;
+        self.media_on_write(&mut doc, MediaRule::NoCopy { before: Some(&source_doc) });
+        // Copies (the Fable maille, by delegation of Céline, 2026-11-17): a
+        // value dismissed in the source is dismissed in the copy too, then
+        // independent: each such dismissal is written for the copy's identity
+        // before its ingest, which then leaves the value as written.
+        for r in self.store().list_pii_records(None, Some(ReviewState::Dismissed), Some(false)).await.map_err(store_err)? {
+            let of_source = r.sources.iter().any(|s| s.source_kind == SourceKind::Document && s.source_id == source);
+            if !of_source || r.deleted_at.is_some() {
+                continue;
+            }
+            let copy = PiiRecord {
+                id: None,
+                sources: vec![SourceRef { source_kind: SourceKind::Document, source_id: id.clone(), span_start: 0, span_end: 0 }],
+                discovered_at: self.now(),
+                last_revealed_at: None,
+                use_count: 0,
+                ..r
+            };
+            self.store().create_pii_record(copy).await.map_err(store_err)?;
+        }
+        // SW1: the copy's ingest is never given the editor's origin, though
+        // its request carries it (same decision): what it replaces, a value
+        // the source had not analysed, is suspected whoever asked for the copy.
+        let origin = match &request.origin {
+            Origin::Editor { .. } => None,
+            other => Some(other.clone()),
+        };
+        let base = self.new_state(&id, &thread_id, trust, &provenance);
+        let pii = self.ingest(&id, WritePath::Create, origin, base, &mut title, &mut doc).await;
         let content = doc.to_json_string();
         let now = self.now();
 

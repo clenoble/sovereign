@@ -12,6 +12,15 @@ mod duress;
 mod doc_saves;
 // C-DOC adoption step 5: the mobile trash and the host's purge.
 mod doc_trash;
+// v0.0.13, item 9 (spec ch. 03, FC1, FC2, FC6): two threads of the name
+// sought, asked once, remembered: the browser's « Web » and the skills.
+mod thread_choice;
+// Item 9's tests in the app, written before the code by another author; the
+// implementer does not edit them.
+#[cfg(test)]
+mod fc_hosts_tests;
+#[cfg(test)]
+mod cli_chooser_tests;
 // The step-5 tests (S5-2, S5-9), written before the code; kept in their own
 // file so whoever implements step 5 does not edit them.
 #[cfg(test)]
@@ -26,6 +35,22 @@ mod doc_unreadable;
 // does not edit them.
 #[cfg(test)]
 mod orphans_tests;
+// v0.0.13, the Alerts' lists that cannot be read (spec ch. 03, *What cannot
+// be read is never shown as empty*): the layer under `list_sync_alerts`,
+// `list_orphaned_documents` and `list_unreadable_documents`. Tests written
+// before the code, by another author; the implementer does not edit them.
+#[cfg(all(test, feature = "encryption"))]
+mod could_not_check_tests;
+// v0.0.13 item C5, the phone's History that cannot be read (spec ch. 03, the
+// same rule): the layer under `list_commits` and its count. Tests written
+// before the code, by another author; the implementer does not edit them.
+#[cfg(all(test, feature = "encryption"))]
+mod c5_history_tests;
+// v0.0.13, History's names on the phone (spec ch. 12, HN1-HN5): the layers
+// under `list_commits` and `restore_commit`. Tests written before the code, by
+// another author; the implementer does not edit them.
+#[cfg(all(test, feature = "encryption"))]
+mod hn_phone_tests;
 // The step-6 tests (M5: the decoy seeded in format v2), written before the
 // code; the implementer does not edit them.
 #[cfg(all(test, feature = "encryption"))]
@@ -44,6 +69,27 @@ mod onboarding_order_tests;
 // edit them. They run the commands on a Tauri mock app.
 #[cfg(all(test, feature = "encryption"))]
 mod lot1_onboarding_tests;
+// C-SUP (v0.0.13 lot LQ, spec ch. 05, *The node's supervision*): what
+// `AppState::node_refusal` answers, on a real `AppState` — tests written
+// before the code, by another author; the implementer does not edit them.
+#[cfg(all(test, feature = "p2p"))]
+mod csup_state_tests;
+// v0.0.13, item C3 (spec ch. 05, PR1 and PR2): pairing a device again, on the
+// app's source side, through its own event translator — tests written before
+// the code, by another author; the implementer does not edit them.
+#[cfg(all(test, feature = "p2p"))]
+mod c3_same_name_tests;
+// v0.0.13, C-LOG's host lot (spec ch. 08, DG3, DG4, DG6): the window's content
+// and Delete, through `tauri_commands::quarantined_log` — tests
+// written before the code, by another author; the implementer does not edit
+// them.
+#[cfg(all(test, feature = "encryption", feature = "encrypted-log"))]
+mod clog_hosts_app_tests;
+// C-LOG's host lot, second set: the app's assistant is offered Keep and Delete
+// only (Céline, 2026-11-18), and the turn's event reaches the frontend — tests
+// written before the code, by another author; the implementer does not edit them.
+#[cfg(all(test, feature = "encryption", feature = "encrypted-log"))]
+mod clog_hosts_app_v2_tests;
 // v0.0.12 item 22 (a device's identity in its stamps is its peer id,
 // `doc/plans/V0012-item22-device-identity.md`): tests written before the
 // code, by another author; the implementer does not edit them. The commands
@@ -62,6 +108,16 @@ mod rc2_second_position_tests;
 // file, so it does not compile until they exist.
 #[cfg(test)]
 mod item9_tests;
+// v0.0.13 lot L5, B1 (C-MERGE, spec ch. 03, MG2 and MG3 on the phone): what
+// canvas_load gives the phone for each thread, written before the code by the
+// B1 test author.
+#[cfg(test)]
+mod b1_merge_tests;
+// v0.0.13 rc2 (Céline, 2026-11-20): nothing reaches the phone's system log by default. Source
+// readings of the phone's `run()`, written before the code by another author; the implementer does
+// not edit them.
+#[cfg(test)]
+mod phone_log_tests;
 // v0.0.12 item 7 V2b (`doc/plans/V0012-item7-v2b-app-list.md`, B2: the app
 // lists the documents it could not read): tests written before the code, by
 // another author; the implementer does not edit them. Needs the seams named
@@ -69,6 +125,17 @@ mod item9_tests;
 // until they exist.
 #[cfg(all(test, feature = "encryption"))]
 mod item7_v2b_tests;
+// Ch. 07, login errors say what failed (v0.0.13; Céline, 2026-11-19, through
+// the Fable maille): the login command's words and the attempt tracker —
+// tests written before the code, by another author; the implementer does not
+// edit them. The commands run as in `lot1_onboarding_tests`.
+#[cfg(all(test, feature = "encryption"))]
+mod login_errors_app_tests;
+// C-AREA (v0.0.13 L1c, spec ch. 07): the phone's duress walk, AR1, AR2, AR5,
+// AR6 — tests written before the code, by another author; the implementer
+// does not edit them. The commands run as in `lot1_onboarding_tests`.
+#[cfg(all(test, feature = "encryption"))]
+mod c_area_walk_tests;
 // rc2: the single-flight claim taken by every first write of auth.store
 // (onboarding fresh or paired, backup recovery).
 pub(crate) mod onboarding_claim;
@@ -95,8 +162,6 @@ mod pii_contact_hook;
 mod pii_message_hook;
 #[cfg(feature = "comms")]
 mod pii_share_hook;
-#[cfg(all(feature = "comms", feature = "encryption"))]
-mod pii_sweep;
 mod tauri_state;
 
 // `web` hosts the SSRF URL validator (always needed by the embedded browser
@@ -133,7 +198,12 @@ use setup::create_db;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    lifecycle::init_tracing();
+    // Nothing is written to the phone's system log: no tracing subscriber
+    // (the app's lines and its libraries' would reach logcat through stderr),
+    // and a panic hook that writes nothing (a panic's message can carry a
+    // path). Céline, 2026-11-20; the way decided by the Fable maille the same
+    // day, by her delegation.
+    std::panic::set_hook(Box::new(|_| {}));
     let config = AppConfig::load_or_default(None);
     let rt = match tokio::runtime::Runtime::new() {
         Ok(r) => r,
@@ -345,6 +415,9 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             // Documents the conversion could not read (v0.0.12 item 7 V2b)
             doc_unreadable::commands::list_unreadable_documents,
             tauri_commands::documents::list_commits,
+            tauri_commands::documents::histories_not_read,
+            tauri_commands::quarantined_log::quarantined_log_readable,
+            tauri_commands::quarantined_log::delete_quarantined_log,
             tauri_commands::documents::restore_commit,
             tauri_commands::documents::list_skills_for_doc,
             tauri_commands::documents::execute_skill,
@@ -359,6 +432,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::threads::update_thread,
             tauri_commands::threads::delete_thread,
             tauri_commands::threads::move_document_to_thread,
+            tauri_commands::threads::thread_for_name,
+            tauri_commands::threads::remember_thread_choice,
             // Contacts & messaging
             tauri_commands::contacts::list_contacts,
             tauri_commands::contacts::get_contact_detail,
@@ -368,6 +443,7 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::contacts::create_relationship,
             // Auth, onboarding, profile, config
             tauri_commands::auth::check_auth_state,
+            tauri_commands::auth::sync_is_stopped,
             tauri_commands::auth::onboarding_designation,
             tauri_commands::auth::validate_password,
             tauri_commands::auth::validate_password_policy,
@@ -418,6 +494,12 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pii::dismiss_pii_record,
             tauri_commands::pii::redact_pii_record,
             tauri_commands::pii::reveal_pii_record,
+            // C-SWEEP (spec ch. 09): the review, its signal and the labels.
+            tauri_commands::pii::pii_review_groups,
+            tauri_commands::pii::pii_review,
+            tauri_commands::pii::pii_signal,
+            tauri_commands::pii::pii_login_notice,
+            tauri_commands::pii::get_document_labelled,
             tauri_commands::pii::create_vault_entry,
             tauri_commands::pii::list_share_records_for_entity,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -444,10 +526,18 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             tauri_commands::pairing::list_paired_devices,
             #[cfg(feature = "encryption")]
             tauri_commands::pairing::forget_paired_device,
+            // PR2 (spec ch. 05; item C3): the question about a device paired
+            // again, and her answer. Built with the node only.
+            #[cfg(feature = "p2p")]
+            tauri_commands::pairing::same_name_question,
+            #[cfg(feature = "p2p")]
+            tauri_commands::pairing::answer_same_name,
             #[cfg(feature = "encryption")]
             tauri_commands::pairing::get_local_peer_id,
             #[cfg(feature = "encryption")]
             tauri_commands::pairing::trigger_sync_now,
+            #[cfg(feature = "encryption")]
+            tauri_commands::pairing::restart_sync,
             #[cfg(feature = "encryption")]
             tauri_commands::pairing::cancel_pairing,
             #[cfg(feature = "encryption")]
@@ -596,9 +686,9 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
             // by install_session() in tauri_commands::auth.rs; not at startup.
             // The theme is read from the persisted UserProfile so it survives
             // restarts (toggle_theme writes back through to the profile).
-            let theme_initial = sovereign_core::profile::UserProfile::load(&backend.profile_dir)
+            let theme_initial = sovereign_core::profile::DevicePreferences::load(&backend.profile_dir)
                 .map(|p| p.theme)
-                .unwrap_or_else(|_| "dark".to_string());
+                .unwrap_or_else(|| "dark".to_string());
             app.manage(tauri_state::AppState {
                 db: backend.db.clone(),
                 orchestrator: backend.orchestrator.clone(),
@@ -631,6 +721,8 @@ fn run_tauri(config: &AppConfig, rt: &tokio::runtime::Runtime) -> Result<()> {
                 p2p_command_tx: tokio::sync::RwLock::new(None),
                 #[cfg(feature = "p2p")]
                 pairing_manager: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+                #[cfg(feature = "p2p")]
+                same_name: Default::default(),
                 #[cfg(feature = "p2p")]
                 p2p_listen_addrs: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
                 #[cfg(feature = "p2p")]
@@ -994,6 +1086,27 @@ async fn init_backend(
         }
     }
 
+    // C-AREA AR2: the device preferences (theme, bubble style) leave the
+    // shared `user_profile.json` for their own file, once, before any login.
+    if let Err(e) = sovereign_core::profile::DevicePreferences::migrate(&profile_dir) {
+        tracing::warn!("device preferences not migrated: {e}");
+    }
+
+    // C-AREA AR4: with encryption and a persistent store, the boot opens no
+    // persona's store. Its raw inner is a memory placeholder (nothing is read
+    // or written before login: every data command needs a session), and each
+    // persona's store is opened at its first session (`install_session`,
+    // `setup::open_store`). A duress session that is the process's first so
+    // never has the primary's store open, whose engine would write it.
+    #[cfg(feature = "encryption")]
+    let db = if config.database.mode != "memory" {
+        let mut boot = config.clone();
+        boot.database.mode = "memory".into();
+        create_db(&boot).await?
+    } else {
+        create_db(config).await?
+    };
+    #[cfg(not(feature = "encryption"))]
     let db = create_db(config).await?;
 
     // No auto-seeding at startup. ALL sample data — DB rows, the orchestrator
@@ -1072,6 +1185,10 @@ async fn init_backend(
             o.set_feedback_rx(feedback_rx);
             #[cfg(feature = "vision")]
             o.set_vision(vision.clone());
+            // C-LOG DG4: the app has no Export, so its assistant offers Keep
+            // and Delete only (Céline, 2026-11-18).
+            #[cfg(feature = "encrypted-log")]
+            o.set_log_choices(tauri_commands::quarantined_log::choices());
 
             // Session-log encryption + PII tokenization for the
             // orchestrator are installed after login by
@@ -1166,6 +1283,9 @@ mod ipc_classification_guard {
         "toggle_theme",
         "get_theme",
         "check_auth_state",
+        // C-SUP: whether the session's sync is stopped, asked after the
+        // login's reset; it takes no Webview, and reads one flag.
+        "sync_is_stopped",
         "onboarding_designation",
         "validate_password",
         "validate_password_policy",
@@ -1218,6 +1338,9 @@ mod ipc_classification_guard {
         "resolve_orphans_of_thread",
         "list_unreadable_documents",
         "list_commits",
+        "histories_not_read",
+        "quarantined_log_readable",
+        "delete_quarantined_log",
         "restore_commit",
         "list_skills_for_doc",
         "execute_skill",
@@ -1232,6 +1355,8 @@ mod ipc_classification_guard {
         "update_thread",
         "delete_thread",
         "move_document_to_thread",
+        "thread_for_name",
+        "remember_thread_choice",
         // contacts
         "list_contacts",
         "get_contact_detail",
@@ -1259,6 +1384,9 @@ mod ipc_classification_guard {
         "accept_link_suggestion",
         "dismiss_link_suggestion",
         "trigger_consolidation",
+        // pairing a device again (PR2): the question and her answer
+        "same_name_question",
+        "answer_same_name",
         // alerts on changes from paired devices; previous values (C-WIRE 13)
         "list_sync_alerts",
         "dismiss_sync_alert",
@@ -1276,6 +1404,11 @@ mod ipc_classification_guard {
         "dismiss_pii_record",
         "redact_pii_record",
         "reveal_pii_record",
+        "pii_review_groups",
+        "pii_review",
+        "pii_signal",
+        "pii_login_notice",
+        "get_document_labelled",
         "create_vault_entry",
         "list_share_records_for_entity",
         "extract_form_fields",
@@ -1291,6 +1424,7 @@ mod ipc_classification_guard {
         "forget_paired_device",
         "get_local_peer_id",
         "trigger_sync_now",
+        "restart_sync",
         "cancel_pairing",
         "get_p2p_settings",
         // backup (P4)
@@ -1339,6 +1473,9 @@ mod ipc_classification_guard {
         "resolve_orphans_of_thread",
         "list_unreadable_documents",
         "list_commits",
+        "histories_not_read",
+        "quarantined_log_readable",
+        "delete_quarantined_log",
         "restore_commit",
         "list_skills_for_doc",
         "execute_skill",
@@ -1353,6 +1490,8 @@ mod ipc_classification_guard {
         "update_thread",
         "delete_thread",
         "move_document_to_thread",
+        "thread_for_name",
+        "remember_thread_choice",
         // contacts
         "list_contacts",
         "get_contact_detail",
@@ -1362,6 +1501,7 @@ mod ipc_classification_guard {
         "create_relationship",
         // auth
         "check_auth_state",
+        "sync_is_stopped",
         "onboarding_designation",
         "validate_password",
         "validate_password_policy",
@@ -1404,6 +1544,11 @@ mod ipc_classification_guard {
         "dismiss_pii_record",
         "redact_pii_record",
         "reveal_pii_record",
+        "pii_review_groups",
+        "pii_review",
+        "pii_signal",
+        "pii_login_notice",
+        "get_document_labelled",
         "create_vault_entry",
         "list_share_records_for_entity",
         "extract_form_fields",
@@ -1420,8 +1565,11 @@ mod ipc_classification_guard {
         "complete_onboarding_paired",
         "list_paired_devices",
         "forget_paired_device",
+        "same_name_question",
+        "answer_same_name",
         "get_local_peer_id",
         "trigger_sync_now",
+        "restart_sync",
         "cancel_pairing",
         "get_p2p_settings",
         // backup (P4)

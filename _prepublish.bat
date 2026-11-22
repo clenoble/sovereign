@@ -2,8 +2,10 @@
 REM Local pre-publish gate. Run before cutting a release; it stops at the FIRST
 REM failing step and exits with its code. See doc\RELEASE.md.
 REM
-REM   _prepublish.bat RELEASE_NOTES_vX.Y.Z.md   (the notes step 9 checks; without
-REM                                             them the gate fails, exit 2)
+REM   _prepublish.bat RELEASE_NOTES_vX.Y.Z.md [RELEASE_NOTES_vX.Y.Z.public.md]
+REM       the notes step 9 checks (without them the gate fails, exit 2), and the
+REM       public notes, if any: step 9 checks their claims too, and that every
+REM       marker in them is one of the full notes' (claims verifier, V10)
 REM
 REM   0  cargo fetch --locked                  (the editor's dependency-graph tests run
 REM      `cargo metadata --offline` on purpose: every locked dependency must be cached first)
@@ -11,6 +13,8 @@ REM   1  cargo check --workspace --exclude sovereign-ai --all-targets
 REM   2  cargo check -p sovereign-shell        (standalone: the shell's own features, as it ships)
 REM   3  cargo check -p sovereign-app --no-default-features --features mobile   (the APK feature set, host target)
 REM   4  cargo test --workspace --exclude sovereign-ai
+REM      (and sovereign-db with encryption, and sovereign-app with p2p: tests that
+REM      compile only with a feature the workspace run does not turn on)
 REM   5  cargo test -p sovereign-ai --no-default-features --features encrypted-log
 REM      (without encrypted-log the session-log tests are silently skipped)
 REM   5b cargo test --release, for the guarantees that exist only in release builds
@@ -57,6 +61,19 @@ set "LISTDIR=%TEMP%\sovereign-gate-lists"
 if exist "%LISTDIR%" rmdir /s /q "%LISTDIR%"
 mkdir "%LISTDIR%"
 if %errorlevel% neq 0 goto :fail
+REM The run's temporary files go to a folder of its own under the target
+REM directory, so the test stores the harnesses leave stop piling up in %TEMP%.
+REM At the end, scripts\gate-tmp.py prints what was left there, grouped by name,
+REM and what appeared in the system folder meanwhile; a gate that passed removes
+REM its folder, a gate that failed keeps it until the next run. Set after
+REM LISTDIR, which stays in the system folder as before.
+set "SYS_TEMP=%TEMP%"
+set "GATE_TMP=%SOVEREIGN_TARGET_DIR%\gate-tmp"
+python -I scripts\gate-tmp.py start "%GATE_TMP%" "%SYS_TEMP%"
+if %errorlevel% neq 0 goto :fail
+set "TMP=%GATE_TMP%"
+set "TEMP=%GATE_TMP%"
+set "TMPDIR=%GATE_TMP%"
 
 set "STEP=0/9 cargo fetch --locked"
 echo. & echo === %STEP%
@@ -88,6 +105,13 @@ REM The encrypted layer's tests compile only with the encryption feature.
 cargo test -p sovereign-db --features encryption --locked -j %SOVEREIGN_JOBS%
 if %errorlevel% neq 0 goto :fail
 cargo test -p sovereign-db --features encryption --locked -j %SOVEREIGN_JOBS% -- --list > "%LISTDIR%\04-db-encryption.txt"
+if %errorlevel% neq 0 goto :fail
+REM The app's tests that compile only with p2p (29 at v0.0.13 rc1, among them a duress
+REM session running no node): `cargo test --workspace` never turns p2p on for the app
+REM (Céline, 2026-11-20, from the rc1 gates' step 9).
+cargo test -p sovereign-app --features p2p --locked -j %SOVEREIGN_JOBS%
+if %errorlevel% neq 0 goto :fail
+cargo test -p sovereign-app --features p2p --locked -j %SOVEREIGN_JOBS% -- --list > "%LISTDIR%\04-app-p2p.txt"
 if %errorlevel% neq 0 goto :fail
 
 set "STEP=5/9 cargo test -p sovereign-ai --no-default-features --features encrypted-log"
@@ -149,9 +173,11 @@ echo. & echo === %STEP%
 if "%~1"=="" goto :no_notes
 set "LISTARGS="
 for %%f in ("%LISTDIR%\*.txt") do call set "LISTARGS=%%LISTARGS%% --list "%%~f""
+if not "%~2"=="" set "LISTARGS=%LISTARGS% --public "%~2""
 python -I scripts\check-release-claims.py "%~1" %LISTARGS%
 if %errorlevel% neq 0 goto :fail
 
+python -I scripts\gate-tmp.py report "%GATE_TMP%" "%SYS_TEMP%" --remove
 echo.
 echo PRE-PUBLISH GATE PASSED (9/9)
 echo EXIT=0
@@ -172,6 +198,7 @@ goto :report
 set "RC=%ERRORLEVEL%"
 
 :report
+if defined GATE_TMP python -I scripts\gate-tmp.py report "%GATE_TMP%" "%SYS_TEMP%"
 if "%RC%"=="0" set "RC=1"
 echo.
 echo PRE-PUBLISH GATE FAILED at step %STEP%

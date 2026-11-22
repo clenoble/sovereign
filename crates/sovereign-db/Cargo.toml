@@ -28,6 +28,11 @@ sovereign-crypto = { workspace = true }
 name = "encrypted_over_surreal"
 required-features = ["encryption"]
 
+# v0.0.13 item 9, FC3: a remembered choice sealed at rest, by persona.
+[[test]]
+name = "fc3_choices_at_rest"
+required-features = ["encryption"]
+
 [features]
 default = []
 encryption = ["sovereign-crypto", "base64", "tracing"]

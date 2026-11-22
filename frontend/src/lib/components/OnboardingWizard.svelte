@@ -695,6 +695,10 @@
 							placeholder="Enter password"
 							bind:value={password}
 							enterkeyhint="next"
+							autocapitalize="off"
+							autocorrect="off"
+							autocomplete="new-password"
+							spellcheck="false"
 							onkeydown={(e) => onFieldEnter(e, pairedPwConfirmEl)}
 						/>
 					</div>
@@ -708,6 +712,10 @@
 							bind:value={passwordConfirm}
 							bind:this={pairedPwConfirmEl}
 							enterkeyhint="done"
+							autocapitalize="off"
+							autocorrect="off"
+							autocomplete="new-password"
+							spellcheck="false"
 							onkeydown={onFieldEnter}
 						/>
 					</div>
@@ -753,6 +761,7 @@
 					<input
 						type="text"
 						class="text-input"
+						aria-label="AI nickname"
 						placeholder='e.g. "Ike", "T-Nine", "B4"...'
 						bind:value={nickname}
 						maxlength="32"
@@ -876,7 +885,7 @@
 							enterkeyhint="next"
 							autocapitalize="off"
 							autocorrect="off"
-							autocomplete="off"
+							autocomplete="new-password"
 							spellcheck="false"
 							onkeydown={(e) => onFieldEnter(e, pwConfirmEl)}
 						/>
@@ -893,7 +902,7 @@
 							enterkeyhint="done"
 							autocapitalize="off"
 							autocorrect="off"
-							autocomplete="off"
+							autocomplete="new-password"
 							spellcheck="false"
 							onkeydown={onFieldEnter}
 						/>
@@ -945,12 +954,19 @@
 						forced to unlock your device, entering this password will show an
 						innocuous environment instead of your real data.
 					</p>
+					<!-- K7 (spec ch. 12): what K6 means for a duress password; the field's description too. -->
+					<p class="description" id="duress-manager-note">
+						A password manager on this device may offer your main password when you unlock, and may
+						offer to save this one. If you rely on a duress password, keep both out of any password
+						manager.
+					</p>
 					<div class="field-group">
 						<label class="field-label" for="duress-pw">Duress password</label>
 						<input
 							id="duress-pw"
 							type={showPw ? 'text' : 'password'}
 							class="text-input"
+							aria-describedby="duress-manager-note"
 							placeholder="Enter duress password"
 							bind:value={duressPassword}
 							enterkeyhint="next"
@@ -1066,11 +1082,15 @@
 					</div>
 
 					{#if keystrokeSamples.length < 5}
+						<!-- Spec ch. 12, lot C: named by a label, as the wizard's other fields are. -->
+						<label class="field-label" for="keystroke-sample">Password sample</label>
 						<input
+							id="keystroke-sample"
 							type="password"
 							class="text-input"
 							placeholder="Type your password"
 							bind:value={currentKeystrokeInput}
+							autocomplete="off"
 							onkeydown={handleKeystrokeKeydown}
 							onkeyup={handleKeystrokeKeyup}
 						/>

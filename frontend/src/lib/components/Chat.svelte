@@ -3,10 +3,13 @@
 	import { app, confirmPendingAction, rejectPendingAction } from '$lib/stores/app.svelte';
 	import { chatMessage } from '$lib/api/commands';
 	import { renderMarkdown } from '$lib/utils/markdown';
+	import QuarantinedLogWindow from './QuarantinedLogWindow.svelte';
 	import { trackChatAnnouncements } from '$lib/utils/chatAnnouncer.svelte';
 
 	let inputValue = $state('');
 	let messagesEl: HTMLDivElement | undefined = $state();
+	/** C-LOG DG3: the window of what remains readable, opened from the control below a message. */
+	let showReadableLog = $state(false);
 	let copiedIdx = $state<number | null>(null);
 
 	let messages = $derived(recentMessages());
@@ -138,8 +141,14 @@
 					{:else}
 						<span class="text">{msg.text}</span>
 					{/if}
+					{#if msg.offersReadableLog}
+						<button class="readable-log-btn" onclick={() => (showReadableLog = true)}>Show what remains readable</button>
+					{/if}
 				</div>
 			{/each}
+			{#if showReadableLog}
+				<QuarantinedLogWindow onclose={() => (showReadableLog = false)} />
+			{/if}
 
 			{#if app.pendingAction}
 				<div class="quick-reply">
@@ -433,5 +442,15 @@
 			width: auto;
 			max-height: 60vh;
 		}
+	}
+	.readable-log-btn {
+		margin-top: 4px;
+		padding: 3px 8px;
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: var(--text-secondary);
+		font-size: 0.75rem;
+		cursor: pointer;
 	}
 </style>

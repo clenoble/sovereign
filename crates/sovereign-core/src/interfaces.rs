@@ -63,10 +63,19 @@ pub enum OrchestratorEvent {
     /// with it until it is updated; other data still syncs (C-WIRE 12).
     /// `device_name` is empty when the device is not in the paired list.
     PeerNeedsUpdate { peer_id: String, device_name: String },
+    /// C-WIRE 12 from the other side: a paired device runs a newer version,
+    /// so **this** device is the one to update; documents are not exchanged
+    /// with it until then, other data still syncs. `device_name` is empty
+    /// when the device is not in the paired list.
+    ThisDeviceNeedsUpdate { peer_id: String, device_name: String },
     /// The alerts on changes from paired devices may have changed (one was
     /// raised by the background model verdict, C-WIRE 13): the UI re-reads
     /// them. Alerts raised during sync are re-read on sync completion.
     SyncAlertsChanged,
+    /// C-SUP SU1, SU2: the P2P node ended without the session asking for it;
+    /// the host says « Sync stopped ». Why it ended is logged by the host
+    /// before it sends this, and does not travel here.
+    SyncStopped,
     /// The one-time migration to document format v2 has completed in this
     /// persona's store (C-DOC adoption step 6, M2): the notice to show, once.
     /// `text` is `sovereign_docs::MigrationNotice::text()`; it names no
@@ -116,6 +125,12 @@ pub enum OrchestratorEvent {
     /// a chat turn always ends with an explicit outcome). Emitted once per chat turn,
     /// in place of `ActionExecuted`.
     ChatTurnEnded { outcome: ChatOutcome },
+    /// C-LOG (spec ch. 08, DG3): in a chat turn, the diagnosis tool found a quarantine of the
+    /// logged-in persona's log. Sent before that turn's `ChatTurnEnded`, never when the tool
+    /// answered that there is none; the host then offers « Show what remains readable » below the
+    /// assistant turn that ends next (the Fable maille, by delegation of Céline, 2026-11-18).
+    /// Named by C-LOG's implementer, declared by the host lot's test author.
+    QuarantinedLogDiagnosed,
 }
 
 /// What came of one action of the action path (v0.0.12 item 11, B1-B4): the

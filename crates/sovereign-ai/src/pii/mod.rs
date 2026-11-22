@@ -14,11 +14,21 @@
 
 pub mod commit;
 pub mod entity_disambig;
+pub mod finding_id;
 pub mod ingest;
 pub mod ner;
 pub mod pipeline;
+pub mod read_mask;
 pub mod regex;
 pub mod resolve;
+pub mod review;
+pub mod signal;
+pub mod sweep;
+
+// C-SWEEP (lot LS(a)): written before the code by its test author.
+#[cfg(test)]
+#[path = "c_sweep_tests.rs"]
+mod c_sweep_tests;
 
 pub use sovereign_db::schema::PiiKind;
 pub use sovereign_skills::skills::pii_detector::Locale;

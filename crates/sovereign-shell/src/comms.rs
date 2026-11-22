@@ -12,6 +12,7 @@ use sovereign_comms::channel::{CommunicationChannel, OutgoingMessage, SyncResult
 use sovereign_comms::channels::email::EmailChannel;
 use sovereign_comms::config::{CommsConfig, EmailAccountConfig};
 use sovereign_comms::error::CommsError;
+use sovereign_core::auth::PersonaKind as CorePersona;
 use sovereign_crypto::account_key::AccountKey;
 use sovereign_crypto::vault::EncryptedBlob;
 use sovereign_db::schema::{PiiKind, PiiRecord, ReviewState};
@@ -33,14 +34,31 @@ pub(crate) const EMAIL_PW_LABEL: &str = "Email account password";
 /// engine + tests building and makes the v0.0.10 re-enable a one-line change.
 pub(crate) const EMAIL_ENABLED: bool = false;
 
-/// Path to the comms config file (host/port/username; never the password).
+/// Path to the primary's comms config file (host/port/username; never the
+/// password), as before v0.0.13.
 fn comms_config_path() -> std::path::PathBuf {
     sovereign_core::sovereign_dir().join("comms.toml")
 }
 
-/// Load the saved email account config (host/port/username), if any.
-pub(crate) fn load_email_config() -> Option<EmailAccountConfig> {
-    let text = std::fs::read_to_string(comms_config_path()).ok()?;
+/// Path to `persona`'s comms config file (C-AREA AR2: « comms.toml: into the
+/// area », it holds the mail address): the primary's is [`comms_config_path`],
+/// so an existing one is the primary's; the duress persona's is in its
+/// identity directory. No persona (before any login), no file (v2.0.87).
+fn comms_config_path_of(persona: Option<CorePersona>) -> Option<std::path::PathBuf> {
+    match persona {
+        Some(CorePersona::Duress) => Some(
+            sovereign_core::auth::identity_profile_dir(&sovereign_core::sovereign_dir(), CorePersona::Duress)
+                .join("comms.toml"),
+        ),
+        Some(CorePersona::Primary) => Some(comms_config_path()),
+        None => None,
+    }
+}
+
+/// Load `persona`'s saved email account config (host/port/username), if any;
+/// none before any login.
+pub(crate) fn load_email_config(persona: Option<CorePersona>) -> Option<EmailAccountConfig> {
+    let text = std::fs::read_to_string(comms_config_path_of(persona)?).ok()?;
     let cfg: CommsConfig = toml::from_str(&text).ok()?;
     cfg.email
 }
@@ -48,17 +66,19 @@ pub(crate) fn load_email_config() -> Option<EmailAccountConfig> {
 /// Persist the email account config to `comms.toml` (merging into any existing
 /// CommsConfig so Signal/WhatsApp settings aren't clobbered). Never writes the
 /// password.
-pub(crate) fn save_email_config(email: &EmailAccountConfig) -> Result<(), String> {
-    let dir = sovereign_core::sovereign_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let mut cfg: CommsConfig = std::fs::read_to_string(comms_config_path())
+pub(crate) fn save_email_config(persona: Option<CorePersona>, email: &EmailAccountConfig) -> Result<(), String> {
+    let path = comms_config_path_of(persona).ok_or_else(|| "the workspace is locked: log in to save the mail settings".to_string())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let mut cfg: CommsConfig = std::fs::read_to_string(&path)
         .ok()
         .and_then(|t| toml::from_str(&t).ok())
         .unwrap_or_default();
     cfg.enabled = true;
     cfg.email = Some(email.clone());
     let serialized = toml::to_string(&cfg).map_err(|e| e.to_string())?;
-    std::fs::write(comms_config_path(), serialized).map_err(|e| e.to_string())
+    std::fs::write(&path, serialized).map_err(|e| e.to_string())
 }
 
 /// One-shot email sync: connect IMAP + fetch new mail into the DB. Returns the
@@ -107,10 +127,11 @@ pub(crate) async fn store_email_password(
         stored_secret: true,
         confidence: 1.0,
         sources: Vec::new(),
-        discovered_at: chrono::Utc::now(),
+        discovered_at: sovereign_core::clock::now(),
         last_revealed_at: None,
         use_count: 0,
         review_state: ReviewState::Confirmed,
+        review_stamp: None,
         deleted_at: None,
     };
     db.create_pii_record(rec).await.map(|_| ()).map_err(|e| e.to_string())

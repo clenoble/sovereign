@@ -14,7 +14,7 @@
 use super::*;
 
 /// One open alert.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct SyncAlertDto {
     pub doc_id: String,
     /// The document's title as shown (personal data as labels).
@@ -61,12 +61,24 @@ pub(crate) async fn device_names(state: &AppState) -> std::collections::HashMap<
     std::collections::HashMap::new()
 }
 
-/// The open alerts, newest first.
-#[tauri::command]
-pub async fn list_sync_alerts(webview: tauri::Webview, state: State<'_, AppState>) -> Result<Vec<SyncAlertDto>, String> {
-    state.require_unlocked(&webview).await?;
-    let docs = state.docs().await?;
-    let names = device_names(&state).await;
+/// The open alerts as `list_sync_alerts` returns them: the list, or, when it
+/// could not be read, the sentence said in its place (spec ch. 03, *What
+/// cannot be read is never shown as empty*).
+#[derive(Debug, Serialize)]
+pub struct SyncAlertsDto {
+    /// Newest first; empty when they could not be read.
+    pub alerts: Vec<SyncAlertDto>,
+    /// `sovereign_docs::COULD_NOT_CHECK_ALERTS` when the alerts could not be
+    /// read; `None` when they were.
+    pub could_not_check: Option<String>,
+}
+
+/// The open alerts of `docs`, newest first, each with its device's name from
+/// `names` (peer id -> name).
+pub async fn list_sync_alerts_of(
+    docs: &sovereign_docs::DocumentService,
+    names: &std::collections::HashMap<String, String>,
+) -> Result<Vec<SyncAlertDto>, String> {
     let alerts = docs.alerts().await.map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?;
     let mut out = Vec::with_capacity(alerts.len());
     for a in alerts {
@@ -84,6 +96,34 @@ pub async fn list_sync_alerts(webview: tauri::Webview, state: State<'_, AppState
         });
     }
     Ok(out)
+}
+
+/// What `list_sync_alerts` returns once the caller is checked: `docs` is the
+/// session's document service, or why there is none (`AppState::docs`). No
+/// service is a refusal (`Err`), never a "could not check": the frontend
+/// reads a refusal as nothing to show.
+pub async fn sync_alerts_listing(
+    docs: Result<std::sync::Arc<sovereign_docs::DocumentService>, String>,
+    names: &std::collections::HashMap<String, String>,
+) -> Result<SyncAlertsDto, String> {
+    let docs = docs?;
+    // Spec ch. 03, *What cannot be read is never shown as empty*: with a
+    // session, a failure is the alerts' read, said in their place.
+    Ok(match list_sync_alerts_of(&docs, names).await {
+        Ok(alerts) => SyncAlertsDto { alerts, could_not_check: None },
+        Err(e) => {
+            tracing::warn!("the alerts could not be read: {e}");
+            SyncAlertsDto { alerts: Vec::new(), could_not_check: Some(sovereign_docs::COULD_NOT_CHECK_ALERTS.into()) }
+        }
+    })
+}
+
+/// The open alerts, newest first.
+#[tauri::command]
+pub async fn list_sync_alerts(webview: tauri::Webview, state: State<'_, AppState>) -> Result<SyncAlertsDto, String> {
+    state.require_unlocked(&webview).await?;
+    let names = device_names(&state).await;
+    sync_alerts_listing(state.docs().await, &names).await
 }
 
 /// Dismisses a document's alert; changes nothing in the document.
@@ -149,21 +189,23 @@ pub async fn list_previous_values(
 }
 
 /// Puts a previous value back (through the P2P node, which holds the key
-/// that unseals it), then removes it from the list.
+/// that unseals it). `None` when it is back, and it left the list; otherwise
+/// the notice the list shows on its entry, which stays (spec ch. 05, *A restore
+/// that fails is said*): « Not restored: {what} — {why} », and nothing changed;
+/// or, when the node took it but has not answered yet, « No answer from sync
+/// yet for {what}. It may still be restored. »
 #[tauri::command]
 pub async fn restore_previous_value(
     webview: tauri::Webview,
     state: State<'_, AppState>,
     id: String,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     state.require_unlocked(&webview).await?;
     #[cfg(feature = "p2p")]
     {
-        let tx = state.p2p_command_tx().await.ok_or_else(|| "Sync is not running.".to_string())?;
-        tx.send(sovereign_p2p::node::P2pCommand::RestoreRowRecovery { recovery_id: id })
-            .await
-            .map_err(|e| format!("The restore could not be started: {e}"))?;
-        Ok(())
+        let tx = state.p2p_command_tx().await;
+        let outcome = sovereign_p2p::node::restore_previous_value(tx.as_ref(), state.db.as_ref(), &id).await;
+        Ok(outcome.notice())
     }
     #[cfg(not(feature = "p2p"))]
     {

@@ -27,10 +27,80 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use sovereign_core::interfaces::OrchestratorEvent;
 use sovereign_p2p::pairing::PairingManager;
+use sovereign_p2p::supervision::{NodeEnd, NodeSupervisor};
 use sovereign_p2p::{ConnectivityState, P2pCommand, P2pConfig, P2pEvent, SovereignNode, SyncService};
 use tokio::sync::mpsc;
 
 use crate::tauri_state::AppState;
+
+/// C-SUP: the running node's supervisor (SU1). Process-wide, like
+/// `P2P_WITHOUT_DNS`: a new `AppState` field would break the full `AppState`
+/// literal of `lot1_onboarding_tests.rs`, and there is one `AppState` per
+/// process.
+static NODE_SUPERVISOR: std::sync::Mutex<Option<NodeSupervisor>> = std::sync::Mutex::new(None);
+
+/// C-SUP SU5: how long an asked end waits for the node to end on Shutdown
+/// before it aborts it. The node handles Shutdown between two handlers, and a
+/// handler is short (milliseconds; a sync round's apply of one state), so ten
+/// seconds is far beyond a node that works: an abort, which could cut a
+/// handler between two writes, only meets a node that is stuck.
+const NODE_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// C-SUP: the profiles whose node ended without the session asking for it,
+/// and has not started since (the app's « Sync stopped »).
+///
+/// Kept per profile folder, not as one flag for the process: an `AppState`
+/// over another profile starts with nothing stopped. One process holds one
+/// `AppState` in the app, but the tests build several in one binary, and a
+/// single flag let one test's stop reach the next one's fresh state. A field
+/// of `AppState` would be simpler; the tests build `AppState` field by field,
+/// so that waits for their constructor, as `SESSION_PERSONA` does (BACKLOG
+/// §16).
+static SYNC_STOPPED: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn set_sync_stopped(profile: &std::path::Path, stopped: bool) {
+    let mut list = SYNC_STOPPED.lock().unwrap_or_else(|e| e.into_inner());
+    list.retain(|p| p != profile);
+    if stopped {
+        list.push(profile.to_path_buf());
+    }
+}
+
+/// C-SUP SU2 (DEL-0018): the stop's text. A command that needs the node
+/// answers with it while sync is stopped (DEL-0019), so the screens show the
+/// stop's notice and its gesture « Restart sync ».
+pub const SYNC_STOPPED_TEXT: &str = "Sync stopped unexpectedly. Nothing syncs until you restart it.";
+
+/// Whether sync has stopped for `profile`: its node ended without the session
+/// asking for it, and has not been started again.
+pub fn sync_stopped(profile: &std::path::Path) -> bool {
+    SYNC_STOPPED.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|p| p == profile)
+}
+
+/// A failed restart leaves the stopped state as it was (DEL-0019).
+pub fn keep_sync_stopped(profile: &std::path::Path) {
+    set_sync_stopped(profile, true);
+}
+
+/// The node ended without the session asking for it: why goes to the log,
+/// the state knows sync stopped (`AppState::node_refusal`), and the screens
+/// get `sync-stopped` (through `tauri_events`). The body of
+/// `AppState::on_sync_stopped`, and what the supervisor's `on_stop` runs: the
+/// closure holds the event channel and the profile folder, not the `AppState`.
+pub(crate) fn node_stopped(
+    orch_tx: &std::sync::mpsc::Sender<OrchestratorEvent>,
+    profile: &std::path::Path,
+    end: NodeEnd,
+) {
+    match end {
+        NodeEnd::Returned => tracing::warn!("P2P node ended unexpectedly: its task returned"),
+        NodeEnd::Failed(reason) => tracing::warn!("P2P node ended unexpectedly: its task failed: {reason}"),
+        // A panic's message can quote document text: not to the log.
+        NodeEnd::Panicked(_) => tracing::warn!("P2P node ended unexpectedly: its task panicked (message withheld)"),
+    }
+    set_sync_stopped(profile, true);
+    let _ = orch_tx.send(OrchestratorEvent::SyncStopped);
+}
 
 /// Build a `sovereign_p2p::P2pConfig` from the app config struct. The
 /// two have identical fields but live in different crates to keep
@@ -67,7 +137,15 @@ const EVENT_BUFFER: usize = 256;
 
 /// Bring up the P2P node, the event translator, and load the paired
 /// devices list. Idempotent — returns early if already started.
+///
+/// **Never in a duress session** (C-AREA AR4, Céline 2026-11-13: « Aucun
+/// moteur »): no node starts, nothing is announced, nothing can pair, and
+/// nothing of the node's is written (`crypto/device_id`, the paired list,
+/// the version store).
 pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
+    if state.is_duress_session() {
+        return Ok(());
+    }
     // Idempotency: if a command sender is already installed, the node
     // is running.
     if state.p2p_command_tx().await.is_some() {
@@ -114,22 +192,17 @@ pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
     // keys (P1.4) are available from the first sync. The store is
     // encrypted under a DeviceKey-derived key; a legacy plaintext file
     // (pre-P1.4, carried no key material) loads transparently and is
-    // re-saved encrypted below. Any other load failure resets the list
-    // (Risk 7 in the v0.0.5 plan).
+    // re-saved encrypted below. A list that cannot be read is kept as it is
+    // and never replaced (C-AREA AR3; ch. 03, *What cannot be read is never
+    // shown as empty*): the manager lists nothing, refuses to save, and
+    // `list_paired_devices` reports the failure.
     let store_key = sovereign_p2p::pairing::derive_store_key(&p2p_identity_key);
     let paired_path = crate::setup::crypto_dir().join("paired_devices.json");
-    let mut manager = if paired_path.exists() {
-        PairingManager::load(&paired_path, &store_key).unwrap_or_else(|e| {
-            tracing::warn!("paired_devices.json invalid ({e}); starting fresh");
-            PairingManager::new(paired_path.clone())
-        })
-    } else {
-        PairingManager::new(paired_path.clone())
-    };
+    let mut manager = PairingManager::load_or_keep(&paired_path, &store_key);
     // P1.4: populate any missing per-pair keys (deterministic derivation
     // from the shared AccountKey — both ends derive the same key), then
     // persist, which also migrates a legacy plaintext file to the
-    // encrypted shape.
+    // encrypted shape. (An unreadable list holds no device: nothing to do.)
     if manager.ensure_pair_keys(&account_key, &local_peer_id) {
         if let Err(e) = manager.save(&store_key) {
             tracing::warn!("failed to persist pair keys: {e}");
@@ -156,6 +229,8 @@ pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
     )
     .with_analysis(Arc::new(sovereign_ai::peer_audit::PeerChangeAnalysis::deterministic()));
     let docs = state.docs.read().await.clone();
+    // C-SWEEP SW1: the translator sweeps after a sync round.
+    let sweep_docs = docs.clone();
     match docs.clone() {
         Some(docs) => sync_service = sync_service.with_documents(docs),
         None => tracing::warn!("no document service: documents will not sync (rows only)"),
@@ -221,11 +296,26 @@ pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
         tracing::info!("P2P node runs without DNS: local network and addresses given by IP only");
     }
 
-    // Spawn the swarm event loop.
-    tauri::async_runtime::spawn(async move {
-        node.run().await;
-        tracing::info!("P2P node event loop exited");
-    });
+    // The swarm event loop, under its supervisor (C-SUP SU1). An end the
+    // session did not ask for is logged and reaches the screens as the
+    // `sync-stopped` event (SU2, through `tauri_events`); nothing restarts the
+    // node (SU3). An asked end goes through `stop_p2p_node` (SU5).
+    let stop_tx = state.orch_tx.clone();
+    let stop_profile = state.profile_dir.clone();
+    let supervisor = NodeSupervisor::spawn(
+        &tokio::runtime::Handle::current(),
+        async move {
+            node.run().await;
+            Ok(())
+        },
+        move |end| node_stopped(&stop_tx, &stop_profile, end),
+    )
+    .with_stop_grace(NODE_STOP_GRACE);
+    set_sync_stopped(&state.profile_dir, false);
+    let previous = NODE_SUPERVISOR.lock().unwrap_or_else(|e| e.into_inner()).replace(supervisor);
+    if let Some(previous) = previous {
+        previous.stop().await;
+    }
 
     // Spawn the event translator: P2pEvent → (auto-trigger StartSync,
     // persist P3.1 pairing completions, collect listen addrs, forward as
@@ -242,6 +332,8 @@ pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
         account_key: account_key.clone(),
         store_key,
         local_peer_id: local_peer_id.clone(),
+        sweep_docs,
+        same_name: state.same_name.clone(),
     };
     tauri::async_runtime::spawn(async move {
         spawn_event_translator(event_rx, ctx).await;
@@ -271,6 +363,38 @@ pub async fn start_p2p_node(state: &AppState) -> Result<(), String> {
     *state.pairing_manager.write().await = Some(manager);
 
     Ok(())
+}
+
+/// Stops the running P2P node, if one runs, and forgets everything it
+/// served (C-AREA AR4: « A switch ends everything the previous session
+/// started »): the node ends through its supervisor, as an end the session
+/// asked for, so nothing is said (C-SUP SU5); its command channel is dropped,
+/// and the paired list, the armed pairing, the listen addresses and the
+/// backup host leave the state. A stopped sync is no longer said either: the
+/// next session starts from nothing. Nothing is written.
+pub async fn stop_p2p_node(state: &AppState) {
+    // The asked end is recorded first (`stop`), then the node gets Shutdown,
+    // which it handles between two handlers; it is aborted only if it has not
+    // ended within `NODE_STOP_GRACE`.
+    let supervisor = NODE_SUPERVISOR.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let stopping = supervisor.map(|s| s.stop());
+    if let Some(tx) = state.p2p_command_tx.write().await.take() {
+        let _ = tx.send(P2pCommand::Shutdown).await;
+    }
+    if let Some(stopping) = stopping {
+        stopping.await;
+    }
+    set_sync_stopped(&state.profile_dir, false);
+    *state.pairing_manager.write().await = None;
+    // A question about a device paired again belongs to the session that
+    // paired it: unanswered, it keeps both (PR2), and the next session does
+    // not ask it.
+    *state.same_name.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *state.backup_host.write().await = None;
+    if let Ok(mut addrs) = state.p2p_listen_addrs.write() {
+        addrs.clear();
+    }
+    state.set_p2p_without_dns(false);
 }
 
 /// Re-push the current paired-peer allow-list AND per-pair sealing keys
@@ -308,6 +432,40 @@ pub async fn refresh_paired_peers(state: &AppState) {
         .await;
 }
 
+/// For tests: spawns this host's event translator, as `start_p2p_node` does,
+/// over `state`'s paired-device store, its `orch_tx` and its account key, with
+/// the store key derived from its p2p identity key as at start, `local_peer_id`
+/// as this device's peer id, and node commands sent to `command_tx`. Returns
+/// the sender a test feeds the node's events into (no node, no socket). For
+/// the C3 tests, by their author.
+#[cfg(test)]
+pub(crate) async fn translate_events_for_test(
+    state: &AppState,
+    local_peer_id: &str,
+    command_tx: mpsc::Sender<P2pCommand>,
+) -> mpsc::Sender<P2pEvent> {
+    let account_key = state.account_key().await.expect("the test state holds an account key");
+    let identity_key = state.p2p_identity_key().await.expect("the test state holds a p2p identity key");
+    let ctx = TranslatorCtx {
+        command_tx,
+        orch_tx: state.orch_tx.clone(),
+        connectivity: state.connectivity.clone(),
+        wifi_only: state.config.p2p.wifi_only,
+        pairing_manager: state.pairing_manager.clone(),
+        listen_addrs: state.p2p_listen_addrs.clone(),
+        account_key,
+        store_key: sovereign_p2p::pairing::derive_store_key(&identity_key),
+        local_peer_id: local_peer_id.to_string(),
+        sweep_docs: state.docs.read().await.clone(),
+        same_name: state.same_name.clone(),
+    };
+    let (event_tx, event_rx) = mpsc::channel::<P2pEvent>(EVENT_BUFFER);
+    tauri::async_runtime::spawn(async move {
+        spawn_event_translator(event_rx, ctx).await;
+    });
+    event_tx
+}
+
 /// Everything the event translator needs to act on P2P events without
 /// touching `AppState` (which it can't hold across the spawn).
 struct TranslatorCtx {
@@ -321,6 +479,31 @@ struct TranslatorCtx {
     account_key: Arc<sovereign_crypto::account_key::AccountKey>,
     store_key: [u8; 32],
     local_peer_id: String,
+    /// C-SWEEP SW1: the session's document service, which the personal-data
+    /// sweep runs over after a sync round.
+    sweep_docs: Option<Arc<sovereign_docs::DocumentService>>,
+    /// PR2 (spec ch. 05): the question about a device paired again, shared
+    /// with `AppState::same_name`, set here before the pairing is reported.
+    same_name: Arc<std::sync::Mutex<Option<crate::tauri_commands::pairing::SameNameQuestionDto>>>,
+}
+
+/// C-SWEEP SW1 (spec ch. 09): the bounded batch of one pass of the
+/// personal-data sweep on the phone.
+pub(crate) const SWEEP_BATCH: usize = 25;
+
+/// C-SWEEP SW1: passes of the shared routine (SW9) until none is left; a pass
+/// that analyses nothing ends it (what failed is tried again later). Run after
+/// a login and after a sync round, inside a task of the session (on the phone,
+/// only while the app is open: the process runs then).
+pub(crate) async fn sweep_until_done(docs: &sovereign_docs::DocumentService) -> usize {
+    let mut analysed = 0;
+    loop {
+        let report = sovereign_ai::pii::sweep::run_sweep_pass(docs, SWEEP_BATCH).await;
+        analysed += report.analysed.len();
+        if !report.remaining || report.analysed.is_empty() {
+            return analysed;
+        }
+    }
 }
 
 /// Translate `P2pEvent`s into `OrchestratorEvent`s for the UI bridge,
@@ -374,10 +557,17 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
             P2pEvent::SyncCompleted {
                 peer_id,
                 docs_synced,
-            } => Some(OrchestratorEvent::SyncStatus {
-                peer_id,
-                status: format!("completed ({docs_synced} items)"),
-            }),
+            } => {
+                // C-SWEEP SW1: the round may have brought content no device
+                // analysed: the sweep runs before the round is reported.
+                if let Some(docs) = &ctx.sweep_docs {
+                    sweep_until_done(docs).await;
+                }
+                Some(OrchestratorEvent::SyncStatus {
+                    peer_id,
+                    status: format!("completed ({docs_synced} items)"),
+                })
+            }
             P2pEvent::SyncConflict {
                 doc_id,
                 description,
@@ -387,6 +577,18 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
                 // this session (allow-list + pair key); persist it so it
                 // survives restarts, then re-push the full lists.
                 persist_paired_device(&ctx, &peer_id, &device_name).await;
+                // PR2: when paired devices other than it hold that name, the
+                // question « is it that device, set up again? » is held before
+                // the pairing is reported, so the screens find it when they
+                // hear `device-paired`. Nothing is removed here: both records
+                // stay until she answers. Each pairing sets the question anew:
+                // one left unanswered from an earlier pairing is dropped, which
+                // keeps both, as no answer does.
+                let question = match ctx.pairing_manager.read().await.as_ref() {
+                    Some(m) => crate::tauri_commands::pairing::same_name_question_for(m, &peer_id, &device_name),
+                    None => None,
+                };
+                *ctx.same_name.lock().unwrap_or_else(|e| e.into_inner()) = question;
                 Some(OrchestratorEvent::DevicePaired {
                     device_id: peer_id,
                     device_name,
@@ -411,6 +613,20 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
                     None => String::new(),
                 };
                 Some(OrchestratorEvent::PeerNeedsUpdate { peer_id, device_name })
+            }
+            P2pEvent::ThisDeviceNeedsUpdate { peer_id } => {
+                // C-WIRE 12 from the other side: the peer runs a newer build;
+                // this device is the one to update. The notice names the peer.
+                let device_name = match ctx.pairing_manager.read().await.as_ref() {
+                    Some(m) => m
+                        .list_devices()
+                        .into_iter()
+                        .find(|d| d.peer_id == peer_id)
+                        .map(|d| d.device_name.clone())
+                        .unwrap_or_default(),
+                    None => String::new(),
+                };
+                Some(OrchestratorEvent::ThisDeviceNeedsUpdate { peer_id, device_name })
             }
             P2pEvent::ListenAddr { address } => {
                 let mut addrs = ctx
@@ -450,7 +666,7 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
                         shard_id,
                         guardian_peer_id,
                         guardian_label,
-                        enrolled_at: chrono::Utc::now().to_rfc3339(),
+                        enrolled_at: sovereign_core::clock::now().to_rfc3339(),
                     },
                 ) {
                     tracing::warn!("failed to queue guardian enrollment: {e}");

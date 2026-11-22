@@ -104,6 +104,8 @@ fn g17_debug_of_types_holding_text_never_prints_the_text() {
             sovereign_docs::IngestItem { field: sovereign_docs::TextField::Title, text: SECRET_TEXT.into() },
             sovereign_docs::IngestItem { field: sovereign_docs::TextField::Text(bid(1)), text: SECRET_TEXT.into() },
         ],
+        origin: None,
+        version: None,
     };
     let out = sovereign_docs::IngestedItem { field: sovereign_docs::TextField::Alt(bid(2)), text: SECRET_TEXT.into() };
     for printed in [

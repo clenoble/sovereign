@@ -613,6 +613,20 @@ pub trait GraphDB: Send + Sync {
         review_state: ReviewState,
     ) -> DbResult<()>;
 
+    /// C-SWEEP SW5 (spec ch. 09): sets a record's `review_state` and its
+    /// `review_stamp` in one statement: her review's gesture, or a review
+    /// received by sync. The default refuses, so test stubs keep compiling;
+    /// the real backends implement it.
+    async fn update_pii_record_review(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+        review_stamp: Option<&str>,
+    ) -> DbResult<()> {
+        let _ = (id, review_state, review_stamp);
+        Err(DbError::Query("update_pii_record_review: not supported by this store".into()))
+    }
+
     /// Replace a PiiRecord's encrypted value + nonce in place. Used by
     /// the v0.0.4 → v0.0.5 migration to re-encrypt vault entries from
     /// the per-device DeviceKey to the user-scoped AccountKey, and by
@@ -818,6 +832,33 @@ pub trait GraphDB: Send + Sync {
     }
     async fn list_threads_including_deleted(&self) -> DbResult<Vec<Thread>> {
         self.list_threads().await
+    }
+
+    // FC3 (spec ch. 03; v0.0.13, item 9): the remembered answers to « which
+    // one? », in table `thread_choice`. Signatures named by item 9's
+    // implementer (2026-11-18), declared by the test author; the bodies are
+    // the implementer's (these defaults are not an implementation).
+
+    /// Keeps `choice`, replacing any earlier one for that name.
+    async fn remember_thread_choice(&self, choice: &crate::schema::ThreadChoice) -> DbResult<()> {
+        let _ = choice;
+        unimplemented!("GraphDB::remember_thread_choice")
+    }
+    /// The choice kept for `name` (any case and surrounding spaces), if any.
+    async fn thread_choice(&self, name: &str) -> DbResult<Option<crate::schema::ThreadChoice>> {
+        let _ = name;
+        unimplemented!("GraphDB::thread_choice")
+    }
+    /// Forgets the choice kept for `name`, if any.
+    async fn forget_thread_choice(&self, name: &str) -> DbResult<()> {
+        let _ = name;
+        unimplemented!("GraphDB::forget_thread_choice")
+    }
+    /// For tests of FC3: the rows of table `thread_choice` as stored. On the
+    /// plain store, what was written; through the encrypted layer it need not
+    /// be implemented.
+    async fn list_thread_choices_raw(&self) -> DbResult<Vec<serde_json::Value>> {
+        unimplemented!("GraphDB::list_thread_choices_raw")
     }
     async fn list_entities_including_deleted(&self) -> DbResult<Vec<Entity>> {
         self.list_entities().await

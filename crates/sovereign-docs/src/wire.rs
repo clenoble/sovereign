@@ -383,6 +383,9 @@ impl DocumentService {
         if rstamp.wall_ms > bound || meta.decision_stamp.as_ref().is_some_and(|ds| ds.wall_ms > bound) {
             return Ok(WireOutcome::of(WireApplied::RefusedStampAhead));
         }
+        // C-MEDIA: no received state is applied before the media migration
+        // pass has run on this store.
+        self.ensure_media_pass().await?;
         let _w = self.write_lock.lock().await;
         if sovereign_db::schema::raw_to_thing(&id).is_none() {
             return Err(DocError::NotFound(id));
@@ -472,7 +475,15 @@ impl DocumentService {
     /// and remembers its stamp (so it is never stored twice).
     async fn keep_as_version(&self, d: &Document, remote: &RemoteDocument, stamp: &Stamp, author: &str) -> Result<(), DocError> {
         let id = remote.id.clone();
-        let content = normalized_content(&id, &remote.content);
+        // C-MEDIA: a received state kept as a version has its outside paths
+        // neutralised too, before anything (History, a restore) can see them.
+        let content = match DocumentV2::read_seeded(&remote.content, &id) {
+            Ok((mut doc, form)) if !matches!(form, SourceForm::NewerVersion { .. }) => {
+                self.media_on_write(&mut doc, crate::service::MediaRule::NeutraliseAll);
+                doc.to_json_string()
+            }
+            _ => remote.content.clone(),
+        };
         let head = d.head_commit.clone();
         let after = match &head {
             Some(h) => self.store().get_commit(h).await.ok().map(|c| c.timestamp),
@@ -500,6 +511,8 @@ impl DocumentService {
         if stamp.wall_ms > self.device_clock_ms() + MAX_STAMP_AHEAD_SECS * 1000 {
             return Ok(WireOutcome::of(WireApplied::RefusedStampAhead));
         }
+        // C-MEDIA: a received version, too, waits for the media pass.
+        self.ensure_media_pass().await?;
         let _w = self.write_lock.lock().await;
         if self.marker(&remote.id).await?.is_some() {
             return Ok(WireOutcome::of(WireApplied::Ignored));
@@ -682,6 +695,9 @@ impl DocumentService {
         documents: Vec<BackupDocument>,
         markers: Vec<PurgeMarkerWire>,
     ) -> Result<BackupReport, BackupError> {
+        // C-MEDIA: a restored backup is a received state: it waits for the
+        // media pass (over a workspace that must be empty, it finds nothing).
+        self.ensure_media_pass().await.map_err(BackupError::Doc)?;
         let _w = self.write_lock.lock().await;
         let held = self.store().list_documents_including_deleted().await.map_err(|e| BackupError::Doc(store_err(e)))?;
         if !held.is_empty() {
@@ -914,7 +930,7 @@ pub fn analysis_text(title: &str, doc: Option<&DocumentV2>) -> String {
     for b in doc.blocks() {
         let extra = if b.text().is_some() {
             None
-        } else if b.media_path().is_none() {
+        } else if !b.is_media() {
             Some(b.to_json_string())
         } else {
             let parts: Vec<&str> = [b.caption(), b.image_alt()].into_iter().flatten().filter(|s| !s.is_empty()).collect();

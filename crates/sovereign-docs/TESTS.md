@@ -139,6 +139,35 @@ The tests of C-DOC adoption step 5 (S5-1 to S5-7, S5-9's Tauri commands), across
 `sovereign-docs`, `sovereign-shell` and `sovereign-app`, are listed in `TESTS-step5.md`, with
 what each fails on before step 5 is built.
 
+## Added 2026-11-13: C-MEDIA (lot L1b, v0.0.13) — ME1–ME4 and the media store
+
+Spec ch. 03, *Received content is hostile — contract (C-MEDIA)*. Written before the code, by
+another author; the types and signatures the tests need are in `src/media.rs` and
+`MediaFiles::copy_into_store`, `first_bytes`, `copy_into_store_checked` and `store_name_for`,
+`is_medium`, `MediaMark`, `MEDIUM_SNIFF_BYTES`, `SVG_SNIFF_BYTES`, `NeutralisedMedium`,
+`NeutralisedReason` (`NoRecordedHash` in place of `WrittenElsewhere`, v2.0.86), `MediaError::Absent`,
+`SyncService::note_peer_manifest`, `node::process_request` made public, `wire_version` on `GetCommits` and `PushCommits`, `SovereignRequest::{get_commits, push_commits, carries_documents}`, `P2pEvent::ThisDeviceNeedsUpdate` (sovereign-p2p), `MediaPassRun` with `notice` and `run_media_pass_at_unlock`, `sovereign_ai::docs_host::build_document_service_in_area`,
+and `DocumentService::migrate_media_into_store`, `media_presence` and `neutralised_media`
+(`unimplemented!()` bodies, the implementer's to fill).
+
+| Guarantee | File | Tests |
+|---|---|---|
+| ME1, received state (sync, backup, Sovereign import); a received owned document is neutralised on apply, then saved by its owner (v2.0.80); a received state kept as a version (C-WIRE 7) never kept with an outside path, and its restore reads none (v2.0.85) | `me1_received_path_never_opened.rs` | 7 |
+| ME1 over real files, shipped `FileMedia` | `crates/sovereign-ai/tests/me1_real_files.rs` | 2 |
+| The record encrypted at rest: a marker in a former path, no file under the profile holds it in clear (v2.0.85; a store on disk, SurrealKV) | `crates/sovereign-ai/tests/media_record_encrypted_at_rest.rs` | 1 |
+| ME2, lexical refusals, resolution inside the store, links and junctions | `me2_resolved_inside_the_store.rs` | 10 (8 on non-Windows) |
+| ME3, streamed and bounded, `MEDIA_SIZE_CAP` | `me3_streamed_and_bounded.rs` | 5 |
+| ME4, `create`, `save_locked`, `restore_version`, `convert_one`, `duplicate`; the two hostile sources | `me4_every_caller.rs` | 6 |
+| The media store (v2.0.81 final): insertion copies (no mark), the original is not read again; the migration pass (first bytes first, copy on a hash match and mark « copied by the migration », neutralise the rest, nothing read for a document last written elsewhere); the spec's three tests (round trip, legacy path last written elsewhere, residual last written here); a non-medium never copied, in the pass (first bytes only) or at insertion; the record of what the pass neutralises (v2.0.84), all seven reasons (v2.0.85: too large, unreadable), no path opened from it, never leaving the device; no received state applied before the pass; an XML file named `.svg` never copied; an old version written here, restored, follows the pass's rule (copy and mark, or neutralise and record; v2.0.86); the notice after the pass (counts, the record said, no path, no title; v2.0.86); v2.0.86 « copier partout »: the guarded copy whichever device wrote last (legacy path, restores), « no recorded hash », the life of a document across two devices, a video's thumbnail copied or recorded | `media_store_copy.rs` | 19 |
+| C-WIRE 12 (v2.0.86): wire version 2; a peer on wire version 1 exchanges no document in either direction or starting order, rows still sync; its purge markers applied, a soft deletion inside its document state refused; from the other side, a peer on wire version 3: the same refusals, the plan says this device is older; v2.0.91 (the announcement withdrawn): the answering side judges by the version the document request carries, through the node's request handler: none or lower refused with an Error, higher refused and this device knows it is older, equal served and applied; v0.0.12's requests decode with no version; a device put back on v0.0.12 refused at once; the requests that carry documents named; this build's requests carry its version; C-MEDIA's record carried neither by row sync nor by backup | `crates/sovereign-p2p/tests/wire_version_2.rs` | 13 |
+| A medium must be a medium, by the list of formats (v2.0.84): one test per format (PNG, JPEG, GIF, WebP, BMP, TIFF, HEIC/HEIF, AVIF, SVG; MP4, MOV, WebM, AVI), SVG by its root element after a long prolog, an XML file of another root, a text beginning with « BM », the neighbours of listed formats, what is not a medium | `media_store_a_medium_is_a_medium.rs` | 18 |
+
+The C-DOC suite's `FakeMedia` records every path the service hands it, by either method. A read
+is observed by that record and by the hash a read would leave in the stored block; nothing depends
+on timing. **G18's first clause is replaced by C-MEDIA** (spec v2.0.79): its first and fourth
+tests now assert the new rule (`g18_a_save_takes_the_hash_of_the_stores_copy_never_of_the_path`,
+`g18_migration_hashes_nothing_outside_the_store_…`); its other clauses keep their tests.
+
 ## Guarantees → tests (154 tests up to G19; 183 with G20–G23)
 
 | G | Guarantee (ch. 03) | File | Tests | Also covered in |

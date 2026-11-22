@@ -38,8 +38,8 @@ pub use sovereign_db::traits::GraphDB;
 use sovereign_docs::{
     BlockId, Clock, CommitContext, CommitDecision, CommitPolicy, DefaultCommitPolicy, DocId,
     DocumentChanged, DocumentEvents, DocumentService, Edit, EditContent, EditSession,
-    IngestRequest, IngestedItem, MediaFiles, NewContent, NewDocument, Origin, PiiError,
-    PiiIngest, Provenance, Revision, ServiceDeps, TextField, Trust,
+    IngestRequest, IngestedItem, MediaError, MediaFiles, MediaMark, NewContent, NewDocument, Origin, PiiError,
+    PiiIngest, Provenance, Revision, ServiceDeps, StoredMedium, TextField, Trust,
 };
 
 /// The name of this device in every stack.
@@ -207,19 +207,187 @@ impl CommitPolicy for FakePolicy {
     }
 }
 
-/// Media files the test pretends exist: path → sha256 hex.
+/// Media files the test pretends this device holds: path → sha256 hex, and
+/// the file's first bytes. Whether a file is a medium is decided by the
+/// contract's own `is_medium` on those bytes, never by the fake. It records every path
+/// the service hands it (C-MEDIA: a received or hostile path must never reach
+/// it), how many first bytes the migration pass asked for, and copies into a
+/// pretend media store, with the mark the service asked for, which it can be
+/// asked about by hash.
 #[derive(Default)]
-pub struct FakeMedia(pub Mutex<HashMap<String, String>>);
+pub struct FakeMedia {
+    /// path → (sha256, the file's first bytes).
+    files: Mutex<HashMap<String, (String, Vec<u8>)>>,
+    /// Every path `sha256` was asked for, in order.
+    hashed: Mutex<Vec<String>>,
+    /// Every path `copy_into_store` (insertion) was asked for, in order.
+    copied: Mutex<Vec<String>>,
+    /// Every (path, max) `first_bytes` (the pass) was asked for, in order.
+    sniffed: Mutex<Vec<(String, usize)>>,
+    /// Every path `copy_into_store_checked` (the pass's full read) was asked
+    /// for, in order.
+    verified: Mutex<Vec<String>>,
+    /// The pretend store: (name, sha256, mark) of every medium copied in.
+    stored: Mutex<Vec<(String, String, Option<MediaMark>)>>,
+    /// Files above the cap (their first bytes read fine).
+    too_large: Mutex<Vec<String>>,
+    /// Files that are there but cannot be read.
+    unreadable: Mutex<Vec<String>>,
+}
+
+/// The store's name the fake gives the medium of hash `sha` (C-MEDIA tests).
+pub fn store_name(sha: &str) -> String {
+    format!("media-store-{sha}")
+}
+
+/// First bytes the fake serves: a PNG header for a medium, text for a file
+/// that is not one (a text file renamed `.png`).
+const PNG_HEAD: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x10\x00\x00\x00\x10\x08\x06\x00\x00\x00";
+const TEXT_HEAD: &[u8] = b"These are my notes, not a picture. They go on for a while, line after line.\n";
 
 impl FakeMedia {
+    /// A file that is an image (a PNG head).
     pub fn put(&self, path: &str, sha: &str) {
-        self.0.lock().unwrap().insert(path.into(), sha.into());
+        self.put_with_head(path, sha, PNG_HEAD);
+    }
+    /// A file whose first bytes say neither image nor video, whatever its
+    /// name (a text file renamed `.png`).
+    pub fn put_not_medium(&self, path: &str, sha: &str) {
+        self.put_with_head(path, sha, TEXT_HEAD);
+    }
+    /// A file with these first bytes.
+    pub fn put_with_head(&self, path: &str, sha: &str, head: &[u8]) {
+        self.files.lock().unwrap().insert(path.into(), (sha.into(), head.to_vec()));
+    }
+    /// v2.0.85: an image that is there but above `MEDIA_SIZE_CAP`.
+    pub fn put_too_large(&self, path: &str, sha: &str) {
+        self.put(path, sha);
+        self.too_large.lock().unwrap().push(path.into());
+    }
+    /// v2.0.85: a file that is there but cannot be read (a read error that is
+    /// not « not found »).
+    pub fn put_unreadable(&self, path: &str) {
+        self.unreadable.lock().unwrap().push(path.into());
+    }
+    /// Why a read of `path` fails before its bytes, if it does.
+    fn read_error(&self, path: &str) -> Option<MediaError> {
+        if self.unreadable.lock().unwrap().iter().any(|p| p == path) {
+            return Some(MediaError::Unreadable("permission denied".into()));
+        }
+        if !self.files.lock().unwrap().contains_key(path) {
+            return Some(MediaError::Absent);
+        }
+        None
+    }
+    fn is_too_large(&self, path: &str) -> bool {
+        self.too_large.lock().unwrap().iter().any(|p| p == path)
+    }
+    /// Every path the service handed this fake, by any method that reads a
+    /// file (one entry per call).
+    pub fn asked(&self) -> Vec<String> {
+        let mut v = self.hashed.lock().unwrap().clone();
+        v.extend(self.copied.lock().unwrap().iter().cloned());
+        v.extend(self.sniffed.lock().unwrap().iter().map(|(p, _)| p.clone()));
+        v.extend(self.verified.lock().unwrap().iter().cloned());
+        v
+    }
+    pub fn hashed(&self) -> Vec<String> {
+        self.hashed.lock().unwrap().clone()
+    }
+    pub fn copied(&self) -> Vec<String> {
+        self.copied.lock().unwrap().clone()
+    }
+    /// (path, max) of every first-bytes read.
+    pub fn sniffed(&self) -> Vec<(String, usize)> {
+        self.sniffed.lock().unwrap().clone()
+    }
+    pub fn verified(&self) -> Vec<String> {
+        self.verified.lock().unwrap().clone()
+    }
+    /// How many times `path` was handed to this fake, by any reading method.
+    pub fn reads_of(&self, path: &str) -> usize {
+        self.asked().iter().filter(|p| *p == path).count()
+    }
+    /// The (name, sha256) of every medium in the pretend store.
+    pub fn in_store(&self) -> Vec<(String, String)> {
+        self.stored.lock().unwrap().iter().map(|(n, s, _)| (n.clone(), s.clone())).collect()
+    }
+    /// The mark the store keeps on the medium named `name`; `None` when it is
+    /// not in the store or has no mark.
+    pub fn mark_of(&self, name: &str) -> Option<MediaMark> {
+        self.stored.lock().unwrap().iter().find(|(n, _, _)| n == name).and_then(|(_, _, m)| *m)
+    }
+    pub fn forget_asked(&self) {
+        self.hashed.lock().unwrap().clear();
+        self.copied.lock().unwrap().clear();
+        self.sniffed.lock().unwrap().clear();
+        self.verified.lock().unwrap().clear();
+    }
+    fn store(&self, sha: &str, mark: Option<MediaMark>) -> StoredMedium {
+        let name = store_name(sha);
+        let mut st = self.stored.lock().unwrap();
+        if !st.iter().any(|(n, _, _)| *n == name) {
+            st.push((name.clone(), sha.to_string(), mark));
+        }
+        StoredMedium { name, sha256: sha.to_string(), mark }
     }
 }
 
 impl MediaFiles for FakeMedia {
     fn sha256(&self, path: &str) -> Option<String> {
-        self.0.lock().unwrap().get(path).cloned()
+        self.hashed.lock().unwrap().push(path.into());
+        if self.read_error(path).is_some() {
+            return None;
+        }
+        self.files.lock().unwrap().get(path).map(|(sha, _)| sha.clone())
+    }
+    fn copy_into_store(&self, outside: &str, mark: Option<MediaMark>) -> Result<StoredMedium, MediaError> {
+        self.copied.lock().unwrap().push(outside.into());
+        if let Some(e) = self.read_error(outside) {
+            return Err(e);
+        }
+        let (sha, head) = self.files.lock().unwrap().get(outside).cloned().expect("present");
+        if !sovereign_docs::is_medium(&head) {
+            return Err(MediaError::NotAMedium);
+        }
+        if self.is_too_large(outside) {
+            return Err(MediaError::TooLarge { cap: sovereign_docs::MEDIA_SIZE_CAP });
+        }
+        Ok(self.store(&sha, mark))
+    }
+    fn first_bytes(&self, outside: &str, max: usize) -> Result<Vec<u8>, MediaError> {
+        self.sniffed.lock().unwrap().push((outside.into(), max));
+        if let Some(e) = self.read_error(outside) {
+            return Err(e);
+        }
+        let (_, head) = self.files.lock().unwrap().get(outside).cloned().expect("present");
+        Ok(head[..head.len().min(max)].to_vec())
+    }
+    fn copy_into_store_checked(
+        &self,
+        outside: &str,
+        expected_sha256: &str,
+        mark: Option<MediaMark>,
+    ) -> Result<StoredMedium, MediaError> {
+        self.verified.lock().unwrap().push(outside.into());
+        if let Some(e) = self.read_error(outside) {
+            return Err(e);
+        }
+        let (sha, head) = self.files.lock().unwrap().get(outside).cloned().expect("present");
+        if !sovereign_docs::is_medium(&head) {
+            return Err(MediaError::NotAMedium);
+        }
+        if self.is_too_large(outside) {
+            // Streamed under the cap: it stops there, before any hash.
+            return Err(MediaError::TooLarge { cap: sovereign_docs::MEDIA_SIZE_CAP });
+        }
+        if sha != expected_sha256 {
+            return Err(MediaError::HashMismatch);
+        }
+        Ok(self.store(&sha, mark))
+    }
+    fn store_name_for(&self, sha256: &str) -> Option<String> {
+        self.stored.lock().unwrap().iter().find(|(_, s, _)| s == sha256).map(|(n, _, _)| n.clone())
     }
 }
 
@@ -344,6 +512,18 @@ impl Stack {
         d.content = content.to_string();
         d.created_at = Utc.with_ymd_and_hms(2025, 3, 1, 9, 0, 0).unwrap();
         d.modified_at = Utc.with_ymd_and_hms(2025, 3, 2, 9, 0, 0).unwrap();
+        self.edb.create_document(d).await.unwrap().id_string().unwrap()
+    }
+
+    /// An owned row from before an update, **bypassing the service**, whose
+    /// current state was written on `author` (C-MEDIA's migration pass tells a
+    /// state written here from one written elsewhere by `author_device`).
+    pub async fn legacy_authored(&self, title: &str, content: &str, author: &str) -> DocId {
+        let mut d = Document::new(title.to_string(), "thread:t1".to_string(), true);
+        d.content = content.to_string();
+        d.created_at = Utc.with_ymd_and_hms(2025, 3, 1, 9, 0, 0).unwrap();
+        d.modified_at = Utc.with_ymd_and_hms(2025, 3, 2, 9, 0, 0).unwrap();
+        d.author_device = Some(author.to_string());
         self.edb.create_document(d).await.unwrap().id_string().unwrap()
     }
 
@@ -534,6 +714,7 @@ async fn record_with(db: &Arc<EncryptedGraphDB>, docs: &[&str], stored_secret: b
         last_revealed_at: None,
         use_count: 0,
         review_state: ReviewState::Confirmed,
+        review_stamp: None,
         deleted_at: None,
     };
     db.create_pii_record(rec).await.unwrap().id_string().unwrap()

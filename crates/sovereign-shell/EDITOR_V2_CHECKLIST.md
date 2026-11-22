@@ -310,6 +310,13 @@ A panic never prints its message: stderr shows only
 quote document text)*. Nothing to try by hand unless a panic happens — if one does,
 check that line and that no document text is in the terminal.
 
+## Linux under X11 without the keyboard library (release binary, Linux only, from v0.0.13)
+
+On an X11 session where `libxkbcommon-x11` is not installed, launch the release shell from a terminal.
+It opens no window, prints one sentence on stderr saying which library is missing and how to install
+it (or to use a Wayland session), and exits with code 1. It never prints a panic. With the package
+installed, it starts as usual.
+
 ### §14 — manual run, 2026-10-17 (Céline, laptop, `main` 65f8d4d)
 
 - **Validated:** 1, 2, 4, 6, 8, 9, and 3, 5, 7 except the two points below.

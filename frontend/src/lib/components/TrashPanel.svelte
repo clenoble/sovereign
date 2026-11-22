@@ -7,7 +7,7 @@
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { canvas, refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
+	import { canvas, liveThreads, refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
 	import {
 		trash,
 		loadTrash,
@@ -43,7 +43,7 @@
 	async function restoreLine(line: TrashLine) {
 		if (line.threadName === null) {
 			choosing = { kind: 'one', id: line.id, title: line.title };
-			chosenThread = canvas.threads[0]?.id ?? '';
+			chosenThread = liveThreads()[0]?.id ?? '';
 			return;
 		}
 		if (await restore(line.id)) refreshCanvas();
@@ -51,7 +51,7 @@
 
 	function chooseForGroup(threadId: string, count: number) {
 		choosing = { kind: 'group', threadId, count };
-		chosenThread = canvas.threads[0]?.id ?? '';
+		chosenThread = liveThreads()[0]?.id ?? '';
 	}
 
 	async function confirmChoice() {
@@ -134,7 +134,7 @@
 			<h4 id="trash-choose-title">
 				{choosing.kind === 'one' ? `Restore “${choosing.title}” into…` : `Restore ${choosing.count} documents into…`}
 			</h4>
-			{#if canvas.threads.length === 0}
+			{#if liveThreads().length === 0}
 				<p>There is no thread to restore into. Create a thread first, then restore.</p>
 			{:else}
 				<p>Its thread was deleted. To bring it back, create a new thread first, then choose it here.</p>
@@ -142,7 +142,7 @@
 			<label>
 				Thread
 				<select bind:this={threadSelect} bind:value={chosenThread} aria-label="Thread">
-					{#each canvas.threads as t (t.id)}
+					{#each liveThreads() as t (t.id)}
 						<option value={t.id}>{t.name}</option>
 					{/each}
 				</select>

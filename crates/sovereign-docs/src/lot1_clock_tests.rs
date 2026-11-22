@@ -53,6 +53,18 @@ impl MediaFiles for NoMedia {
     fn sha256(&self, _: &str) -> Option<String> {
         None
     }
+    fn copy_into_store(&self, _: &str, _mark: Option<crate::media::MediaMark>) -> Result<crate::media::StoredMedium, crate::media::MediaError> {
+        Err(crate::media::MediaError::Unreadable("no media in this test".into()))
+    }
+    fn copy_into_store_checked(&self, _: &str, _: &str, _: Option<crate::media::MediaMark>) -> Result<crate::media::StoredMedium, crate::media::MediaError> {
+        Err(crate::media::MediaError::Unreadable("no media in this test".into()))
+    }
+    fn first_bytes(&self, _: &str, _: usize) -> Result<Vec<u8>, crate::media::MediaError> {
+        Err(crate::media::MediaError::Unreadable("no media in this test".into()))
+    }
+    fn store_name_for(&self, _: &str) -> Option<String> {
+        None
+    }
 }
 
 struct PassThrough;

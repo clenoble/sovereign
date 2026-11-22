@@ -996,7 +996,7 @@ impl App {
     /// The window index whose editor should have keyboard focus: the top
     /// window, if it is a document window, the workspace is unlocked, no
     /// modal or menu is open and the OS window has focus.
-    fn v2_focus_target(&self) -> Option<usize> {
+    pub(super) fn v2_focus_target(&self) -> Option<usize> {
         let top = self.windows.len().checked_sub(1)?;
         let is_v2 = matches!(&self.windows[top].content, WindowContent::Doc(d) if d.v2.is_some());
         let modal = self.unsaved_prompt.is_some()
@@ -1123,8 +1123,12 @@ impl App {
                 let stored = match &result {
                     Ok((stored, title)) => {
                         saved_any = true;
+                        // C-SWEEP SW5: the card shows its tokens as their
+                        // labels, as when it is loaded, never their stored form.
+                        let shown = self.rt.block_on(crate::canvas::shown_text(self.docs.as_deref(), &doc_id, stored));
                         if let Some(c) = self.cards.iter_mut().find(|c| c.id == doc_id) {
                             c.set_stored(stored.clone());
+                            c.body = shown;
                             // The card shows the saved title (title contract T2).
                             if let Some(t) = title {
                                 c.set_title(t, &mut self.shaper);
@@ -1850,10 +1854,11 @@ mod tests {
             stored_secret: false,
             confidence: 1.0,
             sources,
-            discovered_at: chrono::Utc::now(),
+            discovered_at: sovereign_core::clock::now(),
             last_revealed_at: None,
             use_count: 0,
             review_state: ReviewState::Confirmed,
+            review_stamp: None,
             deleted_at: None,
         }
     }

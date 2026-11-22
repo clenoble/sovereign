@@ -23,6 +23,12 @@ pub enum CryptoError {
     #[error("Key unwrap failed: wrong wrapping key or tampered data")]
     UnwrapFailed,
 
+    /// `AuthStore::authenticate`: the key derivation succeeded and no entry's
+    /// probe opened (spec ch. 07, login errors, LE1). Returned in that case
+    /// only; `login_error` holds the words each host shows for it.
+    #[error("wrong passphrase")]
+    WrongPassphrase,
+
     #[error("Key database I/O error: {0}")]
     KeyDbIo(String),
 

@@ -29,9 +29,12 @@ use crate::protocol::manifest::{DocumentWireEntry, PurgeMarkerEntry, SyncManifes
 use crate::protocol::sync::{EncryptedCommit, SyncTable};
 use crate::sync_service::{public_key_from_peer_id, seal_snapshot, sign_commit, transport_to_snapshot, verify_commit, SyncService};
 
-/// The wire version this build speaks (manifest field `wire_version`). A peer
-/// whose manifest has none is on an older build.
-pub const WIRE_VERSION: u32 = 1;
+/// The wire version this build speaks (manifest field `wire_version`). It
+/// goes up with the document format (C-WIRE 12, spec v2.0.86): 2 since
+/// v0.0.13, whose media blocks name the media store. A peer whose manifest
+/// announces a lower version, or none, is on an older build; a higher one
+/// makes this device the older one. Either way no document is exchanged.
+pub const WIRE_VERSION: u32 = 2;
 
 /// The incoming-change analysis (C-WIRE guarantee 13; `peer_audit.rs` in
 /// `sovereign-ai` implements it — sync cannot depend on that crate). Run on
@@ -304,6 +307,17 @@ pub trait ModelJudge: Send + Sync {
     /// deterministic checks already ran). `Some(Some(finding))`: an alert, in
     /// words, no document text.
     async fn judge(&self, prior_text: &str, incoming_text: &str) -> Option<Option<String>>;
+
+    /// C-SWEEP SW3 (spec ch. 09): the verdict on a change to the document
+    /// `document_id`, so that its texts are masked where they are read, with
+    /// the content's id (her dismissals of that document reach the model as
+    /// written, every other detected value as its label). The queue's pass
+    /// calls this one. No default: a judge that forgets it does not compile
+    /// (the Fable maille's read of the seam, 2026-11-17).
+    ///
+    /// *Signature by the test author of lot LS(a); the wiring and the masking
+    /// are the implementer's.*
+    async fn judge_document(&self, document_id: &str, prior_text: &str, incoming_text: &str) -> Option<Option<String>>;
 }
 
 /// What one pass over the queue did.
@@ -414,7 +428,9 @@ impl ModelVerdicts {
                 pass.superseded += 1;
                 continue;
             };
-            let Some(verdict) = self.judge.judge(&prior, &incoming).await else {
+            // C-SWEEP SW3: with the document's id, so that its texts are
+            // masked where they are read for the model.
+            let Some(verdict) = self.judge.judge_document(&check.id, &prior, &incoming).await else {
                 pass.waiting = total - i;
                 break;
             };
@@ -571,6 +587,14 @@ pub struct DocumentPlan {
     /// The remote runs an older build: no document is exchanged with it
     /// (C-WIRE guarantee 12; rows are planned as before).
     pub blocked_old_peer: bool,
+    /// C-WIRE 12 from the other side (spec v2.0.86): the remote announces a
+    /// higher wire version, so **this** device runs the older build. No
+    /// document is exchanged, rows are planned as before, and this device's
+    /// screen says it is the one to update.
+    ///
+    /// *Field by the C-MEDIA test author (lot L1b); setting it is the
+    /// implementer's.*
+    pub this_device_older: bool,
 }
 
 /// Plans the document exchange of a round (C-WIRE guarantees 3, 4, 7, 10, 12):
@@ -591,9 +615,23 @@ pub struct DocumentPlan {
 ///   travels, and the receiver judges it (L6).
 pub fn plan_documents(local: &SyncManifest, remote: &SyncManifest) -> DocumentPlan {
     let mut plan = DocumentPlan::default();
-    if remote.wire_version.is_none() {
-        plan.blocked_old_peer = true;
-        return plan;
+    // C-WIRE 12, from both sides (v2.0.86): a lower wire version, or none, is
+    // an older peer; a higher one makes this device the older one. No
+    // document is exchanged either way; rows are planned as before.
+    match remote.wire_version {
+        None => {
+            plan.blocked_old_peer = true;
+            return plan;
+        }
+        Some(v) if v < WIRE_VERSION => {
+            plan.blocked_old_peer = true;
+            return plan;
+        }
+        Some(v) if v > WIRE_VERSION => {
+            plan.this_device_older = true;
+            return plan;
+        }
+        Some(_) => {}
     }
     let l: HashMap<&str, &DocumentWireEntry> = local.document_wire.iter().map(|e| (e.doc_id.as_str(), e)).collect();
     let r: HashMap<&str, &DocumentWireEntry> = remote.document_wire.iter().map(|e| (e.doc_id.as_str(), e)).collect();

@@ -5,11 +5,8 @@ access recovery), and how their data would survive the loss of every device (Fea
 data backup). The transport both ride on is chapter 05; the key hierarchy is chapter 07.
 
 *Consolidates:* specification v1.2/v1.3 §Guardian Social Recovery, §Recovery Flow (Feature 1),
-§Guardian Management, §Optional Cloud Backup, §Security Model (guardian items); archived plans
-`F1-guardian-access-recovery-implementation.md`, `backup-m1-security.md`,
-`backup-ui-command-contract.md`, `HANDOVER-m2-guardian-app.md`,
-`DECISIONS-2026-07-16-frontend-owner.md`, `p2pbackupuserreadyplan.md`, `p2p-completion-plan.md`;
-the M0 transport spike (branch `spike/m0-transport-discovery`); Appendix C
+§Guardian Management, §Optional Cloud Backup, §Security Model (guardian items); the project's
+archived plans for guardian recovery, backup and the guardian app (private); the M0 transport spike (branch `spike/m0-transport-discovery`); Appendix C
 (`doc/legal/sovereign_os_ethics.md`) §2.2, §3.3; release notes v0.0.7–v0.0.9; the code at
 `main` d02c353.
 
@@ -31,9 +28,9 @@ a data key.
 ## Feature 1 — Guardian access recovery
 
 **Status:** ◐ Partial — recovery key, roster, enrollment protocol, release gate, sealed state and
-verify-before-commit built; on the shipped surfaces the shell does not record completed
-enrollments and the mobile recovery wizard cannot start; heartbeat, rotation, cross-device
-cancellation and the Android guardian app not built.
+verify-before-commit built, and the flow runs on both hosts (the shell records completed
+enrollments, and the mobile wizard starts and resumes a recovery, both since v0.0.10); heartbeat,
+rotation, cross-device cancellation and the Android guardian app not built.
 
 ### The Recovery Key
 
@@ -70,26 +67,27 @@ UI and the roster's arming rule are to be aligned with this decision.
   (`recovery.bundle`, readable before login). (code: crates/sovereign-crypto/src/recovery_roster.rs,
   recovery_store.rs)
 - As each guardian enrolls, that slot's share is handed over and the owner's copy cleared.
-- **Recovery is armed only when all 5 guardians are enrolled** (decided 2026-07-10). The roster
-  reports `enrolled / 5`; the shell and the mobile app say recovery turns on at 5/5; enrollment
-  stops once armed. (code: crates/sovereign-app/src/tauri_commands/guardian.rs,
+- **As built, recovery is armed only when all 5 guardians are enrolled** (the rule of 2026-07-10,
+  replaced by the decision of 2026-10-10 in the status above and not yet aligned with it). The
+  roster reports `enrolled / 5`; the shell and the mobile app say recovery turns on at 5/5;
+  enrollment stops once armed. (code: crates/sovereign-app/src/tauri_commands/guardian.rs,
   crates/sovereign-shell/src/p2p.rs)
 - Enrollment confirmations reach the encrypted roster through a non-secret pending queue
   (`guardian_enrolled.pending`), because the event path holds no KEK. A record that cannot be
   parsed is kept and counted, never silently dropped — a guardian who believes they are enrolled
-  must not vanish from the roster. The mobile app writes this queue; the shell never records
-  enrollments, so its roster stays at 0/5.
+  must not vanish from the roster. Both hosts write this queue and fold it into the roster under
+  the KEK, so the next offer takes the next slot (the shell since v0.0.10). (code:
+  crates/sovereign-shell/src/p2p.rs)
 
-> ⚠ **Conflict — decision pending (Céline).** The specification offers recovery only with the full
-> 5-guardian roster. Recovery is intended to start only from an armed roster; enforcement is being
-> completed (private backlog). Open: whether recovery must refuse to start before 5/5, or whether
-> the specification should allow it once the threshold of 3 guardians is enrolled.
+*Conflict 5, « arming at five », is closed:* decided 2026-10-10, recovery may start once 3 of 5
+guardians are enrolled (status above). The alignment of the roster and the UIs is planned for a
+later release (Céline, 2026-11-04).
 
 ### In-person enrollment
 
-**Status:** ◐ Partial — handshake built and tested; the shell does not record completed
-enrollments, and neither owner UI shows the offer as text while the guardian app accepts only
-pasted text. (code: crates/sovereign-p2p/src/guardian_enroll.rs, node.rs;
+**Status:** ◐ Partial — handshake built and tested, and completed enrollments are recorded on
+both hosts; neither owner UI shows the offer as text (the shell draws a QR code only), while the
+guardian app accepts only pasted text. (code: crates/sovereign-p2p/src/guardian_enroll.rs, node.rs;
 crates/sovereign-guardian/src/enroll.rs; test: crates/sovereign-p2p/tests/e2e_guardian_enroll.rs)
 
 Enrollment happens **in person**, one guardian at a time:
@@ -109,6 +107,11 @@ Enrollment happens **in person**, one guardian at a time:
   guardian enrolled **only on the receipt** — so the roster can never claim a share the guardian
   did not store.
 - Offer TTL 600 s, three wrong proofs destroy it, one session at a time with idle eviction.
+- **Closing the enrollment window does not end the offer**, unlike the pairing offer (ch. 05, PO1):
+  its 600 s and its three wrong proofs bound it (Céline, 2026-11-19: « Une offre d'enrôlement de
+  gardien demande l'intervention d'un tiers, peut prendre du temps, et l'utilisateur peut fermer la
+  fenêtre par mégarde. La durée me semble le bon fail safe dans ce cas. »). Still to be thought
+  about, in her words: « à réfléchir ».
 - The guardian is **not** a paired device: it receives no AccountKey, no salt, no sync access.
 
 ### Identity proof — out of band, human, per pair
@@ -121,13 +124,19 @@ discoverable digitally, so it survives the compromise of a device or account. Th
 it **person to person** before approving. Sovereign stores nothing about it; each pair's proof is
 independent. (Decided 2026-07-10.) This replaces a pre-shared recovery passphrase: no second
 digital secret to forget or steal. The recognition-proof copy is required on the enrollment
-screen in the shell and in the mobile app. (code: crates/sovereign-shell/src/app.rs; frontend/src/lib/components/RecoveryPanel.svelte)
+screen in the shell and in the mobile app. (code: crates/sovereign-shell/src/panels.rs,
+`GuardianEnrollModal`; frontend/src/lib/components/RecoveryPanel.svelte)
 
 ### Guardian custody
 
 **Status:** ◐ Partial — sealed custody built; platform-keystore hardening for mobile not built.
 
 (code: crates/sovereign-guardian/src/custody.rs, state.rs, lib.rs)
+
+*Against D4 (ch. 01, Direction: no hierarchy between the user's devices):* each duty is bound to the
+PeerId of the device that enrolled it. Recovery requests and heartbeats are expected from that
+device, so making the bundle and card live on every device (below) will also need the guardian's
+binding widened.
 
 - One guardian install can guard for several people. Each duty records owner tag and label, the
   owner's PeerId, shard id, epoch, threshold/total and enrollment time; the share bytes are stored
@@ -156,10 +165,10 @@ mobile); with no relay, recovery refuses to start.
 
 ### Recovery flow
 
-**Status:** ◐ Partial — built in the shell; the mobile wizard does not supply the new passphrase
-at start and has no resume step. (code: crates/sovereign-p2p/src/access_recovery.rs,
+**Status:** ✅ Built on both hosts — the shell, and the mobile wizard, which takes the new
+passphrase first and has a resume step (since v0.0.10). (code: crates/sovereign-p2p/src/access_recovery.rs,
 backup_client.rs; crates/sovereign-app/src/tauri_commands/access_recovery.rs;
-crates/sovereign-shell/src/recovery.rs)
+crates/sovereign-shell/src/recovery.rs; frontend/src/lib/stores/recovery.svelte.ts)
 
 Runs **before login**, resumable across restarts:
 
@@ -185,16 +194,17 @@ encrypted to the recovering device.
 
 ### Release gate: approval + 72 hours, on the guardian's device
 
-**Status:** ◐ Partial — approval and the 72-hour gate built on the guardian's device; the
-release-build requirement below is being completed (private backlog). (code:
-crates/sovereign-p2p/src/backup_host.rs; crates/sovereign-guardian/src/serve.rs)
+**Status:** ✅ Built — approval and the 72-hour gate on the guardian's device, and the
+release-build requirement below. (code: crates/sovereign-p2p/src/backup_host.rs;
+crates/sovereign-guardian/src/serve.rs, main.rs)
 
 - The first request for a share starts its window. The share leaves only when **both** hold: the
   guardian's user has **explicitly approved**, and **72 hours** have passed since that first
   request. Denying clears the request and the approval.
 - The gate runs **on the guardian's device**: the recovering device cannot shorten it.
 - **Requirement:** development overrides (a shortened delay for tests, an auto-approve flag in
-  the guardian CLI) are excluded from release builds. ◐ Being completed (private backlog).
+  the guardian CLI) are excluded from release builds. ✅ Built: both compile only in debug builds,
+  each with a test (`backup_host.rs`, `sovereign-guardian/src/main.rs`).
 - Recovery read verbs pass a per-peer rate limit.
 
 ### Notifying every guardian
@@ -253,15 +263,15 @@ existing Tauri app), the desktop app stays.
   as above. (code: crates/sovereign-guardian/src/*, Cargo.toml)
 - **`sovereign-guardian-app`** is the friend-side app: desktop Tauri today. It enrolls (offer
   pasted as text + spoken code + label), lists duties, lists pending recovery requests and
-  approves or denies them. No content, no sync, no AI. It is not among the v0.0.9 release
-  downloads; it builds from source. (code: crates/sovereign-guardian-app/src/*)
+  approves or denies them. No content, no sync, no AI. It is not among the release downloads;
+  it builds from source. (code: crates/sovereign-guardian-app/src/*)
 - A guardian does not need Sovereign GE.
 - Specified, not built: the Android guardian app; approval behind device biometrics or PIN; a
   delete-duty action in the app (the engine supports it).
 
-> ⚠ **Conflict — decision pending (Céline).** This chapter recorded that a mobile-first guardian
-> app was chosen in July 2026 (friends carry phones); later plans order the work desktop-first.
-> What is built is the desktop guardian app. Which platform comes first is not decided here.
+*The platform conflict is closed:* a mobile-first guardian app was chosen in July 2026, later
+plans ordered the work desktop-first, and Céline decided mobile-first on 2026-10-10 (status above).
+What is built is the desktop guardian app.
 
 ### Heartbeat
 
@@ -279,9 +289,10 @@ per-slot verification material in the roster.
 
 ### Owner cancellation of a takeover
 
-**Status:** ◐ Partial — the owner's login cancels a recovery on the same device on the desktop
-(since v0.0.10); on the phone it does not reliably yet (2026-10-16 review, private backlog; the
-rule below specified 2026-10-17, to be built). Cross-device cancellation is specified, not built.
+**Status:** ◐ Partial — the owner's login cancels a recovery on the same device: on the desktop
+since v0.0.10, on the phone since v0.0.11 (the rule below, specified and built 2026-10-17: the
+stored state and the session held in memory are cleared, and a cancelled recovery cannot be saved
+again). Cross-device cancellation is specified, not built.
 
 A successful login with the real passphrase on a device **clears any recovery in progress on that
 device**, on every host (desktop and phone): the stored recovery state and the recovery session
@@ -295,8 +306,8 @@ notifying every guardian, the 72-hour window and the guardians' deny.
 
 > ⚠ **Conflict — decision pending (Céline).** The specification states, unscoped, that the
 > legitimate owner invalidates a concurrent takeover by authenticating with their real passphrase
-> during the window. What is intended today is scoped to the device where the owner
-> logs in.
+> during the window. What is built (2026-10-17) is scoped to the device where the owner logs in;
+> whether the unscoped promise stays the target is still open.
 
 ### Rotation and guardian management
 

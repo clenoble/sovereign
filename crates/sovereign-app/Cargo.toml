@@ -1,6 +1,6 @@
 [package]
 name = "sovereign-app"
-version = "0.0.12"
+version = "0.0.13"
 edition = "2021"
 description = "Sovereign GE binary — CLI and GUI entry point"
 
@@ -75,6 +75,10 @@ tauri-build = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 sovereign-db = { workspace = true, features = ["test-utils"] }
+# C-AREA AR4 (L1c tests): an orchestrator over a fake model,
+# `Orchestrator::for_host_tests_with_model`. A dev-dependency feature: on for
+# this crate's tests only, never in its builds (resolver 2).
+sovereign-ai = { workspace = true, features = ["test-support"] }
 
 [features]
 # rocksdb: desktop persistent backend. Excluded from `mobile` because RocksDB

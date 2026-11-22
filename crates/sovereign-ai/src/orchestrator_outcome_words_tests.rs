@@ -80,14 +80,18 @@ fn chat(events: &[OrchestratorEvent]) -> Vec<String> {
 }
 
 /// The standard world for B: threads Garden (Seeds, Tomatoes, the external
-/// Clipping), Kitchen (Pans), Plans (empty), Spare (empty); a document Notes
-/// with two versions (restorable); a fake model answering summaries.
+/// Clipping), Kitchen (Pans), Plans (empty), Spare (empty); Attic (empty),
+/// merged into Plans, so that the undo of a merge has a merge to undo (C-MERGE
+/// MG5; added by the B1 test author, b1-tests-v3); a document Notes with two
+/// versions (restorable); a fake model answering summaries.
 async fn b_world(tag: &str) -> World {
     let w = world(tag, 4096, answer("A short summary.")).await;
     let garden = w.thread("Garden").await;
     let kitchen = w.thread("Kitchen").await;
-    w.thread("Plans").await;
+    let plans = w.thread("Plans").await;
     w.thread("Spare").await;
+    let attic = w.thread("Attic").await;
+    w.docs.thread_merge(&plans, &attic).await.unwrap();
     w.doc("Seeds", &garden, "seed list").await;
     w.doc("Tomatoes", &garden, "tomato notes").await;
     w.doc("Pans", &kitchen, "pans").await;
@@ -127,6 +131,11 @@ const CASES: &[(&str, Option<&str>, Expect)] = &[
     ("list_models", None, Expect::Report),
     ("swap_model", Some("no-such-model"), Expect::NotDone),
     ("merge_threads", Some("Garden to Kitchen"), Expect::Change),
+    // C-MERGE MG5 (spec v2.0.109; B1 test author, b1-tests-v3): undoing the
+    // merge of an ended thread clears its two fields, a change; a thread that
+    // is not ended is refused (its sentence: `b4_the_undo_of_a_merge_not_ended_says_why`).
+    ("undo_merge_threads", Some("Attic"), Expect::Change),
+    ("undo_merge_threads", Some("Kitchen"), Expect::NotDone),
     ("split_thread", Some("Garden to Orchard"), Expect::Change),
     ("adopt", Some("Clipping"), Expect::Change),
     // Read (B2's principle, B4): adopting what is already owned changes
@@ -136,7 +145,10 @@ const CASES: &[(&str, Option<&str>, Expect)] = &[
     ("list_milestones", Some("Garden"), Expect::Report),
     ("list_contacts", None, Expect::Report),
     ("view_messages", None, Expect::Report),
-    ("create_document", Some("New note"), Expect::Change),
+    // C-HOST AT10 (LH test author, 2026-11-14): no thread named, nothing is
+    // created and the reply asks which thread; named, the document is created.
+    ("create_document", Some("New note"), Expect::NotDone),
+    ("create_document", Some("New note in Garden"), Expect::Change),
     ("restore", Some("Notes"), Expect::Change),
     ("restore", Some("Seeds"), Expect::NotDone),
     ("open_pii_dashboard", None, Expect::Report),
@@ -144,7 +156,35 @@ const CASES: &[(&str, Option<&str>, Expect)] = &[
     ("open_inbox", None, Expect::Report),
     ("browse", None, Expect::Report),
     ("open_settings", None, Expect::Report),
+    // C-HOST AT9 (ch. 11; LH test author, 2026-11-14): the skills the
+    // orchestrator runs, here straight through `execute_action` (the gate is
+    // tested in `orchestrator_lh_tests.rs`). A count reports; a copy changes
+    // the store; find and replace with no text to find in quotes cannot be
+    // carried out. The export is withdrawn from the assistant in v0.0.13
+    // (Céline, 2026-11-14): not carried out.
+    ("word_count", Some("Seeds"), Expect::Report),
+    ("find_replace", Some("Seeds"), Expect::NotDone),
+    ("duplicate", Some("Seeds"), Expect::Change),
+    ("export", Some("Seeds"), Expect::NotDone),
 ];
+
+/// C-MERGE MG5 (spec v2.0.109, « The words »; B1 test author, b1-tests-v3):
+/// the undo of a merge asked for a thread that is not ended is not done, and
+/// says « thread '{name}' is not merged into another thread; nothing was
+/// undone », whole.
+#[tokio::test]
+async fn b4_the_undo_of_a_merge_not_ended_says_why() {
+    let w = b_world("b4-undo-merge-not-ended").await;
+    let before = snapshot(&w.store).await;
+    let evs = w.act("undo_merge_threads", Some("Kitchen")).await;
+    let (success, o) = the_outcome(&evs, "undo_merge_threads Kitchen");
+    assert!(!success, "{o:?}");
+    assert_eq!(
+        o,
+        ActionOutcome::Failed { reason: "thread 'Kitchen' is not merged into another thread; nothing was undone".into() }
+    );
+    assert_eq!(snapshot(&w.store).await, before, "nothing changed");
+}
 
 /// B4 (with B1, B2): every action of the classifier list, run through the
 /// store; "Done" (or the A3 sentence, `Changed`) exactly when the store

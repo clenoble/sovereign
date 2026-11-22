@@ -34,7 +34,7 @@ pub(crate) struct Palette {
     // Borders + separators.
     pub(crate) border: Color,        // panel / popup outline
     pub(crate) border_soft: Color,   // minimap outline
-    pub(crate) input_border: Color,  // text-input / focused-field outline
+    pub(crate) input_border: Color,  // text-input outline without the keyboard (TC5)
     pub(crate) divider: Color,       // row separators
     pub(crate) divider_strong: Color,// chrome separators (taskbar/bar tops)
     pub(crate) scrollbar: Color,
@@ -83,7 +83,7 @@ impl Palette {
             surface_hover: Color::from_rgb8(54, 54, 68),
             border: Color::from_rgb8(51, 51, 64),     // --border
             border_soft: Color::from_rgb8(44, 44, 56),
-            input_border: Color::from_rgb8(64, 64, 80),
+            input_border: Color::from_rgb8(132, 132, 148), // TC5: 3:1 or more on every fill
             divider: Color::from_rgb8(44, 44, 56),
             divider_strong: Color::from_rgb8(51, 51, 64),
             scrollbar: Color::from_rgb8(96, 96, 110),
@@ -126,7 +126,7 @@ impl Palette {
             surface_hover: Color::from_rgb8(224, 224, 213),
             border: Color::from_rgb8(208, 208, 192),  // --border #d0d0c0
             border_soft: Color::from_rgb8(216, 216, 202),
-            input_border: Color::from_rgb8(200, 200, 184),
+            input_border: Color::from_rgb8(122, 122, 106), // TC5: 3:1 or more on every fill
             divider: Color::from_rgb8(224, 224, 213),
             divider_strong: Color::from_rgb8(208, 208, 192),
             scrollbar: Color::from_rgb8(168, 168, 156),
@@ -174,6 +174,72 @@ pub(crate) fn pal() -> Palette {
 /// on rc1 that fill left the dark theme's field text at about 1.2:1.
 pub(crate) fn field_fill(p: &Palette) -> Color {
     p.input
+}
+
+/// A focused text field's border (spec ch. 12, *Theme*, TC3): the text colour,
+/// which reaches 3:1 or more in both themes against `input`, `surface`,
+/// `panel`, `modal`, `popup` and `base` (WCAG 1.4.11). Not the accent: on rc1
+/// the light theme's accent border read 2.65:1 against `surface`. The
+/// unfocused border stays `input_border`.
+pub(crate) fn focused_field_border(p: &Palette) -> Color {
+    p.text
+}
+
+/// The 2-pixel outline that alone marks the chosen row of a list moved
+/// through by the keyboard (spec ch. 12, *Theme*, TC6): the text colour, as a
+/// focused field's border and a button's focus ring. It reaches 3:1 or more in
+/// both themes against the row (`surface`, `surface_hover`) and the window
+/// under it (`modal`, `panel`) (WCAG 1.4.11). Not the accent: in the light
+/// theme the accent read 2.65:1 against `surface`, 2.40 under the pointer.
+pub(crate) fn chosen_row_outline(p: &Palette) -> Color {
+    p.text
+}
+
+/// The near-black that `text_on_fill` offers against a light fill.
+const TEXT_ON_LIGHT_FILL: Color = Color::from_rgb8(20, 20, 26);
+/// The white that `text_on_fill` offers against a dark fill.
+const TEXT_ON_DARK_FILL: Color = Color::from_rgb8(255, 255, 255);
+
+/// WCAG 2.x relative luminance of an sRGB colour (its alpha ignored).
+fn relative_luminance(c: Color) -> f64 {
+    let p = c.to_rgba8();
+    let lin = |v: u8| {
+        let s = v as f64 / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(p.r) + 0.7152 * lin(p.g) + 0.0722 * lin(p.b)
+}
+
+fn contrast_ratio(a: Color, b: Color) -> f64 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// The colour of text (or a glyph) drawn on a coloured fill (spec ch. 12,
+/// *Theme*, TC1 and TC2): of near-black and white, the one that reads better
+/// against it. `fill` is given as it is seen: opaque, or composited over what
+/// is under it (`seen_over`). The same fill can thus take near-black opaque
+/// and white at a transparency. `on_accent` stays for TC4's drawings only.
+pub(crate) fn text_on_fill(fill: Color) -> Color {
+    if contrast_ratio(TEXT_ON_LIGHT_FILL, fill) >= contrast_ratio(TEXT_ON_DARK_FILL, fill) {
+        TEXT_ON_LIGHT_FILL
+    } else {
+        TEXT_ON_DARK_FILL
+    }
+}
+
+/// `fill`, with its own alpha, as it is seen over the opaque `under` (the
+/// renderer blends in sRGB): the colour to give `text_on_fill`.
+pub(crate) fn seen_over(fill: Color, under: Color) -> Color {
+    let alpha = fill.components[3].clamp(0.0, 1.0) as f64;
+    let (f, u) = (fill.to_rgba8(), under.to_rgba8());
+    let mix = |x: u8, y: u8| (x as f64 * alpha + y as f64 * (1.0 - alpha)).round() as u8;
+    Color::from_rgb8(mix(f.r, u.r), mix(f.g, u.g), mix(f.b, u.b))
 }
 
 /// Swap the active palette — the future settings theme hook. Unused today

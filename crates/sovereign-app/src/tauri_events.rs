@@ -291,6 +291,12 @@ pub fn spawn_event_forwarder(
                     );
                 }
 
+                // C-LOG DG3: the reply that comes next offers « Show what
+                // remains readable ».
+                OrchestratorEvent::QuarantinedLogDiagnosed => {
+                    let _ = app_handle.emit("quarantined-log-diagnosed", ());
+                }
+
                 OrchestratorEvent::ActionRejected { action, reason } => {
                     let _ = app_handle.emit(
                         "action-rejected",
@@ -520,8 +526,22 @@ pub fn spawn_event_forwarder(
                         PeerNeedsUpdatePayload { peer_id, device_name },
                     );
                 }
+                // C-WIRE 12 from the other side: this device is the one to
+                // update (same payload: the newer peer).
+                OrchestratorEvent::ThisDeviceNeedsUpdate { peer_id, device_name } => {
+                    let _ = app_handle.emit(
+                        "this-device-needs-update",
+                        PeerNeedsUpdatePayload { peer_id, device_name },
+                    );
+                }
                 OrchestratorEvent::SyncAlertsChanged => {
                     let _ = app_handle.emit("sync-alerts-changed", ());
+                }
+                // C-SUP SU2: the node ended without the session asking for
+                // it; the screens say « Sync stopped » (the store
+                // `syncStopped`). Why is in the log, not in the event.
+                OrchestratorEvent::SyncStopped => {
+                    let _ = app_handle.emit("sync-stopped", ());
                 }
                 // C-DOC adoption step 6 (M2): the one-time migration's notice.
                 OrchestratorEvent::DocumentsMigrated { text } => {

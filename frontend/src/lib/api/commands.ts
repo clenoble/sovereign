@@ -41,6 +41,12 @@ export interface FullDocument {
 	modified_at: string;
 	/** The revision a save of this state is based on (C-DOC adoption step 2). */
 	revision: string;
+	/** C-SWEEP SW5 (spec ch. 09): the title and the text with each
+	 *  personal-data token as its type's label (`get_document_labelled`), what
+	 *  the phone shows; never the stored form `[pii:<id>]`. Seam by the test
+	 *  author of lot LS(a). */
+	labelled_title?: string;
+	labelled_body?: string;
 }
 
 export interface ContentImageDto {
@@ -61,6 +67,38 @@ export interface CommitSummary {
 	timestamp: string;
 	snapshot_title: string;
 	snapshot_preview: string;
+	/** Item C5 of v0.0.13 (spec ch. 03, *What cannot be read is never shown as
+	 *  empty*): the backend's sentence when this version could not be read;
+	 *  then the title and the preview are empty. Null when it was read. */
+	could_not_read?: string | null;
+	/** HN1-HN3 (spec ch. 12): the row's words, devices by their names and versions by their
+	 *  local date and time, never a raw id; `message` stays the stored one. Seam by the test
+	 *  author of HN on the phone. */
+	shown_message?: string;
+	/** HN2: the row's own time, `YYYY-MM-DD HH:MM` in local time; `timestamp` stays RFC 3339. */
+	local_time?: string;
+}
+
+/** What `restore_commit` answers (HN4): the document, and the sentence when the version chosen
+ *  was already the current one (nothing written). Seam by the test author of HN on the phone. */
+export interface RestoredDto {
+	document: FullDocument;
+	already_current: string | null;
+}
+
+/** What `list_commits` answers from item C5 on (seam by its test author; the
+ *  binding's type is the implementer's to change): the versions, or, when
+ *  they could not be read, none and the backend's sentence in their place. */
+export interface CommitListDto {
+	commits: CommitSummary[];
+	could_not_read: string | null;
+}
+
+/** The documents whose history this session could not read, for the phone's
+ *  sync alerts: how many, and the backend's sentence (null when none). */
+export interface HistoriesNotReadDto {
+	count: number;
+	sentence: string | null;
 }
 
 export interface SkillInfo {
@@ -133,9 +171,23 @@ export const createDocument = (title: string, threadId: string) =>
 export const closeDocument = (id: string) => invoke<void>('close_document', { id });
 
 // Version history
-export const listCommits = (docId: string) => invoke<CommitSummary[]>('list_commits', { docId });
+export const listCommits = (docId: string) => invoke<CommitListDto>('list_commits', { docId });
+/** Item C5: the count of histories this session could not read (its command
+ *  is the implementer's to write and register). */
+export const historiesNotRead = () => invoke<HistoriesNotReadDto>('histories_not_read');
+/** C-LOG's host lot (spec ch. 08, DG3): what remains readable of the logged-in persona's most
+ *  recent quarantine, for her window only; `null` when there is none. */
+export interface ReadableLogDto {
+	entries: string[];
+	after_the_break: number;
+	order_not_guaranteed: boolean;
+	earlier: string[];
+}
+export const quarantinedLogReadable = () => invoke<ReadableLogDto | null>('quarantined_log_readable');
+/** C-LOG's host lot (spec ch. 08, DG4): deletes that quarantine; refused unless `confirmed`. */
+export const deleteQuarantinedLog = (confirmed: boolean) => invoke<void>('delete_quarantined_log', { confirmed });
 export const restoreCommit = (docId: string, commitId: string) =>
-	invoke<FullDocument>('restore_commit', { docId, commitId });
+	invoke<RestoredDto>('restore_commit', { docId, commitId });
 
 // Skills
 export const listSkillsForDoc = (docTitle: string) =>
@@ -173,6 +225,13 @@ export interface ThreadDto {
 	name: string;
 	description: string;
 	created_at: string;
+	/** C-MERGE (spec ch. 03, MG1-MG3): the id of the thread this one was merged
+	 *  into; absent or null when it is not ended. Fields by the B1 test author. */
+	merged_into?: string | null;
+	/** The name of that thread, for the lane's mark (MG2). */
+	merged_into_name?: string | null;
+	/** The end date (RFC 3339, UTC): the merge stamp's time (MG2). */
+	ended_at?: string | null;
 }
 
 export interface RelationshipDto {
@@ -538,7 +597,17 @@ export interface SyncAlertDto {
 	previous_version: string | null;
 }
 
-export const listSyncAlerts = () => invoke<SyncAlertDto[]>('list_sync_alerts');
+/** The open alerts, or, when they could not be read, the sentence said in
+ *  their place (spec ch. 03, *What cannot be read is never shown as empty*).
+ *  The sentence comes worded by the backend (`sovereign-docs`). */
+export interface SyncAlertsDto {
+	/** Newest first; empty when they could not be read. */
+	alerts: SyncAlertDto[];
+	/** The sentence when they could not be read; null when they were. */
+	could_not_check: string | null;
+}
+
+export const listSyncAlerts = () => invoke<SyncAlertsDto>('list_sync_alerts');
 
 export const dismissSyncAlert = (docId: string) => invoke<void>('dismiss_sync_alert', { docId });
 
@@ -555,7 +624,11 @@ export interface PreviousValueDto {
 
 export const listPreviousValues = () => invoke<PreviousValueDto[]>('list_previous_values');
 
-export const restorePreviousValue = (id: string) => invoke<void>('restore_previous_value', { id });
+/** `null` when the previous value is back; otherwise the notice shown on its
+ *  entry (spec ch. 05, *A restore that fails is said*): « Not restored: {what} —
+ *  {why} », and nothing changed, or « No answer from sync yet for {what}. It may
+ *  still be restored. » when sync took it but has not answered yet. */
+export const restorePreviousValue = (id: string) => invoke<string | null>('restore_previous_value', { id });
 
 export const forgetPreviousValue = (id: string) => invoke<void>('forget_previous_value', { id });
 
@@ -582,7 +655,17 @@ export type OrphanResolutionDto =
 	| { kind: 'new_thread'; name: string }
 	| { kind: 'trash' };
 
-export const listOrphanedDocuments = () => invoke<OrphanDto[]>('list_orphaned_documents');
+/** The documents whose thread was deleted, or, when they could not be read,
+ *  the sentence said in their place (spec ch. 03, *What cannot be read is
+ *  never shown as empty*), worded by the backend. */
+export interface OrphansDto {
+	/** Empty when they could not be read. */
+	orphans: OrphanDto[];
+	/** The sentence when they could not be read; null when they were. */
+	could_not_check: string | null;
+}
+
+export const listOrphanedDocuments = () => invoke<OrphansDto>('list_orphaned_documents');
 
 export const resolveOrphan = (docId: string, resolution: OrphanResolutionDto) =>
 	invoke<void>('resolve_orphan', { docId, resolution });
@@ -600,6 +683,11 @@ export interface UnreadableDocumentsDto {
 	meaning: string;
 	/** One line per document: short id, "(in the trash)" when so, last modified date. */
 	lines: string[];
+	/** When the list itself could not be read: the sentence said under the
+	 *  heading, in place of the meaning and the lines. Absent when the list
+	 *  was read (the backend sends it only then, so the list keeps its three
+	 *  fields of v0.0.12 item 7 V2b). */
+	could_not_check?: string | null;
 }
 
 export const listUnreadableDocuments = () => invoke<UnreadableDocumentsDto>('list_unreadable_documents');
@@ -623,6 +711,30 @@ export const saveWebPage = (
 		score: score ?? null,
 		assessmentJson: assessmentJson ?? null
 	});
+
+/** Item 9, FC1 (spec ch. 03): a thread offered when she is asked which one.
+ *  `created_at` is RFC 3339 (UTC); the window shows it in local time, in
+ *  History's format (`YYYY-MM-DD HH:MM`). */
+export interface ThreadOffered {
+	id: string;
+	name: string;
+	documents: number;
+	created_at: string;
+}
+
+/** Item 9, FC1 and FC2: what to do with a name a find-or-create looks for.
+ *  Also the `structured_json` of a skill result of kind `ask_thread`. */
+export type ThreadForName =
+	| { kind: 'use'; id: string }
+	| { kind: 'create' }
+	| { kind: 'ask'; name: string; threads: ThreadOffered[] };
+
+/** Item 9, FC1 and FC2: asked by the browser for « Web » before it saves. */
+export const threadForName = (name: string) => invoke<ThreadForName>('thread_for_name', { name });
+
+/** Item 9, FC2: her answer, remembered: `threadId` is the thread for `name`. */
+export const rememberThreadChoice = (name: string, threadId: string) =>
+	invoke<void>('remember_thread_choice', { name, threadId });
 
 // ---------------------------------------------------------------------------
 // PII management & dashboard
@@ -726,6 +838,66 @@ export const redactPiiRecord = (id: string) =>
  *  last_revealed_at server-side. */
 export const revealPiiRecord = (id: string) =>
 	invoke<string>('reveal_pii_record', { id });
+
+// ── C-SWEEP (spec ch. 09, lot LS(a)): the review, its signal, the labels.
+// Signatures by the test author of lot LS(a); the bodies are the implementer's.
+
+/** One type of personal data in the review window (SW5). */
+export interface ReviewGroupDto {
+	kind: string;
+	/** The type's name as shown (« IBAN », « E-mail », …). */
+	label: string;
+	rows: ReviewRowDto[];
+}
+
+/** One record in the review window; its value is never sent. */
+export interface ReviewRowDto {
+	record_id: string;
+	state: ReviewStateString;
+	/** `PII suspected - TBC`, `PII confirmed` or `PII dismissed` (Céline, 2026-11-17). */
+	state_words: string;
+	documents: string[];
+}
+
+/** A review gesture, on one record or several selected; never a whole type. */
+export type ReviewGesture = 'confirm' | 'dismiss' | 'take_back_dismissal' | 'take_back_confirmation';
+
+export interface ReviewOutcomeDto {
+	rewritten: string[];
+}
+
+/** SW6: how many suspected values wait; the status words, null when none. */
+export interface PiiSignalDto {
+	waiting: number;
+	status: string | null;
+}
+
+export interface PiiNoticeDto {
+	title: string;
+	body: string;
+}
+
+export interface LabelledDocumentDto {
+	title: string;
+	body: string;
+}
+
+/** `pii_review_groups`: the review window, grouped by type. */
+export const listPiiReviewGroups = (): Promise<ReviewGroupDto[]> => invoke<ReviewGroupDto[]>('pii_review_groups');
+
+/** `pii_review`: `gesture` on the records `recordIds`. */
+export const reviewPiiRecords = (gesture: ReviewGesture, recordIds: string[]): Promise<ReviewOutcomeDto> =>
+	invoke<ReviewOutcomeDto>('pii_review', { gesture, recordIds });
+
+/** `pii_signal`: the queue's signal now. */
+export const getPiiSignal = (): Promise<PiiSignalDto> => invoke<PiiSignalDto>('pii_signal');
+
+/** `pii_login_notice`: once after a login; the notice if the queue has grown. */
+export const takePiiLoginNotice = (): Promise<PiiNoticeDto | null> => invoke<PiiNoticeDto | null>('pii_login_notice');
+
+/** `get_document_labelled`: a document's title and text, tokens as labels. */
+export const getDocumentLabelled = (id: string): Promise<LabelledDocumentDto> =>
+	invoke<LabelledDocumentDto>('get_document_labelled', { id });
 
 export interface VaultEntryInput {
 	/** snake_case PiiKind */
@@ -886,9 +1058,35 @@ export const listPairedDevices = () =>
 export const forgetPairedDevice = (peerId: string) =>
 	invoke<void>('forget_paired_device', { peerId });
 
+/** PR2 (spec ch. 05; v0.0.13, item C3): the source side's question when a
+ *  device joins under a name a paired device already has. `candidates` are
+ *  the paired devices of that name, other than the one that just joined. */
+export interface SameNameQuestion {
+	new_peer_id: string;
+	new_device_name: string;
+	candidates: PairedDevice[];
+}
+
+/** PR2: the question the backend holds, if any; asked once a pairing is
+ *  reported (`device-paired`). */
+export const sameNameQuestion = () => invoke<SameNameQuestion | null>('same_name_question');
+
+/** PR1 and PR2: her answer. A peer id, « Replace it »: that device's record
+ *  goes. `null`, « Keep both »: every record stays. */
+export const answerSameName = (replace: string | null) =>
+	invoke<void>('answer_same_name', { replace });
+
 /** Trigger a sync with every paired peer. Returns the number of
  *  StartSync commands queued (0 if the P2P node isn't running). */
 export const triggerSyncNow = () => invoke<number>('trigger_sync_now');
+
+/** C-SUP SU3: the gesture « Restart sync »: a fresh node with the open
+ *  session's keys. Rejects with the start's reason when it fails. */
+export const restartSyncCmd = () => invoke<void>('restart_sync');
+
+/** C-SUP SU1: whether the open session's sync is stopped (its node ended by
+ *  itself, or did not start). Asked by the login once its reset is done. */
+export const syncIsStoppedCmd = () => invoke<boolean>('sync_is_stopped');
 
 /** Report the network class so the P2P sync gate (wifi_only on Android)
  *  knows whether to allow auto-sync. kind: 'wifi' | 'cellular' | 'offline'. */

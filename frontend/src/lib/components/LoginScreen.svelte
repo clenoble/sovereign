@@ -4,6 +4,15 @@
 	import type { KeystrokeSampleDto } from '$lib/api/commands';
 	import { openRecovery, checkAvailable, recovery } from '$lib/stores/recovery.svelte';
 	import { setSetupNoticeAfterLogin } from '$lib/stores/setupNotice.svelte';
+	import { loadPiiSignal, offerPiiLoginNotice } from '$lib/stores/piiReview.svelte';
+	import { resetSessionState } from '$lib/session';
+	import { onSyncStateAtLogin } from '$lib/stores/syncStopped.svelte';
+	import { syncIsStoppedCmd } from '$lib/api/commands';
+
+	// The backend's one sentence for a wrong password (spec ch. 07, LE2, LE4).
+	const WRONG_PASSWORD = 'Invalid password';
+	// Shown when the login failed with no text: it is never read as a wrong password.
+	const NO_REASON = 'The login failed without saying why. This is not a wrong password.';
 
 	let password = $state('');
 	let error = $state('');
@@ -103,30 +112,45 @@
 		try {
 			const setupIncomplete = await setupIncompleteAtOpen; // P5g: before the login clears it
 			const persona = await validatePassword(pw, keystrokes);
+			// C-AREA AR4: the interface starts from nothing at a switch (spec ch. 07):
+			// nothing of a previous session's screens survives this login.
+			resetSessionState();
+			// C-SUP SU1: a stop of the session this login opened (its node did
+			// not start) is asked for after the reset, so the reset cannot clear it.
+			// An error of the question says nothing: the first gesture that
+			// needs the node shows the stop's notice anyway.
+			void syncIsStoppedCmd()
+				.then((stopped) => onSyncStateAtLogin(stopped))
+				.catch(() => {});
 			setSetupNoticeAfterLogin(setupIncomplete); // P5g: shown in the unlocked app, not here
+			// C-SWEEP SW6: once the session is open, the queue's count and the
+			// notice at login, after the login's other notices (it yields to
+			// them). A failure says nothing: the count is read again later.
+			void offerPiiLoginNotice().catch(() => {});
+			void loadPiiSignal().catch(() => {});
 			app.authState = 'ready';
 		} catch (e) {
-			// Surface the REAL backend error. validate_password returns
-			// "Invalid password" only for an actual auth failure; other failures
-			// (e.g. at-rest encryption init aborting the login, a locked account)
-			// previously got mislabeled as a bad password, which is badly
-			// misleading. Only a genuine wrong password counts toward lockout.
-			const msg =
-				(typeof e === 'string' ? e : ((e as { message?: string })?.message ?? '')) ||
-				'Invalid password';
+			// Surface the REAL backend error (spec ch. 07, login errors, LE4).
+			// validate_password says exactly "Invalid password" for a wrong
+			// password and for nothing else; only that counts toward the
+			// lockout. Any other text is shown as the backend gave it, even one
+			// that holds those words inside a longer sentence. An error with no
+			// text is not a wrong password either: it says so, and is not counted.
+			const raw = typeof e === 'string' ? e : (e as { message?: unknown } | null | undefined)?.message;
+			const msg = typeof raw === 'string' ? raw : '';
 			password = '';
 			keystrokes = [];
 
-			if (/invalid password/i.test(msg)) {
+			if (msg === WRONG_PASSWORD) {
 				attempts++;
 				if (attempts >= maxAttempts) {
 					lockedUntil = Date.now() + lockoutSeconds * 1000;
 					error = '';
 				} else {
-					error = 'Invalid password';
+					error = WRONG_PASSWORD;
 				}
 			} else {
-				error = msg;
+				error = msg.trim() ? msg : NO_REASON;
 			}
 		} finally {
 			submitting = false;
@@ -150,6 +174,7 @@
 					<input
 						type={showPw ? 'text' : 'password'}
 						class="password-input"
+						aria-label="Password"
 						placeholder="Password"
 						bind:value={password}
 						onkeydown={handleKeydown}
@@ -157,7 +182,7 @@
 						disabled={submitting}
 						autocapitalize="off"
 						autocorrect="off"
-						autocomplete="off"
+						autocomplete="current-password"
 						spellcheck="false"
 					/>
 					<button
@@ -180,7 +205,7 @@
 			</div>
 
 			{#if error}
-				<p class="error">{error}</p>
+				<p class="error" role="alert">{error}</p>
 			{/if}
 
 			{#if attempts > 0 && !lockedUntil}

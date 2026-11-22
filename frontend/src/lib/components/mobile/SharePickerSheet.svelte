@@ -6,7 +6,7 @@
 	 */
 	import { invoke } from '@tauri-apps/api/core';
 	import { app } from '$lib/stores/app.svelte';
-	import { canvas } from '$lib/stores/canvas.svelte';
+	import { canvas, liveThreads } from '$lib/stores/canvas.svelte';
 	import { refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
 	import BottomSheet from './BottomSheet.svelte';
 
@@ -71,7 +71,7 @@
 				{/if}
 
 				<ul class="thread-list" aria-label="Choose a thread">
-					{#each canvas.threads as thread (thread.id)}
+					{#each liveThreads() as thread (thread.id)}
 						<li>
 							<button
 								class="thread-btn"

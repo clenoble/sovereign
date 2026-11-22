@@ -164,9 +164,17 @@ pub async fn close_panel(docs: &DocumentService, sessions: &Sessions, id: &str) 
 
 /// Restore version `commit_id` of document `id`: the current state is made a
 /// version first, the restored state becomes a new version.
+/// The commands call [`restore_said`] (spec ch. 12, HN4); this stays for its tests.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn restore(docs: &DocumentService, id: &str, commit_id: &str) -> Result<FullDocument, String> {
-    docs.restore_version(id, commit_id).await.map_err(|e| message(&e))?;
-    read_document(docs, id).await
+    restore_said(docs, id, commit_id).await.map(|(doc, _)| doc)
+}
+
+/// [`restore`], and whether it wrote anything: `false` when the version chosen
+/// already had the document's current title and content (spec ch. 12, HN4).
+pub async fn restore_said(docs: &DocumentService, id: &str, commit_id: &str) -> Result<(FullDocument, bool), String> {
+    let outcome = docs.restore_version(id, commit_id).await.map_err(|e| message(&e))?;
+    Ok((read_document(docs, id).await?, outcome.changed))
 }
 
 /// Write a skill's `ContentUpdate` back: `input` is what the skill was given

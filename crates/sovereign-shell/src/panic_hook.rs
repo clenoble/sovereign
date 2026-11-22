@@ -94,15 +94,23 @@ mod tests {
     /// A real panic whose message quotes "document text" — through the same
     /// report the installed hook writes — never carries that text. The hook is
     /// process-global, so the test installs a capturing copy only around one
-    /// named thread and restores the previous hook after.
+    /// named thread, hands every other thread's panic to the previous hook
+    /// (a test panicking in parallel keeps its message), and restores the
+    /// previous hook after. That a parallel panic is never lost rests on how
+    /// std holds the hook, read here and not tested (it depends on timing):
+    /// a panic calls the hook under a read lock, and `take_hook` takes the
+    /// write lock, so no call is in flight when our hook is taken back.
     #[test]
     fn a_panic_payload_never_reaches_the_report() {
         let captured: Arc<Mutex<Vec<String>>> = Arc::default();
         let sink = captured.clone();
-        let prev = std::panic::take_hook();
+        let prev = Arc::new(std::panic::take_hook());
+        let others = prev.clone();
         std::panic::set_hook(Box::new(move |info| {
             if std::thread::current().name() == Some("panic-hook-test") {
                 sink.lock().unwrap().push(report(info));
+            } else {
+                others(info);
             }
         }));
         let r = std::thread::Builder::new()
@@ -114,6 +122,10 @@ mod tests {
             })
             .unwrap()
             .join();
+        // Dropping our hook drops its clone of `prev`, so the original box
+        // comes back whole and is restored as it was.
+        drop(std::panic::take_hook());
+        let prev = Arc::try_unwrap(prev).unwrap_or_else(|_| unreachable!("our hook was dropped"));
         std::panic::set_hook(prev);
         assert!(r.is_err(), "the thread panicked");
         let got = captured.lock().unwrap();

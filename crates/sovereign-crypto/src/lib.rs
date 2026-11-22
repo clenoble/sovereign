@@ -45,8 +45,10 @@ pub mod index_key;
 pub mod kek;
 pub mod key_db;
 pub mod keystroke;
+pub mod login_error;
 pub mod mac;
 pub mod master_key;
+pub mod media_seal;
 pub mod password_gen;
 pub mod peer_identity;
 pub mod recovery_key;
@@ -59,6 +61,9 @@ pub mod migration;
 
 #[cfg(feature = "guardian")]
 pub mod guardian;
+
+#[cfg(test)]
+mod auth_store_write_tests;
 
 pub use error::{CryptoError, CryptoResult};
 

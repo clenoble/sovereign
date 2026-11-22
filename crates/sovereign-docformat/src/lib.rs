@@ -222,6 +222,8 @@ struct BlockData {
     markup: Option<String>,
     media_path: Option<String>,
     media_sha256: Option<String>,
+    /// `ref.store`: the media store's name of the medium (C-MEDIA).
+    media_store: Option<String>,
     image_alt: Option<String>,
     caption: Option<String>,
     needs_description: bool,
@@ -303,7 +305,27 @@ impl Block {
         Some(self.0.markup.as_deref().unwrap_or("markdown"))
     }
 
-    /// For an `image` or `video` block, `ref.path`.
+    /// For an `image` or `video` block, `ref.store`: the name of its medium
+    /// in this device's media store (spec ch. 03, C-MEDIA, *The media
+    /// store*). A name a received state carries is data: a medium is found
+    /// in the store by its hash, never by this name.
+    pub fn media_store(&self) -> Option<&str> {
+        match self.0.kind {
+            BlockKind::Image | BlockKind::Video => self.0.media_store.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Whether this is an `image` or a `video` block (with or without an
+    /// outside path: since C-MEDIA a media block may name only the store's
+    /// medium, or nothing but its hash).
+    pub fn is_media(&self) -> bool {
+        matches!(self.0.kind, BlockKind::Image | BlockKind::Video)
+    }
+
+    /// For an `image` or `video` block, `ref.path`: an outside path (C-MEDIA:
+    /// a location on some device, never opened unless the user inserted it
+    /// here, or by the migration pass).
     pub fn media_path(&self) -> Option<&str> {
         match self.0.kind {
             BlockKind::Image | BlockKind::Video => self.0.media_path.as_deref(),
@@ -362,6 +384,30 @@ impl Block {
     /// For a `video` block, `thumbnail_ref.path` (the v1 `thumbnail_path`, as
     /// the v1 migration stores it), read from the block's stored bytes.
     pub fn video_thumbnail_path(&self) -> Option<String> {
+        self.thumbnail_member("path")
+    }
+
+    /// For a `video` block, `thumbnail_ref.sha256` (C-MEDIA: the thumbnail
+    /// follows the same guards as the medium).
+    pub fn video_thumbnail_sha256(&self) -> Option<String> {
+        self.thumbnail_member("sha256")
+    }
+
+    /// For a `video` block, `thumbnail_ref.store`: the media store's name of
+    /// the thumbnail (C-MEDIA).
+    pub fn video_thumbnail_store(&self) -> Option<String> {
+        self.thumbnail_member("store")
+    }
+
+    /// Whether the block's stored bytes hold a `thumbnail_ref` member.
+    fn video_thumbnail_ref_present(&self) -> bool {
+        let raw = &self.0.raw;
+        let Ok((_, span)) = json::whole_value(raw) else { return false };
+        json::members(raw, span).map(|m| m.iter().any(|m| m.key == "thumbnail_ref")).unwrap_or(false)
+    }
+
+    /// A string member of a video block's `thumbnail_ref`.
+    fn thumbnail_member(&self, key: &str) -> Option<String> {
         if self.0.kind != BlockKind::Video {
             return None;
         }
@@ -370,7 +416,7 @@ impl Block {
         let members = json::members(raw, span).ok()?;
         let r = members.iter().rev().find(|m| m.key == "thumbnail_ref" && m.kind == Kind::Object)?;
         let inner = json::members(raw, r.value.clone()).ok()?;
-        let p = inner.iter().rev().find(|m| m.key == "path" && m.kind == Kind::String)?;
+        let p = inner.iter().rev().find(|m| m.key == key && m.kind == Kind::String)?;
         json::decode_string(&raw[p.value.clone()])
     }
 
@@ -434,6 +480,7 @@ impl Block {
             markup: Some("markdown".into()),
             media_path: None,
             media_sha256: None,
+            media_store: None,
             image_alt: None,
             caption: None,
             needs_description: false,
@@ -645,6 +692,51 @@ impl DocumentV2 {
         }
         let raw = b.0.written();
         let new_raw = splice_ref_member(&raw, "sha256", sha256_hex).ok_or(EditError::WrongKind(id))?;
+        replace_raw(b, new_raw);
+        Ok(())
+    }
+
+    /// C-MEDIA (spec ch. 03, *The media store*): replaces the media reference
+    /// of an `image` or `video` block by one that names `store` (the media
+    /// store's name of its medium) and `sha256`, each only when given. The
+    /// outside path (`ref.path`) is dropped; any other member of `ref` is
+    /// kept. A block left with neither a path nor a store name is a
+    /// neutralised medium: it keeps its hash, by which the store may still
+    /// resolve it. Setting the reference the block already has changes
+    /// nothing. A video's `thumbnail_ref` is left as it is
+    /// ([`set_thumbnail_ref`](Self::set_thumbnail_ref)).
+    pub fn set_media_ref(&mut self, id: BlockId, store: Option<&str>, sha256: Option<&str>) -> Result<(), EditError> {
+        let b = self.writable_block(id)?;
+        if !matches!(b.0.kind, BlockKind::Image | BlockKind::Video) {
+            return Err(EditError::WrongKind(id));
+        }
+        if b.0.media_path.is_none() && b.0.media_store.as_deref() == store && b.0.media_sha256.as_deref() == sha256 {
+            return Ok(());
+        }
+        let raw = b.0.written();
+        let new_raw = rebuild_ref_member(&raw, "ref", store, sha256).ok_or(EditError::WrongKind(id))?;
+        replace_raw(b, new_raw);
+        Ok(())
+    }
+
+    /// C-MEDIA: the same for a `video` block's `thumbnail_ref` (an outside
+    /// path follows the medium's guards): it names `store` and `sha256`, each
+    /// only when given, and no longer `path`. A block without a
+    /// `thumbnail_ref` is left as it is.
+    pub fn set_thumbnail_ref(&mut self, id: BlockId, store: Option<&str>, sha256: Option<&str>) -> Result<(), EditError> {
+        let b = self.writable_block(id)?;
+        if b.0.kind != BlockKind::Video {
+            return Err(EditError::WrongKind(id));
+        }
+        if !b.video_thumbnail_ref_present()
+            || (b.video_thumbnail_path().is_none()
+                && b.video_thumbnail_store().as_deref() == store
+                && b.video_thumbnail_sha256().as_deref() == sha256)
+        {
+            return Ok(());
+        }
+        let raw = b.0.written();
+        let new_raw = rebuild_ref_member(&raw, "thumbnail_ref", store, sha256).ok_or(EditError::WrongKind(id))?;
         replace_raw(b, new_raw);
         Ok(())
     }
@@ -880,6 +972,7 @@ fn parse_block(
         markup: None,
         media_path: None,
         media_sha256: None,
+        media_store: None,
         image_alt: None,
         caption: None,
         needs_description: false,
@@ -909,7 +1002,12 @@ fn parse_block(
         }
     };
     data.type_name = string("type").unwrap_or_default();
-    let ref_member = |k: &str| -> Option<(Option<String>, Option<String>)> {
+    // A media reference: `path` (an outside path), `sha256`, and `store` (the
+    // media store's name, C-MEDIA). Since C-MEDIA a reference may have no
+    // path: a medium copied into the store, or a neutralised block that keeps
+    // only its hash. Such a block is still an image or a video.
+    type MediaRef = (Option<String>, Option<String>, Option<String>);
+    let ref_member = |k: &str| -> Option<MediaRef> {
         let m = get(k).filter(|m| m.kind == Kind::Object)?;
         let inner = json::members(raw, m.value.clone()).ok()?;
         let s = |key: &str| {
@@ -919,7 +1017,7 @@ fn parse_block(
                 .find(|x| x.key == key && x.kind == Kind::String)
                 .and_then(|x| json::decode_string(&raw[x.value.clone()]))
         };
-        Some((s("path"), s("sha256")))
+        Some((s("path"), s("sha256"), s("store")))
     };
     match data.type_name.as_str() {
         "text" => {
@@ -937,10 +1035,11 @@ fn parse_block(
             }
         }
         "image" => {
-            if let (Some((Some(path), sha)), Some(alt)) = (ref_member("ref"), string("alt")) {
+            if let (Some((path, sha, store)), Some(alt)) = (ref_member("ref"), string("alt")) {
                 data.kind = BlockKind::Image;
-                data.media_path = Some(path);
+                data.media_path = path;
                 data.media_sha256 = sha;
+                data.media_store = store;
                 data.image_alt = Some(alt);
                 data.caption = string("caption");
                 data.needs_description = get("needs_description")
@@ -948,10 +1047,11 @@ fn parse_block(
             }
         }
         "video" => {
-            if let Some((Some(path), sha)) = ref_member("ref") {
+            if let Some((path, sha, store)) = ref_member("ref") {
                 data.kind = BlockKind::Video;
-                data.media_path = Some(path);
+                data.media_path = path;
                 data.media_sha256 = sha;
+                data.media_store = store;
                 data.caption = string("caption");
             }
         }
@@ -1013,6 +1113,32 @@ fn splice_ref_member(raw: &str, key: &str, value: &str) -> Option<String> {
     let r = members.iter().rev().find(|m| m.key == "ref" && m.kind == Kind::Object)?;
     let inner = splice_string_member(&raw[r.value.clone()], key, value)?;
     Some(format!("{}{}{}", &raw[..r.value.start], inner, &raw[r.value.end..]))
+}
+
+/// `raw` (one media block) with its object member `member` (`ref` or
+/// `thumbnail_ref`) rebuilt as `store` and `sha256` (each when given) plus
+/// every other member it had except `path` (C-MEDIA: no outside path is kept).
+fn rebuild_ref_member(raw: &str, member: &str, store: Option<&str>, sha256: Option<&str>) -> Option<String> {
+    let (kind, span) = json::whole_value(raw).ok()?;
+    if kind != Kind::Object {
+        return None;
+    }
+    let members = json::members(raw, span).ok()?;
+    let r = members.iter().rev().find(|m| m.key == member && m.kind == Kind::Object)?;
+    let inner = json::members(raw, r.value.clone()).ok()?;
+    let mut parts: Vec<String> = inner
+        .iter()
+        .filter(|m| !matches!(m.key.as_str(), "path" | "store" | "sha256"))
+        .map(|m| format!("{}:{}", json::encoded(&m.key), &raw[m.value.clone()]))
+        .collect();
+    if let Some(s) = store {
+        parts.push(format!("\"store\":{}", json::encoded(s)));
+    }
+    if let Some(h) = sha256 {
+        parts.push(format!("\"sha256\":{}", json::encoded(h)));
+    }
+    let new_ref = format!("{{{}}}", parts.join(","));
+    Some(format!("{}{}{}", &raw[..r.value.start], new_ref, &raw[r.value.end..]))
 }
 
 /// Builds the v2 JSON of a block migrated from a v1 `images` / `videos` entry.

@@ -31,6 +31,26 @@ pub fn session_log_beacon_path(base: &Path, persona: PersonaKind) -> PathBuf {
     base.join("crypto").join(name)
 }
 
+/// Directory of a persona's media store (contract C-MEDIA, spec ch. 03, *The
+/// media store*): Sovereign's encrypted copies of the images and videos its
+/// documents hold. It lies **inside the persona's own state directory**
+/// ([`orchestrator_state_dir`]), so it is in that persona's area as C-AREA
+/// names it (spec ch. 07): a duress session's store is inside the duress
+/// area, and nothing synced or backed up reads this directory. (The record of
+/// what the migration pass neutralised is a sealed record of the persona's
+/// own database, not a file here.)
+pub fn media_store_dir(base: &Path, persona: PersonaKind) -> PathBuf {
+    media_store_dir_in(&orchestrator_state_dir(base, persona))
+}
+
+/// The media store's directory inside a persona's state directory
+/// (`state_dir`, as [`orchestrator_state_dir`] gives it): for a host that
+/// already holds that directory, so it computes no new path under the
+/// Sovereign directory (C-AREA AR8).
+pub fn media_store_dir_in(state_dir: &Path) -> PathBuf {
+    state_dir.join("media")
+}
+
 /// Directory of a persona's identity profile (`user_profile.json`: display
 /// name, nickname, designation), read and written only after login. The
 /// primary keeps the historical location, `base` itself, so at migration the

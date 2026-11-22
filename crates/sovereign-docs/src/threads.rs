@@ -221,40 +221,92 @@ impl DocumentService {
         self.store().delete_thread(id).await.map_err(store_err)
     }
 
-    /// Merges thread `source_id` into `target_id`: every document of the
-    /// source (live or in the trash) moves to the target through the service
-    /// (one stamped move each, so the moves travel by sync), then the source
-    /// is deleted through the stamped path. Both must be live and different.
+    /// C-MERGE (spec ch. 03, MG1, MG2, MG3): merges thread `source_id` into
+    /// `target_id`. Nothing is deleted and no document moves: the source gets
+    /// its end date and the thread it was merged into, under a merge stamp of
+    /// its own (MG4), issued after every stamp issued here; the end date is
+    /// that stamp's time (MG2). The source's own stamp, name and description
+    /// are untouched, so a rename and a merge made on two devices combine.
+    /// The target records nothing.
+    ///
+    /// Refused, nothing written: the same thread twice; a deleted or unknown
+    /// thread; a source that has ended already; a target that has ended (MG3:
+    /// it is the target of nothing).
+    ///
+    /// Returns how many live documents stay in the source (the outcome's
+    /// « {n} documents stay in '{from}' »).
     pub async fn thread_merge(&self, target_id: &str, source_id: &str) -> Result<usize, DocError> {
         let _w = self.write_lock.lock().await;
         if target_id == source_id {
             return Err(DocError::Store("a thread cannot be merged into itself".into()));
         }
-        for id in [target_id, source_id] {
-            if self.thread_row(id).await?.deleted_at.is_some() {
+        let target = self.thread_row(target_id).await?;
+        let mut source = self.thread_row(source_id).await?;
+        for (id, t) in [(target_id, &target), (source_id, &source)] {
+            if t.deleted_at.is_some() {
                 return Err(DocError::Store(format!("thread {id} was deleted")));
             }
         }
-        let ids: Vec<String> = self
+        if source.is_ended() {
+            return Err(DocError::Store(format!("thread {source_id} has ended already (merged into another thread)")));
+        }
+        if target.is_ended() {
+            return Err(DocError::Store(format!("thread {target_id} has ended (merged into another thread)")));
+        }
+        let target_raw = target.id_string().unwrap_or_else(|| target_id.to_string());
+        let source_raw = source.id_string().unwrap_or_else(|| source_id.to_string());
+        let staying = self
             .store()
-            .list_documents_including_deleted()
+            .list_documents(Some(&source_raw))
             .await
             .map_err(store_err)?
             .into_iter()
-            .filter(|d| d.thread_id == source_id)
-            .filter_map(|d| d.id_string())
-            .collect();
-        let mut moved = 0;
-        for id in &ids {
-            match self.move_locked(id, target_id).await {
-                Ok(_) => moved += 1,
-                // Mid-purge: it is going, not moving.
-                Err(DocError::Purged(_)) => {}
-                Err(e) => return Err(e),
+            .filter(|d| d.deleted_at.is_none())
+            .count();
+        let prior = source.clone();
+        let stamp = self.merge_write_stamp(&source).await?;
+        source.ended_at = Some(time_of(stamp.wall_ms));
+        source.merged_into = Some(target_raw);
+        source.merge_stamp = Some(encode_stamp(&stamp));
+        self.put_thread(source_id, source, Some(prior)).await?;
+        Ok(staying)
+    }
+
+    /// C-MERGE MG5 (spec ch. 03; Céline, 2026-11-17: « Assistant seul »):
+    /// undoes the merge of thread `source_id` by clearing its two fields
+    /// (`ended_at`, `merged_into`) under a new merge stamp, so the undo
+    /// travels by sync as the merge did (MG4). It needs no record kept in
+    /// memory: the two fields are the whole merge. Refused, nothing written,
+    /// when the thread is not ended (never merged, or undone already), or
+    /// deleted.
+    pub async fn thread_unmerge(&self, source_id: &str) -> Result<(), DocError> {
+        let _w = self.write_lock.lock().await;
+        let mut t = self.thread_row(source_id).await?;
+        if t.deleted_at.is_some() {
+            return Err(DocError::Store(format!("thread {source_id} was deleted")));
+        }
+        if !t.is_ended() {
+            return Err(DocError::Store(format!("thread {source_id} is not merged into another thread")));
+        }
+        let prior = t.clone();
+        let stamp = self.merge_write_stamp(&t).await?;
+        t.ended_at = None;
+        t.merged_into = None;
+        t.merge_stamp = Some(encode_stamp(&stamp));
+        self.put_thread(source_id, t, Some(prior)).await
+    }
+
+    /// A merge stamp for a merge or an undo of thread `t`: after every stamp
+    /// issued or seen here, after the thread's own order, and after its
+    /// previous merge stamp.
+    async fn merge_write_stamp(&self, t: &Thread) -> Result<Stamp, DocError> {
+        self.ensure_clock().await?;
+        if let Some(prev) = t.merge_stamp.as_deref().and_then(decode_stamp) {
+            if prev.wall_ms <= self.device_clock_ms() + MAX_STAMP_AHEAD_SECS * 1000 {
+                self.observe_stamp(&prev);
             }
         }
-        self.thread_delete_locked(source_id).await?;
-        Ok(moved)
+        self.thread_write_stamp(t).await
     }
 
     /// Restores a thread from a guardian backup (C-WIRE 17) under its origin
@@ -317,17 +369,46 @@ impl DocumentService {
             Err(DbError::NotFound(_)) => None,
             Err(e) => return Err(store_err(e)),
         };
-        if let Some(l) = &local {
-            if order <= thread_order(l, &self.deps.device) {
-                return Ok(false);
-            }
+        // C-MERGE MG4: the merge's two fields travel with a stamp of their
+        // own, and a received row changes them only by it. A row without it
+        // (an older peer, or a thread never merged) never changes the merge.
+        let remote_merge = remote.merge_stamp.as_deref().and_then(decode_stamp).filter(|m| m.wall_ms <= bound);
+        let merge_newer = match (&remote_merge, local.as_ref().and_then(|l| l.merge_stamp.as_deref()).and_then(decode_stamp)) {
+            (Some(r), Some(l)) => *r > l,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if let Some(m) = &remote_merge {
+            self.observe_stamp(m);
         }
-        let mut t = Thread::new(remote.name, remote.description);
-        t.id = Some(thing);
-        t.created_at = local.as_ref().map_or(remote.created_at, |l| l.created_at);
-        t.modified_at = remote.modified_at;
-        t.deleted_at = remote.deleted_at;
-        t.stamp = if stamped { remote.stamp } else { None };
+        let row_newer = match &local {
+            Some(l) => order > thread_order(l, &self.deps.device),
+            None => true,
+        };
+        if !row_newer && !merge_newer {
+            return Ok(false);
+        }
+        let mut t = if row_newer {
+            let mut t = Thread::new(remote.name.clone(), remote.description.clone());
+            t.id = Some(thing);
+            t.created_at = local.as_ref().map_or(remote.created_at, |l| l.created_at);
+            t.modified_at = remote.modified_at;
+            t.deleted_at = remote.deleted_at.clone();
+            t.stamp = if stamped { remote.stamp.clone() } else { None };
+            if let Some(l) = &local {
+                t.ended_at = l.ended_at;
+                t.merged_into = l.merged_into.clone();
+                t.merge_stamp = l.merge_stamp.clone();
+            }
+            t
+        } else {
+            local.clone().expect("a merge alone applies to a local row")
+        };
+        if merge_newer {
+            t.ended_at = remote.ended_at;
+            t.merged_into = remote.merged_into.clone();
+            t.merge_stamp = remote.merge_stamp.clone();
+        }
         self.put_thread(id, t, local).await?;
         Ok(true)
     }

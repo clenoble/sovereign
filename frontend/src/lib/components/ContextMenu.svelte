@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { app } from '$lib/stores/app.svelte';
-	import { canvas, refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
+	import { canvas, liveThreads, refresh as canvasRefresh } from '$lib/stores/canvas.svelte';
 	import { openById } from '$lib/stores/documents.svelte';
 	import { moveDocumentToThread } from '$lib/api/commands';
 	import { deleteWithUndo } from '$lib/stores/deleteUndo.svelte';
@@ -75,7 +75,7 @@
 			Move to Thread
 			{#if showThreadSub}
 				<div class="sub-menu">
-					{#each canvas.threads as thread}
+					{#each liveThreads() as thread}
 						{#if thread.id !== app.contextMenu.threadId}
 							<button class="ctx-item" onclick={() => handleMoveToThread(thread.id)}>
 								{thread.name}

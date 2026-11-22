@@ -19,23 +19,32 @@ pub struct UnreadableDocumentsDto {
     pub meaning: String,
     /// One line per document, in the order the conversion's record gives.
     pub lines: Vec<String>,
+    /// When the list itself could not be read: the sentence said under the
+    /// heading, in place of the meaning and the lines
+    /// (`sovereign_docs::COULD_NOT_CHECK_UNREADABLE`; spec ch. 03, *What cannot
+    /// be read is never shown as empty*). `None` when it was read, and then
+    /// not sent: the list keeps the three fields of v0.0.12 item 7 V2b
+    /// (`item7_v2b_tests`, B2, fixes them).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub could_not_check: Option<String>,
 }
 
 /// This store's documents that could not be read, worded (B2). No document
-/// service gives no lines; a list that cannot be read gives no lines and a
-/// warning, as the shell's `load_alerts_as` (B2 [choice]).
+/// service gives no lines; a list that cannot be read gives no lines and the
+/// sentence that says so (spec ch. 03, *What cannot be read is never shown as
+/// empty*), as the shell's `load_alerts_as`.
 pub async fn list_unreadable_documents(docs: Option<&DocumentService>) -> UnreadableDocumentsDto {
-    let lines = match docs {
-        None => Vec::new(),
+    let (lines, could_not_check) = match docs {
+        None => (Vec::new(), None),
         Some(docs) => match sovereign_docs::unlock_migration_undecryptable(docs).await {
-            Ok(list) => list.iter().map(sovereign_docs::unreadable_line).collect(),
+            Ok(list) => (list.iter().map(sovereign_docs::unreadable_line).collect(), None),
             Err(e) => {
                 tracing::warn!("the documents that could not be read could not be listed: {e}");
-                Vec::new()
+                (Vec::new(), Some(sovereign_docs::COULD_NOT_CHECK_UNREADABLE.to_string()))
             }
         },
     };
-    UnreadableDocumentsDto { heading: UNREADABLE_HEADING.into(), meaning: UNREADABLE_MEANING.into(), lines }
+    UnreadableDocumentsDto { heading: UNREADABLE_HEADING.into(), meaning: UNREADABLE_MEANING.into(), lines, could_not_check }
 }
 
 /// The `#[tauri::command]` wrapper, registered in `run_tauri`. Gated like

@@ -34,6 +34,7 @@ mod crypto;
 // S5-8: the one-click delete's notice and Undo.
 mod delete_notice;
 mod dev;
+mod display_check;
 // v0.0.12 item 19 (`doc/plans/V0012-items14-19-devices.md`): this device's
 // name (N1, N2) and the Rename field of Settings → Devices (N3, N5, N6).
 mod device_name;
@@ -55,9 +56,12 @@ mod new_thread;
 mod onboarding;
 mod p2p;
 mod panels;
+mod same_name;
+mod log_window;
 mod panic_hook;
 mod recovery;
 mod text;
+// C-LOG's log window: the seams its scrolling test needs.
 mod theme;
 // The trash (Settings → Trash) and its drawing.
 mod trash;
@@ -95,11 +99,36 @@ mod thread_name_tests;
 // the tests, written before the code; the implementer does not edit them.
 #[cfg(test)]
 mod thread_rename_tests;
+// C-HOST AT8 (spec ch. 08, v2.0.78): a lane's rename, the Skills menu and
+// document windows go by id, through the shared functions; written by the LH
+// test author, the implementer does not edit them.
+#[cfg(test)]
+mod at8_identity_tests;
+// C-HOST AT6 in the shell (spec ch. 08; Fable 0050): the modal counts down to
+// the deadline the proposal carries, and the answer is bound to its request id;
+// written by the LH test author, the implementer does not edit them.
+#[cfg(test)]
+mod at6_shell_tests;
 // rc2: the auth gate's and the wizard's text fields are readable in both themes
 // (spec ch. 12, *Onboarding and the auth gate*): the tests, written before the
 // code; the implementer does not edit them.
 #[cfg(test)]
 mod field_contrast_tests;
+// v0.0.13 rc2: a focused text field's border is seen in both themes (spec
+// ch. 12, *Theme*, TC3): the tests, written before the code; the implementer
+// does not edit them.
+#[cfg(test)]
+mod focused_field_border_tests;
+// v0.0.13 rc2: text on the accent and the gravity word are read in both themes
+// (spec ch. 12, *Theme*, TC1, TC2, TC4): the tests, written before the code;
+// the implementer does not edit them.
+#[cfg(test)]
+mod text_on_fill_tests;
+// v0.0.13 rc2: a chosen row's mark is seen in both themes (spec ch. 12,
+// *Theme*, TC6): the tests, written before the code; the implementer does not
+// edit them.
+#[cfg(test)]
+mod chosen_row_outline_tests;
 // rc2: the desktop's first writes of auth.store are exclusive (spec ch. 07,
 // *Auth store*, as extended): the tests, written before the code; the
 // implementer does not edit them.
@@ -195,8 +224,23 @@ fn main() {
             return;
         }
     }
-    let event_loop = EventLoop::new().unwrap();
+    if let Some(sentence) = display_check::refusal_before_event_loop() {
+        eprintln!("{sentence}");
+        std::process::exit(1);
+    }
+    let event_loop = match EventLoop::new() {
+        Ok(event_loop) => event_loop,
+        Err(e) => {
+            eprintln!("{}", display_check::event_loop_failure_here(&e));
+            std::process::exit(1);
+        }
+    };
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App::new();
-    event_loop.run_app(&mut app).unwrap();
+    let run = event_loop.run_app(&mut app);
+    // C6: the shell releases its database before main returns, within a bound,
+    // on every return of the event loop, an error included (the error is then
+    // raised once the close is done).
+    app.close_before_exit(app::EXIT_CLOSE_BOUND);
+    run.unwrap();
 }

@@ -47,10 +47,11 @@ pub async fn backup_now(
             .account_key()
             .await
             .ok_or_else(|| "backup unavailable: account key not loaded".to_string())?;
+        // C-SUP, DEL-0019: while sync is stopped, the stop's text.
         let cmd_tx = state
             .p2p_command_tx()
             .await
-            .ok_or_else(|| "backup requires the P2P node — enable sync first".to_string())?;
+            .ok_or_else(|| state.node_refusal("backup requires the P2P node — enable sync first"))?;
 
         // Paired devices act as hosts AND guardians (one key shard each).
         let peer_ids: Vec<String> = {

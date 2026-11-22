@@ -502,7 +502,7 @@ impl NewThreadPrompt {
             draw_text(scene, ph, Affine::translate((l.field.x0 + FIELD_PAD, y)), p.text_dim);
         }
         scene.pop_layer();
-        let field_border = if self.focus == Part::Field { p.accent } else { p.input_border };
+        let field_border = if self.focus == Part::Field { crate::theme::focused_field_border(&p) } else { p.input_border };
         scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, field_border, None, &l.field);
 
         // Create: inactive while the name is empty (N2).
@@ -521,7 +521,7 @@ impl NewThreadPrompt {
         let cl = self.create_label.get_or_insert_with(|| shaper.shape(CREATE_LABEL, 400.0, 13.5));
         let tx = l.create.x0 + (l.create.width() - cl.width() as f64) * 0.5;
         let ty = l.create.y0 + (l.create.height() - cl.height() as f64) * 0.5;
-        draw_text(scene, cl, Affine::translate((tx, ty)), if active { p.on_accent } else { p.text_dim });
+        draw_text(scene, cl, Affine::translate((tx, ty)), if active { crate::theme::text_on_fill(crate::theme::seen_over(bg, p.popup)) } else { p.text_dim });
     }
 
     fn set_focus(&mut self, part: Part) {

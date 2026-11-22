@@ -14,17 +14,38 @@
 	 *  three attempts before the offer self-destructs. The panel reacts
 	 *  live to `device-paired` / `pairing-failed` events via the pairing
 	 *  store, and disarms the offer on close.
+	 *
+	 *  Pairing a device again (spec ch. 05, PR1 and PR2): a device set up
+	 *  again comes back with a new peer id under its old name. When the
+	 *  device that joined has a name a paired device already holds, the
+	 *  backend holds a question by the time `device-paired` arrives; the
+	 *  panel asks it: « Replace it » or « Keep both » (« Keep all » with
+	 *  several, one of which she picks). Nothing is answered for her; closing
+	 *  the panel answers « keep », as no answer does.
 	 */
 	import { onMount, onDestroy } from 'svelte';
 	import QRCode from 'qrcode';
 	import {
 		generatePairQr,
 		cancelPairing,
-		type GeneratePairQrResult
+		sameNameQuestion,
+		answerSameName,
+		type GeneratePairQrResult,
+		type PairedDevice,
+		type SameNameQuestion
 	} from '$lib/api/commands';
 	import { pairing, clearPairingStatus } from '$lib/stores/pairing.svelte';
+	import { answeredSyncStopped, onGestureNeedingTheNode } from '$lib/stores/syncStopped.svelte';
 
-	let { onClose }: { onClose: () => void } = $props();
+	let {
+		onClose,
+		onDevicesChanged
+	}: {
+		onClose: () => void;
+		/** Called once her answer has removed a pairing, so the list beside
+		 *  the panel can show it. */
+		onDevicesChanged?: () => void;
+	} = $props();
 
 	let qr = $state<GeneratePairQrResult | null>(null);
 	let qrImageUrl = $state('');
@@ -48,7 +69,125 @@
 	);
 	let failure = $derived(pairing.lastFailure);
 
+	// ---- pairing a device again (PR2) ----
+	/** The question held for the device that just joined, while unanswered. */
+	let question = $state<SameNameQuestion | null>(null);
+	/** Her answer, once given: what the panel then says. */
+	let answered = $state<'replaced' | 'kept' | null>(null);
+	/** True while the question is being asked for. */
+	let checking = $state(false);
+	/** True while her answer goes to the backend. */
+	let answering = $state(false);
+	/** The paired device « Replace it » replaces (the first one by default, as
+	 *  on the desktop). */
+	let chosen = $state('');
+	let keepButton = $state<HTMLButtonElement | null>(null);
+	/** The peer id the question was asked for (not reactive: the effect below
+	 *  asks once per pairing). */
+	let askedFor: string | null = null;
+
+	let several = $derived(question !== null && question.candidates.length > 1);
+
+	/** The day it was paired, on this device's clock, then its id shortened as
+	 *  the desktop shows it. A time that does not parse is shown by its first
+	 *  ten characters, as it is stored. */
+	function detail(d: PairedDevice): string {
+		const t = new Date(d.paired_at);
+		let day: string;
+		if (Number.isNaN(t.getTime())) {
+			day = d.paired_at.slice(0, 10);
+		} else {
+			const m = String(t.getMonth() + 1).padStart(2, '0');
+			const dd = String(t.getDate()).padStart(2, '0');
+			day = `${t.getFullYear()}-${m}-${dd}`;
+		}
+		const id =
+			d.peer_id.length > 18 ? `${d.peer_id.slice(0, 8)}…${d.peer_id.slice(-6)}` : d.peer_id;
+		return day ? `paired ${day}, id ${id}` : `id ${id}`;
+	}
+
+	let questionText = $derived.by(() => {
+		if (!question) return '';
+		const name = question.new_device_name;
+		if (question.candidates.length === 1) {
+			return (
+				`Paired with ${name}. This device is already paired with a device named ${name} ` +
+				`(${detail(question.candidates[0])}). If the new one is that device, set up again, ` +
+				`replace the earlier pairing. If they are two devices, keep both: a device whose ` +
+				`pairing is replaced stops syncing with this device.`
+			);
+		}
+		return (
+			`Paired with ${name}. This device is already paired with ${question.candidates.length} ` +
+			`devices named ${name}. If the new one is one of them, set up again, choose it and ` +
+			`replace its earlier pairing. Otherwise keep all: a device whose pairing is replaced ` +
+			`stops syncing with this device.`
+		);
+	});
+
+	let answeredText = $derived.by(() => {
+		const name = pairing.lastPaired?.deviceName ?? '';
+		if (answered === 'replaced') return `Paired with ${name}. The earlier pairing of ${name} is removed.`;
+		if (answered === 'kept') {
+			const kept = several ? 'All are kept' : 'Both are kept';
+			return `Paired with ${name}. ${kept}; you can forget one in Devices.`;
+		}
+		return '';
+	});
+
+	// Once a pairing is reported, ask the backend whether it holds a question
+	// for that device. A build without sync has no such command: nothing is
+	// asked then, and both pairings stay, as with no answer.
+	$effect(() => {
+		if (!justPaired || !pairing.lastPaired) return;
+		const peer = pairing.lastPaired.peerId;
+		if (askedFor === peer) return;
+		askedFor = peer;
+		question = null;
+		answered = null;
+		checking = true;
+		sameNameQuestion()
+			.then((q) => {
+				if (q && q.new_peer_id === peer && q.candidates.length > 0 && askedFor === peer) {
+					question = q;
+					chosen = q.candidates[0].peer_id;
+				}
+			})
+			.catch((e) => console.warn('same_name_question:', e))
+			.finally(() => (checking = false));
+	});
+
+	// The keyboard starts on « Keep both », the answer that removes nothing.
+	$effect(() => {
+		if (question && !answered && keepButton) keepButton.focus();
+	});
+
+	async function answer(replace: string | null) {
+		if (!question || answered || answering) return;
+		answering = true;
+		error = '';
+		try {
+			await answerSameName(replace);
+			answered = replace === null ? 'kept' : 'replaced';
+			if (replace !== null) onDevicesChanged?.();
+		} catch (e) {
+			error = String(e);
+		}
+		answering = false;
+	}
+
+	/** Closing the panel with the question unanswered answers « keep », as no
+	 *  answer does: nothing is removed. */
+	function keepIfUnanswered() {
+		if (question && !answered && !answering) {
+			answered = 'kept';
+			answerSameName(null).catch(() => {});
+		}
+	}
+
 	async function generate() {
+		// C-SUP, DEL-0019: « Generate new QR » while sync is stopped.
+		if (onGestureNeedingTheNode()) return;
 		loading = true;
 		error = '';
 		copied = false;
@@ -63,7 +202,8 @@
 				width: 280
 			});
 		} catch (e) {
-			error = String(e);
+			// C-SUP, DEL-0019: while sync is stopped, the stop's notice and its gesture.
+			if (!answeredSyncStopped(e)) error = String(e);
 		}
 		loading = false;
 	}
@@ -80,6 +220,7 @@
 	}
 
 	function handleClose() {
+		keepIfUnanswered();
 		onClose();
 	}
 
@@ -90,6 +231,7 @@
 
 	onDestroy(() => {
 		if (timer) clearInterval(timer);
+		keepIfUnanswered();
 		clearPairingStatus();
 		// Disarm the offer so the QR on a closed panel can't be redeemed.
 		// Skip when pairing just finished — the offer is already consumed.
@@ -109,19 +251,72 @@
 		<p class="error">{error}</p>
 	{/if}
 
-	{#if justPaired && pairing.lastPaired}
-		<div class="success">
+	{#if justPaired && pairing.lastPaired && question && !answered}
+		<div
+			class="same-name"
+			role="group"
+			aria-labelledby="same-name-title"
+			aria-describedby="same-name-text"
+		>
+			<p id="same-name-title" class="success-title">
+				<strong>Is this {question.new_device_name} set up again?</strong>
+			</p>
+			<p id="same-name-text" class="same-name-text">{questionText}</p>
+			{#if several}
+				<fieldset class="candidates">
+					<legend>Devices named {question.new_device_name}</legend>
+					{#each question.candidates as c (c.peer_id)}
+						<label class="candidate">
+							<input
+								type="radio"
+								name="same-name-candidate"
+								value={c.peer_id}
+								bind:group={chosen}
+							/>
+							<span>{c.device_name}, {detail(c)}</span>
+						</label>
+					{/each}
+				</fieldset>
+			{/if}
+			<div class="answer-actions">
+				<button
+					type="button"
+					class="primary"
+					disabled={answering || !chosen}
+					onclick={() => answer(chosen)}
+				>
+					Replace it
+				</button>
+				<button
+					type="button"
+					class="secondary"
+					bind:this={keepButton}
+					disabled={answering}
+					onclick={() => answer(null)}
+				>
+					{several ? 'Keep all' : 'Keep both'}
+				</button>
+			</div>
+		</div>
+	{:else if justPaired && pairing.lastPaired}
+		<div class="success" role="status">
 			<span class="success-icon">&#x2713;</span>
 			<div>
-				<p class="success-title">
-					Paired with <strong>{pairing.lastPaired.deviceName}</strong>
-				</p>
+				{#if answered}
+					<p class="success-title">{answeredText}</p>
+				{:else}
+					<p class="success-title">
+						Paired with <strong>{pairing.lastPaired.deviceName}</strong>
+					</p>
+				{/if}
 				<p class="success-sub">
 					The new device is syncing now. You can close this panel.
 				</p>
 			</div>
 		</div>
-		<button class="primary" onclick={handleClose}>Done</button>
+		{#if !checking}
+			<button class="primary" onclick={handleClose}>Done</button>
+		{/if}
 	{:else if loading}
 		<div class="loading">Preparing pairing offer...</div>
 	{:else if qr}
@@ -289,6 +484,78 @@
 		margin: 4px 0 0 0;
 		font-size: 0.78rem;
 		color: var(--text-muted);
+	}
+
+	.same-name {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding: 12px;
+		background: rgba(245, 158, 11, 0.08);
+		border-left: 3px solid var(--warning, #f59e0b);
+		border-radius: 4px;
+	}
+
+	.same-name-text {
+		margin: 0;
+		font-size: 0.82rem;
+		color: var(--text-primary);
+		line-height: 1.5;
+	}
+
+	.candidates {
+		margin: 0;
+		padding: 8px 10px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.candidates legend {
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+		padding: 0 4px;
+	}
+
+	.candidate {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		font-size: 0.82rem;
+		color: var(--text-primary);
+		min-height: 24px;
+		cursor: pointer;
+	}
+
+	.answer-actions {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 8px;
+	}
+
+	.secondary {
+		background: var(--bg-hover);
+		border: 1px solid var(--border);
+		color: var(--text-primary);
+		padding: 8px 16px;
+		font-size: 0.85rem;
+		font-weight: 600;
+		border-radius: 4px;
+		cursor: pointer;
+	}
+
+	.answer-actions button:focus-visible,
+	.candidate input:focus-visible {
+		outline: 2px solid var(--text-primary);
+		outline-offset: 2px;
+	}
+
+	.answer-actions button:disabled {
+		opacity: 0.6;
+		cursor: default;
 	}
 
 	.failure {

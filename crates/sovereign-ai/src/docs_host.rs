@@ -29,19 +29,20 @@ use chrono::{DateTime, Utc};
 use sovereign_crypto::account_key::AccountKey;
 use sovereign_crypto::vault::EncryptedBlob;
 use sovereign_db::encrypted::EncryptedGraphDB;
-use sovereign_db::schema::{Entity, PiiKind, PiiRecord, ReviewState, SourceKind, SourceRef};
+use sovereign_db::schema::{PiiKind, PiiRecord, ReviewState, SourceKind, SourceRef};
 use sovereign_db::traits::GraphDB;
 use sovereign_db::DbError;
 use sovereign_core::content::ContentFields;
 use sovereign_docs::{
     Clock, CreateOutcome, DefaultCommitPolicy, DocError, DocumentChanged, DocumentEvents, DocumentService, Duplicate,
-    DocumentView, Edit, EditContent, EditSession, IngestRequest, IngestedItem, MediaFiles, NewContent, NewDocument,
+    DocumentView, Edit, EditContent, EditSession, IngestRequest, IngestedItem, NewContent, NewDocument,
     Origin, PiiError, PiiIngest, Provenance, ReadOnlyReason, Revision, SaveOutcome, ServiceDeps, TextField,
     Trust,
 };
 
-use crate::pii::ingest::{ingest_text, PiiSink};
-use crate::pii::pipeline::PipelineConfig;
+use crate::pii::commit::{substitute_record_ids, tokenize};
+use crate::pii::finding_id::finding_record_id;
+use crate::pii::pipeline::{run_pipeline, PipelineConfig, ScannedFinding};
 
 // ------------------------------------------------------------------ service --
 
@@ -64,11 +65,32 @@ pub fn build_document_service(
         store,
         commit_policy: Arc::new(DefaultCommitPolicy::default()),
         pii,
-        media: Arc::new(FileMedia),
+        // No persona's area is named here: the hosts give their media store
+        // with `DocumentService::with_media` (C-MEDIA).
+        media: Arc::new(FileMedia::without_store()),
         clock: Arc::new(SystemClock),
         events: Arc::new(LoggedEvents),
         device,
     })
+}
+
+/// C-MEDIA (lot L1b): the document service as the hosts build it, with its
+/// media store and the record of what the migration pass neutralised in the
+/// persona's area `area` (C-AREA), encrypted. What
+/// [`build_document_service`] builds, plus where the store lives.
+///
+/// *Signature by the test author of lot L1b; the body is the implementer's.*
+pub fn build_document_service_in_area(
+    store: Arc<EncryptedGraphDB>,
+    account_key: Option<Arc<AccountKey>>,
+    device: String,
+    area: &std::path::Path,
+) -> DocumentService {
+    // The media store is sealed under the persona's KEK, through its store
+    // (which keeps the KEK: wrap, unwrap, name); the record of what the pass neutralised is a sealed record
+    // of that store (`DocumentService::neutralised_media`).
+    let media = Arc::new(FileMedia::in_area(area.to_path_buf(), store.clone()));
+    build_document_service(store, account_key, device).with_media(media)
 }
 
 /// A fresh editing-session id. Random, so a session after a restart never
@@ -209,7 +231,9 @@ pub fn new_user_document(title: impl Into<String>, thread_id: impl Into<String>,
 }
 
 /// A page saved from the web: never owned at creation (G12; the user adopts it
-/// afterwards if she wants), provenance *web* with its URL.
+/// afterwards if she wants), provenance *web* with its URL. Its origin is the
+/// import's, not the editor's (C-SWEEP SW1, spec v2.0.112): she did not see
+/// its values replaced, so they are suspected.
 pub fn new_web_document(
     title: impl Into<String>,
     thread_id: impl Into<String>,
@@ -222,7 +246,7 @@ pub fn new_web_document(
         text,
         Trust::External,
         Provenance::Web { url: url.into() },
-        Origin::Editor { session: new_edit_session() },
+        Origin::Import,
     )
 }
 
@@ -265,6 +289,33 @@ pub fn skill_creation_trust(skill: &str) -> (Trust, Provenance) {
         (Trust::Undetermined, Provenance::Import { source_path: format!("skill:{skill}") })
     }
 }
+
+/// FC1 (spec ch. 03, *Two threads of the name sought: asked once,
+/// remembered*; v0.0.13, item 9): a skill's find-or-create that needs her
+/// answer: two or more live threads have `name` and no remembered choice
+/// holds. [`ServiceSkillDb::find_or_create_thread`] returns it as the error
+/// (an `anyhow::Error` a host can `downcast_ref` to this type), having
+/// created nothing; the host asks, remembers her answer
+/// (`sovereign_db::remember_thread_choice`) and runs the call again. Its
+/// `Display` is the refusal's sentence, for a host that cannot ask (FC6).
+#[derive(Debug, Clone)]
+pub struct AskWhichThread {
+    pub name: String,
+    pub threads: Vec<sovereign_db::schema::Thread>,
+}
+
+impl std::fmt::Display for AskWhichThread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} threads are named '{}'; none was picked — rename one of them first",
+            self.threads.len(),
+            self.name.trim()
+        )
+    }
+}
+
+impl std::error::Error for AskWhichThread {}
 
 /// What a skill creates goes through the service (adoption step 3, C-SKILL):
 /// the narrow store access a skill is given, with `create_document` routed to
@@ -370,15 +421,22 @@ impl sovereign_skills::SkillDbAccess for ServiceSkillDb {
     /// Finds the thread with that exact name (ignoring case and surrounding
     /// spaces) through the bare store, or creates it through the document
     /// service's one thread-write path, stamped (THREAD-sync S1). Two live
-    /// threads with that name are refused, none picked (v0.0.12 item 6, A1).
+    /// threads with that name use the one she chose while her choice holds
+    /// (FC2); otherwise the error is an [`AskWhichThread`] and nothing is
+    /// created (FC1).
     fn find_or_create_thread(&self, name: &str, description: &str) -> anyhow::Result<String> {
+        // FC1, FC2 (spec ch. 03, item 9): two live threads of the name with no
+        // choice held are a question for the host, nothing created.
         let found = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(sovereign_db::existing_thread_for_find_or_create(self.docs.store(), name))
+            tokio::runtime::Handle::current().block_on(sovereign_db::find_or_create_choice(self.docs.store(), name))
         })
         .map_err(|e| anyhow::anyhow!(e))?;
-        if let Some(id) = found {
-            return Ok(id);
+        match found {
+            sovereign_db::FindOrCreate::Use(id) => return Ok(id),
+            sovereign_db::FindOrCreate::Ask(threads) => {
+                return Err(anyhow::Error::new(AskWhichThread { name: name.trim().to_string(), threads }))
+            }
+            sovereign_db::FindOrCreate::Create => {}
         }
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.docs.thread_create(name, description))
@@ -522,24 +580,21 @@ async fn known_records(db: &dyn GraphDB, key: &AccountKey, doc_id: &str) -> Resu
 
 // -------------------------------------------------------------- small deps --
 
-/// Wall-clock time.
+/// The document service's clock, the one the hosts build the service with
+/// (`build_document_service`): every « now » its trash and purge read (the
+/// 30 days, the « trash since » floor, the stamps). It reads the application's
+/// clock, `sovereign_core::clock::now` (settable in tests through
+/// `sovereign_core::clock::test_clock`, under `test-support`).
 pub struct SystemClock;
 impl Clock for SystemClock {
     fn now(&self) -> DateTime<Utc> {
-        Utc::now()
+        sovereign_core::clock::now()
     }
 }
 
-/// SHA-256 of a media file, read from the file system.
-pub struct FileMedia;
-impl MediaFiles for FileMedia {
-    fn sha256(&self, path: &str) -> Option<String> {
-        use sha2::{Digest, Sha256};
-        let bytes = std::fs::read(path).ok()?;
-        let digest = Sha256::digest(&bytes);
-        Some(digest.iter().map(|b| format!("{b:02x}")).collect())
-    }
-}
+/// The hosts' media files and the persona's media store (C-MEDIA): see
+/// [`crate::media_store`].
+pub use crate::media_store::FileMedia;
 
 /// Change events go to the log (no listener consumes them yet: the shell and
 /// the app refresh what they show after their own writes).
@@ -561,18 +616,33 @@ impl PiiIngest for UnavailableIngest {
 
 // ---------------------------------------------------------------- PII hook --
 
-/// The personal-data hook over the regex ingest (`ingest_text`).
+/// The personal-data hook over the regex pipeline (`run_pipeline`, regex only:
+/// C-SWEEP SW8).
 ///
 /// Per text field it runs the pipeline and returns the field's canonical text
-/// (values replaced by `[pii:<record_id>]`). What it adds to `ingest_text`,
-/// because the service calls it on every save rather than once per document:
+/// (values replaced by `[pii:<record_id>]`). What it does, because the service
+/// calls it on every write rather than once per document:
 ///
-/// - **No duplicate records.** A value already recorded for this document (same
-///   kind, same review state, same value) gets the existing record's id instead
-///   of a new record. Without it, each autosave would add a record for every
-///   finding left in the text (low-confidence findings are not replaced by a
-///   token, so they are found again), and for every value still shown raw in an
-///   editor that has not reloaded the tokenized text.
+/// - **The state follows the write's origin** (C-SWEEP SW1, Céline,
+///   2026-11-17): a value it replaces gets a record confirmed only when the
+///   write is her editor's (`Origin::Editor`), suspected (`Unreviewed`) for
+///   every other origin and for the writes with none (a restore, content
+///   received by sync). Either way the value is replaced by its token.
+/// - **A record that exists keeps its state.** A value already recorded for
+///   this document (same kind, same value) gets the existing record's id, its
+///   state untouched: a state is never lowered by another write, nor raised
+///   (only her review changes it). Without it, each autosave would add a record
+///   for every value still shown raw in an editor that has not reloaded the
+///   tokenized text.
+/// - **A dismissed value is left as written** (SW5): a value of this document
+///   whose record she dismissed is not replaced again, wherever an edit moves
+///   it, and no record is written for it.
+/// - **The record id is derived from the finding** (SW2): from the document's
+///   id, the version given (`IngestRequest::version`), the field and the
+///   span ([`finding_record_id`]), so two devices that ingest the same version
+///   write the same records and the same text. A record already stored under
+///   that id (received by sync) is taken as it is. Without a version the store
+///   mints the id.
 /// - **The preserved raw body** (`body_raw_*`, read by the "raw original"
 ///   reveal): the document's text blocks as given, joined like
 ///   `DocumentView::plain_text`, with the tokens of this document's records
@@ -587,6 +657,10 @@ impl PiiIngest for UnavailableIngest {
 ///
 /// Source spans are offsets into the field's text, not into a flat body
 /// (TESTS.md weakness 4: spans are meaningless for v2 anyway).
+/// The locale of the save's detection (regex only). The title resolver
+/// detects the values in the words given with the same one (C-TPII, TP5).
+pub(crate) const SAVE_LOCALE: crate::pii::Locale = crate::pii::Locale::Swiss;
+
 pub struct RegexDocumentIngest {
     db: Arc<dyn GraphDB>,
     account_key: Arc<AccountKey>,
@@ -596,7 +670,7 @@ pub struct RegexDocumentIngest {
 impl RegexDocumentIngest {
     pub fn new(db: Arc<dyn GraphDB>, account_key: Arc<AccountKey>) -> Self {
         // As the Tauri save path did (PII-001): Swiss locale, regex only.
-        let config = PipelineConfig { locale: crate::pii::Locale::Swiss, ..PipelineConfig::default() };
+        let config = PipelineConfig { locale: SAVE_LOCALE, ..PipelineConfig::default() };
         Self { db, account_key, config }
     }
 
@@ -623,6 +697,132 @@ struct Known {
     value: String,
 }
 
+/// C-SWEEP SW1: the state of a value replaced by a write of this origin.
+/// Confirmed only where she sees it happen, a save or a creation through her
+/// editor (Céline, 2026-11-17: « uniquement l'enregistrement via l'éditeur. Pas
+/// l'import de document. »); suspected for every other origin and for the
+/// writes with none.
+pub fn state_of_write(origin: Option<&Origin>) -> ReviewState {
+    match origin {
+        Some(Origin::Editor { .. }) => ReviewState::Confirmed,
+        _ => ReviewState::Unreviewed,
+    }
+}
+
+/// What ingest does with one finding.
+enum Placement {
+    /// Left as written: its value is dismissed in this document.
+    Leave,
+    /// Replaced by the token of this record.
+    Token(String),
+}
+
+/// One ingest's records: what this document already holds, and what this
+/// ingest wrote.
+struct Records<'a> {
+    hook: &'a RegexDocumentIngest,
+    doc_id: &'a str,
+    version: Option<&'a str>,
+    state: ReviewState,
+    known: Vec<Known>,
+    /// Records written by this ingest, whose source span is set once the
+    /// field's canonical text is known.
+    created: HashSet<String>,
+}
+
+impl Records<'_> {
+    fn find(&self, kind: &PiiKind, value: &str) -> Option<&Known> {
+        let same = |k: &&Known| &k.kind == kind && k.value == value;
+        // A dismissal wins over any other record of the same value.
+        self.known
+            .iter()
+            .find(|k| same(k) && k.review_state == ReviewState::Dismissed)
+            .or_else(|| self.known.iter().find(same))
+    }
+
+    async fn place(&mut self, field: TextField, sf: &ScannedFinding) -> anyhow::Result<Placement> {
+        let f = &sf.finding;
+        if let Some(k) = self.find(&f.kind, &f.sample) {
+            return Ok(match k.review_state {
+                ReviewState::Dismissed => Placement::Leave,
+                _ => Placement::Token(k.id.clone()),
+            });
+        }
+        let db = self.hook.db.as_ref();
+        let key = self.hook.account_key.as_ref();
+        let blob =
+            EncryptedBlob::encrypt_str(&f.sample, key).map_err(|e| anyhow::anyhow!("vault encrypt failed: {e}"))?;
+        let source = SourceRef {
+            source_kind: SourceKind::Document,
+            source_id: self.doc_id.to_string(),
+            span_start: f.start,
+            span_end: f.end,
+        };
+        let mut record = PiiRecord {
+            id: None,
+            kind: f.kind.clone(),
+            value_encrypted: blob.ciphertext_b64,
+            value_nonce: blob.nonce_b64,
+            label: None,
+            entity_id: sf.entity_id.clone(),
+            stored_secret: false,
+            confidence: f.confidence,
+            sources: vec![source.clone()],
+            discovered_at: Utc::now(),
+            last_revealed_at: None,
+            use_count: 0,
+            review_state: self.state.clone(),
+            review_stamp: None,
+            deleted_at: None,
+        };
+        if let Some(version) = self.version {
+            let rid = finding_record_id(self.doc_id, version, &field, f.start, f.end);
+            record.id = sovereign_db::schema::raw_to_thing(&rid);
+            let inserted = db
+                .create_pii_record_with_id(record.clone())
+                .await
+                .map_err(|e| anyhow::anyhow!("create_pii_record: {e}"))?;
+            if inserted {
+                self.remember(&rid, f, self.state.clone(), true);
+                return Ok(Placement::Token(rid));
+            }
+            // Already stored under that id (received by sync, or this version
+            // ingested before): taken as it is, its state kept.
+            let existing = db.get_pii_record(&rid).await.map_err(|e| anyhow::anyhow!("get_pii_record: {e}"))?;
+            if existing.deleted_at.is_none()
+                && existing.kind == f.kind
+                && decrypt_value(&existing, key).as_deref() == Some(f.sample.as_str())
+            {
+                if !existing.sources.iter().any(|s| is_doc(s, self.doc_id)) {
+                    let mut sources = existing.sources.clone();
+                    sources.push(source);
+                    db.update_pii_record_sources(&rid, sources)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("update_pii_record_sources: {e}"))?;
+                }
+                self.remember(&rid, f, existing.review_state.clone(), false);
+                return Ok(match existing.review_state {
+                    ReviewState::Dismissed => Placement::Leave,
+                    _ => Placement::Token(rid),
+                });
+            }
+            // Another value under that id: never reused; the store mints one.
+            record.id = None;
+        }
+        let created = db.create_pii_record(record).await.map_err(|e| anyhow::anyhow!("create_pii_record: {e}"))?;
+        let id = created.id_string().ok_or_else(|| anyhow::anyhow!("create_pii_record returned no id"))?;
+        self.remember(&id, f, self.state.clone(), true);
+        Ok(Placement::Token(id))
+    }
+
+    fn remember(&mut self, id: &str, f: &crate::pii::Finding, review_state: ReviewState, created: bool) {
+        self.known.push(Known { id: id.to_string(), kind: f.kind.clone(), review_state, value: f.sample.clone() });
+        if created {
+            self.created.insert(id.to_string());
+        }
+    }
+}
+
 #[async_trait]
 impl PiiIngest for RegexDocumentIngest {
     async fn ingest(&self, request: IngestRequest) -> Result<Vec<IngestedItem>, PiiError> {
@@ -634,38 +834,75 @@ impl PiiIngest for RegexDocumentIngest {
         let entities = self.db.list_entities().await.map_err(|e| fail("entities", e.to_string()))?;
         let contacts = self.db.list_contacts().await.map_err(|e| fail("contacts", e.to_string()))?;
         let known = self.known(&doc_id).await.map_err(|e| fail("records", e))?;
-        let sink = DedupSink {
-            db: self.db.clone(),
-            doc_id: doc_id.clone(),
-            account_key: self.account_key.clone(),
-            known: Mutex::new(known),
-            reused: Mutex::new(HashSet::new()),
+        let mut records = Records {
+            hook: self,
+            doc_id: &doc_id,
+            version: request.version.as_deref(),
+            state: state_of_write(request.origin.as_ref()),
+            known,
+            created: HashSet::new(),
         };
 
         let mut out = vec![];
+        // SW5: « Ingest reads the dismissals at every save, on every device. »
+        // A token of a record she dismissed (here, or on another device whose
+        // dismissal arrived after the document) is her value as written: it is
+        // put back before detection, which then leaves it as written.
+        let dismissed: Vec<Known> =
+            records.known.iter().filter(|k| k.review_state == ReviewState::Dismissed).cloned().collect();
         for item in &request.items {
-            let result = ingest_text(
-                &item.text,
-                &doc_id,
-                SourceKind::Document,
-                &self.config,
-                None,
-                None,
-                &entities,
-                &contacts,
-                &sink,
-                &self.account_key,
-            )
-            .await
-            .map_err(|e| fail("ingest", e.to_string()))?;
-            if result.canonical_body != item.text {
-                out.push(IngestedItem { field: item.field, text: result.canonical_body });
+            let text = expand_tokens(&item.text, &dismissed);
+            let found = run_pipeline(&text, &self.config, None, None, &entities, &contacts).await;
+            for entity in found.proposed_entities {
+                self.db.create_entity(entity).await.map_err(|e| fail("entity", e.to_string()))?;
+            }
+            let mut replaced: Vec<ScannedFinding> = vec![];
+            let mut ids: Vec<(usize, usize, String)> = vec![];
+            for sf in found.findings {
+                match records.place(item.field, &sf).await.map_err(|e| fail("ingest", e.to_string()))? {
+                    Placement::Leave => {}
+                    Placement::Token(id) => {
+                        ids.push((sf.finding.start, sf.finding.end, id));
+                        // Every value placed is replaced: its record says
+                        // whether it is confirmed or suspected.
+                        replaced.push(ScannedFinding { review_state: ReviewState::Confirmed, ..sf });
+                    }
+                }
+            }
+            let tokenized = tokenize(&text, &replaced);
+            let slot_ids: Vec<String> = tokenized
+                .slots
+                .iter()
+                .map(|slot| {
+                    let span = (slot.scanned.finding.start, slot.scanned.finding.end);
+                    ids.iter().find(|(a, b, _)| (*a, *b) == span).map(|(_, _, id)| id.clone()).unwrap_or_default()
+                })
+                .collect();
+            let (canonical, final_slots) = substitute_record_ids(&tokenized.canonical, &tokenized.slots, &slot_ids);
+            // A record this ingest wrote points at its token in the field's
+            // final text (its first occurrence).
+            for (slot, id) in final_slots.iter().zip(slot_ids.iter()) {
+                if records.created.remove(id) {
+                    let source = SourceRef {
+                        source_kind: SourceKind::Document,
+                        source_id: doc_id.clone(),
+                        span_start: slot.canonical_start,
+                        span_end: slot.canonical_end,
+                    };
+                    self.db
+                        .update_pii_record_sources(id, vec![source])
+                        .await
+                        .map_err(|e| fail("ingest", e.to_string()))?;
+                }
+            }
+            if canonical != item.text {
+                out.push(IngestedItem { field: item.field, text: canonical });
             }
         }
 
         // The preserved raw body: the text blocks as given, this document's
         // tokens expanded.
-        let known = sink.known.lock().map(|k| k.clone()).unwrap_or_default();
+        let known = records.known;
         let raw = request
             .items
             .iter()
@@ -716,70 +953,6 @@ fn expand_tokens(text: &str, known: &[Known]) -> String {
     }
     out.push_str(rest);
     out
-}
-
-/// The sink `ingest_text` writes through: a value already recorded for this
-/// document is answered with the existing record instead of a new one.
-struct DedupSink {
-    db: Arc<dyn GraphDB>,
-    doc_id: String,
-    account_key: Arc<AccountKey>,
-    known: Mutex<Vec<Known>>,
-    /// Ids answered from `known`: their sources are merged, never replaced.
-    reused: Mutex<HashSet<String>>,
-}
-
-#[async_trait]
-impl PiiSink for DedupSink {
-    async fn create_pii_record(&self, record: PiiRecord) -> anyhow::Result<String> {
-        let value = decrypt_value(&record, &self.account_key);
-        if let Some(v) = &value {
-            let found = self.known.lock().ok().and_then(|k| {
-                k.iter()
-                    .find(|k| k.kind == record.kind && k.review_state == record.review_state && &k.value == v)
-                    .map(|k| k.id.clone())
-            });
-            if let Some(id) = found {
-                if let Ok(mut r) = self.reused.lock() {
-                    r.insert(id.clone());
-                }
-                return Ok(id);
-            }
-        }
-        let kind = record.kind.clone();
-        let review_state = record.review_state.clone();
-        let created = self.db.create_pii_record(record).await.map_err(|e| anyhow::anyhow!("create_pii_record: {e}"))?;
-        let id = created.id_string().ok_or_else(|| anyhow::anyhow!("create_pii_record returned no id"))?;
-        if let (Some(value), Ok(mut k)) = (value, self.known.lock()) {
-            k.push(Known { id: id.clone(), kind, review_state, value });
-        }
-        Ok(id)
-    }
-
-    async fn update_pii_record_sources(&self, id: &str, sources: Vec<SourceRef>) -> anyhow::Result<()> {
-        let reused = self.reused.lock().map(|r| r.contains(id)).unwrap_or(false);
-        let sources = if reused {
-            // Keep every other document's link (and this one's, already there).
-            let rec = self.db.get_pii_record(id).await.map_err(|e| anyhow::anyhow!("get_pii_record: {e}"))?;
-            if rec.sources.iter().any(|s| is_doc(s, &self.doc_id)) {
-                return Ok(());
-            }
-            let mut merged = rec.sources;
-            merged.extend(sources);
-            merged
-        } else {
-            sources
-        };
-        self.db
-            .update_pii_record_sources(id, sources)
-            .await
-            .map_err(|e| anyhow::anyhow!("update_pii_record_sources: {e}"))
-    }
-
-    async fn create_entity(&self, entity: Entity) -> anyhow::Result<String> {
-        let created = self.db.create_entity(entity).await.map_err(|e| anyhow::anyhow!("create_entity: {e}"))?;
-        created.id_string().ok_or_else(|| anyhow::anyhow!("create_entity returned no id"))
-    }
 }
 
 /// For the hosts' integration tests: a real encrypted store over an in-memory
@@ -860,6 +1033,8 @@ mod tests {
                 .into_iter()
                 .map(|(field, text)| sovereign_docs::IngestItem { field, text: text.into() })
                 .collect(),
+            origin: None,
+            version: None,
         }
     }
 

@@ -17,9 +17,55 @@ use crate::protocol::manifest::{EncryptedManifest, SyncManifest};
 use crate::protocol::sync::SyncTable;
 use crate::protocol::{SovereignRequest, SovereignResponse};
 use crate::sync_engine;
-use crate::sync_service::SyncService;
+use crate::sync_service::{previous_value_name, NotRestoredReason, RestoreOutcome, SyncService};
 
 pub(crate) const PROTOCOL_NAME: &str = "/sovereign/sync/1";
+
+/// How long a host waits for the node's answer to a restore. The node handles
+/// one command between two handlers, and a handler is short; the desktop waits
+/// on its window's thread, so the wait is kept short (spec ch. 05, *A restore
+/// that answers late is not « Not restored »*).
+pub const RESTORE_ANSWER_WAIT: Duration = Duration::from_secs(3);
+
+/// A host's restore from Previous values (spec ch. 05, *A restore that fails is
+/// said*): hands it to the node through `command_tx`, whose sync layer runs
+/// [`SyncService::restore_previous_value`], and returns its outcome, for the
+/// host to show its `notice()` where it offered Restore. The row is named from
+/// `db` as it is now, before the restore.
+///
+/// - No node (`command_tx` is `None`), a closed channel, or a node that ended
+///   without answering: « sync is not running », at once.
+/// - A command the node did not take within [`RESTORE_ANSWER_WAIT`] (its queue
+///   stayed full): it is withdrawn, so nothing will happen, and it is said as
+///   « sync is not running ».
+/// - A command the node took but did not answer within the wait: the node may
+///   still carry it out, so the outcome is [`RestoreOutcome::NoAnswerYet`],
+///   never « Not restored ».
+pub async fn restore_previous_value(
+    command_tx: Option<&mpsc::Sender<P2pCommand>>,
+    db: &dyn sovereign_db::GraphDB,
+    recovery_id: &str,
+) -> RestoreOutcome {
+    let what = previous_value_name(db, recovery_id).await;
+    if let Some(tx) = command_tx {
+        let deadline = tokio::time::Instant::now() + RESTORE_ANSWER_WAIT;
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let command = P2pCommand::RestoreRowRecovery { recovery_id: recovery_id.to_string(), reply };
+        match tokio::time::timeout_at(deadline, tx.send(command)).await {
+            Ok(Ok(())) => match tokio::time::timeout_at(deadline, answer).await {
+                Ok(Ok(outcome)) => return outcome,
+                Ok(Err(_)) => warn!("restore of row recovery {recovery_id}: the sync node ended without answering"),
+                Err(_) => {
+                    warn!("restore of row recovery {recovery_id}: no answer from the sync node yet");
+                    return RestoreOutcome::NoAnswerYet { what };
+                }
+            },
+            Ok(Err(_)) => warn!("restore of row recovery {recovery_id}: the sync node is not running"),
+            Err(_) => warn!("restore of row recovery {recovery_id}: the sync node did not take the command"),
+        }
+    }
+    RestoreOutcome::NotRestored { what, why: NotRestoredReason::SyncNotRunning }
+}
 
 /// Events emitted by the P2P node to the rest of the application.
 #[derive(Debug, Clone)]
@@ -45,6 +91,10 @@ pub enum P2pEvent {
     /// it until it is updated; rows keep syncing (C-WIRE 12). The screens say
     /// which device to update.
     PeerNeedsUpdate { peer_id: String },
+    /// C-WIRE 12 from the other side (spec v2.0.86, v2.0.91): a paired device
+    /// runs a **newer** build, so this device is the one to update. No
+    /// document is exchanged with it until then; rows keep syncing.
+    ThisDeviceNeedsUpdate { peer_id: String },
     /// The swarm is reachable on a new (interface-expanded) address.
     /// The app collects these so pairing offers can carry real dial
     /// hints instead of relying on mDNS discovery (P3.1).
@@ -333,8 +383,13 @@ pub enum P2pCommand {
     /// Re-apply the preserved prior value of a row recovery, undoing a peer
     /// overwrite (p2p-no-per-doc-authz). Routed here because the SyncService —
     /// which holds the transport key to unseal the stashed prior — lives on the
-    /// node.
-    RestoreRowRecovery { recovery_id: String },
+    /// node. `reply` takes the outcome back to the host that asked, which
+    /// shows it where it offered Restore (spec ch. 05, *A restore that fails
+    /// is said*); [`restore_previous_value`] sends this and waits for it.
+    RestoreRowRecovery {
+        recovery_id: String,
+        reply: tokio::sync::oneshot::Sender<RestoreOutcome>,
+    },
     SendRequest { peer_id: PeerId, request: SovereignRequest },
     /// M1.5: deposit a sealed blob for `to_peer_id` in `relay_peer_id`'s
     /// mailbox (offline delivery). `blob` is already E2E-sealed by the
@@ -1151,6 +1206,15 @@ impl SovereignNode {
                 .send(P2pEvent::PeerNeedsUpdate { peer_id: peer_id.to_string() })
                 .await;
         }
+        if plan.this_device_older {
+            // C-WIRE 12 from the other side: the peer runs a newer build, so
+            // this device is the one to update; rows keep syncing.
+            warn!("{peer_id} runs a newer build: documents are not exchanged until this device is updated");
+            let _ = self
+                .event_tx
+                .send(P2pEvent::ThisDeviceNeedsUpdate { peer_id: peer_id.to_string() })
+                .await;
+        }
 
         // Fetch the documents we need from the remote, by id.
         let fetch: Vec<String> = plan.fetch.iter().chain(plan.concurrent.iter()).cloned().collect();
@@ -1158,7 +1222,9 @@ impl SovereignNode {
             self.send_session_request(
                 peer_id,
                 InflightKind::Commits,
-                SovereignRequest::GetCommits { commit_ids: fetch },
+                // C-WIRE 12 (v2.0.91): the request carries this build's wire
+                // version; the answering side judges by it.
+                SovereignRequest::get_commits(fetch),
             );
         }
 
@@ -1176,7 +1242,8 @@ impl SovereignNode {
                 self.send_session_request(
                     peer_id,
                     InflightKind::PushCommitsAck,
-                    SovereignRequest::PushCommits { commits },
+                    // C-WIRE 12 (v2.0.91): carrying this build's wire version.
+                    SovereignRequest::push_commits(commits),
                 );
             }
         }
@@ -1456,15 +1523,17 @@ impl SovereignNode {
                     Err(e) => warn!("Invalid Multiaddr {address}: {e}"),
                 }
             }
-            P2pCommand::RestoreRowRecovery { recovery_id } => {
+            P2pCommand::RestoreRowRecovery { recovery_id, reply } => {
                 // p2p-no-per-doc-authz: undo a peer overwrite by re-applying the
                 // preserved prior row value. Runs on the node because the
                 // SyncService (which holds the transport key needed to unseal
-                // the recovery) lives here.
-                match self.sync_service.restore_row_recovery(&recovery_id).await {
-                    Ok(()) => info!("restored row recovery {recovery_id}"),
-                    Err(e) => warn!("restore row recovery {recovery_id} failed: {e}"),
+                // the recovery) lives here. The outcome goes back to the host
+                // that asked; a failure's detail is in the log already.
+                let outcome = self.sync_service.restore_previous_value(&recovery_id).await;
+                if outcome == RestoreOutcome::Restored {
+                    info!("restored row recovery {recovery_id}");
                 }
+                let _ = reply.send(outcome);
             }
             P2pCommand::Shutdown => unreachable!("handled in run()"),
         }
@@ -1945,13 +2014,47 @@ impl SovereignNode {
 /// `peer` is the verified libp2p sender — `apply_rows` checks every row's
 /// envelope signature against the key embedded in it (P1.3 / P2P-003).
 /// `backup_host` is Some when this device opted into hosting (P4.2).
-async fn process_request(
+///
+/// Public for the C-WIRE 12 tests (lot L1b): the responder's side of a round,
+/// as the node runs it, without a swarm.
+#[doc(hidden)]
+pub async fn process_request(
     request: SovereignRequest,
     peer: PeerId,
     event_tx: &mpsc::Sender<P2pEvent>,
     sync_service: &SyncService,
     backup_host: Option<&crate::backup_host::BackupHost>,
 ) -> SovereignResponse {
+    // C-WIRE 12 (spec v2.0.91): a request that carries documents is judged by
+    // the wire version it carries, whichever side started the round; nothing
+    // is remembered per peer. No version, or a lower one: refused with the
+    // `Error` v0.0.12 already decodes (it logs it and goes on with its rows).
+    // A higher one: refused too, and this device says it is the one to
+    // update. Rows, shards and backup fragments are not judged.
+    if let Some(version) = request.documents_wire_version() {
+        let ours = crate::wire::WIRE_VERSION;
+        match version {
+            Some(v) if v == ours => {}
+            Some(v) if v > ours => {
+                warn!(%peer, v, "document request from a newer build refused: this device runs the older version");
+                let _ = event_tx.send(P2pEvent::ThisDeviceNeedsUpdate { peer_id: peer.to_string() }).await;
+                return SovereignResponse::Error {
+                    message: format!(
+                        "documents not exchanged: the answering device runs an older version of Sovereign (wire version {ours}; the requesting device runs {v}); update the answering device to sync documents"
+                    ),
+                };
+            }
+            other => {
+                let theirs = other.map(|v| v.to_string()).unwrap_or_else(|| "none".into());
+                warn!(%peer, "document request from an older build refused (wire version {theirs})");
+                return SovereignResponse::Error {
+                    message: format!(
+                        "documents not exchanged: the requesting device runs an older version of Sovereign (wire version {theirs}; the answering device runs {ours}); update the requesting device to sync documents"
+                    ),
+                };
+            }
+        }
+    }
     match request {
         SovereignRequest::GetManifest => match sync_service.build_manifest().await {
             // P2P-002: seal the manifest under the per-account transport key.
@@ -1971,7 +2074,7 @@ async fn process_request(
                 }
             }
         },
-        SovereignRequest::GetCommits { commit_ids } => {
+        SovereignRequest::GetCommits { commit_ids, .. } => {
             if commit_ids.len() > MAX_ELEMENTS_PER_REQUEST {
                 warn!(%peer, n = commit_ids.len(), "GetCommits over element cap — refused (A3)");
                 return SovereignResponse::Error {
@@ -1988,7 +2091,7 @@ async fn process_request(
                 }
             }
         }
-        SovereignRequest::PushCommits { commits } => {
+        SovereignRequest::PushCommits { commits, .. } => {
             if commits.len() > MAX_ELEMENTS_PER_REQUEST {
                 warn!(%peer, n = commits.len(), "PushCommits over element cap — refused (A3)");
                 return SovereignResponse::Error {

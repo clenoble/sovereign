@@ -203,7 +203,7 @@ impl ThreadChooser {
             scene.fill(Fill::NonZero, Affine::IDENTITY, bg, None, &RoundedRect::from_rect(*r, 6.0));
             if idx == self.selected {
                 // The keyboard's row: a visible focus outline (WCAG 2.4.7).
-                scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, pal().accent, None, &RoundedRect::from_rect(*r, 6.0));
+                scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, crate::theme::chosen_row_outline(&pal()), None, &RoundedRect::from_rect(*r, 6.0));
             }
             let label = if i < 9 { format!("{}  {name}", i + 1) } else { name.clone() };
             let nl = shaper.shape(&label, (r.width() - 20.0) as f32, 13.0);

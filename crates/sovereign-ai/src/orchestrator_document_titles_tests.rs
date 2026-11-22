@@ -26,9 +26,11 @@
 //!   not act.**
 //! - **T3** — `search` and the `search_documents` tool keep their partial match
 //!   and act on nothing.
-//! - **T4** — `merge_threads` is never auto-approved, even after five
-//!   approvals (its level, Destruct, is pinned in
-//!   `sovereign-core/tests/t4_merge_threads_destruct.rs`).
+//! - **T4** — retired by the B1 test author: « merging always asks » held while
+//!   a merge deleted its source; C-MERGE MG6 (spec v2.0.109; Céline,
+//!   2026-11-13: « Niveau 3 normal ») puts it at level 3, earned trust
+//!   included (`orchestrator_b1_merge_tests.rs`,
+//!   `sovereign-core/tests/b1_merge_level.rs`).
 //! - **T5** — every outcome is an `ActionOutcome`: a refusal is `Failed`, never
 //!   "Done" or ✓; a read is `Reported`.
 //! - **T6** — rename / move / merge take their two names from the person's own
@@ -888,6 +890,11 @@ async fn t2_a_document_gone_meanwhile_is_refused() {
 /// proposal, nothing changed, not done. Then, as the control that the five
 /// approvals did reach auto-approval, the exact title acts without a
 /// proposal.
+///
+/// Except `adopt`: an external document is never adopted through earned
+/// trust (Céline, 2026-11-17, spec ch. 08, *Conversational confirmation*), so
+/// its exact title shows the proposal, and declined, nothing is adopted. Its
+/// partial title still does not act.
 #[tokio::test]
 async fn t2_with_auto_approval_reached_a_partial_title_still_does_not_act() {
     let cases: &[(&str, &str, &str)] = &[
@@ -933,6 +940,12 @@ async fn t2_with_auto_approval_reached_a_partial_title_still_does_not_act() {
         };
         let control = if *action == "move_document" { "move 'Report' to 'Kitchen'" } else { "EXACT" };
         let evs = run_with_decision(&mut w, control, ActionDecision::Reject("not asked".into()), |_| async {}).await;
+        if *action == "adopt" {
+            // Never through earned trust: the proposal shows, declined.
+            assert_eq!(proposals(&evs).len(), 1, "adopt: the proposal shows, whatever the trust: {evs:?}");
+            assert!(!is_owned_now(&w.store, &id).await, "adopt: declined, nothing adopted");
+            continue;
+        }
         assert!(proposals(&evs).is_empty(), "{action}: auto-approved, so no proposal (control): {evs:?}");
         let (success, o) = the_outcome(&evs, action);
         assert!(success && matches!(o, ActionOutcome::Changed { .. }), "{action}: the exact title acts (control): {o:?}");
@@ -986,26 +999,16 @@ async fn t3_search_documents_tool_finds_partial_titles() {
 }
 
 // ----------------------------------------------------------------- T4 --
+//
+// `t4_merge_threads_is_never_auto_approved_by_the_tracker` is retired by the
+// B1 test author: C-MERGE MG6 (spec v2.0.109) puts a merge at level 3, earned
+// trust included. The test below is kept, for what still holds: T7 (a name
+// read from unquoted words is always proposed, whatever the trust state).
 
-/// T4: whatever the trust state, `merge_threads` is never auto-approved —
-/// five approvals on either workflow change nothing.
-#[test]
-fn t4_merge_threads_is_never_auto_approved_by_the_tracker() {
-    let mut t = crate::trust::TrustTracker::new();
-    for wf in [crate::trust::WORKFLOW_QUERY, crate::trust::WORKFLOW_CHAT] {
-        for _ in 0..6 {
-            t.record_approval(wf, "merge_threads");
-        }
-        assert!(
-            !t.should_auto_approve(wf, "merge_threads", security::action_level("merge_threads")),
-            "{wf}: merge_threads auto-approved after six approvals"
-        );
-    }
-}
-
-/// T4 through the orchestrator: after five approvals of `merge_threads`, a
-/// merge is still proposed (rejected: nothing merged). Control: five
-/// approvals of `rename_thread` (Modify) do auto-approve it.
+/// T7 for a merge (until v2.0.109, T4's « a merge always asks »): after five
+/// approvals of `merge_threads`, a merge named in unquoted words is still
+/// proposed (rejected: nothing merged). Control: five approvals of
+/// `rename_thread` (Modify) auto-approve a rename with quoted names.
 #[tokio::test]
 async fn t4_merge_threads_always_asks_even_after_five_approvals() {
     let script: Script = Arc::new(|prompt: &str, _: u32, _: usize| {
@@ -1099,11 +1102,19 @@ async fn t6_router_fixtures_act_on_the_names_the_person_wrote() {
                 assert_eq!(w.thread_of(&budget).await, finance, "Budget 2026 moved into Finance");
                 assert!(w.store.list_documents(Some(&decoy_budget)).await.unwrap().is_empty());
             }
+            // C-MERGE MG1 (spec v2.0.109; B1 test author, b1-tests-v3): Drafts
+            // ends, merged into Archive; it stays a live thread and keeps its
+            // documents. Until v2.0.109 this case held « Drafts merged away »
+            // and its documents moved to Archive.
             5 => {
-                assert!(!w.is_live(&drafts).await, "Drafts merged away");
+                let d = w.thread_row(&drafts).await;
+                assert!(d.deleted_at.is_none(), "Drafts stays a live thread (MG1)");
+                assert_eq!(d.merged_into.as_deref(), Some(archive.as_str()), "Drafts ends, merged into Archive");
+                assert!(d.ended_at.is_some(), "with its end date");
                 assert!(w.is_live(&archive).await, "Archive kept");
-                for d in &in_drafts {
-                    assert_eq!(w.thread_of(d).await, archive, "Drafts' documents now in Archive");
+                assert_eq!(w.thread_row(&archive).await.merged_into, None, "Archive records nothing");
+                for doc in &in_drafts {
+                    assert_eq!(w.thread_of(doc).await, drafts, "Drafts' documents stay in it");
                 }
             }
             6 => assert_eq!(w.thread_row(&alpha).await.name, "Beta", "the words, not the entities (Gamma)"),
@@ -1270,30 +1281,26 @@ async fn t7_unquoted_new_name_running_to_the_end_is_proposed_even_trusted() {
     assert_eq!(w.thread_row(&alpha).await.name, "Beta", "control: the quoted rename ran");
 }
 
-/// T7, case 3: "restore Trip to Rome" with "Trip" and "Trip to Rome" both live
-/// and versioned; the router's `target` is "Trip to Rome", which `restore`
-/// splits at " to ". That split is a name parsed from unquoted text: the
-/// proposal is shown, even with trust reached (today "Trip" is restored
-/// unseen), and nothing is restored before the approval. Approved, the
-/// document the proposal carries — and only it — goes back to its previous
-/// version. Which of the two it is, is not pinned here (the contract's split
-/// is unchanged: today's proposal would name 'Trip').
+/// T7, case 3, brought to RV2 (spec ch. 08, *Action targets*, RV2, specified
+/// 2026-11-18; the Fable maille, by delegation of Céline, 2026-11-19): "restore
+/// Trip to Rome" with "Trip" and "Trip to Rome" both live and versioned, trust
+/// reached. « Trip to Rome » is a whole title and the only reading (« Rome »
+/// names no version), and a whole title keeps the trust path: it runs unseen,
+/// « Trip to Rome » goes back to its previous version, and « Trip » is
+/// untouched.
+///
+/// Before RV2, `restore` split its target at its first " to ", so this test
+/// held that the proposal was shown even with trust reached, on one of the two
+/// documents.
 #[tokio::test]
-async fn t7_restore_split_of_its_target_is_proposed_even_trusted() {
+async fn t7_restore_a_whole_title_containing_to_keeps_the_trust_path() {
     let mut w = world("t7-restore", 4096, routed(intent_json("restore", Some("Trip to Rome")))).await;
     let t = w.thread("Travel").await;
     let trip = versioned_doc(&w, "Trip", &t, "trip text").await;
     let rome = versioned_doc(&w, "Trip to Rome", &t, "rome text").await;
-    let (evs, p) = t7_proposed_under_trust(&mut w, "restore", "restore Trip to Rome").await;
-    let named = p.doc_id.clone().expect("the proposal carries the resolved document");
-    assert!(named == trip || named == rome, "the proposal names one of the two documents: {p:?}");
-    assert!(p.description.contains("'Trip"), "the proposal names its document: {}", p.description);
-    let (success, o) = the_outcome(&evs, "restore Trip to Rome");
-    assert!(success && matches!(o, ActionOutcome::Changed { .. }), "approved: done: {o:?}");
-    let (restored, other, restored_text, other_text) =
-        if named == trip { (&trip, &rome, "trip text (first)", "rome text") } else { (&rome, &trip, "rome text (first)", "trip text") };
-    assert_eq!(text_of(&w, restored).await, restored_text, "the proposed document is the one restored");
-    assert_eq!(text_of(&w, other).await, other_text, "the other one is untouched");
+    t7_runs_trusted(&mut w, "restore", "restore Trip to Rome").await;
+    assert_eq!(text_of(&w, &rome).await, "rome text (first)", "« Trip to Rome » is the one restored");
+    assert_eq!(text_of(&w, &trip).await, "trip text", "« Trip » is untouched");
 }
 
 /// T7, case 4: "move The Plan to Work", only the document "The Plan" existing
@@ -1420,8 +1427,13 @@ async fn t7_quoted_names_keep_trust() {
 }
 
 /// T7, the boundary, one way: a router `target` taken whole (no split, no
-/// stripping) keeps trust — `restore` on "Report" and `adopt` on "Clipping"
-/// run with no proposal after five approvals, whatever the request's words.
+/// stripping) keeps trust — `restore` on "Report" runs with no proposal after
+/// five approvals, whatever the request's words.
+///
+/// `adopt` was the second sample here. It is out since an external document
+/// is never adopted through earned trust (Céline, 2026-11-17, spec ch. 08,
+/// *Conversational confirmation*); that rule is held in
+/// `orchestrator_adopt_trust_tests.rs` and in `trust.rs`.
 #[tokio::test]
 async fn t7_boundary_router_target_taken_whole_keeps_trust() {
     let mut w = world("t7-whole-restore", 4096, routed(intent_json("restore", Some("Report")))).await;
@@ -1429,28 +1441,31 @@ async fn t7_boundary_router_target_taken_whole_keeps_trust() {
     let report = versioned_doc(&w, "Report", &office, "report text").await;
     t7_runs_trusted(&mut w, "restore", "restore the report").await;
     assert_eq!(text_of(&w, &report).await, "report text (first)", "restored, trusted");
-
-    let mut w = world("t7-whole-adopt", 4096, routed(intent_json("adopt", Some("Clipping")))).await;
-    let office = w.thread("Office").await;
-    let clipping = web_doc(&w, "Clipping", &office, "a clipped page").await;
-    t7_runs_trusted(&mut w, "adopt", "adopt the clipping").await;
-    assert!(is_owned_now(&w.store, &clipping).await, "adopted, trusted");
 }
 
-/// T7, the boundary, the other way: `restore`'s split of its target at " to "
-/// is a name parsed from unquoted text, even when only one reading exists —
-/// target "Trip to Rome", only "Trip" live: the proposal is shown after five
-/// approvals (today "Trip" is restored unseen), nothing restored before it.
+/// T7, the boundary, the other way, brought to RV2 (spec ch. 08, *Action
+/// targets*, RV2, specified 2026-11-18; the Fable maille, by delegation of
+/// Céline, 2026-11-19): target "Trip to Rome", only "Trip" live, trust
+/// reached. « Trip to Rome » is no title, and « Rome » names no version, so
+/// there is no reading that finds a document; « Trip », the words before the
+/// last « to », is a title, so the request is answered as RV1 answers for
+/// « Trip »: nothing is proposed or restored, and the reply says how to name a
+/// version (« previous »).
+///
+/// Before RV2, `restore` split its target at its first " to ", so this test
+/// held that a proposal for « Trip » was shown even with trust reached, and
+/// that « Trip » was restored once it was approved.
 #[tokio::test]
-async fn t7_boundary_restore_target_split_at_to_loses_trust() {
+async fn t7_boundary_restore_a_title_before_to_with_no_version_is_answered_not_restored() {
     let mut w = world("t7-split-restore", 4096, routed(intent_json("restore", Some("Trip to Rome")))).await;
     let t = w.thread("Travel").await;
     let trip = versioned_doc(&w, "Trip", &t, "trip text").await;
-    let (evs, p) = t7_proposed_under_trust(&mut w, "restore", "restore Trip to Rome").await;
-    assert_eq!(p.doc_id.as_deref(), Some(trip.as_str()), "the proposal names 'Trip', the one reading: {p:?}");
-    let (success, o) = the_outcome(&evs, "restore Trip to Rome");
-    assert!(success && matches!(o, ActionOutcome::Changed { .. }), "approved: done: {o:?}");
-    assert_eq!(text_of(&w, &trip).await, "trip text (first)");
+    trust_five(&w, "restore");
+    let evs = run_with_decision(&mut w, "restore Trip to Rome", ActionDecision::Approve, |_| async {}).await;
+    assert!(proposals(&evs).is_empty(), "nothing is proposed: {evs:?}");
+    assert_eq!(text_of(&w, &trip).await, "trip text", "nothing is restored");
+    let r = reply(&evs);
+    assert!(r.contains("previous"), "the reply says how to name a version, as RV1 does:\n{r}");
 }
 
 /// T7, the boundary, the stricter side (reading 7, contract author's

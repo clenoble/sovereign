@@ -22,7 +22,7 @@ beforeEach(() => {
 });
 
 async function withAlerts(alerts: ReturnType<typeof alertDto>[], previous: unknown[] = []) {
-	mockTauriCommand('list_sync_alerts', () => alerts);
+	mockTauriCommand('list_sync_alerts', () => ({ alerts: alerts, could_not_check: null }));
 	mockTauriCommand('list_previous_values', () => previous);
 	await reloadSyncAlerts();
 	await tick();

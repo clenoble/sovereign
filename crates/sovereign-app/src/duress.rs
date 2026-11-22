@@ -17,7 +17,7 @@ fn past_ts(max_days: i64) -> chrono::DateTime<chrono::Utc> {
     rand::rng().fill_bytes(&mut b);
     let span = (max_days * 24 * 60).max(31) as u32;
     let mins = 30 + (u32::from_le_bytes(b) % span) as i64;
-    chrono::Utc::now() - chrono::Duration::minutes(mins)
+    sovereign_core::clock::now() - chrono::Duration::minutes(mins)
 }
 
 /// The duress persona's device identity (v0.0.12 item 22, D6): the libp2p
@@ -58,7 +58,7 @@ pub async fn seed_duress_db(db: &SurrealGraphDB, device: &str) -> Result<()> {
 
     // Stamped, through the one thread-write path (THREAD-sync S1): the decoy
     // is seeded before its first unlock, so before its document service.
-    let thread_ids = sovereign_docs::seed_threads(db, &thread_defs, device, chrono::Utc::now())
+    let thread_ids = sovereign_docs::seed_threads(db, &thread_defs, device, sovereign_core::clock::now())
         .await
         .map_err(|e| anyhow::anyhow!("seed decoy threads: {e}"))?;
 

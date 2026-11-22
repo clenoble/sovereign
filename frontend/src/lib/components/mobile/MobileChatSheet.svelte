@@ -22,6 +22,7 @@
 	import { chatMessage } from '$lib/api/commands';
 	import { invoke } from '@tauri-apps/api/core';
 	import { renderMarkdown } from '$lib/utils/markdown';
+	import QuarantinedLogWindow from '../QuarantinedLogWindow.svelte';
 	import { trackChatAnnouncements } from '$lib/utils/chatAnnouncer.svelte';
 	import { hapticForLevel, hapticSuccess, hapticLight } from '$lib/api/haptics';
 	import BottomSheet from './BottomSheet.svelte';
@@ -29,6 +30,8 @@
 	let detent: 'peek' | 'partial' | 'full' = $state('peek');
 	let inputValue = $state('');
 	let messagesEl: HTMLDivElement | undefined = $state();
+	/** C-LOG DG3: the window of what remains readable, opened from the control below a message. */
+	let showReadableLog = $state(false);
 	let copiedIdx = $state<number | null>(null);
 
 	// Voice capture (hold-to-record → Whisper STT)
@@ -286,8 +289,14 @@
 						{:else}
 							<span class="text">{msg.text}</span>
 						{/if}
+						{#if msg.offersReadableLog}
+							<button class="readable-log-btn" onclick={() => (showReadableLog = true)}>Show what remains readable</button>
+						{/if}
 					</div>
 				{/each}
+				{#if showReadableLog}
+					<QuarantinedLogWindow onclose={() => (showReadableLog = false)} />
+				{/if}
 
 				{#if app.pendingAction}
 					<div class="action-card">
@@ -600,4 +609,14 @@
 		white-space: nowrap;
 	}
 	.send-btn:active { filter: brightness(0.88); }
+	.readable-log-btn {
+		margin-top: 4px;
+		padding: 3px 8px;
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: var(--text-secondary);
+		font-size: 0.75rem;
+		cursor: pointer;
+	}
 </style>

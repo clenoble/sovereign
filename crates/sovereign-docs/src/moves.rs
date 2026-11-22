@@ -52,6 +52,7 @@ impl DocumentService {
         if d.thread_id == target {
             return Err(DocError::MoveRefused(SAME_THREAD.into()));
         }
+        self.refuse_ended(&target).await?;
         self.move_locked(id, &target).await?;
         Ok(())
     }
@@ -72,6 +73,11 @@ impl DocumentService {
             return Err(DocError::NotInTrash(id.to_string()));
         }
         let target = self.live_thread(thread_id).await?;
+        // C-MERGE MG3: a restore goes back to the document's own thread, even
+        // ended; into another thread, an ended one is refused.
+        if d.thread_id != target {
+            self.refuse_ended(&target).await?;
+        }
         let mut patch = DocumentPatch { deleted_at: Some(None), ..Default::default() };
         if d.thread_id != target {
             patch.thread_id = Some(target);
@@ -88,6 +94,38 @@ impl DocumentService {
         match active_thread(self.store(), thread_id).await.map_err(store_err)? {
             Some(t) => Ok(t.id_string().unwrap_or_else(|| thread_id.to_string())),
             None => Err(DocError::MoveRefused(NO_SUCH_THREAD.into())),
+        }
+    }
+
+    /// C-MERGE MG3: an ended thread takes no new or moved document. Refused
+    /// with the contract's answer to a request that names it.
+    pub(crate) async fn refuse_ended(&self, thread_id: &str) -> Result<(), DocError> {
+        let Some(t) = active_thread(self.store(), thread_id).await.map_err(store_err)? else { return Ok(()) };
+        if !t.is_ended() {
+            return Ok(());
+        }
+        let answer = sovereign_db::ended_thread_answer(self.store(), &t, &sovereign_db::ended_day(&t)).await.map_err(store_err)?;
+        Err(DocError::MoveRefused(answer))
+    }
+
+    /// C-MERGE MG3: where a copy of a document of thread `thread_id` goes —
+    /// the thread itself, or its live end when it has ended (« a duplicate of
+    /// one of its documents go[es] to its live end »); refused with the
+    /// contract's sentence when it has none. An unknown or deleted thread is
+    /// left as it is (the fallback lane, as before).
+    pub(crate) async fn live_end_of(&self, thread_id: &str) -> Result<String, DocError> {
+        let Some(t) = active_thread(self.store(), thread_id).await.map_err(store_err)? else {
+            return Ok(thread_id.to_string());
+        };
+        if !t.is_ended() {
+            return Ok(thread_id.to_string());
+        }
+        match sovereign_db::live_end(self.store(), &t).await.map_err(store_err)? {
+            Some(end) => Ok(end.id_string().unwrap_or_else(|| thread_id.to_string())),
+            None => {
+                let target = sovereign_db::merged_into_name(self.store(), &t).await;
+                Err(DocError::MoveRefused(sovereign_db::no_live_end_words(t.name.trim(), &target)))
+            }
         }
     }
 }

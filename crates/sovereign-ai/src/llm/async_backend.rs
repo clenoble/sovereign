@@ -15,14 +15,15 @@ pub struct AsyncLlmBackend {
     n_ctx: u32,
     sampling: Arc<Mutex<SamplingConfig>>,
     /// Test-only seam: a scripted model answering `generate` in place of
-    /// llama.cpp (prompt, max_tokens) → text. Never compiled outside tests.
-    #[cfg(test)]
+    /// llama.cpp (prompt, max_tokens) → text. Never compiled outside tests
+    /// (this crate's, or a host's through the `test-support` feature).
+    #[cfg(any(test, feature = "test-support"))]
     fake: Option<FakeGenerate>,
 }
 
 /// Test-only seam: the function a fake backend answers `generate` with.
-#[cfg(test)]
-pub(crate) type FakeGenerate = Arc<dyn Fn(&str, u32) -> Result<String> + Send + Sync>;
+#[cfg(any(test, feature = "test-support"))]
+pub type FakeGenerate = Arc<dyn Fn(&str, u32) -> Result<String> + Send + Sync>;
 
 impl AsyncLlmBackend {
     pub fn new(n_ctx: u32) -> Self {
@@ -30,15 +31,15 @@ impl AsyncLlmBackend {
             inner: Arc::new(Mutex::new(None)),
             n_ctx,
             sampling: Arc::new(Mutex::new(SamplingConfig::default())),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             fake: None,
         }
     }
 
     /// Test-only seam: a backend with window `n_ctx` whose `generate` is
     /// answered by `fake` (no model is loaded or needed).
-    #[cfg(test)]
-    pub(crate) fn fake(n_ctx: u32, fake: FakeGenerate) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fake(n_ctx: u32, fake: FakeGenerate) -> Self {
         let mut b = Self::new(n_ctx);
         b.fake = Some(fake);
         b
@@ -90,7 +91,7 @@ impl ModelBackend for AsyncLlmBackend {
     }
 
     async fn generate(&self, prompt: &str, max_tokens: u32) -> Result<String> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(fake) = &self.fake {
             return fake(prompt, max_tokens);
         }

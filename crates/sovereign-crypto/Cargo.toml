@@ -25,6 +25,11 @@ ed25519-dalek = { version = "2.2", features = ["zeroize"] }
 # The same crate `libp2p 0.56` re-exports as `libp2p::identity`.
 libp2p-identity = { version = "0.2.14", features = ["ed25519", "peerid"] }
 
+# The no-replace rename of a new auth.store where hard links are refused
+# (spec ch. 07, AS1): renameat2(RENAME_NOREPLACE). Already in the lockfile.
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+libc = "0.2"
+
 [dependencies.blahaj]
 version = "0.6"
 optional = true

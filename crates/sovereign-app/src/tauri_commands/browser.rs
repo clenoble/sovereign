@@ -400,22 +400,9 @@ pub async fn save_web_page(
 ) -> Result<CanvasDocDto, String> {
     state.require_unlocked(&webview).await?;
     let docs = state.docs().await?;
-    let tid = match thread_id {
-        Some(t) if !t.is_empty() => t,
-        _ => {
-            // Create or find a "Web" thread for browsed content (created
-            // through the one thread-write path, stamped: THREAD-sync S1).
-            // The thread named exactly "Web" (v0.0.12 item 6, A1: never "Web
-            // clippings"); two live threads with that name are refused.
-            match sovereign_db::existing_thread_for_find_or_create(state.db.as_ref(), "Web").await? {
-                Some(id) => id,
-                None => docs
-                    .thread_create("Web", "Browsed web content")
-                    .await
-                    .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?,
-            }
-        }
-    };
+    // The « Web » thread, or the one she chose (FC2); two with no choice held
+    // are refused, creating nothing: the screen asks first (FC1, FC6).
+    let tid = crate::thread_choice::web_thread(&docs, thread_id).await?;
 
     // C-DOC adoption step 3: through the document service — external,
     // provenance web with its URL (it records `source_url`), a version from

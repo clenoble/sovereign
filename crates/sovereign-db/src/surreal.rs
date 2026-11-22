@@ -1679,6 +1679,23 @@ impl GraphDB for SurrealGraphDB {
         Ok(())
     }
 
+    async fn update_pii_record_review(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+        review_stamp: Option<&str>,
+    ) -> DbResult<()> {
+        let (table, key) = parse_and_validate(id, "pii_record")?;
+        let updated: Option<PiiRecord> = self.db
+            .update((table, key))
+            .merge(serde_json::json!({ "review_state": review_state, "review_stamp": review_stamp }))
+            .await?;
+        if updated.is_none() {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
     async fn update_pii_record_value(
         &self,
         id: &str,
@@ -2221,6 +2238,49 @@ impl GraphDB for SurrealGraphDB {
         let mut result = self.db.query("SELECT * FROM thread").await?;
         let threads: Vec<Thread> = result.take(0)?;
         Ok(threads)
+    }
+
+    // FC3 (spec ch. 03; item 9): the remembered answers to « which one? »,
+    // one row per name, in table `thread_choice`. This store keeps what it is
+    // given: through the encrypted layer, a blind index for the name and a
+    // sealed body. Table `thread_choice` is not in the sync manifest.
+    async fn remember_thread_choice(&self, choice: &crate::schema::ThreadChoice) -> DbResult<()> {
+        let mut row = choice.clone();
+        row.name = choice_key(&choice.name);
+        self.db
+            .query("DELETE thread_choice WHERE name = $name; CREATE thread_choice CONTENT $row")
+            .bind(("name", row.name.clone()))
+            .bind(("row", row))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    async fn thread_choice(&self, name: &str) -> DbResult<Option<crate::schema::ThreadChoice>> {
+        let mut result = self
+            .db
+            .query("SELECT name, chosen, among FROM thread_choice WHERE name = $name LIMIT 1")
+            .bind(("name", choice_key(name)))
+            .await?;
+        let rows: Vec<crate::schema::ThreadChoice> = result.take(0)?;
+        Ok(rows.into_iter().next())
+    }
+
+    async fn forget_thread_choice(&self, name: &str) -> DbResult<()> {
+        self.db
+            .query("DELETE thread_choice WHERE name = $name")
+            .bind(("name", choice_key(name)))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    async fn list_thread_choices_raw(&self) -> DbResult<Vec<serde_json::Value>> {
+        let mut result = self.db.query("SELECT name, chosen, among FROM thread_choice").await?;
+        let rows: Vec<crate::schema::ThreadChoice> = result.take(0)?;
+        rows.into_iter()
+            .map(|r| serde_json::to_value(r).map_err(|e| DbError::Query(format!("thread_choice row: {e}"))))
+            .collect()
     }
 
     async fn list_entities_including_deleted(&self) -> DbResult<Vec<Entity>> {
@@ -2806,31 +2866,34 @@ mod tests {
         assert!(threads.iter().any(|t| t.id_string().as_deref() == Some(id.as_str())));
     }
 
+    /// C-MERGE MG1 (spec ch. 03, v2.0.109; B1 test author): the store keeps a
+    /// merged thread's three fields — its end date, the thread it was merged
+    /// into and the merge stamp — through a whole-record write, and lists the
+    /// thread among the live ones (« the source is not deleted »). Replaces
+    /// `test_merge_threads`, which held the merge of v0.0.12 (documents moved,
+    /// source soft-deleted), contradicted by MG1.
     #[tokio::test]
-    async fn test_merge_threads() {
+    async fn test_a_merged_thread_keeps_its_merge_fields() {
         let db = setup_db().await;
-        let t1 = Thread::new("Target".into(), "".into());
-        let t2 = Thread::new("Source".into(), "".into());
-        let ct1 = db.create_thread(t1).await.unwrap();
-        let ct2 = db.create_thread(t2).await.unwrap();
-        let tid1 = ct1.id_string().unwrap();
-        let tid2 = ct2.id_string().unwrap();
+        let target = db.create_thread(Thread::new("Target".into(), "".into())).await.unwrap();
+        let source = db.create_thread(Thread::new("Source".into(), "".into())).await.unwrap();
+        let tid = target.id_string().unwrap();
+        let sid = source.id_string().unwrap();
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-17T10:00:00.123Z").unwrap().with_timezone(&Utc);
+        let mut ended = db.get_thread(&sid).await.unwrap();
+        ended.ended_at = Some(at);
+        ended.merged_into = Some(tid.clone());
+        ended.merge_stamp = Some(format!("{}:0:device-a", at.timestamp_millis()));
+        db.put_thread(ended).await.unwrap();
 
-        let d1 = Document::new("DocA".into(), tid1.clone(), true);
-        let d2 = Document::new("DocB".into(), tid2.clone(), true);
-        db.create_document(d1).await.unwrap();
-        db.create_document(d2).await.unwrap();
-
-        db.merge_threads(&tid1, &tid2).await.unwrap();
-
-        // All docs should be in target thread
-        let docs = db.list_documents(Some(&tid1)).await.unwrap();
-        assert_eq!(docs.len(), 2);
-
-        // Source thread should be soft-deleted
-        let threads = db.list_threads().await.unwrap();
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].name, "Target");
+        let back = db.get_thread(&sid).await.unwrap();
+        assert_eq!(back.ended_at, Some(at));
+        assert_eq!(back.merged_into.as_deref(), Some(tid.as_str()));
+        assert_eq!(back.merge_stamp, Some(format!("{}:0:device-a", at.timestamp_millis())));
+        let live: Vec<String> = db.list_threads().await.unwrap().iter().filter_map(|t| t.id_string()).collect();
+        assert!(live.contains(&sid) && live.contains(&tid), "both threads are listed: {live:?}");
+        let target_back = db.get_thread(&tid).await.unwrap();
+        assert_eq!((target_back.ended_at, target_back.merged_into, target_back.merge_stamp), (None, None, None));
     }
 
     #[tokio::test]
@@ -3462,4 +3525,10 @@ mod tests {
         assert!(db.create_entity_with_id(e).await.unwrap());
         assert_eq!(db.get_entity("entity:esync1").await.unwrap().name, "Acme");
     }
+}
+
+/// FC3: a choice's row is found by its name as find-or-create compares it
+/// (ignoring case and surrounding spaces).
+fn choice_key(name: &str) -> String {
+    name.trim().to_lowercase()
 }

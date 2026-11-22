@@ -53,3 +53,5 @@ zeroize = { version = "1.8", features = ["zeroize_derive"] }
 [dev-dependencies]
 sovereign-db = { workspace = true, features = ["test-utils"] }
 tracing-subscriber = { workspace = true }
+# Paused time, so a test of the host's bounded wait does not wait it out.
+tokio = { workspace = true, features = ["test-util"] }

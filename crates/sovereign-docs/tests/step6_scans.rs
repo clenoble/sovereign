@@ -265,7 +265,10 @@ const EXCEPTIONS: &[(&str, &str, &str)] = &[
         ASSIGN,
         "the auth probe (dev only, writers gate): tests the encrypted layer below the service",
     ),
-    ("sovereign-app/src/pii_sweep.rs", BODY_KEY, "dead code, replaced by the C-PII sweep (writers gate, K10)"),
+    // `sovereign-app/src/pii_sweep.rs` (BODY_KEY, dead code): its exception
+    // retired by the test author of lot LS(a), the file being retired by
+    // C-SWEEP SW9 (spec ch. 09, Céline, 2026-11-17). Red until the code
+    // removes the file.
 ];
 
 #[test]

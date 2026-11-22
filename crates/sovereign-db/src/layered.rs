@@ -207,6 +207,7 @@ impl GraphDB for ArcWrapper {
     async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord> { self.0.get_pii_record(id).await }
     async fn list_pii_records(&self, entity_id: Option<&str>, review_state: Option<ReviewState>, stored_secret: Option<bool>) -> DbResult<Vec<PiiRecord>> { self.0.list_pii_records(entity_id, review_state, stored_secret).await }
     async fn update_pii_record_review_state(&self, id: &str, review_state: ReviewState) -> DbResult<()> { self.0.update_pii_record_review_state(id, review_state).await }
+    async fn update_pii_record_review(&self, id: &str, review_state: ReviewState, review_stamp: Option<&str>) -> DbResult<()> { self.0.update_pii_record_review(id, review_state, review_stamp).await }
     async fn update_pii_record_value(&self, id: &str, value_encrypted: &str, value_nonce: &str) -> DbResult<()> { self.0.update_pii_record_value(id, value_encrypted, value_nonce).await }
     async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> { self.0.soft_delete_pii_record(id).await }
     async fn get_entity(&self, id: &str) -> DbResult<Entity> { self.0.get_entity(id).await }
@@ -245,6 +246,10 @@ impl GraphDB for ArcWrapper {
     // Sync-scope lists (tombstones included, H-p2p1)
     async fn list_documents_including_deleted(&self) -> DbResult<Vec<Document>> { self.0.list_documents_including_deleted().await }
     async fn list_threads_including_deleted(&self) -> DbResult<Vec<Thread>> { self.0.list_threads_including_deleted().await }
+    async fn remember_thread_choice(&self, choice: &crate::schema::ThreadChoice) -> DbResult<()> { self.0.remember_thread_choice(choice).await }
+    async fn thread_choice(&self, name: &str) -> DbResult<Option<crate::schema::ThreadChoice>> { self.0.thread_choice(name).await }
+    async fn forget_thread_choice(&self, name: &str) -> DbResult<()> { self.0.forget_thread_choice(name).await }
+    async fn list_thread_choices_raw(&self) -> DbResult<Vec<serde_json::Value>> { self.0.list_thread_choices_raw().await }
     async fn list_entities_including_deleted(&self) -> DbResult<Vec<Entity>> { self.0.list_entities_including_deleted().await }
     async fn list_pii_records_including_deleted(&self) -> DbResult<Vec<PiiRecord>> { self.0.list_pii_records_including_deleted().await }
     async fn list_contacts_including_deleted(&self) -> DbResult<Vec<Contact>> { self.0.list_contacts_including_deleted().await }
@@ -395,6 +400,7 @@ impl GraphDB for LayeredGraphDB {
     async fn get_pii_record(&self, id: &str) -> DbResult<PiiRecord> { self.current().get_pii_record(id).await }
     async fn list_pii_records(&self, entity_id: Option<&str>, review_state: Option<ReviewState>, stored_secret: Option<bool>) -> DbResult<Vec<PiiRecord>> { self.current().list_pii_records(entity_id, review_state, stored_secret).await }
     async fn update_pii_record_review_state(&self, id: &str, review_state: ReviewState) -> DbResult<()> { self.current().update_pii_record_review_state(id, review_state).await }
+    async fn update_pii_record_review(&self, id: &str, review_state: ReviewState, review_stamp: Option<&str>) -> DbResult<()> { self.current().update_pii_record_review(id, review_state, review_stamp).await }
     async fn update_pii_record_value(&self, id: &str, value_encrypted: &str, value_nonce: &str) -> DbResult<()> { self.current().update_pii_record_value(id, value_encrypted, value_nonce).await }
     async fn soft_delete_pii_record(&self, id: &str) -> DbResult<()> { self.current().soft_delete_pii_record(id).await }
     async fn get_entity(&self, id: &str) -> DbResult<Entity> { self.current().get_entity(id).await }
@@ -433,6 +439,10 @@ impl GraphDB for LayeredGraphDB {
     // Sync-scope lists (tombstones included, H-p2p1)
     async fn list_documents_including_deleted(&self) -> DbResult<Vec<Document>> { self.current().list_documents_including_deleted().await }
     async fn list_threads_including_deleted(&self) -> DbResult<Vec<Thread>> { self.current().list_threads_including_deleted().await }
+    async fn remember_thread_choice(&self, choice: &crate::schema::ThreadChoice) -> DbResult<()> { self.current().remember_thread_choice(choice).await }
+    async fn thread_choice(&self, name: &str) -> DbResult<Option<crate::schema::ThreadChoice>> { self.current().thread_choice(name).await }
+    async fn forget_thread_choice(&self, name: &str) -> DbResult<()> { self.current().forget_thread_choice(name).await }
+    async fn list_thread_choices_raw(&self) -> DbResult<Vec<serde_json::Value>> { self.current().list_thread_choices_raw().await }
     async fn list_entities_including_deleted(&self) -> DbResult<Vec<Entity>> { self.current().list_entities_including_deleted().await }
     async fn list_pii_records_including_deleted(&self) -> DbResult<Vec<PiiRecord>> { self.current().list_pii_records_including_deleted().await }
     async fn list_contacts_including_deleted(&self) -> DbResult<Vec<Contact>> { self.current().list_contacts_including_deleted().await }

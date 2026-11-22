@@ -4,6 +4,10 @@ export interface ChatMessage {
 	role: 'user' | 'assistant' | 'system';
 	text: string;
 	timestamp: number;
+	/** C-LOG (spec ch. 08, DG3): the quarantine notice, or the assistant turn that ends after
+	 *  the diagnosis tool found a quarantine; « Show what remains readable » is offered below
+	 *  it. Declared by the test author of C-LOG's host lot. */
+	offersReadableLog?: boolean;
 }
 
 /** Reactive chat state. */

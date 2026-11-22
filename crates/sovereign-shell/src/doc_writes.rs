@@ -34,8 +34,8 @@ pub(crate) fn is_menu_hidden(skill: &str, action: &str) -> bool {
 }
 
 /// The Skills menu entries: `(index into registry.all_skills(), label)` for each
-/// skill's first action, minus the hidden ones. The index is the one
-/// `CtxAction::RunSkill` carries, so filtering never shifts which skill runs.
+/// skill's first action, minus the hidden ones. Since C-HOST AT8 the menu rows
+/// carry the skill's name ([`menu_skill_names`]), not this index.
 pub(crate) fn menu_skill_entries(registry: &SkillRegistry) -> Vec<(usize, String)> {
     registry
         .all_skills()
@@ -50,6 +50,22 @@ pub(crate) fn menu_skill_entries(registry: &SkillRegistry) -> Vec<(usize, String
             }
         })
         .collect()
+}
+
+/// The Skills menu entries by identity (C-HOST AT8): `(skill name, label)`
+/// for each entry of [`menu_skill_entries`], in the same order. The row
+/// carries the name, so nothing it names depends on a position in a list.
+pub(crate) fn menu_skill_names(registry: &SkillRegistry) -> Vec<(String, String)> {
+    menu_skill_entries(registry)
+        .into_iter()
+        .filter_map(|(i, label)| registry.all_skills().get(i).map(|s| (s.name().to_string(), label)))
+        .collect()
+}
+
+/// The skill a Skills menu row names (C-HOST AT8), by its name; `None` for a
+/// name no registered skill has.
+pub(crate) fn skill_named<'a>(registry: &'a SkillRegistry, name: &str) -> Option<&'a dyn sovereign_skills::CoreSkill> {
+    registry.find_skill(name)
 }
 
 /// What a skill receives for a stored document, read through the service:

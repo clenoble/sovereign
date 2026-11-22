@@ -27,6 +27,10 @@ struct Judge {
     entered: tokio::sync::Notify,
     gate: Option<tokio::sync::Semaphore>,
     available: std::sync::atomic::AtomicBool,
+    /// C-SWEEP SW3 (added by the test author of lot LS(a)): through which
+    /// entry the judge was asked, and for which document: ("judge", "") or
+    /// ("judge_document", id).
+    entries: std::sync::Mutex<Vec<(&'static str, String)>>,
 }
 
 impl Judge {
@@ -36,13 +40,26 @@ impl Judge {
             entered: tokio::sync::Notify::new(),
             gate: busy.then(|| tokio::sync::Semaphore::new(0)),
             available: std::sync::atomic::AtomicBool::new(true),
+            entries: std::sync::Mutex::new(Vec::new()),
         })
     }
 }
 
 #[async_trait]
 impl ModelJudge for Judge {
-    async fn judge(&self, _prior: &str, incoming: &str) -> Option<Option<String>> {
+    async fn judge(&self, prior: &str, incoming: &str) -> Option<Option<String>> {
+        self.entries.lock().unwrap().push(("judge", String::new()));
+        self.verdict(prior, incoming).await
+    }
+
+    async fn judge_document(&self, document_id: &str, prior: &str, incoming: &str) -> Option<Option<String>> {
+        self.entries.lock().unwrap().push(("judge_document", document_id.to_string()));
+        self.verdict(prior, incoming).await
+    }
+}
+
+impl Judge {
+    async fn verdict(&self, _prior: &str, incoming: &str) -> Option<Option<String>> {
         if !self.available.load(Ordering::SeqCst) {
             return None;
         }
@@ -186,4 +203,27 @@ async fn without_a_model_the_queue_waits_and_a_replaced_state_is_noted_not_judge
     assert_eq!(pass.superseded, 1, "the replaced one is noted as not analysed by the model");
     assert!(b.docs.pending_model_checks().await.unwrap().is_empty());
     let _ = kept;
+}
+
+/// C-SWEEP SW3 (spec ch. 09; added by the test author of lot LS(a), on the
+/// Fable maille's read of 2026-11-17): the queue's pass asks the model through
+/// the entry that carries the document's id, `judge_document`, so that the
+/// texts are masked where they are read; never through `judge`, which has no
+/// id to mask with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_queues_pass_asks_through_the_entry_with_the_documents_id() {
+    let (a, b) = two_devices("mv-entry", 47).await;
+    let judge = Judge::new(false);
+    let verdicts = ModelVerdicts::new(b.docs.clone(), judge.clone());
+    b.sync.set_model_verdicts(verdicts.clone());
+    let first = create(&a, "First", "an ordinary note").await;
+    let second = create(&a, "Second", "another note").await;
+    settle(&a, &b, 4).await;
+    let pass = verdicts.run_pending().await;
+    assert_eq!(pass.judged, 2, "both changes were judged");
+    let mut entries = judge.entries.lock().unwrap().clone();
+    entries.sort();
+    let mut want = vec![("judge_document", first), ("judge_document", second)];
+    want.sort();
+    assert_eq!(entries, want, "asked through judge_document, with each document's id");
 }

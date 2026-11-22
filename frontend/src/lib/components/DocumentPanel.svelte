@@ -3,9 +3,10 @@
 	import { renderMarkdown } from '$lib/utils/markdown';
 	import { type OpenPanel, save, refresh, updateBody, updateTitle, close, bringToFront, updatePosition, setMode, loadCommits, selectCommit, restoreVersion, toggleSkillsOverflow } from '$lib/stores/documents.svelte';
 	import SaveNotice from './SaveNotice.svelte';
-	import { listSkillsForDoc, executeSkill } from '$lib/api/commands';
+	import { listSkillsForDoc, executeSkill, rememberThreadChoice } from '$lib/api/commands';
 	import { pushSystem } from '$lib/stores/chat.svelte';
-	import type { SkillInfo, SkillResultDto } from '$lib/api/commands';
+	import type { SkillInfo, SkillResultDto, ThreadOffered } from '$lib/api/commands';
+	import ThreadChooser from './ThreadChooser.svelte';
 
 	let { panel }: { panel: OpenPanel } = $props();
 
@@ -132,7 +133,22 @@
 		setMode(panel.doc.id, panel.mode === 'preview' ? 'edit' : 'preview');
 	}
 
+	// HN4 (spec ch. 12): the backend's sentence when the version chosen was
+	// already the current one, as the phone says it.
+	let restoreSaid = $state<string | null>(null);
+
+	function chooseVersion(i: number) {
+		restoreSaid = null;
+		selectCommit(panel.doc.id, i);
+	}
+
+	async function useVersion(commitId: string) {
+		restoreSaid = null;
+		restoreSaid = await restoreVersion(panel.doc.id, commitId);
+	}
+
 	function toggleHistory() {
+		restoreSaid = null;
 		if (panel.mode === 'history') {
 			setMode(panel.doc.id, 'edit');
 		} else {
@@ -152,6 +168,27 @@
 			pushSystem('Skill not run: this document has edits that could not be saved.');
 			return;
 		}
+		await runOnce(skillName, actionId);
+	}
+
+	/** Item 9, FC1 and FC2: a skill that answered `ask_thread` waits here for
+	 *  her answer, with what to run again once she has given it. */
+	let asking = $state<{ name: string; threads: ThreadOffered[]; skillName: string; actionId: string } | null>(null);
+
+	async function pickThread(id: string) {
+		const q = asking;
+		asking = null;
+		if (!q) return;
+		try {
+			await rememberThreadChoice(q.name, id);
+		} catch (e) {
+			pushSystem(`Skill error: ${e}`);
+			return;
+		}
+		await runOnce(q.skillName, q.actionId);
+	}
+
+	async function runOnce(skillName: string, actionId: string) {
 		try {
 			const result: SkillResultDto = await executeSkill(
 				skillName,
@@ -159,7 +196,10 @@
 				panel.doc.id,
 				'{}'
 			);
-			if (result.kind === 'content_update') {
+			if (result.kind === 'ask_thread' && result.structured_json) {
+				const q = JSON.parse(result.structured_json) as { name: string; threads: ThreadOffered[] };
+				asking = { name: q.name, threads: q.threads, skillName, actionId };
+			} else if (result.kind === 'content_update') {
 				await refresh(panel.doc.id);
 			} else if (result.kind === 'file' && result.file_data_base64) {
 				// Trigger download
@@ -276,30 +316,40 @@
 			{:else if panel.mode === 'history'}
 				<!-- Version History -->
 				<div class="history-list">
-					{#if panel.commits.length === 0}
+					{#if panel.historyNotRead}
+						<!-- Item C5: said in their place, never as no versions. -->
+						<p class="empty" role="alert">{panel.historyNotRead}</p>
+					{:else if panel.commits.length === 0}
 						<p class="empty">No commits yet</p>
 					{:else}
 						{#each panel.commits as commit, i}
 							<button
 								class="commit-row"
 								class:selected={panel.selectedCommit === i}
-								onclick={() => selectCommit(panel.doc.id, i)}
+								onclick={() => chooseVersion(i)}
 							>
-								<span class="commit-msg">{commit.message}</span>
-								<span class="commit-time">{new Date(commit.timestamp).toLocaleString()}</span>
+								<!-- HN1-HN3 (spec ch. 12): the backend's words and local time. -->
+								<span class="commit-msg">{commit.shown_message ?? commit.message}</span>
+								<span class="commit-time">{commit.local_time ?? new Date(commit.timestamp).toLocaleString()}</span>
 							</button>
 						{/each}
 					{/if}
-					{#if panel.selectedCommit !== null && panel.commits[panel.selectedCommit]}
+					{#if panel.selectedCommit !== null && panel.commits[panel.selectedCommit]?.could_not_read}
+						<!-- Item C5, HR4: said by the backend's sentence; not offered. -->
+						<div class="commit-preview">
+							<p>{panel.commits[panel.selectedCommit].could_not_read}</p>
+						</div>
+					{:else if panel.selectedCommit !== null && panel.commits[panel.selectedCommit]}
 						<div class="commit-preview">
 							<h4>{panel.commits[panel.selectedCommit].snapshot_title}</h4>
 							<p>{panel.commits[panel.selectedCommit].snapshot_preview}</p>
 							<button
 								class="restore-btn"
-								onclick={() => restoreVersion(panel.doc.id, panel.commits[panel.selectedCommit!].id)}
+								onclick={() => useVersion(panel.commits[panel.selectedCommit!].id)}
 							>
 								Use this version
 							</button>
+							<p class="restore-said" role="status">{restoreSaid ?? ''}</p>
 						</div>
 					{/if}
 				</div>
@@ -328,6 +378,14 @@
 							{/each}
 						</div>
 					{/if}
+				{/if}
+				{#if asking}
+					<ThreadChooser
+						name={asking.name}
+						threads={asking.threads}
+						onpick={pickThread}
+						oncancel={() => (asking = null)}
+					/>
 				{/if}
 			</div>
 		{/if}
@@ -568,6 +626,12 @@
 	}
 	.restore-btn:hover {
 		filter: brightness(1.15);
+	}
+	.commit-preview .restore-said {
+		margin: 8px 0 0;
+	}
+	.commit-preview .restore-said:empty {
+		margin: 0;
 	}
 
 	/* Skills sidebar */

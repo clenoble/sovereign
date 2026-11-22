@@ -21,20 +21,46 @@ pub(crate) async fn install_session(
     auth_store: &sovereign_crypto::auth::AuthStore,
     password: &[u8],
 ) -> Result<sovereign_crypto::auth::PersonaKind, String> {
-    install_session_inner(state, auth_store, password, true).await
+    install_session_inner(state, auth_store, password, true).await.map_err(|e| e.to_string())
 }
 
+/// The folders whose paths a login's error must not name (spec ch. 07, login
+/// errors, LE3): the data directory, the profile directory, and the folder of
+/// the configured database when it lies elsewhere.
+#[cfg(feature = "encryption")]
+fn login_data_dirs(state: &AppState) -> Vec<std::path::PathBuf> {
+    let mut dirs = vec![sovereign_core::sovereign_dir(), state.profile_dir.clone()];
+    if let Some(parent) = std::path::Path::new(&state.config.database.path).parent() {
+        if parent.is_absolute() {
+            dirs.push(parent.to_path_buf());
+        }
+    }
+    dirs
+}
+
+/// The session's installation, whose error says what failed (spec ch. 07,
+/// login errors, LE2): a wrong password, a derivation that failed, or a
+/// failure after the password matched. Its text is the sentence the login
+/// shows; the login's attempt tracker counts a wrong password only (LE4).
 #[cfg(feature = "encryption")]
 async fn install_session_inner(
     state: &AppState,
     auth_store: &sovereign_crypto::auth::AuthStore,
     password: &[u8],
     start_sync: bool,
-) -> Result<sovereign_crypto::auth::PersonaKind, String> {
+) -> Result<sovereign_crypto::auth::PersonaKind, sovereign_crypto::login_error::LoginFailure> {
+    use sovereign_crypto::login_error::LoginFailure;
+    let dirs = login_data_dirs(state);
+    let dirs: Vec<&std::path::Path> = dirs.iter().map(|d| d.as_path()).collect();
+    let not_opened = |e: &dyn std::fmt::Display| LoginFailure::not_opened(e, &dirs);
     let auth_result = auth_store
         .authenticate(password)
-        .map_err(|_| "Invalid password".to_string())?;
+        .map_err(|e| LoginFailure::from_authenticate(&e, &dirs))?;
     let persona = auth_result.persona;
+    // C-AREA AR4 (spec ch. 07, « A switch ends everything the previous
+    // session started »): whatever session was open ends here, before
+    // anything of the new persona is installed.
+    end_previous_session(state, map_persona(persona)).await;
     let device_key_arc = std::sync::Arc::new(auth_result.device_key);
     let account_key_arc = std::sync::Arc::new(auth_result.account_key);
     // v0.0.12 item 22 (D1, D6): this persona's device identity is the libp2p
@@ -42,7 +68,7 @@ async fn install_session_inner(
     // never the configured display name. Its document service and, for the
     // duress persona, its decoy are stamped with it.
     let identity = sovereign_crypto::peer_identity::peer_id(&device_key_arc)
-        .map_err(|e| format!("Could not derive this device's identity ({e})"))?;
+        .map_err(|e| not_opened(&format!("this device's identity could not be derived ({e})")))?;
 
     // 1. Call complete_auth and discard the returned key_db / kek —
     //    side effect: keys.duress.db is created on first duress login,
@@ -96,23 +122,39 @@ async fn install_session_inner(
             // itself — otherwise EncryptedGraphDB.inner would be the layer whose
             // current points back at us, looping on every DB call. raw_inner()
             // is the bootstrap reference held since init_backend.
-            sovereign_core::auth::PersonaKind::Primary => state.db.raw_inner(),
+            //
+            // C-AREA AR4: with a persistent store the boot opens none (its raw
+            // inner is a memory placeholder, `init_backend`): the primary's
+            // store is opened here, at its first session, and never before, so
+            // a duress session that is the process's first never has it open.
+            sovereign_core::auth::PersonaKind::Primary if state.config.database.mode == "memory" => {
+                state.db.raw_inner()
+            }
+            sovereign_core::auth::PersonaKind::Primary => match crate::setup::open_store(&state.config).await {
+                Ok(db) => db,
+                Err(e) => {
+                    tracing::error!("primary store open failed; aborting login: {e}");
+                    return Err(not_opened(&e));
+                }
+            },
             sovereign_core::auth::PersonaKind::Duress => {
                 let mut duress_config = state.config.clone();
                 duress_config.database.path =
                     crate::setup::persona_db_path(&state.config, core_persona);
-                match crate::setup::create_db(&duress_config).await {
+                match crate::setup::open_store(&duress_config).await {
                     Ok(ddb) => {
                         // Seed plausible decoy data on first duress login
                         // (seed_duress_db is idempotent — no-op once populated).
                         if let Err(e) = crate::duress::seed_duress_db(&ddb, &identity).await {
                             tracing::warn!("duress decoy seed failed (continuing): {e}");
                         }
-                        std::sync::Arc::new(ddb)
+                        ddb
                     }
                     Err(e) => {
                         tracing::error!("duress profile DB open failed; aborting login: {e}");
-                        return Err(format!("Could not open the duress profile ({e})"));
+                        // The same words as the primary's (LE5): what is
+                        // shown never says which persona's store failed.
+                        return Err(not_opened(&e));
                     }
                 }
             }
@@ -134,9 +176,7 @@ async fn install_session_inner(
                 // visible error and leave the session locked (no account key is
                 // installed below — step 3 is never reached).
                 tracing::error!("EncryptedGraphDB install failed; aborting login: {e}");
-                return Err(format!(
-                    "Could not initialize at-rest encryption — login aborted to protect your data ({e})"
-                ));
+                return Err(not_opened(&e));
             }
         };
         // SIDECHANNEL-001: pad the persona-specific DB setup to a constant floor.
@@ -154,13 +194,23 @@ async fn install_session_inner(
         // v0.0.12 item 7, V3: under the app's own build version, which the
         // one-time conversion records and compares (it retries what it could
         // not decrypt only under another version).
+        // C-MEDIA: with the media store of this persona's area, sealed under
+        // its KEK through its store (which keeps the KEK).
         let docs = std::sync::Arc::new(
             sovereign_ai::docs_host::build_document_service(
                 encrypted.clone(),
                 Some(account_key_arc.clone()),
                 identity.clone(),
             )
-            .with_build_version(env!("CARGO_PKG_VERSION")),
+            .with_build_version(env!("CARGO_PKG_VERSION"))
+            // Under the profile directory the app's other persona paths use
+            // (`state.profile_dir`; no new path under the Sovereign
+            // directory, C-AREA AR8).
+            .with_media(std::sync::Arc::new(sovereign_ai::docs_host::FileMedia::for_persona(
+                &state.profile_dir,
+                core_persona,
+                encrypted.clone(),
+            ))),
         );
         *state.docs.write().await = Some(docs.clone());
         if let Ok(mut sessions) = state.edit_sessions.lock() {
@@ -174,6 +224,7 @@ async fn install_session_inner(
         // Feature 1: retain the KEK so recovery-setup can seal it (+ AccountKey)
         // into the guardian Recovery Bundle. Only the PRIMARY persona's KEK —
         // the duress persona must never provision real-account recovery.
+        // C-AREA AR4: a duress session holds no KEK (cleared at the switch).
         if core_persona == sovereign_core::auth::PersonaKind::Primary {
             state.set_kek(kek_arc).await;
         }
@@ -252,10 +303,7 @@ async fn install_session_inner(
             sovereign_crypto::auth::PersonaKind::Primary => sovereign_core::auth::PersonaKind::Primary,
             sovereign_crypto::auth::PersonaKind::Duress => sovereign_core::auth::PersonaKind::Duress,
         };
-        let log_paths = sovereign_ai::OrchestratorStatePaths::for_persona(
-            &sovereign_core::sovereign_dir(),
-            log_persona,
-        );
+        let log_paths = sovereign_ai::OrchestratorStatePaths::for_persona(&state.profile_dir, log_persona);
         // SEAM D (v0.0.9 audit): derivation lifted to sovereign-crypto so the
         // native shell shares it — same info string, same key.
         orch.set_session_log_key_for(&log_paths, account_key_arc.derive_session_log_key());
@@ -288,11 +336,24 @@ async fn install_session_inner(
     //     both personas: nothing here tells them apart (M5).
     if let Some(docs) = state.docs.read().await.clone() {
         let tx = state.orch_tx.clone();
+        let media_tx = state.orch_tx.clone();
+        // C-MEDIA: the media migration pass runs first, in the same background
+        // task: the login does not wait for it (SIDECHANNEL-001). The order
+        // before sync is the service's: it runs the pass before it applies any
+        // received state. What the pass did, or that it failed, goes to the
+        // frontend as a `documents-migrated` notice.
+        let media = sovereign_docs::media_pass_task(docs.clone(), move |text| {
+            let _ = media_tx.send(sovereign_core::interfaces::OrchestratorEvent::DocumentsMigrated { text });
+        });
         let mut slot = state.migration_task.lock().unwrap_or_else(|e| e.into_inner());
         sovereign_docs::start_unlock_migration(
             docs,
             |task| {
-                if let Some(previous) = slot.replace(tauri::async_runtime::spawn(task)) {
+                let both = async move {
+                    media.await;
+                    task.await;
+                };
+                if let Some(previous) = slot.replace(tauri::async_runtime::spawn(both)) {
                     previous.abort();
                 }
             },
@@ -310,11 +371,103 @@ async fn install_session_inner(
     //    is a no-op on the second pass. Best-effort: a P2P bring-up
     //    failure must not fail the login. A backup recovery starts it
     //    itself, after the restore (`install_session_without_sync`).
-    if start_sync {
+    // C-AREA AR2 (v2.0.87: « An install set up before v0.0.13 never passes
+    // through setup again: there, the same draw happens at the first duress
+    // login that finds no names of its own »): the duress persona's names,
+    // drawn now if it has none, in its own area.
+    if persona == sovereign_crypto::auth::PersonaKind::Duress {
+        if let Err(e) = create_duress_identity(&state.profile_dir) {
+            tracing::warn!("the duress profile could not be made at login: {e}");
+        }
+    }
+
+    // C-AREA AR4 (« Aucun moteur »): a duress session runs no node.
+    if start_sync && persona == sovereign_crypto::auth::PersonaKind::Primary {
         start_sync_now(state).await;
     }
 
     Ok(persona)
+}
+
+/// C-SWEEP SW1: the sweep a login started. The process holds one session at
+/// a time, so one slot (not a field of `AppState`, which the C-AREA walks
+/// build field by field).
+#[cfg(feature = "encryption")]
+fn pii_sweep_slot() -> &'static std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>> =
+        std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// C-SWEEP SW1 (spec ch. 09): « after a login, once the session is open »,
+/// passes of the shared routine (SW9) in bounded batches, in a task of the
+/// session (ended at the next login, C-AREA AR4). Never on a timer: on the
+/// phone the sweep runs only while the app is open, after a login or a sync
+/// round. A pass that analyses nothing ends it (what failed is tried again).
+#[cfg(feature = "encryption")]
+async fn start_pii_sweep(state: &AppState) {
+    let Some(docs) = state.docs.read().await.clone() else { return };
+    let task = tauri::async_runtime::spawn(async move {
+        loop {
+            let r = sovereign_ai::pii::sweep::run_sweep_pass(&docs, 25).await;
+            if !r.remaining || r.analysed.is_empty() {
+                break;
+            }
+        }
+    });
+    let mut slot = pii_sweep_slot().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(previous) = slot.replace(task) {
+        previous.abort();
+    }
+}
+
+#[cfg(feature = "encryption")]
+fn map_persona(p: sovereign_crypto::auth::PersonaKind) -> sovereign_core::auth::PersonaKind {
+    match p {
+        sovereign_crypto::auth::PersonaKind::Primary => sovereign_core::auth::PersonaKind::Primary,
+        sovereign_crypto::auth::PersonaKind::Duress => sovereign_core::auth::PersonaKind::Duress,
+    }
+}
+
+/// C-AREA AR4 (spec ch. 07): « A switch ends everything the previous session
+/// started: its node, its keys, its timers and background tasks (the hourly
+/// purge, the personal-data sweep), and its pending proposals. Nothing
+/// started under one persona acts under the other. » Run at every login,
+/// right after the password is verified and before the new persona's keys,
+/// store and services are installed:
+/// - the P2P node stops and its pairing state goes (`stop_p2p_node`);
+/// - the keys go: the KEK, the account key, the device key, an armed pairing;
+/// - the document service goes, with its editing sessions and its one-time
+///   migration; the hourly purge (`doc_trash::run_purge_ticks`) acts only
+///   through the service installed now, so it follows the new session;
+/// - the orchestrator ends the previous session: a proposal still waiting is
+///   withdrawn and records nothing, and its state moves to `persona`'s own
+///   directory (ATREST-011).
+#[cfg(feature = "encryption")]
+async fn end_previous_session(state: &AppState, persona: sovereign_core::auth::PersonaKind) {
+    #[cfg(feature = "p2p")]
+    crate::sync_startup::stop_p2p_node(state).await;
+    if let Some(task) = state.migration_task.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        task.abort();
+    }
+    if let Some(task) = pii_sweep_slot().lock().unwrap_or_else(|e| e.into_inner()).take() {
+        task.abort();
+    }
+    *state.kek.write().await = None;
+    *state.account_key.write().await = None;
+    *state.p2p_identity_key.write().await = None;
+    *state.pending_pairing.write().await = None;
+    *state.docs.write().await = None;
+    if let Ok(mut sessions) = state.edit_sessions.lock() {
+        sessions.clear();
+    }
+    // Nothing of the previous persona's store is reachable from here until
+    // the new one is installed: the layer goes back to the boot placeholder.
+    state.db.swap(state.db.raw_inner());
+    if let Some(ref orch) = state.orchestrator {
+        orch.switch_persona(&sovereign_ai::OrchestratorStatePaths::for_persona(&state.profile_dir, persona));
+    }
+    state.set_session_persona(Some(persona));
 }
 
 /// [`install_session`] without starting sync: for a backup recovery, which
@@ -329,7 +482,28 @@ pub(crate) async fn install_session_without_sync(
     auth_store: &sovereign_crypto::auth::AuthStore,
     password: &[u8],
 ) -> Result<sovereign_crypto::auth::PersonaKind, String> {
-    install_session_inner(state, auth_store, password, false).await
+    install_session_inner(state, auth_store, password, false).await.map_err(|e| e.to_string())
+}
+
+/// C-SUP SU1 (spec ch. 05; Céline, 2026-11-16): whether this session's sync
+/// is stopped, read from the same state `AppState::node_refusal` reads. The
+/// login asks it after the interface's reset (`resetSessionState()`), so a
+/// stop of the session it opens, a failed start included, reaches the screen
+/// after the login has answered.
+///
+/// *Signature by the C-SUP test author (lot LQ); the body, and its
+/// registration in `run_tauri`, are the implementer's.*
+#[tauri::command]
+pub async fn sync_is_stopped(state: State<'_, AppState>) -> Result<bool, String> {
+    let _ = &state;
+    #[cfg(feature = "p2p")]
+    {
+        return Ok(crate::sync_startup::sync_stopped(&state.profile_dir));
+    }
+    #[allow(unreachable_code)]
+    {
+        Ok(false)
+    }
 }
 
 /// Starts sync for the unlocked session (best-effort, idempotent).
@@ -337,8 +511,12 @@ pub(crate) async fn install_session_without_sync(
 pub(crate) async fn start_sync_now(state: &AppState) {
     #[cfg(feature = "p2p")]
     {
+        // A start that fails, a missing key included, is said as a stop
+        // (Céline, 2026-11-16): the stop's path, the reason to the log only.
+        // The login itself goes on.
         if let Err(e) = crate::sync_startup::start_p2p_node(state).await {
-            tracing::warn!("P2P startup failed (continuing without sync): {e}");
+            tracing::warn!("P2P node did not start: {e}");
+            state.on_sync_stopped(sovereign_p2p::supervision::NodeEnd::Failed(e));
         }
     }
 }
@@ -397,9 +575,18 @@ fn mark_setup_finished_at_login(profile_dir: &std::path::Path) {
 /// the one `complete_onboarding` persists and `get_profile` returns on every
 /// later login. Creating + saving the profile here is safe pre-auth: the
 /// onboarding gate keys off the `onboarding_done` marker, not `profile.json`.
+///
+/// **Refused once the device has an account** (C-AREA AR2, v2.0.88: « The
+/// commands that create an account or answer its designation are refused once
+/// the device has an account, inside a duress session too »), with the words
+/// account creation is refused with; nothing is read or written then. On a
+/// device with no account (setup), it answers as before.
 #[tauri::command]
 pub async fn onboarding_designation(state: State<'_, AppState>) -> Result<String, String> {
     let profile_dir = &state.profile_dir;
+    if profile_dir.join("crypto").join("auth.store").exists() {
+        return Err(crate::onboarding_claim::ClaimRefused::AlreadyOnboarded.to_string());
+    }
     let mut profile = sovereign_core::profile::UserProfile::load(profile_dir)
         .unwrap_or_else(|_| sovereign_core::profile::UserProfile::default_new());
     // Persist so complete_onboarding (and future launches) reuse this exact
@@ -468,25 +655,33 @@ pub async fn validate_password(
         // AND the duress persona — both are "success" and must reset the
         // counter identically. The only difference is the downstream persona
         // string we return; the throttle path must NOT leak which one unlocked.
-        match install_session(&state, &store, password.as_bytes()).await {
+        match install_session_inner(&state, &store, password.as_bytes(), true).await {
             Ok(persona) => {
                 attempts.reset();
                 if let Err(e) = attempts.save(&crypto_dir) {
                     tracing::warn!("login_throttle: failed to persist reset on success: {e}");
                 }
                 mark_setup_finished_at_login(&state.profile_dir);
+                // C-SWEEP SW1: once the session is open, the sweep.
+                start_pii_sweep(&state).await;
                 match persona {
                     sovereign_crypto::auth::PersonaKind::Primary => Ok("primary".into()),
                     sovereign_crypto::auth::PersonaKind::Duress => Ok("duress".into()),
                 }
             }
             Err(e) => {
-                attempts.record_failure();
-                if let Err(save_err) = attempts.save(&crypto_dir) {
-                    tracing::warn!("login_throttle: failed to persist failure: {save_err}");
+                // LE4 (spec ch. 07): only a wrong password counts toward the
+                // lockout. A wrong guess always yields it, so no guess escapes
+                // the throttle; a derivation that failed or an account that
+                // did not open after the password matched is not a guess.
+                if e.is_wrong_password() {
+                    attempts.record_failure();
+                    if let Err(save_err) = attempts.save(&crypto_dir) {
+                        tracing::warn!("login_throttle: failed to persist failure: {save_err}");
+                    }
                 }
-                // Return the existing auth error UNCHANGED.
-                Err(e)
+                // The sentence the login screen shows, as is (LE2).
+                Err(e.to_string())
             }
         }
     }
@@ -618,23 +813,16 @@ pub async fn complete_onboarding(
     // pre-login IPC caller cannot re-onboard with its own password.
     let _claim = crate::onboarding_claim::claim(profile_dir).map_err(|e| e.to_string())?;
 
-    // Save user profile
+    // Save user profile: the nickname in the primary's identity profile (the
+    // data directory's `user_profile.json`), the theme and the bubble style in
+    // the device preferences (C-AREA AR2).
     let mut profile = sovereign_core::profile::UserProfile::load(profile_dir)
         .unwrap_or_else(|_| sovereign_core::profile::UserProfile::default_new());
     if let Some(ref nick) = data.nickname {
         profile.nickname = Some(nick.clone());
     }
-    if let Some(ref style) = data.bubble_style {
-        profile.bubble_style =
-            serde_json::from_str(&format!("\"{style}\"")).unwrap_or_default();
-    }
-    // Persist the theme picked during the wizard (the wizard toggles
-    // state.theme via the toggle_theme command, but at that point the
-    // profile may not exist yet, so we capture the current value here).
-    if let Ok(theme_guard) = state.theme.lock() {
-        profile.theme = theme_guard.clone();
-    }
     profile.save(profile_dir).str_err()?;
+    save_wizard_preferences(&state, data.bubble_style.as_deref()).str_err()?;
 
     // P2b: set once auth.store is written; from then on a failed step marks
     // the setup incomplete instead of failing the command.
@@ -702,6 +890,17 @@ pub async fn complete_onboarding(
             &mut incomplete,
         )?;
 
+        // C-AREA AR2 (spec ch. 07, Céline 2026-11-13: « la persona de contrainte
+        // a des noms … random générés automatiquement »): the duress persona's
+        // own identity profile, made now with a designation drawn at random,
+        // never copied from the primary's.
+        after_store(
+            "duress profile",
+            create_duress_identity(profile_dir),
+            store_written,
+            &mut incomplete,
+        )?;
+
         // sidechannel-001-floor-not-equalizer: pre-create + pre-seed the duress
         // decoy DB now, at onboarding, so the FIRST duress login pays no seed
         // cost. The login-time DB_SETUP_FLOOR pads the persona-distinguishing
@@ -722,7 +921,7 @@ pub async fn complete_onboarding(
             // id, derived from its device key. Without it, no pre-seed: the
             // first duress login seeds the decoy with that id.
             let duress_identity = crate::duress::duress_identity(&auth_store, duress.as_bytes());
-            match (crate::setup::create_db(&duress_config).await, duress_identity) {
+            match (crate::setup::open_store(&duress_config).await, duress_identity) {
                 (Ok(ddb), Some(identity)) => {
                     if let Err(e) = crate::duress::seed_duress_db(&ddb, &identity).await {
                         tracing::warn!("duress decoy pre-seed at onboarding failed (continuing): {e}");
@@ -766,7 +965,13 @@ pub async fn complete_onboarding(
                 Err(e) => {
                     after_store(
                         "safety phrase / typing profile",
-                        Err(format!("authentication for the KEK failed: {e}")),
+                        Err(format!(
+                            "authentication for the KEK failed: {}",
+                            sovereign_crypto::login_error::LoginFailure::from_authenticate(
+                                &e,
+                                &[sovereign_core::sovereign_dir().as_path(), profile_dir.as_path()],
+                            )
+                        )),
                         store_written,
                         &mut incomplete,
                     )?;
@@ -844,6 +1049,29 @@ pub async fn complete_onboarding(
     Ok(OnboardingOutcome { incomplete })
 }
 
+/// The wizard's device preferences: the theme the wizard toggled (held in
+/// `state.theme`) and the bubble style it chose, in `device_preferences.json`.
+pub(crate) fn save_wizard_preferences(state: &AppState, bubble_style: Option<&str>) -> anyhow::Result<()> {
+    let theme = state.theme.lock().map(|t| t.clone()).unwrap_or_else(|_| "dark".into());
+    let defaults = sovereign_core::profile::DevicePreferences { theme: theme.clone(), bubble_style: Default::default() };
+    sovereign_core::profile::DevicePreferences::update(&state.profile_dir, defaults, |p| {
+        p.theme = theme;
+        if let Some(style) = bubble_style {
+            p.bubble_style = serde_json::from_str(&format!("\"{style}\"")).unwrap_or_default();
+        }
+    })?;
+    Ok(())
+}
+
+/// The duress persona's identity profile at setup: its names drawn at random
+/// (`UserProfile::generated`), in its own directory, when it has none.
+pub(crate) fn create_duress_identity(profile_dir: &std::path::Path) -> Result<(), String> {
+    let dir = crate::tauri_state::persona_identity_dir(profile_dir, Some(sovereign_core::auth::PersonaKind::Duress));
+    // Name by name (DEL-0006): a profile of its own is kept, its missing
+    // nickname drawn; no profile, a whole one drawn.
+    sovereign_core::profile::UserProfile::ensure_drawn_in(&dir).map(|_| ()).str_err()
+}
+
 /// Encrypt and write the typing profile enrolled during onboarding
 /// (`crypto/keystroke.store`). Nothing is written when no sample is usable.
 #[cfg(feature = "encryption")]
@@ -876,16 +1104,47 @@ fn save_typing_profile(
     Ok(())
 }
 
-/// Get the current user profile.
+/// The open persona's identity profile (C-AREA AR2: `user_profile.json` is
+/// the persona's), read from its own directory. A persona with a directory of
+/// its own and no file there yet gets defaults, saved so they stay the same
+/// from one read to the next: never another persona's values.
+///
+/// Before any login there is none (C-AREA AR2, v2.0.87): refused, nothing
+/// read or written. A persona of its own with no file yet gets names drawn at
+/// random (`UserProfile::generated`).
+fn identity_profile(state: &AppState) -> Result<sovereign_core::profile::UserProfile, String> {
+    let dir = state.identity_dir().ok_or_else(|| NO_SESSION.to_string())?;
+    if dir != state.profile_dir && !dir.join("user_profile.json").exists() {
+        return sovereign_core::profile::UserProfile::ensure_drawn_in(&dir).str_err();
+    }
+    sovereign_core::profile::UserProfile::load(&dir).str_err()
+}
+
+/// The refusal of a command that needs an open session (C-AREA AR2).
+const NO_SESSION: &str = "Not authenticated: log in first.";
+
+/// The device preferences (theme, bubble style), shared by the personas and
+/// read before login (C-AREA AR2, `device_preferences.json`).
+pub(crate) fn device_preferences(state: &AppState) -> sovereign_core::profile::DevicePreferences {
+    sovereign_core::profile::DevicePreferences::load(&state.profile_dir).unwrap_or_else(|| {
+        sovereign_core::profile::DevicePreferences {
+            theme: state.theme.lock().map(|t| t.clone()).unwrap_or_else(|_| "dark".into()),
+            bubble_style: Default::default(),
+        }
+    })
+}
+
+/// Get the current user profile: the open persona's identity, with the
+/// device's bubble style.
 #[tauri::command]
 pub async fn get_profile(state: State<'_, AppState>) -> Result<UserProfileDto, String> {
-    let profile = sovereign_core::profile::UserProfile::load(&state.profile_dir)
-        .str_err()?;
+    let profile = identity_profile(&state)?;
+    let prefs = device_preferences(&state);
     Ok(UserProfileDto {
         user_id: profile.user_id,
         designation: profile.designation,
         nickname: profile.nickname,
-        bubble_style: serde_json::to_string(&profile.bubble_style)
+        bubble_style: serde_json::to_string(&prefs.bubble_style)
             .unwrap_or_else(|_| "\"icon\"".into())
             .trim_matches('"')
             .to_string(),
@@ -893,27 +1152,31 @@ pub async fn get_profile(state: State<'_, AppState>) -> Result<UserProfileDto, S
     })
 }
 
-/// Update user profile fields.
+/// Update user profile fields: the nickname and display name in the open
+/// persona's identity, the bubble style in the device preferences.
 #[tauri::command]
 pub async fn save_profile(
     state: State<'_, AppState>,
     data: SaveProfileDto,
 ) -> Result<(), String> {
-    let mut profile = sovereign_core::profile::UserProfile::load(&state.profile_dir)
-        .str_err()?;
-    if let Some(ref nick) = data.nickname {
-        profile.nickname = Some(nick.clone());
+    // C-AREA AR2 (v2.0.87): before any login, refused whole; nothing written.
+    let dir = state.identity_dir().ok_or_else(|| NO_SESSION.to_string())?;
+    if data.nickname.is_some() || data.display_name.is_some() {
+        let mut profile = identity_profile(&state)?;
+        if let Some(ref nick) = data.nickname {
+            profile.nickname = Some(nick.clone());
+        }
+        if let Some(ref name) = data.display_name {
+            profile.display_name = Some(name.clone());
+        }
+        profile.save(&dir).str_err()?;
     }
     if let Some(ref style) = data.bubble_style {
-        profile.bubble_style =
-            serde_json::from_str(&format!("\"{style}\"")).unwrap_or_default();
+        let style = serde_json::from_str(&format!("\"{style}\"")).unwrap_or_default();
+        let defaults = device_preferences(&state);
+        sovereign_core::profile::DevicePreferences::update(&state.profile_dir, defaults, |p| p.bubble_style = style)
+            .str_err()?;
     }
-    if let Some(ref name) = data.display_name {
-        profile.display_name = Some(name.clone());
-    }
-    profile
-        .save(&state.profile_dir)
-        .str_err()?;
     Ok(())
 }
 

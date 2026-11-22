@@ -225,6 +225,7 @@ async fn two_nodes_sync_doc_entity_and_pii_record() {
             last_revealed_at: None,
             use_count: 0,
             review_state: ReviewState::Confirmed,
+            review_stamp: None,
             deleted_at: None,
         })
         .await

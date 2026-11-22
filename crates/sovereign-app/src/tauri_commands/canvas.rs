@@ -4,6 +4,40 @@ use super::*;
 // Canvas (Phase 3)
 // ---------------------------------------------------------------------------
 
+/// C-MERGE (spec ch. 03, MG2 and MG3) on the phone: the threads the canvas
+/// draws as lanes, in the store's order, each with its merge fields — the
+/// thread it was merged into, that thread's name and the end date — so that
+/// the phone shows an ended lane's mark and offers an ended thread for
+/// nothing. What `canvas_load` returns as its `threads`.
+///
+/// Signature by the B1 test author; the body is the implementer's.
+pub(crate) async fn thread_dtos(db: &dyn sovereign_db::GraphDB) -> Result<Vec<ThreadDto>, String> {
+    let threads = db.list_threads().await.str_err()?;
+    let mut out = Vec::with_capacity(threads.len());
+    for t in threads {
+        let id = t.id.as_ref().map(sovereign_db::schema::thing_to_raw).unwrap_or_default();
+        let (merged_into, merged_into_name, ended_at) = if t.is_ended() {
+            (
+                t.merged_into.clone(),
+                Some(sovereign_db::merged_into_name(db, &t).await),
+                t.ended_at.map(|e| e.to_rfc3339()),
+            )
+        } else {
+            (None, None, None)
+        };
+        out.push(ThreadDto {
+            id,
+            name: t.name,
+            description: t.description,
+            created_at: t.created_at.to_rfc3339(),
+            merged_into,
+            merged_into_name,
+            ended_at,
+        });
+    }
+    Ok(out)
+}
+
 /// Bulk-load all data needed for the spatial canvas.
 #[tauri::command]
 pub async fn canvas_load(
@@ -14,7 +48,7 @@ pub async fn canvas_load(
     tracing::info!("canvas_load: called from frontend");
     let docs = state.db.list_documents(None).await.str_err()?;
     tracing::info!("canvas_load: got {} documents from DB", docs.len());
-    let threads = state.db.list_threads().await.str_err()?;
+    let threads = thread_dtos(state.db.as_ref()).await?;
     let rels = state.db.list_all_relationships().await.str_err()?;
     let contacts = state.db.list_contacts().await.str_err()?;
 
@@ -48,18 +82,7 @@ pub async fn canvas_load(
                 }
             })
             .collect(),
-        threads: threads
-            .into_iter()
-            .map(|t| {
-                let id = t.id.as_ref().map(sovereign_db::schema::thing_to_raw).unwrap_or_default();
-                ThreadDto {
-                    id,
-                    name: t.name,
-                    description: t.description,
-                    created_at: t.created_at.to_rfc3339(),
-                }
-            })
-            .collect(),
+        threads,
         relationships: rels
             .into_iter()
             .map(|r| {

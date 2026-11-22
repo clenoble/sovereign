@@ -274,6 +274,7 @@ fn build_pii_record(
         last_revealed_at: None,
         use_count: 0,
         review_state: scanned.review_state.clone(),
+        review_stamp: None,
         deleted_at: None,
     })
 }

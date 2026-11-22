@@ -131,6 +131,14 @@ pub struct AppState {
     #[cfg(feature = "p2p")]
     pub pairing_manager:
         Arc<tokio::sync::RwLock<Option<sovereign_p2p::pairing::PairingManager>>>,
+    /// PR2 (spec ch. 05; v0.0.13, item C3): the question the source side
+    /// holds after a device joined under a name a paired device has, until
+    /// she answers (`answer_same_name`). Shared with the event translator.
+    /// `None` when nothing is asked. A field, not a process-wide static, so
+    /// that each test's state holds its own question (the test author added
+    /// it to the `AppState` literals of the earlier test files).
+    #[cfg(feature = "p2p")]
+    pub same_name: Arc<std::sync::Mutex<Option<crate::tauri_commands::pairing::SameNameQuestionDto>>>,
     /// Concrete listen multiaddrs the P2P swarm reported (interface-
     /// expanded). Collected by the event translator; pairing offers use
     /// them as dial hints so the new device doesn't depend on mDNS.
@@ -280,6 +288,97 @@ impl AppState {
     }
 }
 
+/// The persona of the session open now: see [`AppState::session_persona`].
+/// Process wide for the reason given at [`AppState::set_p2p_without_dns`]: a
+/// field would break the `AppState` literals of the tests, which the
+/// implementer does not edit. One `AppState` per process.
+static SESSION_PERSONA: std::sync::Mutex<Option<sovereign_core::auth::PersonaKind>> = std::sync::Mutex::new(None);
+
+impl AppState {
+    /// The persona whose session is open now, `None` before the first login
+    /// (C-AREA, spec ch. 07: what a session reads and writes follows it).
+    pub fn session_persona(&self) -> Option<sovereign_core::auth::PersonaKind> {
+        SESSION_PERSONA.lock().map(|g| *g).unwrap_or(None)
+    }
+
+    /// Records the persona of the session being opened (at login, by
+    /// `install_session`).
+    pub(crate) fn set_session_persona(&self, persona: Option<sovereign_core::auth::PersonaKind>) {
+        if let Ok(mut g) = SESSION_PERSONA.lock() {
+            *g = persona;
+        }
+    }
+
+    /// C-SUP (spec ch. 05, *The node's supervision*): the node ended without
+    /// the session asking for it. The supervisor's `on_stop` calls this, the
+    /// app's counterpart of the shell's `App::on_sync_stopped`: the state
+    /// knows sync stopped (so `node_refusal` answers with the stop's text), and
+    /// the `sync-stopped` event goes to the screens. Why it ended goes to the
+    /// log.
+    ///
+    /// *Signature by the C-SUP test author (lot LQ); the body is the
+    /// implementer's.*
+    #[cfg(feature = "p2p")]
+    // The supervisor's `on_stop` runs the same body (`sync_startup::node_stopped`)
+    // through the event channel it holds: the closure cannot hold the `AppState`.
+    pub fn on_sync_stopped(&self, end: sovereign_p2p::supervision::NodeEnd) {
+        crate::sync_startup::node_stopped(&self.orch_tx, &self.profile_dir, end);
+    }
+
+    /// C-SUP, DEL-0019 (the Fable maille, by delegation of Céline): the words
+    /// a command that needs the node answers when no node runs. While sync is
+    /// stopped (the node ended without the session asking), the stop's notice
+    /// text, « Sync stopped unexpectedly. Nothing syncs until you restart it. »,
+    /// so the screen shows the stop's notice again with « Restart sync »; when
+    /// sync was never started, `when_never_started`, the command's own
+    /// sentence, as before.
+    ///
+    /// *Signature by the C-SUP test author (lot LQ); the body is the
+    /// implementer's.*
+    pub fn node_refusal(&self, when_never_started: &str) -> String {
+        #[cfg(feature = "p2p")]
+        if crate::sync_startup::sync_stopped(&self.profile_dir) {
+            return crate::sync_startup::SYNC_STOPPED_TEXT.to_string();
+        }
+        when_never_started.to_string()
+    }
+
+    /// Whether the open session is the duress persona's.
+    #[cfg_attr(not(feature = "p2p"), allow(dead_code))] // its callers are the p2p build's
+    pub fn is_duress_session(&self) -> bool {
+        self.session_persona() == Some(sovereign_core::auth::PersonaKind::Duress)
+    }
+
+    /// The directory of the open persona's identity profile on this host
+    /// (`user_profile.json`: designation, nickname, display name), read and
+    /// written only after login (C-AREA AR2, « user_profile.json: into the
+    /// area »). The primary keeps the historical location, the data directory,
+    /// so an existing profile is the primary's (ch. 07, *Migration*); the
+    /// duress persona's is in its own state directory, under `identity/`
+    /// (the phone keeps no other directory of the persona's own).
+    ///
+    /// **No session, no identity directory** (C-AREA AR2, v2.0.87: « A process
+    /// with no session has no identity directory »): `None` before any login,
+    /// and after a failed one.
+    pub fn identity_dir(&self) -> Option<std::path::PathBuf> {
+        self.session_persona().map(|p| persona_identity_dir(&self.profile_dir, Some(p)))
+    }
+}
+
+/// See [`AppState::identity_dir`]: the identity profile's directory of
+/// `persona` under the data directory `base` (`None`: the primary's).
+pub fn persona_identity_dir(
+    base: &std::path::Path,
+    persona: Option<sovereign_core::auth::PersonaKind>,
+) -> std::path::PathBuf {
+    match persona {
+        Some(sovereign_core::auth::PersonaKind::Duress) => {
+            sovereign_core::auth::orchestrator_state_dir(base, sovereign_core::auth::PersonaKind::Duress).join("identity")
+        }
+        _ => base.to_path_buf(),
+    }
+}
+
 /// See [`AppState::set_p2p_without_dns`] (v0.0.12 item 12).
 #[cfg(feature = "p2p")]
 static P2P_WITHOUT_DNS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -290,6 +389,11 @@ impl AppState {
     pub async fn p2p_command_tx(
         &self,
     ) -> Option<tokio::sync::mpsc::Sender<sovereign_p2p::P2pCommand>> {
+        // C-SUP: a node that ended by itself takes no command; its channel is
+        // dropped by the next stop or restart (`stop_p2p_node`).
+        if crate::sync_startup::sync_stopped(&self.profile_dir) {
+            return None;
+        }
         self.p2p_command_tx.read().await.clone()
     }
 

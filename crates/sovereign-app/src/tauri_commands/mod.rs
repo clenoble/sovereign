@@ -13,6 +13,7 @@ pub mod mobile;
 pub mod pairing;
 pub mod sync_alerts;
 pub mod pii;
+pub mod quarantined_log;
 #[cfg(feature = "encryption")]
 pub mod recovery;
 pub mod suggestions;
@@ -29,7 +30,6 @@ use sovereign_core::interfaces::{FeedbackEvent, OrchestratorEvent};
 use sovereign_core::security::ActionDecision;
 use sovereign_db::GraphDB;
 use sovereign_db::schema::{MessageDirection, ReadStatus, RelationType};
-use sovereign_skills::traits::{SkillContext, SkillDocument};
 use tauri::State;
 
 use crate::err::ToStringErr;
@@ -127,13 +127,18 @@ pub struct ContentVideoDto {
     pub thumbnail_path: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct CommitSummaryDto {
     pub id: String,
     pub message: String,
     pub timestamp: String,
     pub snapshot_title: String,
     pub snapshot_preview: String,
+    /// `sovereign_docs::VERSION_COULD_NOT_BE_READ` when this version could not
+    /// be read: then `snapshot_title` and `snapshot_preview` are empty, never
+    /// its ciphertext. `None` when it was read (item C5 of v0.0.13; seam by its
+    /// test author).
+    pub could_not_read: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -213,6 +218,13 @@ pub struct ThreadDto {
     pub name: String,
     pub description: String,
     pub created_at: String,
+    /// C-MERGE (spec ch. 03, MG1-MG3): the raw id of the thread this one was
+    /// merged into; `None` when it is not ended. Fields by the B1 test author.
+    pub merged_into: Option<String>,
+    /// The name of that thread, for the lane's mark (MG2).
+    pub merged_into_name: Option<String>,
+    /// The end date (RFC 3339, UTC): the merge stamp's time (MG2).
+    pub ended_at: Option<String>,
 }
 
 #[derive(Serialize)]

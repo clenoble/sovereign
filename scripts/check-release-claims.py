@@ -450,33 +450,20 @@ def build_parser():
         "runner's listing); repeatable; at least one is required",
     )
     p.add_argument("--root", help="the repo root (default: the script's parent's parent)")
+    p.add_argument(
+        "--public", metavar="FILE",
+        help="the public notes (RELEASE_NOTES_<tag>.public.md): their claims are checked too, "
+        "and every test:/manual: marker in them must be one of the full notes' (V10)",
+    )
     return p
 
 
-def main(argv=None):
-    _reconfigure_stdout()
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    # V4: without any --list, the verifier refuses to run, so the gate check
-    # cannot be skipped by forgetting the argument.
-    if not args.lists:
-        parser.error("at least one --list FILE is required (V4: the gate's test listings)")
+def check_file(text, root, gate):
+    """Prints one file's table and counts (V1-V7). Returns (fails, markers):
+    fails is True when a claim failed or a stray marker exists; markers are
+    every marker the file holds, on its claims and stray."""
+    claims, strays, limitations = parse_notes(text)
 
-    root = Path(args.root) if args.root else Path(__file__).resolve().parent.parent
-    try:
-        notes_text = read_text_file(args.notes, "notes")
-        gate = GateLists(read_text_file(lst, "list file") for lst in args.lists)
-    except UsageError as e:
-        print(f"check-release-claims: {e}", file=sys.stderr)
-        return 2
-    if not root.is_dir():
-        print(f"check-release-claims: --root {root} is not a directory", file=sys.stderr)
-        return 2
-
-    claims, strays, limitations = parse_notes(notes_text)
-
-    print(f"notes: {args.notes}")
-    print(f"root:  {root}")
     if limitations is None:
         # V1, settled readings: a notice, not a failure.
         print("notice: heading `## Known limitations` not found; every claim to the end is checked")
@@ -518,11 +505,70 @@ def main(argv=None):
     if strays:
         summary += f"   stray: {len(strays)}"
     print(summary)
+
+    markers = [mk for c in claims for mk in c.markers] + list(strays)
+    return bool(counts["failed"] or strays), markers
+
+
+def marker_identity(mk):
+    """V10: the same kind and the same target, whitespace inside ignored."""
+    return mk.kind, "".join(mk.body.split())
+
+
+def not_in_full(public_markers, full_markers):
+    """V10: the public test: and manual: markers that are not markers of the
+    full notes. A no-claim proves nothing and is outside the inclusion."""
+    known = {marker_identity(mk) for mk in full_markers}
+    return [
+        mk for mk in public_markers
+        if mk.kind in ("test", "manual") and marker_identity(mk) not in known
+    ]
+
+
+def main(argv=None):
+    _reconfigure_stdout()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    # V4: without any --list, the verifier refuses to run, so the gate check
+    # cannot be skipped by forgetting the argument.
+    if not args.lists:
+        parser.error("at least one --list FILE is required (V4: the gate's test listings)")
+
+    root = Path(args.root) if args.root else Path(__file__).resolve().parent.parent
+    try:
+        notes_text = read_text_file(args.notes, "notes")
+        # V10: an unreadable --public file is a usage error, before any output.
+        public_text = read_text_file(args.public, "public notes") if args.public is not None else None
+        gate = GateLists(read_text_file(lst, "list file") for lst in args.lists)
+    except UsageError as e:
+        print(f"check-release-claims: {e}", file=sys.stderr)
+        return 2
+    if not root.is_dir():
+        print(f"check-release-claims: --root {root} is not a directory", file=sys.stderr)
+        return 2
+
+    print(f"notes: {args.notes}")
+    print(f"root:  {root}")
+    fails, full_markers = check_file(notes_text, root, gate)
+
+    if public_text is not None:
+        # V10: a line naming the public file, its own table and counts, then
+        # the markers it holds that the full notes do not; those change no count.
+        print()
+        print(f"public notes: {args.public}")
+        public_fails, public_markers = check_file(public_text, root, gate)
+        extra = not_in_full(public_markers, full_markers)
+        if extra:
+            print()
+            for mk in extra:
+                print(f"{mk.line:>5}  not in the full notes: {mk.raw}")
+        fails = fails or public_fails or bool(extra)
+
     print("A green run is not a proof: read the table (does each test prove its claim?).")
 
     # V7: 0 when every claim is ok or no-claim; 1 when any claim fails (or a
-    # stray marker exists).
-    return 1 if counts["failed"] or strays else 0
+    # stray marker exists); with --public, over both files and the V10 lines.
+    return 1 if fails else 0
 
 
 if __name__ == "__main__":

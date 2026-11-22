@@ -8,10 +8,17 @@
 	 *               capture / secret)
 	 */
 	import { createDocument, createThread } from '$lib/api/commands';
-	import { canvas, mobileCanvas, load as canvasLoad } from '$lib/stores/canvas.svelte';
+	import { canvas, currentLaneThreadId, isEnded, load as canvasLoad } from '$lib/stores/canvas.svelte';
 	import { longPress } from '$lib/actions/longPress';
 
 	let menuOpen = $state(false);
+	// C-MERGE MG3: no « + » on an ended thread's lane (the Fable maille, by
+	// delegation of Céline, 2026-11-17).
+	let onEndedLane = $derived.by(() => {
+		const id = currentLaneThreadId();
+		const t = id ? canvas.threads.find((x) => x.id === id) : undefined;
+		return !!t && isEnded(t);
+	});
 	let longPressWasFired = false; // suppress the click that follows a long-press release
 
 	function openMenu() {
@@ -38,14 +45,21 @@
 
 	async function handleNewDoc() {
 		close();
-		const title = window.prompt('New document title');
-		if (!title || !title.trim()) return;
-		// Use the currently active lane rather than always thread[0]
-		const threadId = canvas.threads[mobileCanvas.currentLaneIndex]?.id ?? canvas.threads[0]?.id;
-		if (!threadId) {
-			alert('Create a lane first.');
+		// C-HOST AT8: the lane the person is on, by its thread id — never the
+		// thread that a reload has put at that lane's old position. Checked
+		// before the title is asked, so a typed title is never thrown away
+		// (DEL-0001).
+		const threadId = currentLaneThreadId();
+		if (!threadId || onEndedLane) {
+			alert(
+				canvas.threads.length === 0
+					? 'Create a lane first.'
+					: "This lane can't take a new document. Pick another lane first."
+			);
 			return;
 		}
+		const title = window.prompt('New document title');
+		if (!title || !title.trim()) return;
 		try {
 			await createDocument(title.trim(), threadId);
 			await canvasLoad();
@@ -92,6 +106,7 @@
 	<button class="backdrop" onclick={close} aria-label="Close menu"></button>
 {/if}
 
+{#if !onEndedLane}
 <div class="fab-stack" class:open={menuOpen}>
 	{#if menuOpen}
 		<div class="menu" role="menu">
@@ -122,6 +137,7 @@
 		<span class="plus" class:rotated={menuOpen}>+</span>
 	</button>
 </div>
+{/if}
 
 <style>
 	.backdrop {

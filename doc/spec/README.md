@@ -1,6 +1,7 @@
 # Sovereign GE — Specification
 
-**Version 2.0 — 2026-10-09.** The single source of truth for what Sovereign GE is and how it
+**Version 2.0 — 2026-10-09**; the current revision is the newest entry of the
+[changelog](CHANGELOG.md). The single source of truth for what Sovereign GE is and how it
 behaves. Plans say how and when; they never redefine what. If a plan and this specification
 disagree, the specification wins and the plan is wrong (see `CLAUDE.md`).
 
@@ -58,8 +59,7 @@ specification, and the built route is now the design.
    separate files keep them from overwriting each other.
 5. **This folder is published** on the public GitHub mirror. Describe requirements and status;
    never describe an unfixed security weakness in exploitable detail. Open work, including
-   security findings, lives in the private backlog (`doc/plans/BACKLOG.md`, stripped from the
-   mirror).
+   security findings, lives in the private backlog, stripped from the mirror.
 
 ## History
 

@@ -15,6 +15,7 @@ import {
 	type GuardianRosterDto,
 	type BeginEnrollmentResult
 } from '$lib/api/commands';
+import { answeredSyncStopped, onGestureNeedingTheNode } from './syncStopped.svelte';
 
 /** Recovery is usable only once all 5 guardians are enrolled. */
 export const GUARDIAN_TOTAL = 5;
@@ -57,6 +58,8 @@ export async function refreshRoster() {
  *  success; the QR + spoken code then live in `recoverySetup.offer`. */
 export async function beginEnrollment(): Promise<boolean> {
 	if (recoverySetup.enrolling || isArmed()) return false;
+	// C-SUP, DEL-0019: while sync is stopped, the stop's notice and its gesture.
+	if (onGestureNeedingTheNode()) return false;
 	recoverySetup.enrolling = true;
 	recoverySetup.offerError = null;
 	recoverySetup.offer = null;
@@ -65,7 +68,8 @@ export async function beginEnrollment(): Promise<boolean> {
 		recoverySetup.enrolling = false;
 		return true;
 	} catch (e) {
-		recoverySetup.offerError = String(e);
+		// C-SUP, DEL-0019: while sync is stopped, the stop's notice and its gesture.
+		if (!answeredSyncStopped(e)) recoverySetup.offerError = String(e);
 		recoverySetup.enrolling = false;
 		return false;
 	}

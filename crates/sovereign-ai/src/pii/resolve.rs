@@ -44,16 +44,16 @@ pub enum AccessLevel {
 
 /// Span of one `[pii:<record_id>]` token in a body.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TokenSpan {
-    start: usize,
-    end: usize,
-    record_id: String,
+pub(crate) struct TokenSpan {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) record_id: String,
 }
 
 /// Find every `[pii:<record_id>]` token in `body`. Tokens with no
 /// closing `]` are skipped (the body is whatever it is — a malformed
 /// token shouldn't break rendering of valid ones around it).
-fn parse_tokens(body: &str) -> Vec<TokenSpan> {
+pub(crate) fn parse_tokens(body: &str) -> Vec<TokenSpan> {
     const PREFIX: &str = "[pii:";
     let mut out = Vec::new();
     let mut cursor = 0;
@@ -79,28 +79,10 @@ fn parse_tokens(body: &str) -> Vec<TokenSpan> {
     out
 }
 
-/// Type-only label rendered for `AccessLevel::Preview`.
+/// Type-only label rendered for `AccessLevel::Preview`: the one table every
+/// label comes from (`PiiKind::label`, spec ch. 09, SW5).
 pub fn preview_label_for_kind(kind: &PiiKind) -> &'static str {
-    match kind {
-        PiiKind::Email => "[Email]",
-        PiiKind::Phone => "[Phone]",
-        PiiKind::Ssn => "[SSN]",
-        PiiKind::CreditCard => "[Card]",
-        PiiKind::Ipv4 => "[IP]",
-        PiiKind::Avs => "[AVS]",
-        PiiKind::Iban => "[IBAN]",
-        PiiKind::Passport => "[Passport]",
-        PiiKind::Dob => "[DOB]",
-        PiiKind::Address => "[Address]",
-        PiiKind::PersonName => "[Name]",
-        PiiKind::OrgName => "[Org]",
-        PiiKind::Password => "[Password]",
-        PiiKind::ApiToken => "[API Token]",
-        PiiKind::BankAccount => "[Bank Account]",
-        PiiKind::DocumentId => "[Document ID]",
-        PiiKind::Note => "[Note]",
-        PiiKind::Other => "[PII]",
-    }
+    kind.label()
 }
 
 /// PII-002: replace every `[pii:<record_id>]` token in `body` with the
@@ -486,6 +468,7 @@ mod tests {
             last_revealed_at: None,
             use_count: 0,
             review_state: ReviewState::Confirmed,
+            review_stamp: None,
             deleted_at: None,
         };
         let created = db.create_pii_record(record).await.unwrap();
@@ -627,6 +610,7 @@ mod tests {
             last_revealed_at: None,
             use_count: 0,
             review_state: ReviewState::Confirmed,
+            review_stamp: None,
             deleted_at: None,
         }
     }

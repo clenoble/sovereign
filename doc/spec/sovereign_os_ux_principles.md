@@ -2,7 +2,7 @@
 
 **Version:** 1.0
 **Date:** February 7, 2026
-**Status:** Draft
+**Status:** Draft, being realigned — decided 2026-10-10 (Céline): where a newer decision differs from this appendix, the newer decision holds. Where it differs from the code, ch. 08 holds the built orchestrator rules and ch. 12 the built UI; ch. 12, *Appendix B — where its figures differ from the built UI*, lists the differences.
 **Parent document:** the specification, `doc/spec/README.md` (Section: Multimodal AI Orchestrator)
 
 ---
@@ -373,7 +373,7 @@ When something goes wrong, the AI should be specific, not generic:
 
 ---
 
-**Document Status:** Draft — core principles implemented in `sovereign-core::security` (action levels, authorization) and `sovereign-ai` (action gating, trust tracking, injection detection).
+**Document Status:** Draft, being realigned (see the status at the top) — parts of these principles are implemented in `sovereign-core::security` (action levels, authorization) and `sovereign-ai` (action gating, trust tracking, injection detection), not always as written here; ch. 08 says what is built.
 
 **Last Updated:** February 13, 2026
 **Version:** 1.1 — Implementation status note

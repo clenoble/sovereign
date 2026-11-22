@@ -7,9 +7,9 @@ guardians, which rides the same transport, is chapter 06.
 *Consolidates:* specification v1.2/v1.3 §P2P Storage & Guardian Protocol (Three-Layer
 Architecture, Device-to-Device P2P Sync, Sync Protocol), §Version Control (conflict
 resolution), §Encryption & Key Management (in-transit); the M0 transport spike (findings log
-and filled decision matrix, branch `spike/m0-transport-discovery`, 2026-07-07/08); archived
-plans `p2p-completion-plan.md`, `p2pbackupuserreadyplan.md`, `backup-m1-security.md`,
-`HANDOVER-m2-guardian-app.md`; release notes v0.0.7–v0.0.9; the code at `main` d02c353.
+and filled decision matrix, branch `spike/m0-transport-discovery`, 2026-07-07/08); the
+project's archived plans for P2P completion, backup and the guardian app (private); release notes
+v0.0.7–v0.0.9; the code at `main` d02c353.
 
 ## Scope and layers
 
@@ -256,6 +256,14 @@ The code is proven **live**: there is no offline verifier for it.
 - **Three wrong proofs** destroy the offer; offers are single-use.
 - One handshake session per offer; a session idle for **30 s** can be evicted, so a peer that
   opens a handshake and vanishes cannot lock out the real device.
+- **PO1 — Closing the offer's window ends the offer, on both hosts** (v0.0.13; the Fable maille, by
+  delegation of Céline (2026-11-14), on 2026-11-19). **Built in v0.0.13** on the desktop (merged
+  2026-11-19); the app already disarmed it when its panel closed. On the desktop, the pairing window closed by « Done », a click
+  outside it, Escape or Enter disarms the offer on the node, so a code seen while it was open cannot
+  be used after she closed it. A proof that arrives once the offer is disarmed is refused. After a
+  pairing that succeeded, closing has nothing left to disarm. Nothing is said to her: closing the
+  window is what ends it. The duress session's decoy offer arms nothing, and its closing disarms
+  nothing.
 
 ### Paired-device store and pair keys
 
@@ -271,14 +279,37 @@ revocation not built.
 - A peer with no pair key fails closed: nothing can be sealed for it or accepted from it.
 - After access recovery (chapter 06) the device gets a new identity; its paired-device list is
   reset and devices must be paired again.
+- **PR1 — Pairing a device again replaces its record, on both sides.** **Built in v0.0.13** (item C3,
+  merged 2026-11-18): the desktop and the app ask at the pairing, and « Replace it » removes the old
+  record as a « Forget » does. After a device is paired again with a device it was paired with, each
+  side's paired list holds one record for the other: the new one. The old record is not kept, and the
+  device shows once in the device list, History, alerts and orphans.
+  - **The joining side** holds this already: the source keeps its peer id, and the list is keyed by
+    peer id.
+  - **The source side** (the device that showed the offer) is where it can fail: a device paired
+    again after a new setup comes back with a new peer id, derived from its new passphrase, and is
+    added under that id. The old record stays beside it, as a device that never syncs again (the
+    tests of v0.0.13 found it so); PR2 is what removes it.
+  - **The old record's pair key goes with it:** the old peer id leaves the allow-list and the sealing
+    map, as at unpairing.
+  - **History's earlier rows from that device** read as a forgotten device's, « … » and its old id's
+    last 8 characters (ch. 12, HN1): nothing links the old id to the new one. The rows written after
+    the new pairing carry its name.
+  - **PR2 — The source side asks.** The pairing carries the joining device's name, which two devices
+    can share, and nothing else links the old id to the new one. So when a device joins under a name
+    a paired device already has, the source side asks whether it is that device, set up again:
+    « Replace it » or « Keep both ». « Replace it » removes the old record as above; « Keep both », or
+    no answer, keeps both records. **Nothing is replaced without her answer.** With several paired
+    devices of that name, the question lists them, and she picks one or keeps all (the Fable maille,
+    by delegation of Céline (2026-11-14), on 2026-11-18).
 
 Specified, not built: per-device cryptographic revocation through a fresh key exchange per pair.
 
 ### Device names
 
-**Status:** ● Built in v0.0.12 on the desktop (items 14 and 19, `doc/plans/V0012-items14-19-devices.md`,
-merged `c7a78e4`, 2026-10-24; code `crates/sovereign-shell/src/device_name.rs`, `device_rename.rs`,
-`history_device.rs`). The phone's device name is a later item.
+**Status:** ✅ Built on the desktop since v0.0.12 (items 14 and 19, merged `c7a78e4`, 2026-10-24).
+The phone's device name is a later item. (code: crates/sovereign-shell/src/device_name.rs,
+device_rename.rs, history_device.rs)
 
 A device's name is a label for people. It is not its identity: the device in a stamp is its peer
 id (*Stamps*, item 22), and renaming a device never changes what is stored or written next. Until
@@ -315,7 +346,9 @@ d'accord avec tes choix"). The choices below marked PANDA2's are the PANDA2 mail
   shows, and announces, the device's name from the paired list instead; "this device" for its own
   id; for a device no longer paired, "…" and the id's **last** 8 characters (every peer id starts
   with the same 8). The stored message is unchanged, so older versions are shown the same way;
-  other messages are shown as they are. A row's message is one line, cut with "…" at the row's
+  other messages are shown as they are. In v0.0.13 this extends to every row that names a device or
+  a version, on the phone too (ch. 12, *History on both hosts*; ○ specified 2026-11-18). A row's
+  message is one line, cut with "…" at the row's
   width, never drawn over the time line under it; the full message stays in the row's accessible
   text.
 - **Accessibility.** The rename fields are text inputs named "This device's name" and "Name of
@@ -327,9 +360,23 @@ later lot); the phone's device name.
 
 ## Sync protocol
 
-**Status:** ◐ Partial — all tables carried; title-only edits, document thread moves,
-conversation titles and contact-address removals do not propagate; collaborative merge is
-roadmap.
+*The target (D17 and D11, Céline, 2026-11-10; ch. 01, Direction):*
+- a journal kept by each device and exchanged directly, with the node as one more blind replica, never a
+  required passage;
+- a sealed journal shared by sync, backup and mail, which is a proposal to write.
+
+*Decided 2026-11-13 (Céline; ch. 01, P6, P7, P10, P12, P19):*
+- **The node** is an optional add-on. It is blind, or authorised by a delegation (ch. 07). Hosted by a
+  third party, it stays strictly blind. The project never operates one.
+- **Each type of data has its merge rule,** additive or ordered by stamp.
+- **One device is a complete Sovereign,** and the journal works entirely locally.
+
+*What is below is the protocol as built.*
+
+**Status:** ◐ Partial — all tables carried; documents travel by the C-WIRE contract below since
+v0.0.11, so title-only edits travel, and thread moves too since v0.0.12 (*Moving a document*);
+conversation titles and contact-address removals propagate since v0.0.11 (C-WIRE *Rows*);
+collaborative merge is roadmap.
 
 **Decided 2026-10-10 (Céline): the wire evolves by added fields, not by a protocol bump.** New
 fields (document title and thread in the manifest hash, ownership in the snapshot, the missing
@@ -355,10 +402,67 @@ the AccountKey (imported at pairing) is the only shared secret.
 **Status:** ✅ Built — (code: crates/sovereign-app/src/sync_startup.rs, crates/sovereign-shell/src/p2p.rs)
 
 Sync starts when mDNS discovers a peer (the node ignores unpaired ones), right after pairing,
-and on demand. The periodic 5-minute poll of all paired peers runs in the mobile app only; the
-shell syncs on discovery, after pairing and on demand.
+and on demand. The Tauri app (the phone, and the frozen Tauri desktop when built with P2P) also
+polls all paired peers: every 5 minutes, every 15 minutes after three rounds that started no
+sync, hourly after five, and back to 5 minutes once a round starts one. (code:
+crates/sovereign-app/src/lib.rs) The shell does not poll: it syncs on discovery, after pairing and
+on demand.
 With `wifi_only` (default on Android, off on desktop), automatic sync is suppressed on cellular
 data; an offline device triggers no automatic sync.
+
+### The node's supervision — contract (C-SUP)
+
+**Status:** ✅ Built for v0.0.13 (lot LQ), on the shell and the phone app; SU1-SU6 are held by tests
+on both hosts, except two points of SU2 that are read in the host and not tested: which notice shows
+when a login also has the setup's to show, and the app's screens asking the stop's state before the
+backend. Decided by Céline on 2026-11-13 (« Lot avant rc1 + surveillance »): the P2P node's
+end, by a panic or not, is shown, with a restart. Not built: the shell has no logout, switch or
+lock yet, so its asked end is the application's exit only (SU5 is held at the supervisor); the
+lock of C-SESS will be another end.
+
+**Guarantees (C-SUP, each one a test):**
+- **SU1 — The node's end is observed,** whether its task returns, returns an error or panics. It is
+  never silent.
+  - **A start that fails is said as a stop** (Céline, 2026-11-16): a session whose keys are open, whose
+    node was tried and did not start, shows what SU2 shows for a stop, with the same words and the same
+    gesture. The reason goes to the log, and to the user only if a restart fails in its turn. The shell's
+    session opened without a login has no keys and tries no start: it is not this case. On the app, a key
+    missing at the start is an error of the start, and is said as one.
+  - **The stop reaches the screen after the login has answered:** the interface's reset at login
+    (C-AREA AR4) never clears a stop of the session it opens.
+- **SU2 — The host says that sync stopped,** in its status line and once as a notice, on each host that
+  runs a node: the shell, and the app built with P2P. The words (the Fable maille, by delegation of
+  Céline, 2026-11-15), the same on both hosts:
+  - the status line: « Sync stopped », first, then what the line would say without it: « Sync stopped;
+    {the rest} ». An alert still open is still shown (the Fable maille, by delegation of Céline,
+    2026-11-16);
+  - the notice, once per stop: « Sync stopped unexpectedly. Nothing syncs until you restart it. »;
+  - the gesture: « Restart sync », present wherever the notice is shown;
+  - the button that closes the notice on the app: « Dismiss » (the Fable maille, by delegation of
+    Céline, 2026-11-16);
+  - a restart that fails: « Sync could not be restarted: {reason} ».
+  - Why it stopped goes to the log, not to the user.
+  - **While the status line says « Sync stopped », a gesture that needs the node shows the stop's
+    notice again,** with its gesture, on both hosts: never « Log in to start » nor « enable sync … first ».
+    « Once per stop » means once by itself: an answer to the user's gesture is not the notice coming back
+    by itself (the Fable maille, by delegation of Céline, 2026-11-15).
+  - **When a login also has the setup's notice to show** (on the shell, which shows one notice at a time),
+    the setup's notice is the one shown: it lists what was not saved, said nowhere else. The stop stays in
+    the status line, and its notice comes at the first gesture that needs the node (the Fable maille, by
+    delegation of Céline, 2026-11-16).
+- **SU3 — A restart is a gesture of the user's,** and builds a fresh node with the open session's keys.
+  Nothing restarts the node by itself in v0.0.13 (the Fable maille, by delegation of Céline,
+  2026-11-15): a retry would hide a stop that repeats. If stops prove frequent in use, a bounded
+  automatic restart that says each retry comes next.
+- **SU4 — Supervision never starts a node where none may run:** never in a duress session (C-AREA,
+  AR4), and a switch or a lock ends the supervision with the node.
+  - **A stop ends with its session** (the Fable maille, by delegation of Céline, 2026-11-15; C-AREA AR4):
+    after a logout, a switch or a lock, the next session starts as if sync had never stopped, and shows
+    nothing of the previous stop.
+- **SU5 — An end the session asked for is not a stop:** a logout, a switch, a lock or the application's
+  exit end the node and say nothing. Only an end the host did not ask for is said.
+- **SU6 — Each host calls the supervision,** and the tests hold the call, not only the supervising
+  function: a « built » here is read against a caller.
 
 ### Manifest
 
@@ -366,12 +470,15 @@ data; an offline device triggers no automatic sync.
 
 Peers exchange a **manifest** listing every syncable record, table by table:
 
-- **Documents:** id, head commit, commit count, content hash, last modification, deletion
-  marker.
+- **Documents:** id, **normalised hash** and **stamp**, with the previous stamp and a bounded
+  list of earlier ones (C-WIRE, *What travels for a document*); beside them, the **purge
+  markers** (id and deletion stamp) and the manifest's **wire version**. The entry builds before
+  v0.0.11 sent (head commit, commit count, content hash, last modification, deletion marker) is
+  no longer sent.
 - **Rows:** threads, entities, PII records, share records, contacts, messages, conversations,
   milestones, relationships and suggested links — each with id, the table's last-writer-wins
-  timestamp, content hash and deletion marker. Share records, milestones and relationships are
-  append-only.
+  timestamp, content hash and deletion marker; each stamped thread also with its stamp (*Rows*,
+  below). Share records, milestones and relationships are append-only.
 - The manifest is AEAD-sealed under the account-wide **transport key** (derived from the
   AccountKey), so record ids, timestamps and sizes are invisible to the network and to relays.
   A peer that cannot produce a manifest under that key is dropped.
@@ -385,34 +492,36 @@ Specified, not built: padding the manifest to hide record count and size distrib
 
 ### Documents
 
-**Status:** ◐ Partial — content LWW built; the document hash covers content and deletion only,
-so title-only edits do not travel, and thread moves of existing documents are not applied.
-(code: crates/sovereign-p2p/src/sync_service.rs, sync_engine.rs)
+**Status:** ✅ Built — since v0.0.11 a document is compared, ordered and applied by the C-WIRE
+contract below (normalised hash, stamps, `apply_wire`), so a title-only edit travels; a thread
+move travels since v0.0.12 (*Moving a document*). A peer on a build older than v0.0.11 exchanges
+no documents with this one (*Peers on an older build*). (code: crates/sovereign-p2p/src/wire.rs,
+sync_service.rs, sync_engine.rs)
 
 - A document travels as its **current state** — title, content, thread membership and deletion
   marker in one sealed snapshot — not as a replayed commit chain. Commit history stays local to
   each device.
-- Direction is **content last-writer-wins on modification time.** Equal times with differing
-  content are broken deterministically by content hash, so both devices converge on the same
-  winner, and the case is surfaced as a conflict (in the mobile app; see *Concurrent-edit
-  conflicts*).
+- Direction is decided by **stamps**, not by the wall clock (C-WIRE, *Direction and concurrent
+  edits*). Until v0.0.11 it was content last-writer-wins on modification time.
 - Every snapshot is Ed25519-signed by the sending device and names it as author; an unsigned
   snapshot, a bad signature, or an author other than the verified sender is rejected.
   Timestamps beyond a bounded future skew are rejected.
 - A document missing locally is created **under its origin id**, so it never duplicates on the
   next round.
-- The manifest's document hash covers content and the deletion marker only. A title-only edit
-  therefore leaves the hashes equal and does not travel; and for a document that already exists
-  on the receiver, the snapshot's thread is not applied, so a move to another thread does not
-  propagate.
+- The manifest compares documents by their **normalised hash**, which covers the title and the
+  thread among the rest (C-WIRE, *Comparing two states*), so a title-only edit travels, and a move
+  to another thread travels as a stamped write (*Moving a document*, v0.0.12). Until v0.0.11 the
+  hash covered content and the deletion marker only, so neither travelled; a peer still on such a
+  build is sent no document at all.
 
 *Replaces v1.x:* "Request missing commits only … apply commits using git-like merge." Encrypted
 commit chains cannot cross the per-device key boundary.
 
 ### Rows: signed Lamport last-writer-wins
 
-**Status:** ◐ Partial — signed Lamport LWW built for every row table; per-table apply is
-partial: conversation-title changes and contact-address removals are not applied. (code:
+**Status:** ✅ Built — signed Lamport LWW for every row table but threads, which are ordered by
+their own stamp (below); since v0.0.11 a conversation's title change and a contact's address
+removals are applied too (C-WIRE *Rows*, guarantee 15). (code:
 crates/sovereign-p2p/src/sync_service.rs, version_store.rs, protocol/sync.rs)
 
 - Every row envelope carries a **version stamp** `(counter, device)` from a per-device Lamport
@@ -424,9 +533,25 @@ crates/sovereign-p2p/src/sync_service.rs, version_store.rs, protocol/sync.rs)
   when its counter advances implausibly far beyond what this device has seen, or when its
   timestamp exceeds the future-skew bound. Replayed and stale rows lose the comparison.
 - Stamps and per-row versions persist in a non-secret file (counters and hashes only).
-- Applying a winning row goes through per-table setters, and not every field has one: a
-  conversation's title change is not applied, and contact addresses are only ever added, so a
-  removal does not propagate (the two copies' hashes then never converge).
+- Applying a winning row goes through per-table setters. A conversation's title is applied when
+  it changes, and a contact's addresses are applied as a set, removals included, so both copies'
+  hashes converge (since v0.0.11; until then the title was not applied and addresses were only
+  ever added).
+- **Thread rows are ordered by the thread's stamp**, not by the Lamport counter (decided by
+  Céline, 2026-10-18: the later action wins; built and released in v0.0.11). Every thread write
+  — create, rename, delete, restore, on every path: the shell, the assistant, the phone, skills,
+  import, backup restore, the decoy's seeding — goes through the document service's one
+  thread-write path, which stamps it from the same device clock as documents (*Stamps instead of
+  the wall clock*). The stamp travels in the row, a field added with a default. For the same
+  thread the greater stamp wins, whatever the two actions are, and decides the direction of the
+  exchange, so two devices converge. A row without a stamp (written by an older build) is
+  compared as if stamped at its modification time (the later of its modification and deletion
+  times), counter 0, its device, within the same 5-minute bound; so an older device's later
+  rename can still win. A **deleted** thread with a stamp is compared on its id, its deleted state
+  and its stamp only (its name and description are not hashed), so a thread shrunk to its id on
+  one device and a named tombstone on the other are not re-sent every round. What a rename or a
+  deletion that wins does here, and the shrink after 30 days: ch. 03, *Thread deletion and the
+  fallback lane*.
 
 ### Deletions
 
@@ -436,20 +561,23 @@ crates/sovereign-p2p/src/sync_service.rs)
 Soft-deleted records stay in the manifest as **tombstones**, with their timestamp advanced to
 the deletion time; the deleted state is part of the content identity. A peer still holding the
 record live therefore receives the deletion instead of resurrecting it — including deleted PII.
-A deletion applied from a peer is a soft delete (restorable) and is flagged for review like any
-other peer change; a live winning state restores a locally deleted record.
+A deletion applied from a peer is a soft delete (restorable), and what it replaced is kept like
+any other peer overwrite (*Non-destructive peer overwrite*); no review flag is raised (retired
+2026-10-15). A live winning state restores a locally deleted record.
 
 A hard delete leaves no tombstone and is undone by the next sync: a peer still holding the record
 sends it back.
 
 ### Thread membership
 
-**Status:** ◐ Partial — a new document lands in its thread; a later move to another thread does
-not sync. (code: crates/sovereign-p2p/src/sync_service.rs)
+**Status:** ✅ Built — a new document lands in its thread; a later move to another thread syncs
+since v0.0.12, as a stamped write (*Moving a document*). (code: crates/sovereign-p2p/src/wire.rs,
+sync_service.rs)
 
 A synced document carries its thread, so it lands in its real lane when it is created on the
-receiver. A snapshot from an older peer without the field lands in the default thread, shown
-as "Unfiled".
+receiver. A peer on a build older than v0.0.11 is sent no document and none of its documents is
+applied (*Peers on an older build*), so no document arrives without its thread. A document whose
+thread does not exist here is drawn in the fallback lane, "Unfiled" (ch. 03).
 
 ### Ownership of synced documents
 
@@ -465,47 +593,87 @@ chapter 04.
 
 ### Non-destructive peer overwrite and peer review
 
-*Decided 2026-10-15 (Céline; C-WIRE below): the systematic review (flag on every change, the
-review lists, the badge) is retired for changes from her own devices; the audit stays, runs on
-every received change and raises an alert only on a detection; the overwrite preservation stays
-(History, previous values). This section describes the build until step 4 lands.*
+*Decided 2026-10-15 (Céline; C-WIRE below, *Applying a remote state*): no systematic review of
+changes from her own devices; the analysis runs on every received change and raises an alert only
+on a detection; what an overwrite replaced stays recoverable (History, previous values).*
 
-**Status:** ◐ Partial — overwrite preservation built; the shell never runs the audit; both UIs
-offer restore for 3 of the 7 restorable tables. (code: crates/sovereign-p2p/src/sync_service.rs;
-crates/sovereign-ai/src/peer_audit.rs; crates/sovereign-app/src/tauri_commands/peer_review.rs;
+**Status:** ◐ Partial — built in C-DOC adoption step 4 and released in v0.0.11: preservation, the
+analysis on every received document change in the shell and the app, the alerts and the lists of
+previous values in both UIs. Both UIs offer to restore only threads, contacts and PII records, of
+the seven tables the sync layer can restore. (code: crates/sovereign-p2p/src/sync_service.rs,
+wire.rs; crates/sovereign-ai/src/peer_audit.rs; crates/sovereign-app/src/tauri_commands/sync_alerts.rs;
 crates/sovereign-shell/src/panels.rs)
 
 A paired device is trusted to sync, not to silently replace. Every overwrite from a peer
-preserves what it replaced and is surfaced:
+preserves what it replaced:
 
-- **Documents:** the current local version is committed first; the peer's content is applied;
-  the document is flagged `peer_review_pending` with the peer, time and prior commit.
+- **Documents:** the local state is kept as a version before the peer's state applies, through
+  the document service (C-WIRE *Applying a remote state*); no review flag is raised.
 - **Rows:** before an overwrite, the prior row is captured, sealed under the account transport
-  key, and stored as a `RowRecovery`. Restore is wired in the sync layer for threads, entities,
-  PII records, contacts, messages, conversations and suggested links; both UIs offer it only for
-  threads, contacts and PII records. Append-only tables are never overwritten. **A thread a peer
-  deleted** is brought back live, with its name, by a stamped write after the deletion it undoes
-  (`DocumentService::thread_restore`), so the restore travels like any thread write; its documents
+  key, and stored as a `RowRecovery`, listed under **Previous values** (`v` in the shell; under the
+  alerts in the app) with the device and the time, and the buttons "Restore" and "Remove from
+  list"; nothing there is pending and no badge appears. Restore is wired in the sync layer for
+  threads, entities, PII records, contacts, messages, conversations and suggested links; both UIs
+  offer it only for threads, contacts and PII records. Append-only tables are never overwritten.
+  **A thread a peer deleted** is brought back live, with its name, by a stamped write after the
+  deletion it undoes (`DocumentService::thread_restore`), so the restore travels like any thread
+  write; its documents
   in the trash stay there until restored (v0.0.12 item 6, A4; until v0.0.11 the restore went
   through `thread_update`, which refuses a deleted thread).
-- **Audit:** each pending change is scored — a model-free heuristic (prompt-injection scan of the
-  incoming content, wholesale-rewrite check against the prior) always, plus an LLM verdict when a
-  model is loaded. The audit annotates; it never gates the sync. Only the frozen Tauri
-  desktop ran it: the shell never runs it, and the mobile app has no model to run it with (ch. 08).
-- **Review surface:** the shell (`r`) and the mobile app list pending changes; the user keeps the
-  synced version or restores the prior one. A `RowsFlaggedForReview` event badges the panel when
-  it happens.
+- **A restore that fails is said.** **Built in v0.0.13** (item C2, merged 2026-11-18): both hosts call
+  the sync layer's one restore and show its notice where Restore was offered. Until
+  v0.0.13 a failed restore from Previous values, a thread a peer deleted among them, was only written
+  to the log: the host hands the restore to the sync node and hears nothing back.
+  - **The host that asked shows the outcome,** in the place that offered Restore: Previous values
+    in the shell, the list under the alerts on the phone. A failure is a notice « Not restored:
+    {what} — {why} », where {what} names the row (the thread's name, the contact's name, the PII
+    record's label) and {why} says what failed in plain words: sync is not running, the previous
+    value could not be read, or the write was refused. The notice keeps to these plain sentences; a
+    store's error is never shown, and any reason without a sentence of its own is « the write was
+    refused », with its detail in the log.
+  - **A restore that answers late is not « Not restored ».** The host waits a bounded time for the
+    sync node's answer; past it, the notice is « No answer from sync yet for {what}. It may still be
+    restored. », never « Not restored », since the node may still carry it out. No node, or a closed
+    channel, is « sync is not running », at once (the Fable maille, by delegation of Céline
+    (2026-11-14), on 2026-11-18). As built, the desktop waits on its window's thread, so the wait is
+    kept short.
+  - **A failed restore changes nothing:** the entry stays in Previous values, and the current value
+    stays as it was.
+  - It covers every row the hosts offer to restore (threads, contacts, PII records), since they go
+    through the one restore of the sync layer.
+- **Analysis:** every received document change is analysed (`peer_audit.rs`): the model-free
+  checks (a scan of the incoming content for injected instructions, a wholesale-rewrite check
+  against the prior) at once, during sync, in the shell and in the app; the model's verdict
+  afterwards, in the background, where a model is loaded (in the shell, once the orchestrator
+  exists, built on the first chat message). It never gates the sync. Of the changes received, only
+  one with a detection raises an alert. (The Alerts list also shows documents that could not be
+  read and documents whose thread was deleted, ch. 03.)
+- **Alerts:** in the shell, the status bar says "A change from {device} to “{title}” looks
+  suspicious — press A to see it" (or "N changes from your devices look suspicious — press A to
+  see them"), and `a` opens the *Alerts* window, with **Open the document**, **Open the previous
+  version** and **Dismiss** for each; in the app, the same notice as a banner over the canvas,
+  opening the same list. Dismissing changes nothing in the document. Going back is the ordinary
+  "Use this version" in History.
 
-*Replaces v1.x:* the `pending_edits` conflict queue and its approval/rejection flow.
+*Replaces v1.x:* the `pending_edits` conflict queue and its approval/rejection flow. *Retired
+2026-10-15:* the per-change review flag, the review lists (`r` in the shell, the mobile list) and
+the `RowsFlaggedForReview` badge.
 
 ### Concurrent-edit conflicts
 
-**Status:** ◐ Partial — surfacing and "keep mine" built; "keep theirs" and "keep both" not
-built.
+**Status:** ◐ Partial — keeping both built and released in v0.0.11 (C-WIRE, *Direction and
+concurrent edits*, decided by Céline 2026-10-15); the notice is shown in the app only: the shell
+drops the event. (code: crates/sovereign-p2p/src/wire.rs, node.rs;
+frontend/src/lib/components/SettingsPanel.svelte)
 
-A `SyncConflict` event surfaces equal-timestamp divergence. **Keep mine** (touches the document
-so it wins the next round, then syncs) and Dismiss are offered in the mobile app; the shell drops
-the event. "Keep theirs" and "keep both" need a fetch-document verb that does not exist.
+Two edits of one document made on two devices without either seeing the other's are **both
+kept, without asking**: the later stamp is current on both devices, the other state is a version
+in History on both. The sync round that finds it emits a `SyncConflict` event ("edited on both
+devices: the later edit is current, the other is in History"). The app (phone and the frozen Tauri
+desktop) lists such documents in Settings → Devices under "Edited on both devices", with **Open
+History** and **Dismiss**; "Use this version" in History puts the other state back, as an
+ordinary edit that syncs. "Keep mine" is gone (*"Use this version" replaces "Keep mine"*). The
+shell shows no notice for it.
 
 ### Git-like merge and `pending_edits`
 
@@ -524,20 +692,28 @@ last-writer-wins. Device sync between one user's devices does not need it.
 
 ## Sync wire — contract (C-WIRE)
 
-**Status:** ○ Draft 2026-10-15, amended the same day with Céline's answers to all five questions
-(devices on an older build, purges, backup restore, "Keep mine", review of her own devices'
-changes). Technical choices marked **[choice]**. No test and no code yet.
+**Status:** ◐ Partial — decided 2026-10-15 with Céline's answers to all five questions (devices
+on an older build, purges, backup restore, "Keep mine", review of her own devices' changes); tests
+written first, built in C-DOC adoption step 4 and released in v0.0.11. Amended since: purges are
+local (Céline, 2026-10-23; built in v0.0.12, item 3), the stamp bound inside the clock (v0.0.12,
+lot 1), the device in a stamp is the peer id (v0.0.12, item 22), a move is a stamped write
+(v0.0.12, item 15). Not as written: the shell shows no concurrent-edit notice (guarantee 7), and
+both UIs restore 3 of the 7 tables sync can overwrite (guarantee 15). Technical choices marked
+**[choice]**. (code: crates/sovereign-p2p/src/wire.rs, sync_service.rs;
+crates/sovereign-docs/src/wire.rs; tests `crates/sovereign-p2p/tests/wire_*`,
+`crates/sovereign-docs/tests/g24_*`–`g31_*`)
 
-**Why.** Documents are now written by one door, the document service (ch. 03, C-DOC), which keeps
-v2 content, versions, trust, trust decisions, provenance, the trash and purge markers. Sync still
-writes around it (C-DOC adoption, step 4): it compares and sends the **stored bytes**, decides
-direction by **wall-clock** modification time, creates every arriving document **owned** with
-provenance *unrecorded*, and sends neither trust, the user's trust decisions, provenance (copies
-included) nor purge markers. So an undetermined import becomes owned on her other device, a
-trust decision made on the phone never reaches the desktop, a purge is undone by the next sync,
-and a document stored in v2 on one device and in a legacy form on another never compares equal.
+**Why.** Documents are written by one door, the document service (ch. 03, C-DOC), which keeps
+v2 content, versions, trust, trust decisions, provenance, the trash and purge markers. Until
+v0.0.11, sync wrote around it (C-DOC adoption, step 4): it compared and sent the **stored bytes**,
+decided direction by **wall-clock** modification time, created every arriving document **owned**
+with provenance *unrecorded*, and sent neither trust, the user's trust decisions, provenance
+(copies included) nor purge markers. So an undetermined import became owned on her other device, a
+trust decision made on the phone never reached the desktop, a purge was undone by the next sync,
+and a document stored in v2 on one device and in a legacy form on another never compared equal.
 This contract fixes what travels, how two states are compared, and how a remote state is applied
-— through `DocumentService::apply_remote` and nothing else.
+— through the document service and nothing else (as built, `DocumentService::apply_wire`, and
+`apply_wire_version` for a concurrent state kept as a version).
 
 **How the wire evolves (K8, decided 2026-10-10).** By **added fields with defaults**, no protocol
 bump. Every field below that is new is optional on the wire; a peer that does not send it is
@@ -548,7 +724,7 @@ signed envelope (the document snapshot, the AEAD-sealed manifest); nothing new i
 
 The snapshot (sealed under the pair key, signed by the sender) carries:
 
-| Field | Today | Contract |
+| Field | Before v0.0.11 | Contract (built since v0.0.11) |
 |---|---|---|
 | title, thread, trash marker | sent | sent |
 | content | the stored bytes | the stored v2 content; a newer-format document verbatim |
@@ -561,12 +737,15 @@ The snapshot (sealed under the pair key, signed by the sender) carries:
 | modification time | sent | sent, for display and for peers on an older build only |
 
 The manifest (sealed under the account transport key) gains, per document, the **normalised
-hash** and the **stamp**; it keeps today's byte hash for older peers. It gains a list of **purge
-markers** — document id, the stamp of the purge, and the **fingerprint** of the purged version
-(*Deletions and purges*), nothing else — and a **wire version** number so a peer on an older build
-can be recognised. *(Amended 2026-10-23, Céline: purges are local. A purged document travels as a
-deletion — id and deletion stamp — which puts or keeps a peer's copy in its trash; no fingerprint
-travels, and no peer copy is purged. To build in v0.0.12.)*
+hash** and the **stamp** (with the previous stamp and a bounded list of earlier ones, so a device
+several edits behind sees a fast-forward). The byte-hash entries of builds before v0.0.11 are not
+sent when the document service exists: a peer on such a build is sent no document (*Peers on an
+older build*). It gains a list of **purge
+markers** — the document id and the stamp of its deletion, nothing else: a purged document travels
+as a deletion, which puts or keeps a peer's copy in its trash, and no peer copy is purged (purges
+are local, Céline, 2026-10-23; *Deletions and purges*) — and a **wire version** number so a peer on
+an older build can be recognised. Each marker also carries the `fingerprint` field a v0.0.11 build
+requires, sent empty, so that build still reads the manifest.
 
 ### Stamps instead of the wall clock **[choice]**
 
@@ -574,22 +753,23 @@ Every write to a document, and every trust decision, gets a **hybrid logical clo
 wall-clock time, a counter, and the device — ordered by time, then counter, then device. A device
 never issues a stamp lower than one it has seen, so a later write always carries a greater stamp
 even when the clocks disagree; a received stamp more than **5 minutes** ahead of the receiver's
-clock is refused, as manifests already are (today a document is accepted up to 24 hours ahead).
+clock is refused, as manifests are (until v0.0.11 a document was accepted up to 24 hours ahead;
+rows other than threads keep a 24-hour bound on their wall-clock time, beside their Lamport stamps).
 The rows already use Lamport stamps (*Rows* above); documents and trust decisions join them. This
 closes the C-DOC weakness that a device whose clock runs ahead wins every disagreement. The
 displayed times stay wall-clock.
 
 **The bound is inside the clock** (v0.0.12, lot 1, after the cloud review of v0.0.11, finding 1). A
 stamp more than 5 minutes ahead of this device's **wall clock** never moves its clock, whatever
-carries it: a document's state, a trust decision, a purge marker, a backup, or a stamp already
-stored (read again at start). A document whose state or decision stamp is beyond the bound is
-refused whole; a purge marker beyond it is refused and applies at a later sync; a backup is
-restored as stored, but its stamps beyond the bound do not move the clock. The rule "never lower
+carries it: a document's state, a trust decision, a purge marker, a thread row (refused whole
+beyond the bound, as since v0.0.11), a backup, or a stamp already stored (read again at start). A
+document whose state or decision stamp is beyond the bound is refused whole; a purge marker beyond
+it is refused and applies at a later sync; a backup is restored as stored, but its stamps beyond the bound do not move the clock. The rule "never lower
 than a stamp issued or seen here" holds for stamps within the bound; a stamp beyond it that is
 already stored keeps winning concurrent conflicts on its document until real time passes it.
 Each device bounds against its own wall clock, so two devices whose clocks are d apart may see a
 delay of at most d, never a stop. A counter at its maximum moves to the next millisecond: no wrap,
-no panic. *Status:* ● built in v0.0.12 lot 1 (`lot1_c_stamp_bound.rs`, `lot1_clock_tests.rs`).
+no panic. *Status:* ✅ built in v0.0.12 lot 1 (`lot1_c_stamp_bound.rs`, `lot1_clock_tests.rs`).
 
 **The device in a stamp is the device's peer id** (v0.0.12 item 22; found by PANDA2's items 14 + 19
 test author; Céline, 2026-10-24: "Dans la v0.0.12"). It is the libp2p peer id of the persona,
@@ -600,7 +780,7 @@ known. Stamps already stored keep their name; old and new coexist (ordering by t
 first; a write naming an old stamp as its previous one fast-forwards). Where a device is named from a
 stamp (History, orphans, alerts), the name comes from the paired list, "this device" for the own id,
 and an old name is shown as it is. If the identity cannot be derived, the desktop opens no document
-service rather than stamp with a shared word. *Status:* ● built (`item22_device_identity.rs` and the
+service rather than stamp with a shared word. *Status:* ✅ built (`item22_device_identity.rs` and the
 hosts' `item22_identity_tests.rs`).
 
 ### Comparing two states
@@ -610,7 +790,8 @@ thread, the trash state, the trust, the trust decision, the provenance, and the 
 — a legacy form converted with the deterministic migration seeded by the document id (ch. 03, G3),
 so the same legacy document is the same on every device whether or not it has been migrated. The
 normalised hash is computed by the document service (`sync` never parses content, per the readers
-gate). A title-only edit or a thread move changes it, so both now travel (they do not today).
+gate). A title-only edit or a thread move changes it, so both travel (a title-only edit since
+v0.0.11, a move since v0.0.12; before, neither did).
 
 ### Direction and concurrent edits
 
@@ -619,8 +800,8 @@ gate). A title-only edit or a thread move changes it, so both now travel (they d
 - **Concurrent edits keep both, without asking** — the rule Céline decided for save conflicts on
   2026-10-12, applied across devices: the state with the greater stamp is current on **both**
   devices; the other state is kept as a version on **both** (the losing device versions its own
-  state before applying, as today; the winning device receives the losing state and stores it as
-  a version without making it current); both devices show a notice. Nothing is asked unless the
+  state before applying, as it already did before v0.0.11; the winning device receives the losing
+  state and stores it as a version without making it current); both devices show a notice. Nothing is asked unless the
   user acts on the notice.
 - With three or more devices, a "concurrent" verdict can be a false alarm (a relayed state whose
   previous stamp is unknown here); the cost is an extra version and a notice, never a loss
@@ -628,7 +809,9 @@ gate). A title-only edit or a thread move changes it, so both now travel (they d
 
 ### Applying a remote state
 
-Every remote document state goes through `DocumentService::apply_remote` (C-DOC G19): the local
+Every remote document state goes through the document service (C-DOC G19; as built,
+`DocumentService::apply_wire`, with the wire metadata of G24–G31, and `apply_wire_version` for a
+concurrent state kept as a version): the local
 state is versioned first, ingest runs (G10), trust moves only with a later decision (G12), a purged
 id is handled as in *Deletions and purges*. Sync keeps no write of its own to documents: no store
 update, commit, create, soft delete or restore from `sovereign-p2p`.
@@ -666,22 +849,23 @@ only the rare alerts. Consequences:
 - C-DOC G19 ("the document is flagged for review") changes accordingly: the flag becomes an alert
   raised only on a detection.
 
-**What `apply_remote` lacks today**, to add in the contract before the tests (not added here):
-1. the original **creation time** (a document arriving today is dated by the sync);
-2. the **stamps** — the service decides with the wall-clock `modified_at`; trust decisions carry a
-   wall-clock `decided_at`;
+**What the service needed beyond `apply_remote`** — each built in step 4 (C-DOC G24–G31, ch. 03)
+and released in v0.0.11, sync calling `apply_wire` and not `apply_remote`:
+1. the original **creation time** (a document arriving was dated by the sync) — ✅ carried;
+2. the **stamps** (the service decided with the wall-clock `modified_at`, and trust decisions
+   carried a wall-clock `decided_at`) — ✅ stamps for writes and decisions;
 3. storing a remote state **as a version without making it current** (the winning side of a
-   concurrent edit);
-4. receiving a **purge marker** from a peer, with its fingerprint (*Deletions and purges*);
-5. the **author device** distinct from the relaying sender;
+   concurrent edit) — ✅;
+4. receiving a **purge marker** from a peer, applied as a deletion (*Deletions and purges*) — ✅,
+   as amended by item 3 (v0.0.12);
+5. the **author device** distinct from the relaying sender — ✅;
 6. an outcome that says the edit was **concurrent** (for the notice) and whether **ingest changed
-   the text** (so the rewritten state travels back);
-7. the **normalised hash** and the **purge fingerprint** as service functions, and a way to send the
-   stored state (with trust, decision, provenance, creation time, stamps) without the sync layer
-   reading `content`;
-8. a **backup restore** entry (below);
-9. **row tables** are out of the service: conversation titles and contact-address sets stay with
-   the row apply (below).
+   the text** (so the rewritten state travels back) — ✅;
+7. the **normalised hash** as a service function, and a way to send the stored state (with trust,
+   decision, provenance, creation time, stamps) without the sync layer reading `content` — ✅;
+8. a **backup restore** entry (below) — ✅;
+9. **row tables** stay out of the service: conversation titles and contact-address sets are
+   applied by the row apply (below) — ✅.
 
 ### Deletions and purges
 
@@ -696,18 +880,23 @@ only the rare alerts. Consequences:
 - **What travels after a purge is the deletion, never the purge.** The device that purged keeps a
   **local purge marker** — the id and the stamp of the deletion, nothing else (no fingerprint, no
   content) — and advertises it as a deletion: a peer that holds the document **live** with an
-  earlier stamp moves it to **its trash**, restorably; a peer that holds it **in its trash**
-  keeps it there. In both cases the peer's copy stays until its own term (30 days on that device)
-  or until it is purged there by hand.
+  earlier stamp moves it to **its trash**, restorably, and that state takes the deletion's stamp,
+  so both devices order it alike; a peer that holds it live with a stamp not earlier than the
+  deletion keeps it live; a peer that holds it **in its trash** keeps it there as it is, its trash
+  date and its stamp unchanged. In each case the peer's copy stays until its own term (30 days on
+  that device) or until it is purged there by hand. A peer that holds **no copy** records the
+  deletion (the id and its stamp), so an older copy arriving later from a third device is
+  ignored; of two deletions recorded for one id, the later stamp is kept. A received deletion
+  never purges anything (v0.0.12 item 3).
 - **The 30 days run on each device's own clock**, from the moment the document entered *that
   device's* trash (by a local delete or by applying a peer's deletion), never from a date a peer
   sent.
 - **A purged id comes back only live, by a later action.** A device that purged a document ignores
-  a peer's copy of it that is in the peer's trash, and a live state whose stamp is earlier than its
-  deletion. A **live state with a later stamp** — the document restored or edited on another device
-  after the deletion — **brings it back here, live** (Céline, 2026-10-23), through the service, as a
-  new arrival (its own first version, the sender's trust and provenance); the local marker is then
-  dropped. This is the one exception to C-DOC G13 ("a purged document is never brought back by
+  a peer's copy of it that is in the peer's trash, and a live state whose stamp is earlier than or
+  equal to its deletion's. A **live state with a later stamp** — the document restored or edited on
+  another device after the deletion — **brings it back here, live** (Céline, 2026-10-23), through
+  the service, as a new arrival (its own first version, the sender's trust and provenance); the
+  local marker is then dropped. This is the one exception to C-DOC G13 ("a purged document is never brought back by
   sync"), which is amended to say so.
 - **Peers on v0.0.11** (Céline, 2026-10-24): documents keep syncing with them. A v0.0.11 purge
   marker is read as a deletion (its fingerprint is neither compared nor stored); this build's
@@ -715,16 +904,20 @@ only the rare alerts. Consequences:
   reads the manifest and ignores them.
 - **The 30 days and an upgrade:** at its first purge tick a store records when it started counting
   ("trash since"); a document whose trash date is earlier is purged 30 days after that, not
-  before, and the trash view shows those days **[choice]**. A document restored from a backup into
-  the trash enters this device's trash at the restore. Fingerprints already stored by v0.0.11 are
-  erased at the first unlock.
+  before, and the trash view shows those days **[choice]**. **The days shown are the days used:**
+  the trash view's days left are counted from the date the purge uses — the local trash date,
+  floored by "trash since" — in whole days; the date shown stays the stored trash date, so only a
+  document floored at an upgrade shows an old date with more days left. A document restored from a
+  backup into the trash enters this device's trash at the restore. **Fingerprints stored by
+  v0.0.11 are erased** at every unlock, on every unlock path (a store whose format conversion
+  completed under v0.0.11 included), each persona at its own unlock; the purge tick and the
+  reading of the markers for the manifest erase any left, so no stored fingerprint is ever sent.
 - **Sync does not refetch what it will ignore:** the document plan neither fetches nor pushes a
   copy that the other side's marker would ignore **[choice]**. *(Remainder, backlog: a copy a peer
   holds in its trash with a later stamp is still fetched each round, then ignored; the manifest
   does not say whether a copy is in the trash.)*
-- *Status:* ● built in v0.0.12 item 3 (`doc/plans/V0012-item3-local-purges.md`; tests
-  `item3_local_purges.rs`, `item3_no_fingerprint.rs`, `item3_trash_since.rs`,
-  `item3_purge_outcomes.rs`, `g27_purge_markers.rs`, and `sovereign-p2p/tests/item3_local_purges.rs`,
+- *Status:* ✅ built in v0.0.12 item 3 (tests `item3_local_purges.rs`, `item3_no_fingerprint.rs`,
+  `item3_trash_since.rs`, `item3_purge_outcomes.rs`, `g27_purge_markers.rs`, and `sovereign-p2p/tests/item3_local_purges.rs`,
   `wire_purges.rs`). Review of v0.0.11, findings 2, 3, 13 and 14, closed.
 
 ### Moving a document
@@ -737,22 +930,60 @@ moved on two devices, the later move wins on both. A move into a deleted or unkn
 trashed or purged document, or into the thread the document is already in, is refused with its
 reason. **The pin stays on each device** (Céline, 2026-10-24): it is not stamped, not sent, and
 never part of the compared state. A card's free position (written only by the frozen Tauri
-desktop) is not synced either. *Status:* ● built (`lanes_m1_move.rs`, `lanes_m2_one_move_path.rs`,
+desktop) is not synced either. *Status:* ✅ built (`lanes_m1_move.rs`, `lanes_m2_one_move_path.rs`,
 `wire_lanes_moves.rs`, `wire_lanes_pin.rs`).
 
 ### Peers on an older build
 
+*Status:* ✅ built for v0.0.13 (lot L1b, merged 2026-11-15): wire version 2, carried by each document
+request (`crates/sovereign-p2p/tests/wire_version_2.rs`).
+
 **Documents are not exchanged with a device on an older build until it is updated** (decided by
-Céline, 2026-10-15), and both screens say so ("Update <device> to sync documents"). Threads,
+Céline, 2026-10-15), and both screens say so ("{device} runs an older version of Sovereign.
+Update it to sync documents with it; other data still syncs."; in the shell's status bar, "{device}
+runs an older version: update it to sync documents"). Threads,
 contacts, messages and the other rows keep syncing. The reason: an older build cannot read v2
 content — its tolerant read shows a v2 document as the raw JSON text, and an edit there would save
 that text back as the document.
 
-A peer is on an older build when its manifest carries no wire version. *(A v0.0.11 peer is not an
-older build for documents: same wire version, same document format; only its purges differ, and
-they are read as deletions, see* Deletions and purges*.)* The new build sends it no
-document state and applies none from it; documents written on the old device stay there until it
-is updated, then sync normally. The v2 format is already written by this build, so "keep writing
+**A peer is on an older build when its manifest carries a lower wire version, or none.** *(A
+v0.0.11 peer is not an older build for documents: same wire version, same document format; only its
+purges differ, and they are read as deletions, see* Deletions and purges*.)*
+- **The wire version goes up with every change of the document format** (Céline, 2026-11-14:
+  « Oui, l'appliquer », on her rule of 2026-10-15 applied between v0.0.12 and v0.0.13). v0.0.13
+  raises it from 1 to 2, since media blocks name the store's medium instead of a path (ch. 03).
+- **The refusals are the new build's.** A build that only tests for a missing version, as v0.0.12
+  does, does not compare numbers. So toward a peer on a lower wire version, the new build:
+  - sends it no document state;
+  - serves none of its requests for documents;
+  - applies none of its document states.
+- **Its purge markers are still applied.** A marker carries an id and a stamp, and no document
+  content, so the change of format does not touch it. A purge is the user's intent.
+- **The rule holds from both sides.** A build that meets a higher wire version holds the same three
+  refusals. Its screen says that this device runs the older version and is the one to update
+  (Céline, 2026-11-14: « Le garder »): a notice titled « This device needs an update », « This
+  device runs an older version of Sovereign than {name}. Update this device to sync documents with
+  it; other data still syncs. », and in the status bar « This device runs an older version: update
+  it to sync documents ». It clears the same way as the sentence for the other device.
+  v0.0.12 lacked this half, and it can only be put into a build before that build is published.
+- **The answering side judges by the request it answers, whichever side started the round.**
+  - The two requests that carry documents, fetching and pushing them, carry the requester's wire
+    version. A request built by v0.0.12 has no such field, and reads as having none.
+  - **A request with no version, or a lower one,** is refused for documents: nothing is served,
+    nothing is applied. Rows, shards and backup fragments go on in their own requests.
+  - **A request with a higher version** is refused the same way, and this device knows it is the
+    older one.
+  - **The refusal is said to the requester,** not answered as an empty list, so that a refused round
+    is told apart from « nothing to sync ». Toward a request with no version or a lower one, it is
+    the error response that v0.0.12 already knows: v0.0.12 logs it and goes on with its rows.
+  - **Nothing is remembered per peer** on the answering side, so nothing can go stale: a device put
+    back on an older build is refused at its first request. The asking side keeps its plan from the
+    manifest it asked for.
+  - **Any later request that carries a document joins this rule.** A test lists them, and a new one
+    fails until it is named.
+  - Found by the laptop maille (a peer that started every round was never refused); the way chosen
+    was proposed by the Fable maille, over an announcement remembered per peer.
+- **Documents written on the old device stay there until it is updated,** then sync normally. The v2 format is already written by this build, so "keep writing
 the old form until every device is updated" is not an option.
 
 ### Backup restore
@@ -768,9 +999,11 @@ On an empty workspace, the restore goes through the service, document by documen
 one version ("Restored from backup"), its trust, decision, provenance and times as backed up. There
 is nothing local to conflict with, so everything in the backup comes back. **The purge rule there:**
 an empty device knows no purge, so a document purged after the backup was taken comes back with
-it; the backup carries the purge markers it knew of **[choice]**, which keep a document purged
-before the backup from returning by sync later, unless a peer sends a live state with a later
-stamp (*Deletions and purges*, as amended 2026-10-23: purges are local). If no other device
+it; the backup carries the purge markers it knew of **[choice]**, as id and deletion stamp, no
+fingerprint (a backup taken by v0.0.11 has its markers restored without their fingerprints).
+Restored, they are recorded as deletions and keep a document purged before the backup from
+returning by sync later, unless a peer sends a live state with a later stamp (*Deletions and
+purges*, as amended 2026-10-23: purges are local; v0.0.12 item 3). If no other device
 survives, what the backup held is what comes back.
 
 **For the rare wish to see a backup next to existing data** (Céline's fallback): restore it into a
@@ -788,13 +1021,17 @@ identical save does nothing, G11).
 
 ### Rows
 
-The row apply (*Rows* above) gains, by added fields: a **conversation's title** applied when it
-changes; a **contact's addresses** applied as a set, removals included (both hashes then converge);
-one shared list of **restorable tables** used by sync and by both *previous values* lists, so every
-table sync can overwrite is one both UIs can restore. Trust of entities and contacts is out of this
-contract.
+The row apply (*Rows* above) applies a **conversation's title** when it changes, and a
+**contact's addresses** as a set, removals included (both hashes then converge), since v0.0.11.
+The contract also requires one shared list of **restorable tables** used by sync and by both
+*previous values* lists, so every table sync can overwrite is one both UIs can restore. As built,
+the sync layer restores seven tables and both UIs offer three of them, each from its own list
+(threads, contacts, PII records; guarantee 15, status above). (code:
+crates/sovereign-p2p/src/sync_service.rs; crates/sovereign-shell/src/panels.rs;
+crates/sovereign-app/src/tauri_commands/sync_alerts.rs) Trust of entities and contacts is out of
+this contract.
 
-### Guarantees — each to become a test
+### Guarantees — each one is tested
 
 1. **Everything that defines a document travels**: title, thread, content (v2; a newer format
    verbatim), trash state, trust, the last trust decision with its stamp, provenance (copies
@@ -819,16 +1056,19 @@ contract.
    sender trust or decision that says so (closes "synced documents always land owned").
 9. **Tombstones**: every user deletion reaches every paired device as a trash, restorable; a later
    live state revives.
-10. **A purge removes only the same version** (Céline, 2026-10-15): a device whose copy has the
-    purged fingerprint purges it, wherever it sits; a device whose copy differs keeps it, and that
-    copy comes back to the purging device as a new arrival; a second purge of now-identical copies
-    removes them everywhere; the marker carries no title or content, only the id, stamp and
-    fingerprint.
+10. **A purge is local** (Céline, 2026-10-23): a purge removes the document from this device only;
+    on a peer, the marker moves a live copy stamped before the deletion to the trash, or keeps it
+    there, and never purges it; a live state with a later stamp than the deletion brings the
+    document back here, live; the marker carries no title, no content and no fingerprint, only the
+    id and the deletion's stamp.
 11. **Only the service writes documents**: no store write to documents from `sovereign-p2p` (the
     write gate's step-4 entries removed and its patterns extended to soft delete and restore).
-12. **Older peers exchange no documents** (Céline, 2026-10-15): a peer without a wire version is
-    sent no document state and none of its document states is applied; both screens say which
-    device to update; rows sync with it as before.
+12. **Older peers exchange no documents** (Céline, 2026-10-15 and 2026-11-14). A peer with a lower
+    wire version, or none, is sent no document state, its requests for documents are not served,
+    and none of its document states is applied. Its purge markers are still applied. This holds in
+    either direction, whichever side starts, and from both sides: a build that meets a higher wire
+    version refuses in the same way, and says that it is the one to update. Both screens say which
+    device to update, and rows sync with it as before.
 13. **Alerts, not reviews** (Céline, 2026-10-15): a document change received from a paired device
     is analysed every time; an innocent change applies silently (no flag, no alert) with the
     replaced state in History; a suspicious one (injected instructions, a wholesale rewrite, or a

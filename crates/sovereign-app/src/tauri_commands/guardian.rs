@@ -63,18 +63,32 @@ pub struct GuardianRosterDto {
     pub guardians: Vec<GuardianSlotDto>,
 }
 
-/// Arm an in-person guardian-enrollment offer handing out the next
-/// Recovery-Key share. First call generates the Recovery Key + bundle + roster.
-#[tauri::command]
-pub async fn begin_guardian_enrollment(
-    webview: tauri::Webview,
-    state: State<'_, AppState>,
-) -> Result<BeginEnrollmentResult, String> {
-    state.require_unlocked(&webview).await?;
+/// The behaviour under `begin_guardian_enrollment`, on the state alone, as
+/// `pairing::generate_pair_qr_in` is under `generate_pair_qr` (the command
+/// keeps its main-webview check and calls this):
+/// - in a primary session, the real offer, armed on the node as today;
+/// - **in a duress session, the decoy** (ch. 07, *After login*, Céline
+///   2026-10-17: guardian enrollment « appears to work, waits for the guardian,
+///   and never completes »; AR4: « Guardian enrollment keeps its decoy waiting
+///   screen »): an offer of the real form, through the same key stretch as
+///   the real one ([`stretch_enroll_key`]), armed nowhere, with nothing read
+///   from or written to the recovery store.
+///
+/// Signature by the C-AREA test author (`l1c-tests-v10`; claude-coord
+/// from-fable-2nde-position/0062, from-windows/0302, from-laptop/0285); its
+/// body is the implementer's.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) async fn begin_guardian_enrollment_in(state: &AppState) -> Result<BeginEnrollmentResult, String> {
     #[cfg(all(feature = "p2p", feature = "encryption"))]
     {
         use sovereign_crypto::recovery_roster::{GUARDIAN_THRESHOLD, GUARDIAN_TOTAL};
 
+        state.require_session_unlocked().await?;
+        // C-AREA AR4: a duress session gets the decoy, before anything of the
+        // real enrollment (its KEK, the node, the recovery store) is asked for.
+        if state.is_duress_session() {
+            return decoy_guardian_offer(state).await;
+        }
         let kek = state
             .kek()
             .await
@@ -83,10 +97,11 @@ pub async fn begin_guardian_enrollment(
             .account_key()
             .await
             .ok_or_else(|| "recovery setup unavailable: account key not loaded".to_string())?;
+        // C-SUP, DEL-0019: while sync is stopped, the stop's text.
         let cmd_tx = state.p2p_command_tx().await.ok_or_else(|| {
-            "guardian enrollment requires the P2P node — enable sync in Settings first".to_string()
+            state.node_refusal("guardian enrollment requires the P2P node — enable sync in Settings first")
         })?;
-        let owner_peer_id = crate::tauri_commands::pairing::peer_id_from_state(&state).await;
+        let owner_peer_id = crate::tauri_commands::pairing::peer_id_from_state(state).await;
         if owner_peer_id.is_empty() {
             return Err("guardian enrollment unavailable: p2p identity not loaded".into());
         }
@@ -140,15 +155,8 @@ pub async fn begin_guardian_enrollment(
         );
         let code = sovereign_crypto::pair_payload::generate_pairing_code();
 
-        // Argon2id stretch (~0.5 s) off the async runtime.
-        let offer_for_kdf = offer.clone();
-        let code_for_kdf = code.clone();
-        let handshake_key = tauri::async_runtime::spawn_blocking(move || {
-            sovereign_p2p::guardian_enroll::derive_enroll_key(&code_for_kdf, &offer_for_kdf)
-        })
-        .await
-        .map_err(|e| format!("kdf task: {e}"))?
-        .str_err()?;
+        // Argon2id stretch (~0.5 s), the one the decoy runs too.
+        let handshake_key = stretch_enroll_key(&offer, &code).await?;
 
         cmd_tx
             .send(sovereign_p2p::P2pCommand::SetGuardianOffer {
@@ -178,22 +186,120 @@ pub async fn begin_guardian_enrollment(
     }
     #[cfg(not(all(feature = "p2p", feature = "encryption")))]
     {
-        let _ = (webview, state);
+        let _ = state;
         Err("guardian enrollment requires the p2p + encryption features".into())
     }
 }
 
-/// The owner's guardian roster (X/5, armed only at 5). Empty before setup.
+/// The duress session's guardian-enrollment screen (see
+/// [`begin_guardian_enrollment_in`]): built as the real offer is, from this
+/// session's own peer id and the device's name, a code from the real
+/// generator, through the same key stretch (its key thrown away), and the
+/// first slot of a persona with no roster yet. Nothing is armed (a duress
+/// session runs no node) and the recovery store is neither read nor written,
+/// so the screen waits for a guardian that never comes.
+#[cfg(all(feature = "p2p", feature = "encryption"))]
+async fn decoy_guardian_offer(state: &AppState) -> Result<BeginEnrollmentResult, String> {
+    use sovereign_crypto::recovery_roster::GUARDIAN_TOTAL;
+    let owner_peer_id = crate::tauri_commands::pairing::peer_id_from_state(state).await;
+    if owner_peer_id.is_empty() {
+        return Err("guardian enrollment unavailable: p2p identity not loaded".into());
+    }
+    let offer = sovereign_p2p::guardian_enroll::GuardianEnrollOffer::new(
+        owner_peer_id,
+        state.config.p2p.device_name.clone(),
+        Vec::new(),
+        sovereign_p2p::guardian_enroll::GUARDIAN_OFFER_TTL_SECONDS,
+    );
+    let code = sovereign_crypto::pair_payload::generate_pairing_code();
+    let _ = stretch_enroll_key(&offer, &code).await?;
+    Ok(BeginEnrollmentResult {
+        qr_payload_b64: offer.encode().str_err()?,
+        code,
+        // The first slot of the first epoch, as a fresh roster names it.
+        shard_id: "rk-e1-0".to_string(),
+        enrolled_count: 0,
+        total: GUARDIAN_TOTAL as u8,
+    })
+}
+
+/// The guardian-enrollment key of `offer` under `code`: the Argon2id stretch
+/// (~0.5 s), as `sovereign_p2p::guardian_enroll::derive_enroll_key` computes
+/// it, off the async runtime. **The real offer and the duress session's decoy
+/// both go through this one function** (C-AREA AR4; SIDECHANNEL-001's rule;
+/// the phone's form of the shell's `p2p::stretch_enroll_key`). Each call
+/// counts in `enroll_key_stretches` (tests).
+///
+/// Signature by the C-AREA test author (`l1c-tests-v10`); its body is the
+/// implementer's.
+#[cfg(feature = "p2p")]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) async fn stretch_enroll_key(
+    offer: &sovereign_p2p::guardian_enroll::GuardianEnrollOffer,
+    code: &str,
+) -> Result<[u8; 32], String> {
+    #[cfg(test)]
+    ENROLL_KEY_STRETCHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let offer = offer.clone();
+    let code = code.to_string();
+    tauri::async_runtime::spawn_blocking(move || sovereign_p2p::guardian_enroll::derive_enroll_key(&code, &offer))
+        .await
+        .map_err(|e| format!("kdf task: {e}"))?
+        .map_err(|e| e.to_string())
+}
+
+/// The runs of [`stretch_enroll_key`] in this process (tests only).
+#[cfg(all(test, feature = "p2p"))]
+static ENROLL_KEY_STRETCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many times this process has run [`stretch_enroll_key`] (tests only):
+/// the C-AREA walk reads it around the real guardian offer and around the
+/// decoy.
+///
+/// Signature by the C-AREA test author (`l1c-tests-v10`); its body is the
+/// implementer's.
+#[cfg(all(test, feature = "p2p"))]
+pub(crate) fn enroll_key_stretches() -> usize {
+    ENROLL_KEY_STRETCHES.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Arm an in-person guardian-enrollment offer handing out the next
+/// Recovery-Key share. First call generates the Recovery Key + bundle + roster.
 #[tauri::command]
-pub async fn list_guardians(
+pub async fn begin_guardian_enrollment(
     webview: tauri::Webview,
     state: State<'_, AppState>,
-) -> Result<GuardianRosterDto, String> {
-    state.require_unlocked(&webview).await?;
-    #[cfg(all(feature = "p2p", feature = "encryption"))]
+) -> Result<BeginEnrollmentResult, String> {
+    crate::tauri_state::require_main_webview(&webview)?;
+    begin_guardian_enrollment_in(&state).await
+}
+
+/// The guardian list as `list_guardians` answers it, on the state alone, for the session the
+/// state holds (v0.0.13 rc2, Céline 2026-11-20: in a duress session it answers as for a persona
+/// with no roster, and no error). The command checks its webview, then answers this.
+///
+/// Signature by the test author of the rc2's lot on personas in logs and exports; its body is the
+/// implementer's.
+#[cfg(feature = "p2p")]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) async fn list_guardians_in(state: &AppState) -> Result<GuardianRosterDto, String> {
+    #[cfg(feature = "encryption")]
     {
         use sovereign_crypto::recovery_roster::GUARDIAN_TOTAL;
 
+        let none_enrolled = || GuardianRosterDto {
+            enrolled_count: 0,
+            total: GUARDIAN_TOTAL as u8,
+            armed: false,
+            guardians: vec![],
+        };
+        state.require_session_unlocked().await?;
+        // A duress session answers as a persona with no roster, before the
+        // KEK or any file of the recovery store is asked for, as its decoy
+        // enrolment does.
+        if state.is_duress_session() {
+            return Ok(none_enrolled());
+        }
         let kek = state
             .kek()
             .await
@@ -211,14 +317,7 @@ pub async fn list_guardians(
                 }
                 s
             }
-            None => {
-                return Ok(GuardianRosterDto {
-                    enrolled_count: 0,
-                    total: GUARDIAN_TOTAL as u8,
-                    armed: false,
-                    guardians: vec![],
-                });
-            }
+            None => return Ok(none_enrolled()),
         };
         let guardians = setup
             .slots
@@ -236,7 +335,25 @@ pub async fn list_guardians(
             guardians,
         })
     }
-    #[cfg(not(all(feature = "p2p", feature = "encryption")))]
+    #[cfg(not(feature = "encryption"))]
+    {
+        let _ = state;
+        Err("guardian roster requires the p2p + encryption features".into())
+    }
+}
+
+/// The owner's guardian roster (X/5, armed only at 5). Empty before setup.
+#[tauri::command]
+pub async fn list_guardians(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<GuardianRosterDto, String> {
+    state.require_unlocked(&webview).await?;
+    #[cfg(feature = "p2p")]
+    {
+        list_guardians_in(&state).await
+    }
+    #[cfg(not(feature = "p2p"))]
     {
         let _ = (webview, state);
         Err("guardian roster requires the p2p + encryption features".into())

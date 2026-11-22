@@ -30,6 +30,40 @@ pub enum Plane {
     Data,
 }
 
+/// What kind of object an action target is (spec ch. 08, *Action targets*,
+/// AT1). `None` is the neutral value of a proposal whose target is not
+/// resolved into this type yet (C-HOST, lot LH: types and signatures first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum TargetKind {
+    #[default]
+    None,
+    Thread,
+    Document,
+    Version,
+    Model,
+    Skill,
+}
+
+/// The object a proposal acts on, resolved before proposing (AT1): its kind,
+/// id, displayed title, and the revision seen when the proposal was built.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ActionTarget {
+    pub kind: TargetKind,
+    pub id: String,
+    pub title: String,
+    pub revision: String,
+}
+
+/// The id of one proposal (AT6): a decision applies only to the proposal with
+/// that id. `RequestId::default()` is the neutral value of a proposal not yet
+/// given one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct RequestId(pub u64);
+
+fn no_deadline() -> chrono::DateTime<chrono::Utc> {
+    ProposedAction::NO_DEADLINE
+}
+
 /// A proposed action awaiting authorization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProposedAction {
@@ -39,6 +73,21 @@ pub struct ProposedAction {
     pub doc_id: Option<String>,
     pub thread_id: Option<String>,
     pub description: String,
+    /// The object acted on (AT1).
+    #[serde(default)]
+    pub target: ActionTarget,
+    /// This proposal's id (AT6).
+    #[serde(default)]
+    pub request_id: RequestId,
+    /// When the proposal expires, counted from when it was issued (AT6); a
+    /// host counts down to it. [`ProposedAction::NO_DEADLINE`] until set.
+    #[serde(default = "no_deadline")]
+    pub deadline: chrono::DateTime<chrono::Utc>,
+}
+
+impl ProposedAction {
+    /// The neutral deadline of a proposal not yet given one (the Unix epoch).
+    pub const NO_DEADLINE: chrono::DateTime<chrono::Utc> = chrono::DateTime::<chrono::Utc>::UNIX_EPOCH;
 }
 
 /// The user's decision on a proposed action.
@@ -46,6 +95,13 @@ pub struct ProposedAction {
 pub enum ActionDecision {
     Approve,
     Reject(String),
+}
+
+/// A decision bound to the proposal it answers (AT6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestDecision {
+    pub request_id: RequestId,
+    pub decision: ActionDecision,
 }
 
 /// The user's decision on how to handle a high-severity injection detected in
@@ -81,16 +137,25 @@ pub fn action_level(action: &str) -> ActionLevel {
         "create_document" | "create_thread" | "rename_thread" | "move_document"
         | "restore" | "edit" | "find_replace" | "duplicate" | "import_file"
         | "swap_model" | "split_thread" | "adopt"
-        | "create_milestone" | "delete_milestone" => ActionLevel::Modify,
+        | "create_milestone" | "delete_milestone"
+        // C-MERGE MG6 (Céline, 2026-11-13: « Niveau 3 normal »): a merge keeps
+        // its source and can be undone, so it is level 3, as is its undo.
+        | "merge_threads" | UNDO_MERGE_ACTION => ActionLevel::Modify,
         "export" | "share" | "transmit"
         | "pair_device" | "enroll_guardian" | "rotate_shards" => ActionLevel::Transmit,
-        // v0.0.12 item 23, T4: a merge deletes its source thread, so it is
-        // never auto-approved, like deleting a thread.
-        "delete_thread" | "merge_threads" | "delete_document" | "purge"
+        "delete_thread" | "delete_document" | "purge"
         | "initiate_recovery" | "revoke_guardian" => ActionLevel::Destruct,
         _ => ActionLevel::Observe,
     }
 }
+
+/// C-MERGE MG5 (spec ch. 03; Céline, 2026-11-17: « Assistant seul »): the
+/// action the router names when the person asks the assistant to undo the
+/// merge of a thread, named by the thread (its target). Its handler clears the
+/// thread's two merge fields under a new merge stamp. Name by the B1 test
+/// author; the router's prompt, the handler and the level are the
+/// implementer's.
+pub const UNDO_MERGE_ACTION: &str = "undo_merge_threads";
 
 /// Decide whether an action can proceed automatically.
 /// Levels 1-2 are auto-approved. Levels 3-5 require confirmation.
@@ -167,8 +232,11 @@ mod tests {
 
     #[test]
     fn action_level_merge_destruct_split_modify() {
-        // v0.0.12 item 23, T4 (Céline, 2026-10-25): merging always asks.
-        assert_eq!(action_level("merge_threads"), ActionLevel::Destruct);
+        // C-MERGE MG6 (spec v2.0.109; Céline, 2026-11-13: « Niveau 3 normal »):
+        // a merge is reversible, so it is level 3. Until then, v0.0.12 item 23,
+        // T4 (Céline, 2026-10-25): merging always asked, at Destruct. The name
+        // is kept; the B1 test author changed the assertion.
+        assert_eq!(action_level("merge_threads"), ActionLevel::Modify);
         assert_eq!(action_level("split_thread"), ActionLevel::Modify);
     }
 
@@ -236,6 +304,9 @@ mod tests {
             doc_id: None,
             thread_id: Some("thread:abc".into()),
             description: "Delete thread abc".into(),
+            target: ActionTarget::default(),
+            request_id: RequestId::default(),
+            deadline: ProposedAction::NO_DEADLINE,
         };
         let json = serde_json::to_string(&pa).unwrap();
         assert!(json.contains("delete_thread"));

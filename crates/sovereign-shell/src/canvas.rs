@@ -168,6 +168,47 @@ pub(crate) async fn shown_title(docs: Option<&sovereign_docs::DocumentService>, 
     out
 }
 
+/// C-SWEEP SW5 (spec ch. 09): what a card shows of a document's text, each
+/// personal-data token as its type's label, never raw (Céline, 2026-11-17:
+/// both hosts), as [`shown_title`] does for a title.
+///
+/// *Signature by the test author of lot LS(a); the body is the implementer's.*
+///
+/// The text is read through the v2 model ([`display_text`]); each token the
+/// document's view reports (in any of its fields) is replaced by its label,
+/// a token whose record was deleted by the placeholder. Without a service, or
+/// when the document can't be read, each token form shows as the generic
+/// label (`[PII]`): in doubt, the stored form is not shown.
+pub(crate) async fn shown_text(docs: Option<&sovereign_docs::DocumentService>, id: &str, stored: &str) -> String {
+    let text = display_text(stored);
+    if !text.contains(TOKEN_PREFIX) {
+        return text;
+    }
+    let view = match docs {
+        Some(docs) => docs.read(id).await.ok(),
+        None => None,
+    };
+    let generic = sovereign_ai::pii::resolve::preview_label_for_kind(&sovereign_db::schema::PiiKind::Other);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find(TOKEN_PREFIX) {
+        let Some(len) = rest[at..].find(']') else { break };
+        let rid = &rest[at + TOKEN_PREFIX.len()..at + len];
+        out.push_str(&rest[..at]);
+        let status = view.as_ref().and_then(|v| v.tokens.iter().find(|t| t.record_id == rid).map(|t| t.status.clone()));
+        match (&view, status) {
+            (_, Some(sovereign_docs::TokenStatus::Token { label })) => out.push_str(&label),
+            (_, Some(sovereign_docs::TokenStatus::Placeholder)) => out.push_str(sovereign_docs::PLACEHOLDER),
+            // Token-form text that is not a token in the document: as typed.
+            (Some(_), _) => out.push_str(&rest[at..at + len + 1]),
+            (None, _) => out.push_str(generic),
+        }
+        rest = &rest[at + len + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// What the shell shows for a stored content string (C-DOC adoption step 1):
 /// its text read through the v2 model — a v2 document, a v1 envelope or raw
 /// text — never the stored JSON. Personal-data tokens stay in their stored
@@ -384,18 +425,51 @@ pub(crate) struct LaneMap {
     threads: Vec<String>,
     lane_of: HashMap<String, usize>,
     unfiled: bool,
+    /// C-MERGE MG2: the end date of each ended thread's lane.
+    ended_at: HashMap<usize, chrono::DateTime<chrono::Utc>>,
+    /// C-MERGE MG2, MG3: what the load read for each ended lane.
+    ended: HashMap<usize, EndedLane>,
+}
+
+/// C-MERGE MG2, MG3: an ended lane, as the workspace load reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EndedLane {
+    /// The name of the thread it was merged into.
+    pub(crate) target: String,
+    /// « merged into '{target}' on {YYYY-MM-DD} » (the device's local day).
+    pub(crate) mark: String,
+    /// Its live end (raw id, name): where a drop on it goes; `None`: no live
+    /// thread takes its place, and a drop is refused.
+    pub(crate) live_end: Option<(String, String)>,
 }
 
 impl LaneMap {
     /// The lanes of `thread_ids` (raw, in lane order), without an Unfiled lane.
     pub(crate) fn new(thread_ids: Vec<String>) -> LaneMap {
         let lane_of = thread_ids.iter().enumerate().map(|(i, t)| (t.clone(), i)).collect();
-        LaneMap { threads: thread_ids, lane_of, unfiled: false }
+        LaneMap { threads: thread_ids, lane_of, unfiled: false, ended_at: HashMap::new(), ended: HashMap::new() }
     }
 
     /// The lanes of the store's thread list: one per live thread, in order.
     pub(crate) fn from_threads(threads: &[sovereign_db::schema::Thread]) -> LaneMap {
-        LaneMap::new(threads.iter().filter(|t| t.deleted_at.is_none()).filter_map(|t| t.id_string()).collect())
+        let mut map =
+            LaneMap::new(threads.iter().filter(|t| t.deleted_at.is_none()).filter_map(|t| t.id_string()).collect());
+        for t in threads.iter().filter(|t| t.deleted_at.is_none() && t.is_ended()) {
+            if let (Some(lane), Some(at)) = (t.id_string().and_then(|id| map.lane_of_thread(&id)), t.ended_at) {
+                map.ended_at.insert(lane, at);
+            }
+        }
+        map
+    }
+
+    /// Records what the load read for the ended lane `lane`.
+    pub(crate) fn set_ended(&mut self, lane: usize, ended: EndedLane) {
+        self.ended.insert(lane, ended);
+    }
+
+    /// What the load read for lane `lane`, when its thread has ended.
+    pub(crate) fn ended(&self, lane: usize) -> Option<&EndedLane> {
+        self.ended.get(&lane)
     }
 
     /// With (or without) the Unfiled lane after the threads' lanes.
@@ -444,6 +518,16 @@ impl LaneMap {
     /// The threads' raw ids, in lane order.
     pub(crate) fn thread_ids(&self) -> &[String] {
         &self.threads
+    }
+
+    /// C-MERGE MG2 (spec ch. 03): the end date of the thread lane `lane`
+    /// shows — the thread's `ended_at`, the merge stamp's time — where its
+    /// band stops and no card of it is drawn later; `None` for a lane whose
+    /// thread is not ended, for the Unfiled lane, and for no lane.
+    ///
+    /// Signature by the B1 test author; the body is the implementer's.
+    pub(crate) fn ended_at(&self, lane: usize) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.ended_at.get(&lane).copied()
     }
 }
 
@@ -515,15 +599,20 @@ pub(crate) fn lanes_between(cam: &Camera, lanes: usize, y0: f64, y1: f64) -> std
 /// Open a persistent SurrealGraphDB at `path` (RocksDB is single-process
 /// exclusive — only one open per path at a time across the whole shell).
 pub(crate) async fn open_db_at(path: &Path) -> Option<Arc<dyn GraphDB>> {
+    open_db_at_or_error(path).await.ok()
+}
+
+/// [`open_db_at`] that keeps its error: the login says why a persona's
+/// database did not open (spec ch. 07, login errors, LE3). The error's text
+/// may name the path; whoever shows it clears it first.
+pub(crate) async fn open_db_at_or_error(path: &Path) -> anyhow::Result<Arc<dyn GraphDB>> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let db = SurrealGraphDB::new(StorageMode::Persistent(path.to_string_lossy().into_owned()))
-        .await
-        .ok()?;
-    db.connect().await.ok()?;
-    db.init_schema().await.ok()?;
-    Some(Arc::new(db) as Arc<dyn GraphDB>)
+    let db = SurrealGraphDB::new(StorageMode::Persistent(path.to_string_lossy().into_owned())).await?;
+    db.connect().await?;
+    db.init_schema().await?;
+    Ok(Arc::new(db) as Arc<dyn GraphDB>)
 }
 
 /// The default (primary-persona) workspace DB path.
@@ -598,7 +687,19 @@ pub(crate) async fn load_workspace_full(
     }
     let rels = db.list_all_relationships().await.unwrap_or_default();
 
-    let lanes = LaneMap::from_threads(&threads);
+    let mut lanes = LaneMap::from_threads(&threads);
+    // C-MERGE MG2, MG3: each ended lane's mark and live end.
+    for t in threads.iter().filter(|t| t.is_ended()) {
+        let Some(lane) = t.id_string().and_then(|id| lanes.lane_of_thread(&id)) else { continue };
+        let target = sovereign_db::merged_into_name(db.as_ref(), t).await;
+        let day = sovereign_db::ended_day(t);
+        let live_end = sovereign_db::live_end(db.as_ref(), t)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|e| e.id_string().map(|id| (id, e.name.clone())));
+        lanes.set_ended(lane, EndedLane { mark: format!("merged into '{target}' on {day}"), target, live_end });
+    }
     // The per-lane display name, read for the thread each lane shows (the
     // same threads, in the same order, as `LaneMap::from_threads`).
     let mut lane_names: Vec<String> = Vec::with_capacity(lanes.thread_count() + 1);
@@ -648,7 +749,13 @@ pub(crate) async fn load_workspace_full(
                 unfiled_lane
             }
         };
-        let x = x_of_ts(d.modified_at.timestamp(), ref_ts);
+        // C-MERGE MG2: a card of an ended thread is drawn no later than its
+        // end date, even when edited after the merge.
+        let shown_at = match lanes.ended_at(lane) {
+            Some(end) => d.modified_at.timestamp().min(end.timestamp()),
+            None => d.modified_at.timestamp(),
+        };
+        let x = x_of_ts(shown_at, ref_ts);
         // A title still under its nonce is ciphertext (raw / no-auth
         // mode): a lock placeholder. Read through the encrypted store the
         // nonce is cleared, and the title is the plaintext — possibly
@@ -665,7 +772,8 @@ pub(crate) async fn load_workspace_full(
         // as its blocks' JSON); the stored string is kept for the pre-v2
         // edit buffer only.
         let (body, stored) = if d.encryption_nonce.is_none() && !d.content.is_empty() {
-            (display_text(&d.content), d.content.clone())
+            // C-SWEEP SW5: its tokens as their labels, never raw.
+            (shown_text(service, &id, &d.content).await, d.content.clone())
         } else if !d.content.is_empty() {
             let lock = "\u{1f512} Encrypted — this document unlocks after login.".to_string();
             (lock.clone(), lock)

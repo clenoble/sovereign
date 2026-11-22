@@ -1,6 +1,6 @@
 [package]
 name = "sovereign-shell"
-version = "0.0.12"
+version = "0.0.13"
 edition = "2021"
 publish = false
 
@@ -110,6 +110,12 @@ arboard = "3.6"
 # v0.0.12 item 19 (N2): a device name is at most 64 grapheme clusters, never
 # cut inside one. Already in the lock (sovereign-editor's), same version.
 unicode-segmentation = "1.13"
+
+# Probes libxkbcommon-x11 before the event loop exists, with the loader winit
+# itself uses, so a missing library is said, not panicked on (display_check.rs).
+# Already in the lock (winit's), same version.
+[target.'cfg(target_os = "linux")'.dependencies]
+xkbcommon-dl = { version = "0.4.2", features = ["x11"] }
 
 [dev-dependencies]
 # Lot 0: the shell's document-write invariants (doc_writes.rs) are tested

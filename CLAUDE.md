@@ -18,6 +18,9 @@ Minimal on purpose: what the system is lives in the spec, how to build it in
   mirror, where it is absent, the import is ignored. Open work lives in
   `doc/plans/BACKLOG.md`. `doc/plans/` is private and never published: security findings go
   there, never into `doc/spec/`, which is public.
+- **The spec cites a chapter or a decision, never a file of `doc/plans/`.** A decision is cited by its
+  date and who took it. (Céline, 2026-11-13. The spec's chapters were cleaned in v2.0.72. The
+  changelog's earlier entries keep their plan names as history.)
 
 ## How work is done here
 

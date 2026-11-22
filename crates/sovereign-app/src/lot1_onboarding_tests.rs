@@ -121,6 +121,8 @@ pub(crate) fn launch(profile_dir: &Path) -> AppState {
         #[cfg(feature = "p2p")]
         pairing_manager: Arc::new(tokio::sync::RwLock::new(None)),
         #[cfg(feature = "p2p")]
+        same_name: Default::default(),
+        #[cfg(feature = "p2p")]
         p2p_listen_addrs: Arc::new(std::sync::RwLock::new(Vec::new())),
         #[cfg(feature = "p2p")]
         backup_host: tokio::sync::RwLock::new(None),

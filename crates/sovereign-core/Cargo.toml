@@ -20,3 +20,9 @@ url = { workspace = true } # SSRF guard (net_guard) — URL parse + host classif
 # The stored document format v2: `ContentFields::read_stored` reads every
 # stored form through it (C-DOC adoption step 1). No I/O, no dependencies.
 sovereign-docformat = { path = "../sovereign-docformat" }
+
+[features]
+# The settable test clock (`clock::test_clock`). Enabled only by
+# `[dev-dependencies]` (through sovereign-ai's `test-support`, or directly):
+# never in a production build.
+test-support = []

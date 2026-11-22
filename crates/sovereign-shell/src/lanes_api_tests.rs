@@ -401,8 +401,12 @@ fn n4_the_event_loop_routes_the_wheel_keys_and_resize_through_the_seams() {
     assert!(wheel.contains("canvas_wheel("), "the wheel over the canvas goes to canvas_wheel:\n{wheel}");
     assert!(wheel.contains("self.mods"), "with the modifiers held (Shift, Ctrl)");
     assert!(!wheel.contains("zoom_toward("), "the wheel arm no longer zooms on its own (Ctrl+wheel is canvas_wheel's)");
+    // The key arm hands the key to `key_pressed` since SQ11d (spec ch. 12, 2026-11-19).
     let keys = arm(&prod, "WindowEvent::KeyboardInput");
-    assert!(keys.contains("canvas_key("), "the canvas keys go to canvas_key");
+    assert!(keys.contains("key_pressed("), "the key arm hands the key to key_pressed");
+    let pressed = prod.find("fn key_pressed(").map(|a| &prod[a..]).unwrap_or("");
+    let pressed = &pressed[..pressed[1..].find("\n    fn ").map(|e| e + 1).unwrap_or(pressed.len())];
+    assert!(pressed.contains("canvas_key("), "the canvas keys go to canvas_key");
     let resized = arm(&prod, "WindowEvent::Resized");
     assert!(resized.contains("view_resized("), "a resize calls view_resized");
     let moved = arm(&prod, "WindowEvent::CursorMoved");

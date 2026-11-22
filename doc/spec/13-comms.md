@@ -5,14 +5,14 @@ encrypted like every other piece of the user's data. The engine exists; no shipp
 connects to a mail server or a messaging network yet.
 
 *Consolidates:* specification v1.3 Appendix A ("Unified Comms ✅ Implemented" — corrected
-below) and the comms mentions in v1.3 §Relationship Model; archived plans `v0.0.9-plan.md`
-(email deferral) and `v0.0.8-release-plan.md` (COMMS-001); code in `crates/sovereign-comms`,
+below) and the comms mentions in v1.3 §Relationship Model; the project's archived plans
+(private: the email deferral, COMMS-001); code in `crates/sovereign-comms`,
 `crates/sovereign-shell/src/comms.rs`, the comms commands and PII hooks in
 `crates/sovereign-app`, and the message/contact storage in `crates/sovereign-db`.
 
 **Status:** ◐ Partial — **dormant**. The channel engine, the contact-centric inbox and
-encrypted storage are built; no shipped build constructs a channel. Email is deferred to
-a later release (not yet numbered) together with its hardening; Signal follows (ch. 15, *Roadmap*).
+encrypted storage are built; no shipped build constructs a channel. Email, with its hardening,
+is for v0.0.14, the email release; Signal and WhatsApp come later (ch. 15, *Roadmap*).
 
 *Replaces v1.x:* Appendix A listed Unified Comms as "✅ Implemented — Email, Signal, WhatsApp
 channels with sync engine". The engine was implemented and unit-tested, but no running
@@ -50,6 +50,54 @@ Every channel implements one trait, `CommunicationChannel`:
 **Status:** ◐ Partial — IMAP/SMTP engine built and tested; **disabled at runtime since v0.0.9**
 (code: `crates/sovereign-comms/src/channels/email.rs`, `crates/sovereign-shell/src/comms.rs`).
 
+*Release numbers in this section.* Céline's decisions of 2026-11-13 say « v0.0.13 ». At that time
+v0.0.13 was the email release. The same day she split it into two releases, one after the other:
+v0.0.13 for consolidation, and v0.0.14 for email, read-only. She answered « et oui pour les 2
+releases successives » to this question: « La coupe en deux releases successives, v0.0.13 pour la
+consolidation et v0.0.14 pour le courrier en lecture seule, tes décisions du 13/11 marquées
+« v0.0.13 » suivant le courrier. » So the decisions below apply to **v0.0.14**. Her words are
+quoted as she said them.
+
+**Decided 2026-11-13 (Céline): each device fetches its own mail by IMAP, as the target.** Her words:
+« je veux que chaque machine soit autonome ».
+- **Sync between devices** is secondary, « uniquement lorsque l'IMAP ne répond pas ou est cassé »
+  (her direction of 2026-10-30).
+- **The email release starts there** (Céline, 2026-11-13: « La cible dès v0.0.13 »): each device fetches for
+  itself, and no device is designated to fetch for the others. What travels between devices
+  besides the mail itself (the user's additions, such as favourites and filing) is for the contract
+  C-COMMS to name.
+
+**Decided 2026-11-13 (Céline): email is read-only in its first release, v0.0.14** (« Lecture seule en v0.0.13 »).
+Sending comes in a later release.
+- **No write to the server at all** (« Aucune écriture au serveur »): nothing is sent, marking a
+  message read stays on the device, and deleting a message hides it on the device. Nothing changes
+  on the server.
+  - This replaces, for v0.0.14, her decision of 2026-10-30 that marking read goes back to the
+    server.
+  - **Read state:** Sovereign reads the server's « read » flag and never sets it (Céline,
+    2026-11-13: « ok »). What she has read in another mail client shows as read. What she reads in
+    Sovereign stays local to the device, which is a known limit of v0.0.14.
+  - *As built,* the dormant engine opens `INBOX` only, read-write, and fetches messages in a way
+    that marks them read on the server. The email release changes both (C-COMMS).
+- **Folders:** every folder is fetched, except spam and trash for now. Céline: « l'ensemble des
+  dossiers, pas seulement la boîte de réception […] tous les courriers doivent être lisibles »,
+  then « non pour spam et corbeille pour le moment, je veux voir à l'usage si c'est vivable. je
+  pense que oui ».
+- **The account's password, on each device** (« Au choix de l'utilisateur »): the user chooses
+  whether the password is entered on each device or kept account-wide, encrypted, and synced.
+  This is the same choice as for the keys of model providers (ch. 01, P17b).
+- The design of v0.0.14 is still to be contracted. It will carry the decisions of 2026-11-13
+  (ch. 01, P1–P3, P14 and P15):
+  - a message is an immutable event, and a gesture promotes it into a document. What is immutable
+    is the message as received (Céline, 2026-11-13: « L'original reçu »): its raw original, kept
+    encrypted. The stored body is tokenised at ingest, as for documents (ch. 09);
+  - how often one interacts counts deliberate acts only, over a sliding 30-day window whose start
+    is shown;
+  - the Sent folder is fetched from the first version, so that messages sent can count;
+  - a contact has a nature (person, organisation, automatic);
+  - no link in a mail is visited automatically;
+  - mail leaves and arrives through the one network gate (ch. 02, *Network egress*).
+
 - IMAP over TLS (default port 993) fetches by date; SMTP with STARTTLS (default port 587)
   sends; messages are parsed into the common `Message` model.
 - **Credential:** the account password is held in the **PII vault** — a `PiiRecord` of kind
@@ -60,7 +108,7 @@ Every channel implements one trait, `CommunicationChannel`:
   not shipped, and the mobile build excludes comms.
 
 **Deferral (decided 2026-07-06; confirmed at the v0.0.9 release gate, 2026-07-19).** Email
-wiring was deferred to one coherent comms release (originally v0.0.10; since 2026-10-10 a later, unnumbered release) with the comms findings of the
+wiring was deferred to one coherent comms release (originally v0.0.10; on 2026-10-10 a later, unnumbered release; from 2026-10-30, v0.0.13; since 2026-11-13, v0.0.14, ch. 15) with the comms findings of the
 v0.0.8 review. Email is not the migration channel either: the user's own documents would arrive
 through the data plane as external content, and through a cloud detour (migration is
 stub-first bulk import, ch. 03). Email nevertheless went live in the shell during the v0.0.9

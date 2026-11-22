@@ -66,6 +66,9 @@ pub fn build_proposal(intent: &UserIntent) -> ProposedAction {
         doc_id: None,
         thread_id: intent.target.clone(),
         description,
+        target: sovereign_core::security::ActionTarget::default(),
+        request_id: sovereign_core::security::RequestId::default(),
+        deadline: sovereign_core::security::ProposedAction::NO_DEADLINE,
     }
 }
 

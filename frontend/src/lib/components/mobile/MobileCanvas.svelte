@@ -31,6 +31,8 @@
 		MOBILE_PX_PER_DAY
 	} from '$lib/stores/canvas.svelte';
 	import { openById } from '$lib/stores/documents.svelte';
+	// C-SWEEP SW5: a card shows its title's tokens as labels, never raw.
+	import { shownTitle } from '$lib/utils/piiLabels';
 	import { app } from '$lib/stores/app.svelte';
 	import { longPress } from '$lib/actions/longPress';
 
@@ -570,7 +572,7 @@
 											aria-label={doc.is_owned ? 'Owned' : 'External'}
 										></span>
 										<div class="card-body">
-											<div class="card-title">{doc.title || 'Untitled'}</div>
+											<div class="card-title">{shownTitle(doc.title) || 'Untitled'}</div>
 											<div class="card-time">{formatRelative(doc.modified_at)}</div>
 										</div>
 										{#if xLane > 0}

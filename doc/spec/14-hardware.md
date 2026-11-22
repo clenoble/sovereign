@@ -38,11 +38,11 @@ sidecar alongside.
 | Build | Inference | GPU needed |
 |---|---|---|
 | `sovereign` — native shell, the desktop UI (shipped) | CPU only (llama.cpp, in-process) | No |
-| Android app (`sovereign_app`, mobile feature set; shipped) | CPU — llama.cpp is compiled in; whether a model loads on a phone is open (*Mobile* below) | No |
+| Android app (`sovereign_app`, mobile feature set; shipped) | None — llama.cpp is not linked, no AI on mobile (*Mobile* below) | No |
 | `sovereign-tauri` built with `cuda` (the old release script's feature set, ch. 02) — **frozen, not shipped** | NVIDIA GPU, all layers offloaded (`n_gpu_layers = 99`) | NVIDIA driver, plus the three CUDA 13 runtime DLLs beside the executable or on `PATH` |
 | Default `cargo build` of either desktop binary | CPU only | No |
 
-The current release ships no CUDA build: the v0.0.9 assets contain no CUDA executable and no
+The current release ships no CUDA build: the release assets contain no CUDA executable and no
 CUDA runtime (ch. 02). A GPU build of the native shell is open work (backlog).
 
 ◐ AMD GPUs: no ROCm or Vulkan inference build exists; "or AMD equivalent" in the target is not
@@ -155,15 +155,24 @@ and GPU budget (ch. 02).
 
 ## Mobile
 
-**Status:** ○ Specified, not built — no hardware requirement is set for Android.
+**Status:** ◐ Partial — the decision of 2026-10-10 is built (no llama.cpp in the Android
+build); no hardware requirement is set for Android.
 
 **Decided 2026-10-10 (Céline): no AI on mobile for now.** llama.cpp is to be removed from the
-Android build (it is compiled in today although no model ships).
+Android build.
 
-The Android app (ch. 02) runs the same backend on SurrealKV with p2p sync. llama.cpp is
-compiled into the mobile library (through `sovereign-ai`), and the app builds the orchestrator
-at start-up (code: `crates/sovereign-app/Cargo.toml`, `src/lib.rs`). [unverified] Whether a
-model is present and loads on a phone in practice, and on what class of phone; if the router
-cannot load, the app runs without the orchestrator and chat requests return "AI orchestrator
-not available". Pairing and sync are reliable on Wi-Fi; over cellular data they are unstable
-(v0.0.8 known issue, ch. 05).
+**The target, and where this decision stands** (Céline, 2026-11-13):
+- **The target is D14 (2026-11-10):** the same functions on every host as soon as the hardware
+  allows; the phone is a complete Sovereign (ch. 01, *Direction*).
+- **« No AI on mobile for now » is the current step.** It is a choice of order, not of principle.
+- **When local AI returns to the phone** is Céline's decision. It comes after a measurement of what a
+  current phone runs.
+
+The Android app (ch. 02) runs the same backend on SurrealKV with p2p sync. As built, the
+`mobile` feature set leaves out `llama`, so no llama.cpp is linked into the mobile library, and
+loading a model fails with "local AI is not available in this build" (code:
+`crates/sovereign-ai/src/llm/backend.rs`, `crates/sovereign-app/Cargo.toml`). The app still
+tries to build the orchestrator at start-up; the router cannot load, so the app runs without the
+orchestrator and chat requests return "AI orchestrator not available" (code:
+`crates/sovereign-app/src/lib.rs`, `src/tauri_commands/ai.rs`). Pairing and sync are reliable on
+Wi-Fi; over cellular data they are unstable (v0.0.8 known issue, ch. 05).

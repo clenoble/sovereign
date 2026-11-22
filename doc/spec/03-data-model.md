@@ -6,8 +6,8 @@ links work, and how an existing folder tree is brought in by bulk import.
 
 *Consolidates:* specification v1.3 §JSON Schema Specification (Storage Model, Document Node
 Structure, Intent Thread Manifest, Relationship Model, Spatial Positioning, Version Control) and
-Open Questions 5–7 and 9; archived plans `consolidated-memory.md`, `phase5-plan.md`,
-`v0.0.9-plan.md` (Track 2, bulk import), `sovereign_os_implementation_plan.md` (Spike 2, §1a.2);
+Open Questions 5–7 and 9; the project's archived plans (private: memory consolidation, phase 5,
+the v0.0.9 bulk import, the storage benchmark spike and batched writes);
 code at v0.0.9 (`main` = d02c353); `RELEASE_NOTES_v0.0.9.md`.
 
 ---
@@ -72,6 +72,8 @@ directory, and the original per-file JSON design — the JSON schemas of v1.x we
 | `suggested_link` | `SuggestedLink` edge — AI-suggested relationship | this chapter |
 | `commit` | `Commit` — one version of one document | this chapter |
 | `row_recovery` | `RowRecovery` — prior value of a non-document row overwritten by a peer | ch. 05 |
+| `purge_marker` | `PurgeMarker` — what stays of a purged document: its id and deletion stamp, no content | this chapter (C-DOC G13, G27) |
+| `store_record` | A keyed value of the store: the one-time migration's record, the trash's start date | this chapter (*Content encoding*, C-DOC G27) |
 | `contact`, `conversation`, `message` | Unified communications | ch. 13 |
 | `entity`, `pii_record`, `share_record` | Personal-data vault and disclosure ledger | ch. 09 |
 
@@ -94,8 +96,8 @@ SurrealDB does not index a field unless told to. The rule, from the storage benc
 **every field a query filters on carries an explicit index.** Without one, the thread query took
 688 ms over 50,000 documents; with `idx_thread_id`, 0.12 ms (in-memory, SurrealDB 2.6). The
 spike's other targets (single fetch < 5 ms, 2-hop traversal < 50 ms, title search < 100 ms,
-50,000-document bulk insert < 30 s) all passed (source: `sovereign_os_implementation_plan.md`,
-Spike 2).
+50,000-document bulk insert < 30 s) all passed (source: the storage benchmark spike, in the
+project's archived plans, private).
 
 Indexes in this chapter's tables (code: `SurrealGraphDB::init_schema`):
 
@@ -118,8 +120,8 @@ ch. 13 and ch. 09.
 **Status:** ○ Specified, not built.
 
 Bulk relationship creation runs in transactions, not as one `RELATE` query per edge; acceptance
-was "batch insert within 2× of single-insert benchmarks" (source:
-`sovereign_os_implementation_plan.md` §1a.2). As built, `create_relationship` issues one `RELATE`
+was "batch insert within 2× of single-insert benchmarks" (source: the project's archived plans,
+private). As built, `create_relationship` issues one `RELATE`
 per edge and no batch API exists on `GraphDB`. Nothing creates relationships in bulk today
 (import creates none; consolidation creates at most five suggestions per cycle), so the
 requirement is not yet load-bearing.
@@ -128,9 +130,10 @@ requirement is not yet load-bearing.
 
 ## Document
 
-**Status:** ◐ Partial — the record is built and in use; its content encoding differs between
-writers, inside the native shell itself and between the shell and mobile (⚠ below), and its
-ownership model is a pending decision (D3).
+**Status:** ◐ Partial — the record is built and in use, and every writer stores format v2
+through the document service (*Content encoding*). Ownership is the trust state of ch. 04, where
+the assistant's adoption differs from G12 (*Ownership*); multi-party ownership is deferred (D3,
+decided 2026-10-10).
 
 A document is one node of the user's graph: a title, a body, the lane it belongs to, and the
 metadata other subsystems attach to it. Fields are flat on the record (code:
@@ -138,8 +141,9 @@ metadata other subsystems attach to it. Fields are flat on the record (code:
 
 ### Fields as built
 
-**Status:** ✅ Built — 28 fields. v1.3 had a conceptual schema only; seventeen of these fields
-(soft delete, encryption, reliability, PII, pinning, peer review) have no counterpart in it.
+**Status:** ✅ Built — 47 fields. v1.3 had a conceptual schema only; most of these fields (soft
+delete, encryption, reliability, PII, pinning, trust and provenance, sync, alerts) have no
+counterpart in it.
 
 | Group | Field | Type | Meaning |
 |---|---|---|---|
@@ -156,7 +160,7 @@ metadata other subsystems attach to it. Fields are flat on the record (code:
 | Encryption (ch. 07) | `encryption_nonce` | Option\<String\> | Nonce paired with `content`; `None` = plaintext |
 | | `title_nonce` | Option\<String\> | Nonce paired with `title` |
 | | `title_token_hashes` | Vec\<String\> | Per-database keyed hashes of title tokens (blind index for title search) |
-| Web origin | `source_url` | Option\<String\> | Meant to be set when the document was fetched from the web; the native shell's "Save page" does not set it (it puts the URL in the body) |
+| Web origin | `source_url` | Option\<String\> | The page's URL, set by the document service when a document is created with web provenance (the shell's "Save page", the app's web clip; the shell also puts the URL at the top of the body) |
 | Reliability (legacy, ch. 04) | `reliability_classification` | Option\<String\> | "Factual" / "Opinion" / "Fiction" |
 | | `reliability_score` | Option\<f32\> | 0.0–5.0 |
 | | `reliability_assessment` | Option\<String\> | JSON rubric |
@@ -164,11 +168,21 @@ metadata other subsystems attach to it. Fields are flat on the record (code:
 | PII (ch. 09) | `body_raw_encrypted` | Option\<String\> | Sealed pre-tokenization body, for gated reveal |
 | | `body_raw_nonce` | Option\<String\> | Its nonce |
 | | `pii_scanned_at` | Option\<DateTime\> | `None` = not yet scanned |
-| Peer review (ch. 05) | `peer_review_pending` | bool | A paired device's sync overwrote this document; awaiting review |
-| | `peer_review_peer` | Option\<String\> | Device that produced the change |
-| | `peer_review_at` | Option\<DateTime\> | When it was applied |
-| | `peer_review_prior_commit` | Option\<String\> | Commit holding the pre-overwrite version, for one-click restore |
-| | `peer_review_assessment` | Option\<String\> | JSON verdict of the local audit, when a model is available |
+| Trust and provenance (ch. 04, C-DOC G12) | `trust` | Option\<String\> | "owned" / "external" / "undetermined"; `None` on rows from before the service, which read from `is_owned` |
+| | `provenance_kind` | Option\<String\> | "written" / "assistant" / "web" / "import" / "peer" / "copy"; `None` = unrecorded (rows from before the service) |
+| | `provenance_detail` | Option\<String\> | The URL (web), the source path (import), the device (peer), or a copy's chain of provenances |
+| | `trust_decision`, `trust_decision_device`, `trust_decision_at` | Option\<String\>, Option\<String\>, Option\<DateTime\> | The user's last explicit trust decision: the trust chosen, the device, the time |
+| Writes (C-DOC G4, G11) | `write_seq` | u64 | Bumped on every write of title or content; part of the revision a save names |
+| | `last_writer` | Option\<String\> | Who wrote the current state (`editor:<session>`, `assistant`, `skill:<name>`, …), for the restore-point rule |
+| Sync (ch. 05, C-DOC G24–G26) | `stamp` | Option\<String\> | Hybrid-logical-clock stamp of the write that produced this state (`wall_ms:counter:device`) |
+| | `prev_stamp` | Option\<String\> | The stamp of the state this one replaced |
+| | `stamp_history` | Vec\<String\> | Earlier stamps of this document (bounded) |
+| | `author_device` | Option\<String\> | The device on which the current state was written |
+| | `decision_stamp` | Option\<String\> | The stamp of the last trust decision |
+| | `kept_versions` | Vec\<String\> | Concurrent local states lost to a remote state with a greater stamp, kept as versions (bounded) |
+| Alerts (ch. 05, C-DOC G31) | `alert_device`, `alert_finding`, `alert_previous_version`, `alert_raised_at` | Option\<String\> ×3, Option\<DateTime\> | An open alert from the incoming-change analysis: the device the change came from, what was found (no document text), the version before the change, when |
+| | `model_check` | Option\<String\> | A received change still waiting for the model's verdict: the sending device, the version before the change, the received state's stamp; no document text |
+| Peer review (retired) | `peer_review_pending`, `peer_review_peer`, `peer_review_at`, `peer_review_prior_commit`, `peer_review_assessment` | bool, Option\<…\> ×4 | No production path sets them since the review flag was retired (2026-10-15, C-WIRE 13; C-DOC G19, G31): the alert fields and `kept_versions` replace them |
 
 All fields added after the first schema are `#[serde(default)]`, so older rows deserialize
 without migration. `Document::new` creates the default body `{"body":"","images":[]}`.
@@ -178,7 +192,7 @@ record exists.
 
 ### Content encoding
 
-**Status:** ◐ Partial — decided 2026-10-10 (Céline). On `main`, not yet released: one reader for every form (`sovereign-docformat`), and readers, saves, creators and sync go through the document service, which writes v2. Delete goes through it too since adoption step 5 (2026-10-17). Since step 6 (2026-10-19), the one-time migration runs at each persona's first unlock with its notice, its record is sealed at rest, the decoy is seeded in v2, and the deprecated field parser is gone (`sovereign-docformat` still reads v1 and raw, for received or restored content); a test refuses any write of an old form. Still behind `SHELL_EDITOR_V2` in the shell: the v2 editor. v0.0.10 has the tolerant read only (lot 0).
+**Status:** ✅ Built, released in v0.0.11 — decided 2026-10-10 (Céline). One reader for every form (`sovereign-docformat`), and readers, saves, creators, delete and sync go through the document service, which writes v2. The one-time migration runs at each persona's first unlock with its notice, its record is sealed at rest, the decoy is seeded in v2, and the deprecated field parser is gone (`sovereign-docformat` still reads v1 and raw, for received or restored content); a test refuses any write of an old form. The v2 editor is the shell's only editor (ch. 12). v0.0.10 had the tolerant read only (lot 0).
 
 **Decision.** A document's `content` is a **versioned JSON document made of typed blocks**:
 `{"format": "sovereign.doc", "v": 2, "blocks": [ {"type": "text", …}, {"type": "image", …},
@@ -201,11 +215,23 @@ record exists.
 - **What the migration cannot read, and saves during it — v0.0.12 item 7** (Céline, 2026-10-24:
   count them, list them, retry only after a version change):
   - A document row that exists but cannot be decrypted is **counted** in the notice and **left as
-    it was**; nothing about it changes.
+    it was**; nothing about it changes. A row whose purge is under way (an unrevoked purge marker
+    for its id) is left out, readable or not.
+  - **The notice, as built** (one wording for both hosts, `sovereign-docs`): "N documents converted
+    to the new format — each one's earlier state is in its History." (for one: "1 document
+    converted to the new format — its earlier state is in its History."). When some could not be
+    read, the full stop gives way to "; M could not be read and were left as they are." (for one:
+    "; 1 could not be read and was left as it is."). With nothing converted, only "M documents could
+    not be read and were left as they are." (for one: "1 document could not be read and was left as
+    it is."). A store whose conversion completed under v0.0.11 converts nothing more at its first
+    unlock under v0.0.12 and gets that last form, once, when it finds rows it cannot read. A retry
+    that converts at least one document says so in the same words, counting what it converted and
+    what still cannot be read. A notice not yet shown when a later pass has something to tell is
+    merged into the new one, never lost.
   - The desktop's Alerts window **lists** each one under "Documents that could not be read": a
     short id (the first 8 characters of its key) and its last modified date, "(in the trash)"
     where it applies, never a title. The status line says how many and that they are in Alerts.
-  - **The Tauri app lists them too** (V2b, built: `doc/plans/V0012-item7-v2b-app-list.md`, merged
+  - **The Tauri app lists them too** (V2b, built: merged
     `9f99b7f`, 2026-10-25; PANDA2's contract, the laptop's second position). The heading, the line
     "Each one is kept as it was, untouched. Sovereign will try to read it again after its next
     update." and each document's line (short id, "(in the trash)", last modified date in local
@@ -215,10 +241,12 @@ record exists.
     any remain, the dialog's notice bar says "1 document could not be read" (or "N documents…")
     as a status, with a button that opens the dialog (PANDA2's choice); it is not the one-time
     migration notice, and it stays while any remain. The list is loaded with the other alerts and
-    again when a migration ends. A locked session's request is refused and the app shows an empty
-    list, so one persona's list never shows under the other; the app has no lock signal yet, so a
-    store change empties the list at the next reload (backlog). The dialog stays open while this
-    list is the only thing in it.
+    again when a migration ends. A list that cannot be read gives an empty list, with a warning in
+    the log (the shell leaves it empty too, without logging). The notice is announced as a status;
+    its button, "See it" (or "See them"), opens the dialog. A locked session's request is refused
+    and the app shows an empty list, so one persona's list never shows under the other; the app
+    has no lock signal yet, so a store change empties the list at the next reload (backlog). The
+    dialog stays open while this list is the only thing in it.
   - The migration's record keeps the build version that ran and the ids it could not read. Only an
     unlock under a **different** build version tries them again; a row that now decrypts is
     converted like any other and leaves the list. A store whose migration completed under v0.0.11
@@ -228,7 +256,9 @@ record exists.
     or a create waits for at most one document's conversion.
   - An editor holding the document gets no "changed elsewhere" from its own conversion: it takes
     the converted form silently when the row was last written by the migration and its plain text
-    equals what the editor opened; any other change still warns.
+    equals what the editor opened; any other change still warns. Text typed in the editor meanwhile
+    is kept, and its next save is based on the converted state, so it makes no conflict (the
+    desktop shell's editor).
 - The block schemas are specified below, in *Document format v2 — blocks*.
 
 What follows describes the forms in use up to v0.0.10.
@@ -259,7 +289,7 @@ Media are referenced by path; they are not stored in the database.
 > - a shell skill that rewrites a document parses a raw body as empty, so it runs on an empty
 >   body and saves the result over the real one.
 >
-> v0.0.10 made reads tolerant of a bare body; the service on `main` reads every form with one
+> v0.0.10 made reads tolerant of a bare body; since v0.0.11 the service reads every form with one
 > reader and writes v2. One case remains by construction: a legacy raw-text document whose whole
 > text is a JSON object with a string `body` reads as an envelope, and keeps only that body at
 > its next write.
@@ -267,7 +297,10 @@ Media are referenced by path; they are not stored in the database.
 
 ### Document format v2 — blocks
 
-**Status:** ○ Specified 2026-10-10, to be reviewed by Céline — choices marked **[choice]**.
+**Status:** ✅ Built, released in v0.0.11 — specified 2026-10-10; choices marked **[choice]**
+remain to be reviewed by Céline (code: `crates/sovereign-docformat`). The editor shows an image,
+video or table block, and a block of an unknown type, as a placeholder (code:
+`crates/sovereign-editor/src/view.rs`); nothing creates a table block yet.
 
 **Envelope.**
 ```json
@@ -302,9 +335,15 @@ looks like a change to history and to sync.
 | `video` | `ref`; `caption`; `duration_secs` (optional); `thumbnail_ref` (optional) | |
 | `table` | `columns`: [{`name`, `kind`}]; `rows`: [[cell, …]] | **Decided 2026-10-10 (Céline): in v2 only if cells are typed values** — a number is stored as a number, not a string, and calculations over cells work. Otherwise the block waits for a later version. A table of strings with a display hint does not qualify. |
 
-**Media reference** (`ref`): `{ "path": "<local path>", "sha256": "<hex>" }` today — media are not
-copied into the encrypted store (originals stay where they are); the hash lets a moved or altered
-file be detected. A media store would later replace `path` by an id.
+**Media reference** (`ref`):
+- **Through v0.0.12:** `{ "path": "<local path>", "sha256": "<hex>" }`. Media were not copied (the
+  originals stayed where they were), and the hash let a moved or altered file be detected.
+- **From v0.0.13 (C-MEDIA, *The media store*, below):** `{ "store": "<the medium's name in the
+  store>", "sha256": "<hex>" }`. A media block names no outside path.
+- **A device still on v0.0.12 does not receive such a block.** The format changed, so the wire
+  version went up, and documents are not exchanged with an older build (ch. 05, *Peers on an older
+  build*). Its own reader would take the block for one of an unknown kind; what its editor writes
+  back after an edit was not traced.
 
 **Reading the older forms (migration).**
 - The v1 envelope `{"body", "images", "videos"}` → one `text` block holding `body`, then one
@@ -314,32 +353,44 @@ file be detected. A media store would later replace `path` by an id.
   files). Such a block is valid in that state. *(Decided 2026-10-10.)*
 - A raw-text body → one `text` block holding the whole string.
 - Conversion happens at the document's next write, after a commit; a one-time pass converts the
-  rest; then the tolerant read is removed.
+  rest; then the tolerant read is removed. As built, the old field parser is gone, and
+  `sovereign-docformat` still reads both forms, for content received from an older peer or
+  restored from an old version (C-DOC G2).
 
 **What the format does not do.** It does not encrypt (the encrypted layer encrypts `content`
 whole, ch. 07); it does not hold the title, thread or trust state (record fields, ch. 03, ch. 04);
 it does not version itself (history is the commit chain).
 ### Ownership
 
-**Status:** ◐ Partial — a single boolean, set at creation; ◐ synced documents currently arrive
-owned (tracked in the private backlog); the undetermined state is specified in ch. 04, not built.
+**Status:** ◐ Partial — the trust state (owned / external / undetermined) and its provenance are
+recorded by the document service (C-DOC G12); the assistant's "adopt" differs from G12 (below);
+the adoption gestures have no surface yet.
 
 `is_owned = true` marks the user's own content: control plane, trusted, not injection-fenced,
 drawn as a rounded rectangle. `false` marks external content: data plane, fenced, drawn as a
 parallelogram (ch. 08, ch. 12).
 
-The flag is set when the record is created by the surface that creates it. `update_document`
-changes only title and content; the one way to change ownership afterwards is
-`adopt_document`, which sets it to `true` (adopt external content) — there is no reverse
-operation (code: `crates/sovereign-db/src/{traits.rs,surreal.rs}`). Requirement: a document's
-ownership is the same on every device. ◐ Synced documents currently arrive owned; tracked in the
-private backlog.
+The trust state is set when the document is created, by the surface that creates it, through the
+document service (`trust`, with `provenance_kind` and `provenance_detail`); the service keeps
+`is_owned` true only when the trust is owned. A row from before the service has no `trust` and
+reads as owned or external from `is_owned`, provenance *unrecorded*. The service's `set_trust`
+changes trust in either direction and records the decision, which travels by sync (G12); no
+surface calls it yet. A document arriving by sync takes the sender's trust decision or, without
+one, the sender's trust; a sender that sends no trust gives undetermined, and content from
+outside (web, import) that arrives owned without a decision lands undetermined (code:
+`crates/sovereign-docs/src/service.rs`). Requirement: a document's ownership is the same on
+every device.
+
+*Where the code differs from G12:* the assistant's "adopt" calls the store's `adopt_document`,
+which sets only `is_owned` to true. It records no trust, decision or stamp, so the row's `trust`
+and `is_owned` then disagree, and the adoption does not travel to paired devices (code:
+`crates/sovereign-ai/src/orchestrator.rs`, `crates/sovereign-db/src/surreal.rs`).
 
 The tri-state — *undetermined, pending the user's judgment*, failing closed — and when
 ownership is decided for imported content are specified in ch. 04 (*Ownership is not decided at
 landing*). See also *Bulk import → Ownership at import* below.
 
-### ○ Target (pending D3) — multi-party ownership
+### ○ Deferred (D3) — multi-party ownership
 
 **Status:** ○ Deferred — D3 decided 2026-10-10: multi-party ownership is a future
 collaboration chapter, kept separate from the trust state (owned / external / undetermined,
@@ -358,16 +409,12 @@ v1.x described each document with an ownership block, not a flag:
                  "origin_url": "url | null", "import_method": "user_action | ai_ingest | api" }
 ```
 
-> ⚠ **Conflict — decision pending (Céline).** The code has `is_owned: bool` and `source_url`.
-> Federation and multi-user sync are on the roadmap, so this richer model may be the target
-> rather than a description that fell behind. Whether it is the target or stale is **D3**,
-> open. It no longer blocks the undetermined-ownership tri-state of ch. 04: K9 (decided
-> 2026-10-10, Céline) keeps trust — three states, reversible, with provenance — separate from
-> multi-party ownership (*Ownership*, C-DOC). The v1.x thread
-> `members` block (see *Thread*) is the same question at thread level [link to D3 inferred, not
-> stated in D3].
-
-Not resolved here. Until D3 is answered, the built model above is the current design.
+> *Decided since (D3, 2026-10-10, Céline; ch. 15).* Trust — three states, reversible, with
+> provenance — is built separately from multi-party ownership (K9, decided the same day;
+> *Ownership*, C-DOC), and multi-party ownership waits for a future collaboration chapter. The
+> code has the trust state, `is_owned` and `source_url`, and nothing of this block. The v1.x
+> thread `members` block (see *Thread*) is the same question at thread level [link to D3
+> inferred, not stated in D3].
 
 ### v1.x document fields not built
 
@@ -381,7 +428,7 @@ Not resolved here. Until D3 is answered, the built model above is the current de
 | `extracted_metadata.semantic_embedding` | Not built — semantic search via embeddings is roadmap |
 | `relationships.outbound[].snapshot` | Not built — see *Link snapshots* |
 | `version_history` (author, diff, branches) | See *Version control* |
-| `pending_edits` | ✗ Retired — replaced by peer review of synced writes (`peer_review_*`, ch. 05) |
+| `pending_edits` | ✗ Retired — replaced by last-writer-wins by stamp, the overwritten state kept as a version, and an alert when the incoming-change analysis finds something (ch. 05; C-DOC G19, G26, G31) |
 
 ---
 
@@ -397,8 +444,9 @@ replaces the folder; documents relate across threads through edges.
 | `id` | record id | `thread:<key>` |
 | `name`, `description` | String | Ciphertext at rest under the encrypted layer |
 | `created_at` | DateTime UTC | |
-| `modified_at` | DateTime UTC | Last writer wins across devices (ch. 05); defaults to now for rows older than sync |
+| `modified_at` | DateTime UTC | Time of the last change, for display; defaults to now for rows older than sync. Across devices it orders only a row with no `stamp` |
 | `deleted_at` | Option\<String\> | Soft-delete marker |
+| `stamp` | Option\<String\> | The hybrid-logical-clock stamp of the thread's last create, rename or deletion (`wall_ms:counter:device`); across devices the later stamp wins (*Thread deletion and the fallback lane*, 2026-10-18). A row without one is ordered as if stamped at its modification time |
 | `name_nonce`, `description_nonce` | Option\<String\> | Nonces; `None` = plaintext |
 | `name_token_hashes` | Vec\<String\> | Blind index for find-by-name |
 
@@ -408,31 +456,170 @@ source is soft-deleted), **split**, soft delete and restore. As built, the orche
 `split_thread` intent creates the new, empty thread and moves no documents; the user is meant
 to move documents afterwards (code: `crates/sovereign-ai/src/orchestrator.rs`).
 
+**Merging keeps the source thread — contract (C-MERGE).** ● Built in v0.0.13 (lot B1, merged
+2026-11-17), specified 2026-11-13 and revised 2026-11-17. Its second run, on the branch merged with main,
+read each guarantee's host: the shell's drop and lane, the phone's lane, the assistant's tools and
+context, the undo by name (MG5), the level (MG6), and an older peer's rows end to end (MG4).
+
+Céline, 2026-10-25: « It should not delete the source thread, which should continue to exist on the
+canvas in the past. It will just have an end date with an indication that it has been merged into
+another thread. » Until v0.0.13, a merge, which only the assistant offers, moved every document and
+soft-deleted the source, and no host offered its undo.
+- **MG1 — Nothing is deleted.** A merge gives the source two fields, its end date and the thread it
+  was merged into. No document moves, and the source is not deleted. The target records nothing.
+- **MG2 — The source's lane stops at its end date and shows its mark,** « merged into '{target}' on
+  {YYYY-MM-DD} », which is also its accessibility label, after its name.
+  - Its documents stay in it, and stay editable. Their cards are drawn no later than the end date,
+    even when edited after the merge: the thread goes on existing « in the past ».
+  - The end date is the merge stamp's time, so that every device draws the same lane; the day shown
+    is in the device's local time.
+  - On the phone, which shows one lane at a time, the ended lane shows its mark.
+- **MG3 — An ended thread takes no new or moved document, and is the target of nothing.**
+  - No picker, menu, drop or assistant offers it for a document, and a merge into it is refused.
+  - **Its live end** is the thread at the end of its chain of merges, followed within a bound (the
+    number of threads). A drop on its lane, a find-or-create by its name and a duplicate of one of
+    its documents go to its live end. Where a host already names the thread a document went to, it
+    adds « ('{name}' was merged into it) »; a drop in the shell says it in a notice, since the
+    document did not go where it was dropped.
+  - A request that names it is answered that it was merged, on its date, and its live end is
+    proposed. Nothing is changed.
+  - **With no live end** (a loop that two devices' merges made, or a deleted end), the request or the
+    drop is refused and said. Nothing is changed.
+  - An ended thread is not a live thread of its name, for find-or-create or for an ambiguity (AT2).
+  - A restore from the trash goes back to the ended thread: it is the document's own. An ended thread
+    can still be renamed, and it counts among the threads, as its lane is drawn.
+- **MG4 — The two fields travel with a stamp of their own.** A received row changes the merge only by
+  that stamp. **A row without it never changes the merge,** so a rename and a merge made on two
+  devices combine.
+  - **An older peer (v0.0.12)** ignores the fields and their stamp, and keeps showing the source as a
+    live thread. A rename made there no longer undoes the merge.
+  - **A v0.0.13 device that hears of a thread only through an older peer** shows it live until it
+    syncs with a device that holds the merge. Nothing is undone; the news is late.
+  - **A merge made on an older peer** soft-deletes the source, and that deletion reaches the newer
+    devices; its document moves do not, since documents are not exchanged across wire versions
+    (ch. 05). So on a newer device the source arrives deleted and its documents are orphans: the
+    Unfiled lane and the alert.
+  - **The notes say:** update every device before merging.
+- **MG5 — A merge can be undone, by asking the assistant** (Céline, 2026-11-17: « Assistant seul »:
+  no new gesture). Undoing it clears the two fields under a new merge stamp.
+  - **At any time and from any device, by naming the thread.** The two fields are the whole merge, so
+    the undo needs no record kept in memory, and it outlives a restart. « Undo that », after the
+    merge (AT7), is the same operation.
+  - **It is refused if the thread is not ended,** and the reply says so.
+- **MG6 — Level 3 (Modify)** (Céline, 2026-11-13: « Niveau 3 normal »). A merge is reversible, so it
+  leaves level 5. It follows the level's usual rules, earned trust included, and an auto-approved
+  merge keeps its undo (AT7).
+  - **The approvals counted while a merge was level 5 do not count:** its trust starts at zero in
+    v0.0.13.
+  - This replaces the rule of v0.0.12, « merging always asks », which held while a merge deleted.
+- **The words** (the Fable maille, by delegation of Céline, 2026-11-17), with « 1 document » in the
+  singular:
+  - the proposal: « Merge thread '{from}' into '{into}': '{from}' ends now and keeps its {n}
+    documents; new ones go to '{into}' »; with none, « …: '{from}' ends now; it holds no documents »;
+  - the outcome: « Merged '{from}' into '{into}' ({n} documents stay in '{from}') »; with none,
+    « Merged '{from}' into '{into}' »;
+  - a request that names an ended thread: « '{name}' was merged into '{target}' on {YYYY-MM-DD} and
+    takes no new document. Use '{live end}' instead? Nothing was changed. »;
+  - no live end: « '{name}' has ended (merged into '{target}'), and no live thread takes its place.
+    Nothing was changed. »;
+  - a merge into an ended thread: « '{into}' has ended (merged into '{target}'): merge into
+    '{live end}' instead. Nothing was changed. »;
+  - a merge undone: « Undid the merge of '{name}' into '{target}': '{name}' is live again »;
+  - the undo refused: « thread '{name}' is not merged into another thread; nothing was undone »;
+  - in these sentences '{target}' is the thread it was merged into, with that merge's date, and
+    '{live end}' the end of its chain; without a chain they are the same thread;
+  - a drop redirected, in the shell, a notice « Moved »: « '{title}' is now in '{target}' ('{name}'
+    was merged into it). »
+
+**Find or create by name** (v0.0.12 item 6: Céline's rule for the assistant, 2026-10-24, "Nom
+exact seulement, sinon il demande", carried to every caller; for the callers that cannot ask, a
+choice made with the test author). Callers that find a thread by name or create it, where
+nobody can be asked "which one?" — a skill's thread (the daily journal's included), the bulk
+import's folder threads, the browser's "Web" thread — reuse the one live thread whose name equals
+the name exactly, ignoring case and surrounding spaces ("Work" never resolves to "Work Archive"),
+and create the thread when there is none. When two or more live threads have that exact name, none is picked: the call is
+refused ("N threads are named '{name}'; none was picked — rename one of them first"); the import
+resolves every name before writing anything, so such a name refuses the whole import (code:
+`crates/sovereign-db/src/thread_names.rs`, `existing_thread_for_find_or_create`). The assistant's
+own actions on a thread by name follow ch. 08, *Action targets*.
+
+**Two threads of the name sought: asked once, remembered** (Céline, 2026-11-13: « Demander une fois,
+retenir »). **Built in v0.0.13** (item 9, merged 2026-11-19; specified 2026-11-18). Until v0.0.13 such a name refused
+every call for good: two devices that each created « Web » or « Journal » before their first sync
+stopped saving pages and journal entries until one thread was renamed. For the browser's « Web »
+thread, the daily journal and the import:
+- **FC1 — The first time, Sovereign asks which.** When two or more live threads have the exact name
+  sought, the host that runs the call asks which one to use, listing each with its number of
+  documents and its creation date in local time, in History's format (as ch. 08, AT2 and AT11 do), and
+  saying that the choice will be remembered. Nothing is written for that call until she answers; no
+  answer, nothing is written and nothing is remembered.
+- **FC2 — The choice is remembered.** The next calls for that name use the thread chosen, without
+  asking.
+- **FC3 — Where it is kept.** In the session's own store, sealed at rest as a thread's name is
+  (ch. 07): the name as find-or-create compares it, the thread chosen, and the live threads of that
+  name it was chosen among. It is this persona's and this device's: it does not travel to the other
+  devices, and the other persona never sees it.
+- **FC4 — What forgets it.** The choice holds while the live threads of that name are exactly the
+  ones it was chosen among. When that changes, it is forgotten: one of them deleted, merged away or
+  renamed out of the name (the one chosen included; a rename that changes only case or surrounding
+  spaces keeps the name as compared, and the choice), or a third thread of the name, made here or
+  received by sync.
+  Then one live thread of the name is used without asking, and two or more ask again.
+- **FC5 — The import asks too, instead of refusing.** It asks, for each name two live threads share,
+  before writing anything, and remembers each answer as FC2 says. Where nobody can answer (the bulk
+  import run without a terminal), it refuses the whole import as before, and says so.
+- **FC6 — A call nobody can be asked about is refused and said.** Where no window can ask (a call
+  made in the background with no host prompt), the call is refused with the sentence above, and
+  the refusal is shown to the person, not only written to the log.
+
 Requirement: a thread's name and description are sealed at rest whichever operation creates the
 thread (ch. 07). ◐ — not every creation path does so yet; tracked in the private backlog.
 
 ### Thread deletion and the fallback lane
 
-**Status:** ✅ Built on `main`, not released — the decision below (adoption step 5, 2026-10-17)
-and the warning for a document whose thread was deleted (S5-12, `ed719c7`, 2026-10-18: computed,
-in both sync directions; thread tombstones are kept). The description under *As built* is
-v0.0.10's. Open with Céline: a thread deleted here and renamed offline on the other device.
+**Status:** ✅ Built, released in v0.0.11 — the decision below (adoption step 5, 2026-10-17), the
+warning for a document whose thread was deleted (S5-12, `ed719c7`, 2026-10-18: computed, in both
+sync directions; thread tombstones are kept), and the later action winning across devices
+(2026-10-18), which also settles a thread deleted here and renamed offline on the other device.
+Restoring a thread a peer deleted works since v0.0.12 (item 6, A4). One lane per thread since
+v0.0.12 (ch. 12, *Y — thread lanes*).
 
 **Decided 2026-10-17 (Céline).** Deleting a thread moves **every document still in it to the
-trash** — not to the fallback lane — and **deletes the thread**: its id never comes back, and
-nothing restores it. To bring a thread back, the user creates a new thread and assigns the
-documents to it from the trash. The confirmation says that all the thread's documents will be
-placed in the trash (with the thread's name and its number of documents, ch. 08 AT5). The
+trash** — not to the fallback lane — and **deletes the thread**: nothing on this device restores
+it. To bring a thread back, the user creates a new thread and assigns the documents to it from the
+trash. It comes back only by a later action on another device (below). The confirmation says
+that all the thread's documents will be placed in the trash (with the thread's name and its number of documents, ch. 08 AT5). The
 thread record survives only as what sync needs to carry the deletion to paired devices, never
 shown (ch. 05). The fallback lane remains for documents whose thread never existed locally.
 **Across devices (decided 2026-10-18, Céline):** for the same thread, **the later action wins** —
 a rename made after a deletion on another device brings the thread back under that name, a
 deletion made after a rename keeps it deleted; every thread write (create, rename, delete) carries
 a clock stamp for this. A deleted thread **shrinks to its id** after 30 days, once no document
-(live or in the trash) points to it: its name is removed from disk. A thread is renamed in its
-lane's label or by the assistant. ✅ Built on `main`, not released (`24c25a3`, 2026-10-18:
-`doc/plans/THREAD-sync.md` S1–S11); the rename in the lane label too (`7dd8fbe`, `THREAD-name.md`
-R1–R8).
+(live or in the trash) points to it: its name is removed from disk. *As built (released in
+v0.0.11):*
+- **One stamped path.** Every thread write, on every path that writes one (the shell, the
+  assistant, the phone, skills, import, backup restore, the decoy's seeding), goes through the
+  document service's one thread-write path, stamped by the same device clock as documents' writes
+  (G25); the stamp travels in the row, a field added with a default. How rows are compared,
+  unstamped ones included, and the 5-minute bound on thread stamps: ch. 05, *Rows*.
+- **A rename that wins over a deletion** brings the thread back live under the newer name. The
+  documents the deletion sent to the trash stay there (restorable into the thread, now shown under
+  its live name); its live documents stop asking what to do; nothing is moved. A deletion that
+  wins over a rename keeps the thread deleted, and this device's live documents of it ask.
+- **The shrink.** The 30 days run from the physical time of the deletion's stamp, wherever the
+  deletion was made, so paired devices shrink it at about the same time; the purge tick does it.
+  What remains — the id and the deletion stamp, no name, no description — is shown nowhere and
+  stays in the sync manifest: a received row for that id with an older stamp is refused, one with
+  a newer stamp (a rename made after the deletion) re-creates the thread with what it carries. A
+  document arriving for a thread already shrunk still asks, worded without a name: "“{title}” —
+  its thread was deleted."
+
+A thread is renamed in its lane's label or by the assistant. ✅ Built, released in v0.0.11
+(`24c25a3`, 2026-10-18); the rename in the lane label too (`7dd8fbe`). **A thread a peer deleted** is restored from the list of
+previous values (ch. 05, *Non-destructive peer overwrite*): it comes back live, with its name, by a
+stamped write later than the deletion, so the restore travels like any thread write; its documents
+in the trash stay there until restored (v0.0.12 item 6, A4). A restore that fails is said, where it
+was asked, and changes nothing (built in v0.0.13, item C2, merged 2026-11-18; ch. 05, same section).
 Deleting a thread is all or nothing: if one of its documents cannot go to the trash, the others
 come back and the thread stays. In the trash, a deleted thread's documents are grouped, and can
 be restored all at once into a thread the user chooses, or one by one. A document that arrives by
@@ -440,26 +627,15 @@ sync for a thread deleted here (written on another device meanwhile) raises a wa
 user what to do with it — move it to another thread, create a new thread for it, or put it in the
 trash; until then it stays visible.
 
-*As built:*
+*The fallback lane, as built:* any document whose `thread_id` does not resolve to a live thread —
+its thread never existed here, or was deleted here while the document arrived by sync — is drawn
+in one shared fallback lane, "Unfiled", which appears only while such a document exists.
 
-Deleting a thread soft-deletes the thread record only. Its documents keep their `thread_id` and
-are not moved or deleted. Any document whose `thread_id` does not resolve to an active thread is
-meant to be drawn in one shared fallback lane, "Unfiled" in the native shell (code:
-`crates/sovereign-shell/src/canvas.rs`). As built:
-
-- **Native shell:** the Unfiled lane exists, but the canvas has twelve lanes; with twelve or
-  more threads the Unfiled lane falls on a real thread's lane, so orphaned documents appear in
-  that thread, and documents created or dropped there can be filed in the wrong thread [by code
-  reading].
-- **Mobile:** lanes are built from active threads only, so orphaned documents are not shown
-  (code: `frontend/src/lib/components/mobile/MobileCanvas.svelte`). The frozen Tauri desktop
-  canvas puts them in its first lane.
-
-Restoring the thread (`restore_soft_deleted_thread`) brings its documents back into its lane. No
-UI exposes thread restore; only sync applies it (ch. 05). Once the thread is purged (30 days,
-below), its documents stay in the fallback lane until moved.
-
-The fallback lane also catches documents whose thread never existed locally.
+- **Native shell:** one lane per live thread, with no cap, then Unfiled after the threads' lanes
+  when needed (since v0.0.12; ch. 12, *Y — thread lanes*) (code:
+  `crates/sovereign-shell/src/canvas.rs`).
+- **Mobile:** one lane per thread, then Unfiled when a document needs it (code:
+  `frontend/src/lib/components/mobile/MobileCanvas.svelte`).
 
 *Replaces v1.x / Phase 5 plan:* hard delete of the thread record with an "Uncategorized" lane;
 deletion is now soft.
@@ -547,8 +723,11 @@ Lifecycle:
 
 Accept and dismiss are commands of the Tauri host (code:
 `crates/sovereign-app/src/tauri_commands/suggestions.rs`); the frozen Tauri desktop UI surfaced
-them. The mobile app loads pending suggestions [whether it offers accept and dismiss:
-unverified]. ◐ The native shell has no suggestion surface yet.
+them. The mobile app loads pending suggestions and shows their number as a badge in the chat
+sheet; it offers no accept or dismiss, since the suggestion panel belongs to the desktop layout
+only (code: `frontend/src/lib/components/mobile/MobileChatSheet.svelte`; the panel is mounted in
+`frontend/src/routes/+page.svelte`, which `frontend/src/routes/+layout.svelte` replaces with the
+mobile shell on a phone). ◐ The native shell has no suggestion surface yet.
 
 *Replaces v1.x:* nothing — v1.3 did not describe suggested links.
 
@@ -579,8 +758,8 @@ and `branches` — the Phase 5 plan replaced global commits with per-document ch
 
 ### Commit integrity
 
-**Status:** ◐ Partial — not every commit-creating path stamps a MAC yet; tracked in the private
-backlog (code: `crates/sovereign-db/src/encrypted.rs`).
+**Status:** ✅ Built — under the encrypted layer both commit-creating paths (`commit_document`,
+`insert_commit`) stamp a MAC (code: `crates/sovereign-db/src/encrypted.rs`).
 
 Requirement: under the encrypted layer every new commit is stamped with a device-keyed MAC over
 its canonical fields (document id, parent, message, snapshot including nonces and title hashes),
@@ -591,10 +770,9 @@ backlog. Keys and the MAC primitive: ch. 07.
 
 ### Restore
 
-**Status:** ◐ Partial — built as described below, with two gaps found by the 2026-10-16 review and
-tracked in the private backlog: a restore that fails after writing the content is reported as
-failed although the document has changed, and the version restored is not yet checked to be one
-of the document's own.
+**Status:** ✅ Built — every host restores through the document service (`restore_version`): the
+restore lands whole or not at all (C-DOC G4), and a version of another document is refused (G9)
+(code: `crates/sovereign-docs/src/service.rs`).
 
 Restoring a version writes the snapshot's title and content (with their nonces and title
 hashes) back to the document and then **creates a new commit** "Restored from \<commit id\>" —
@@ -602,17 +780,22 @@ history is never rewritten, and the restore itself can be undone. Restore does n
 membership or deletion state. Under the encrypted layer, restore also refuses a snapshot that
 predates nonce-carrying commits when the live row is encrypted, since it could not be decrypted.
 Restore is reachable from the History window (native shell), the orchestrator's `restore`
-intent, and peer review's one-click restore (ch. 05). In the native shell the History rows come
+intent, the Tauri app's history, and an alert's "Open the previous version", which opens History
+with that version selected (native shell; ch. 05). In the native shell the History rows come
 from the document service, with the store's own version ids; a row whose integrity check fails
 says so ("can't be verified"), a history that cannot be read opens no window and says so, and a
-malformed version id is refused as such, not as "no such version". *(v0.0.11 failed on every row:
+malformed version id is refused as such, not as "no such version". With no document service (the
+workspace locked), History does not open and the notice says "The workspace is locked: log in to
+see a document’s versions." Restoring a version whose title and text equal the current state
+changes nothing and adds no version. *(v0.0.11 failed on every row:
 the rows carried SurrealDB's display form of the id, which quotes the reserved table name
 `commit`; fixed in v0.0.12 lot 1, tested through the shell's own path.)* The frozen Tauri desktop build also has a
 history panel.
 
 ### Auto-commit policy
 
-**Status:** ◐ Partial — two surfaces, two policies; the session-end commit is not built.
+**Status:** ✅ Built — both hosts make versions through the document service's policy (C-DOC
+G6); the threshold is still to calibrate.
 
 **Decided 2026-10-11 (Céline): versions are made by amount of change, never by time.** A new
 version is made when the amount of change since the last version reaches a threshold; also at an
@@ -626,18 +809,20 @@ be evaluated; the proposal is in *Document service — contract (C-DOC)*, G6.
 
 | Surface | As built |
 |---|---|
-| Mobile (Tauri host) | `AutoCommitEngine`: each save records an edit; a 30-second timer commits any document with ≥ 50 recorded edits or ≥ 5 minutes since its last commit; closing a document commits its pending edits ("Auto-commit on close") (code: `crates/sovereign-ai/src/autocommit.rs`, `crates/sovereign-app/src/lib.rs`) |
-| Native shell | Every explicit save commits ("Saved edit"); a skill that rewrites a document commits ("Skill: \<name\>") (code: `crates/sovereign-shell/src/app.rs`) |
+| Mobile (Tauri host) | Each save of the document panel goes to the service, which makes a version when the policy says so, and always for an explicit save; closing the panel ends its editing session, so what it saved last becomes a version (code: `crates/sovereign-app/src/doc_saves.rs`) |
+| Native shell | The editor's saves go to the service under the same policy; closing an editor, or quitting, ends its editing session (code: `crates/sovereign-shell/src/app/editor_v2.rs`) |
 
-The native shell's per-save commits are a superset of the policy for its explicit-save editing
-model. Neither surface commits at session end. Bulk import and the native shell's document
-creation make no initial commit, so such a document has no version until its first commit. The
-CLI `commit` command commits on demand (the CLI lives in the frozen `sovereign-tauri` binary).
+Creating a document makes exactly one version, whatever the origin, import included (G5); every
+write that is not the user's editor (the assistant, a skill, sync, import, restore) makes a
+version of its result (G6), a skill's named after the skill (G7). The CLI `commit` command is
+refused: each `update-doc` is a version (code: `crates/sovereign-app/src/{cli.rs,commands.rs}`;
+the CLI lives in the frozen `sovereign-tauri` binary). The 30-second auto-commit timer of the
+Tauri host is retired.
 
 ### Branching and merge
 
 **Status:** ○ Specified, not built — branching; ✗ Retired — merge through `pending_edits`,
-replaced by last-writer-wins with peer review (ch. 05).
+replaced by last-writer-wins by stamp with the overwritten state kept as a version (ch. 05).
 
 v1.x: the user checks out any historical snapshot, creates a branch from it, branches coexist
 and show as a split on the timeline, merge conflicts go through `pending_edits` and are resolved
@@ -645,8 +830,9 @@ by the creator or an admin, with automatic merge when changes touch different se
 commit before creating a branch.
 
 Built: one linear chain per document, no checkout, no branch. Concurrent edits from paired
-devices are resolved by last-writer-wins, and the overwritten local version is preserved as a
-commit and surfaced for review (ch. 05). The `branchesfrom` relation type exists, but nothing
+devices are resolved by last-writer-wins by stamp: the overwritten local state is kept as a
+version, and an alert is raised only when the incoming-change analysis finds something (ch. 05;
+C-DOC G19, G26, G31). The `branchesfrom` relation type exists, but nothing
 creates it. The timeline's branch visualisation, merge UI and historical scrubber (v1.3 Open
 Question 5) are therefore not built either (ch. 12).
 
@@ -654,36 +840,29 @@ Question 5) are therefore not built either (ch. 12).
 
 ## Deletion
 
-**Status:** ✅ Built on `main` 2026-10-17, not yet released (C-DOC adoption step 5, `cad9771`): every delete goes to the trash through the document service; shell and phone purge at unlock and hourly; the trash is in Settings on both. v0.0.10 (released): both UIs soft-delete, purge only on the phone, no trash.
+**Status:** ✅ Built, released in v0.0.11 (C-DOC adoption step 5, `cad9771`, 2026-10-17): every delete goes to the trash through the document service; shell and phone purge at unlock and hourly; the trash is in Settings on both. Up to v0.0.10: both UIs soft-deleted, purge only on the phone, no trash.
 
 ### Soft delete and 30-day purge
 
-**Status:** ✅ Built on `main` 2026-10-17, not yet released (adoption step 5): the gestures below
-(one click with Undo, the trash in Settings, Empty trash, restore into a chosen thread) on the
-desktop shell and the phone; the purge in both hosts. *The paragraphs that follow the decisions
-describe the v0.0.10 behaviour, kept until the release that ships step 5.* The warning for a
-document arriving by sync for a thread deleted here is built too (S5-12, 2026-10-18).
+**Status:** ✅ Built, released in v0.0.11 (adoption step 5): the gestures below (one click with
+Undo, the trash in Settings, Empty trash, restore into a chosen thread) on the desktop shell and
+the phone; the purge in both hosts. The warning for a document arriving by sync for a thread
+deleted here is built too (S5-12, 2026-10-18).
 
-Deleting a document or a thread sets `deleted_at`; every list, search and traversal excludes
-soft-deleted records, and a soft-deleted record can be restored (`restore_soft_deleted_*`).
-`purge_deleted(max_age)` permanently removes documents and threads whose `deleted_at` is older
-than `max_age`. The Tauri host runs it every hour with a 30-day age, so purge runs on mobile
-(code: `crates/sovereign-app/src/lib.rs`, `crates/sovereign-db/src/surreal.rs`).
-
-- **Mobile (Tauri host):** document delete is a soft delete; thread delete is a soft delete
-  (see *Thread deletion*).
-- **Native shell:** deleting a document from its card asks for two clicks ("Delete…", then
-  "Confirm delete") and soft-deletes it since v0.0.10, so sync carries the tombstone (ch. 05);
-  the action gate is not involved. Threads are
-  deleted only through the orchestrator's `delete_thread` intent, which soft-deletes. The shell
-  schedules no purge, so what it soft-deletes is never purged on the desktop (code:
-  `crates/sovereign-shell/src/app.rs`, `crates/sovereign-ai/src/orchestrator.rs`).
+Deleting a document moves it to the trash through the document service (`trash`, C-DOC G13): it
+sets `deleted_at` and keeps the row, so sync carries the tombstone (ch. 05); every list, search
+and traversal excludes it, and `restore_from_trash` brings it back. Deleting a thread sends its
+documents to the trash and deletes the thread (*Thread deletion*). Both hosts purge through the
+service at unlock and then hourly (`purge_tick`): a document 30 days in the trash goes, with its
+versions, key and edges, and leaves a purge marker (G13, G27); a deleted thread shrinks to its id
+when *Thread deletion* says (code: `crates/sovereign-docs/src/{service.rs,hosts.rs}`, `crates/sovereign-shell/src/app.rs`,
+`crates/sovereign-app/src/{lib.rs,doc_trash.rs}`).
 
 **Decided 2026-10-10 (Céline): delete is a soft delete everywhere, with a trash.** Deleting
 moves the item to a trash the user can see; it stays recoverable for 30 days and is then purged.
 The user can empty the trash at any time, which purges at once. There is no separate permanent
-delete. ◐ The native shell's switch to soft delete is in progress; the trash view, a purge task
-in the shell, and making a purge stick across paired devices (ch. 05) are open work.
+delete. As built (adoption step 5), both hosts follow it; a purge is local, and what travels to
+paired devices is the deletion (G13, G27, as decided 2026-10-23).
 
 **Decided 2026-10-17 (Céline) — the gestures.** Deleting a document is **one click**; the notice
 says it is in the trash and can be restored for 30 days, and offers **Undo**. The only permanent
@@ -693,7 +872,7 @@ thread was deleted, the user chooses the thread it goes to (to "bring back" a th
 new one and assign the documents to it from the trash).
 
 **Actions act on what was shown — built in v0.0.12** (item 9; the cloud review of v0.0.11, R15
-and R20; `doc/plans/V0012-item9-act-on-what-was-shown.md`, merged `f879443`, 2026-10-25). A peer's
+and R20; merged `f879443`, 2026-10-25). A peer's
 deletion or a synced document can change the trash or an orphan group between the moment a list
 is drawn and the moment the person confirms; until v0.0.11 the confirm re-listed and so acted on
 documents nobody had seen. The choices marked PANDA2's were made by the PANDA2 maille on
@@ -731,15 +910,255 @@ Requirement: purge removes everything that carries a document's content. ◐ Bei
 
 ---
 
+## What cannot be read is never shown as empty
+
+**Status:** ○ Specified 2026-11-13, to build in v0.0.13. One rule for one class of defect, found in
+four places at once: the paired list (C-AREA, AR3), the phone's History (« No saved versions yet »
+on a read error), the unreadable documents (« could not check » shown as « none »), and listings that
+skip the rows they cannot decrypt.
+In v0.0.13 two more join them, beside the unreadable documents in the same reading: the list of
+alerts and the list of orphans (PANDA2, 2026-11-17, by the rule's own generality).
+
+**The rule,** in the words ch. 06 already uses: what cannot be read is **kept, counted and said**,
+never dropped, replaced or shown as nothing. A store or a list that fails to read is left as it is.
+The number of what could not be read is reported, and the user sees a sentence that says so.
+- **On the desktop:** the Alerts window, as for undecryptable rows (CHANGELOG v2.0.53).
+- **On the phone:** the screen where the failure happens says it in words, for instance History:
+  « This document's history could not be read », not « No saved versions yet ». The count also
+  goes to the phone's sync alerts.
+- **A fifth place waits for the sync-convergence lot, out of v0.0.13:** in sync, one row that
+  cannot be decrypted blocks a peer's later deletions.
+
+**History, in v0.0.13.** **Built in v0.0.13** (item C5, merged 2026-11-18), on the desktop and the phone.
+Specified 2026-11-18 (decided by the Fable
+maille, by delegation of Céline (2026-11-14), on 2026-11-18, with its sentences). How the rule above
+holds for a document's History. The names its rows give are in ch. 12, *History on both hosts*.
+- **HR1 — A whole list that cannot be read says so.** The document service answers with the list
+  and, when the read failed, its sentence: « This document's history could not be read. » The
+  sentence is worded in the document service (`sovereign-docs`); the host shows it and holds no copy.
+  « No saved versions yet » is shown only for a list that was read and is empty. On the desktop,
+  History opens no window and its notice says it (ch. 12).
+- **HR2 — A locked session is a refusal, not a read error.** A list asked for while the session is
+  locked is refused, as any call is then; it is not said to be unreadable and it is not counted.
+- **HR3 — The count, for the session.** The document service counts, for the session, the documents
+  whose history it failed to read. The phone's sync alerts report that count, with its sentence,
+  worded in the document service: « The history of 1 document could not be read. » or « The
+  histories of {n} documents could not be read. » (two forms, never « document(s) »). A document
+  leaves the count at its next good read. Nothing is stored: a new session starts at zero, and says
+  it again when that History is opened.
+- **HR4 — One version that cannot be read stays in its place.** It is listed at its place and time
+  among the others. Its title and preview are the document service's sentence, « This version could
+  not be read. », never its ciphertext and never a blank where it is shown (the fields that carry it
+  may hold the sentence apart). « Use this version » (phone) and « Restore »
+  (desktop) are not offered for it. Its document counts as in HR3, once. The mark is made where the
+  version is read, so every caller of the document service gets it. Until v0.0.13 the phone showed
+  the ciphertext as its title and preview, and the desktop offered Restore and refused it after the
+  click. (The desktop half: PANDA2, 2026-11-18, by the same rule.)
+
+**Its boundary.** Another persona's rows must look absent, because which persona is which is not
+readable (C-AREA, ATREST-011). C-AREA does this by keeping them out of a session's store. The rule
+above is for a session's own data. One shared assertion serves C-AREA's AR3, the History fix and the
+unreadable-documents fix: a session's own unreadable item is counted, and the count is shown.
+
+## Received content is hostile — contract (C-MEDIA)
+
+**Status:** ✅ Built for v0.0.13 (lot L1b, merged 2026-11-15), specified 2026-11-13. Its tests are in
+`crates/sovereign-docs/tests/` (`me1_*` to `me4_*`, `media_store_*`, `g18_*`) and
+`crates/sovereign-ai/tests/` (`me1_real_files.rs`, `media_record_encrypted_at_rest.rs`). Not yet:
+inserting a medium from any host (the guarded copy at insertion is built and tested in the document
+service, but no shipped host offers the gesture, so a document has media only from before the
+update or from another build), and showing a document's media, with the inert SVG (below).
+
+**Until v0.0.13:** a document's media blocks carried a local file path. The service computed their
+hash by reading that path, on seven call paths, among them the application of a state received
+from a paired device. So received content chose which local file was read, whole.
+
+**The media store** (Céline, 2026-11-13: « oui copie chiffrée des médias dans sovereign »).
+- **Sovereign keeps its own encrypted copy** of every image and video a document holds, in the
+  active persona's area. The original stays where it was, untouched, and is no longer read after
+  insertion.
+- **Inserting a medium copies it into the store.** After the copy, the block names the store's
+  medium, its name in the store and its hash, and no longer the outside path. Insertion is the only
+  gesture that copies an outside path.
+- **The documents that exist at the update are migrated once, on each device, before any sync is
+  applied** (raised by the Fable maille). For every media block that still names an outside path:
+  - ME2's lexical refusals come first, except the refusal of an absolute path: an outside path is
+    absolute by nature. A network path, a device name, `..`, the `\\?\` prefix and an alternate
+    data stream are neutralised without any file-system call;
+  - **the same guarded copy for every document, whichever device wrote it last** (Céline,
+    2026-11-14: « Plus simple : copier partout »);
+  - **a block with no recorded hash is neutralised, and nothing is read for it;**
+  - **otherwise, its first bytes are read first.** A file that is not an image or a video is
+    neutralised there, counted and said, and never read further;
+  - **then** the file is read in a stream, under ME3's cap, and its hash is compared with the
+    block's recorded hash:
+    - **if they match,** the file is copied into the store, and the block names the store's medium;
+    - **if not, or if the file is absent,** the block is neutralised, and counted and said.
+  - **Why not by the last writer.** An earlier rule neutralised every block of a document whose
+    current state was written on another device. The Fable maille found its cost:
+    - an image inserted on the desktop, followed by a word corrected on the laptop, would have gone
+      « not on this device » on the desktop that holds it, since both devices then share one current
+      state written on the laptop;
+    - a version records its date, not its device, so finding which edit inserted each image would
+      have meant reading the history's chain.
+    - Céline chose the guarded copy everywhere. An honest path named by another device is absent
+      here, so it is neutralised as before.
+  - **A video's thumbnail path** is an outside path too. It is copied if the thumbnail is a medium,
+    under the same guards, and recorded otherwise.
+  - **Every medium the pass copies is marked « copied by the migration »** in the store. A medium
+    inserted after the update has no mark. The mark cannot be rebuilt afterwards; the second guard
+    below rests on it.
+  - **After the pass, no outside path is left.**
+  - **An older version in a document's history** that names an outside path goes through the same
+    guarded copy when it is restored: first bytes, then hash, then copy and mark, or neutralise and
+    record.
+  - **When the pass fails in the background,** the user is told, with no path and no title
+    (Céline, 2026-11-14: « Le garder »): « Some images and videos could not be moved into
+    Sovereign's encrypted store yet. This is tried again before anything is received from your
+    other devices, and at the next unlock. »
+  - **The cost, said in the notes:** the disk space of the copies at once, and time at the first
+    launch.
+  - **What the user is told after the pass** shows no path and no title (Céline, 2026-11-14:
+    « Ajouter le registre »). The text, in English like the rest of the interface:
+    - « N images and videos were copied into Sovereign's encrypted store; the originals stay where
+      they are. »
+    - « M could not be copied. »
+    - « The list of what was not copied is kept, encrypted, on this device. »
+    - The notice says only what is built (the Fable maille, by delegation of Céline, 2026-11-14). No
+      host shows « not on this device » yet, and no repair pass is built. No screen shows the list
+      either: the user learns how many were not copied, not which.
+  - **In doubt, copy, with two guards** (Céline, 2026-11-13: « Dans le doute, copier », then, asked
+    again with the question corrected, « Copier, avec les garde-fous »). A document received before
+    the update and then saved here may keep a path that a peer named, with a hash filled on this
+    device from that very file. The code cannot tell it from the user's own image. Removing in doubt
+    would have removed every image inserted before the update.
+    - **A medium must be a medium:** the pass, and insertion too, copy a file only if its first bytes
+      say image or video, never by its name. Anything else is neutralised, counted and said.
+      - **The formats are a list in the contract, broad** (Céline, 2026-11-14: « Liste large +
+        registre »). Images: PNG, JPEG, GIF, WebP, BMP, TIFF, HEIC and HEIF, AVIF, and SVG. Videos:
+        MP4 and MOV, WebM, AVI. Each is known by the signature its format defines, and each has its
+        test. Until v0.0.13, no host filtered formats at insertion, so a document may name any
+        format.
+      - **A format with a weak signature gets a check as strong as the guard's purpose.** The guard
+        keeps a key file, a password database or a document from being copied.
+        - **An SVG is a file whose root element is `svg`.** It is read within a stated bound larger
+          than the binary sniff. A declaration, a DOCTYPE, comments and white space may come before
+          it; nothing else may. An XML file with another root is not a medium, whatever its name.
+        - **A BMP is accepted on a coherent header,** not on its two letters « BM ».
+      - **SVG is accepted** (Céline, 2026-11-14: « Les accepter »). It is text, so its first bytes
+        prove less than a binary signature does. **An SVG is shown without running its scripts and
+        without loading anything it references:** no network, no other file.
+        - **As built, no host shows a document's media blocks.** The editor draws a placeholder with
+          the alternative text, and the app's interface renders no media block.
+        - **The app's Markdown preview of a document's text does show images named in the text,**
+          bounded by the app's content security policy: no local file is read. An SVG there is shown
+          as an image, so it is inert by the browser, not by Sovereign's code.
+        - The requirement, with its test, binds the lot that first shows a document's media, on each
+          host. It does not bind the lot that copies them.
+      - **What the pass neutralises, it records.** For each block: the document, the block, the
+        former path as text, and the reason (absent, another hash, no recorded hash, not a medium, a
+        lexical refusal, too large, unreadable).
+        - **« No recorded hash » is a reason of its own:** there was no hash, so it is not « another
+          hash ». The record says what was the case, so that a later pass can mend the right thing.
+        - **The record is never synced or backed up,** whatever store holds it: not by the document
+          service, and not by the database's own sync or backup. Each has its test.
+        - **A file that is there is never recorded as absent.** A file above the cap is « too large »,
+          and one that cannot be read at that moment is « unreadable ». A cap found too low can then be
+          mended like a list found too short.
+        - The record lives in the persona's area, encrypted, outside every synced store: **it never
+          leaves the device.** Its paths name her folders. Nothing ever opens a path from it.
+        - **Its encryption has its test.** A former path holding a marker string is neutralised, and
+          afterwards no file under the profile holds that string in clear.
+        - It is what stands behind the report's « neutralised » count. A list found too short
+          after the update can then be mended by a later pass over the record, without loss.
+        - It is ch. 03's rule applied to the pass: what cannot be read is kept, counted and said.
+    - **A medium copied in doubt never leaves the device** (by content-addressed media, backup
+      between contacts, or a node) until she has seen it and kept it. Since the code cannot tell
+      the two cases apart, every medium the pass copies is in doubt: it is the mark above. What
+      « seen and kept » means is defined by the later lot that moves media; this binds it.
+  - **What this does not protect against:**
+    - such a path is read once, by this pass, under ME2's refusals and ME3's cap (its first bytes
+      only, if it is not an image or a video), and if it is an image, that image shows in a document
+      a peer wrote;
+    - the block's hash is part of the document and syncs. A hash filled here on a peer-named path has
+      always gone back to that peer, which learns whether a file it guessed is there. That is the
+      leak of the v0.0.12 review's finding 1, and C-MEDIA ends it for every state received after the
+      update.
+- **From the update on, content that was received, imported as a Sovereign document, or written by
+  the assistant never has its paths copied or read,** except once, by the migration pass (above).
+  Conversion and duplication copy nothing.
+  - **A received state's outside paths are neutralised when it is applied,** before anything else
+    can see them. This covers sync, a restored backup and a Sovereign import, owned documents
+    included. It also covers a received state kept as a version without being made current
+    (C-WIRE 7): a later restore of that version has no outside path to read, and none is kept
+    before the pass has run.
+    - The block keeps its medium's name and hash, and is to be shown as « medium not on this
+      device »: absent, not empty (*What cannot be read is never shown as empty*). As built, no host
+      shows a document's media blocks yet; the lot that first shows them says it on the block.
+    - A later save of that document, even by its owner, therefore has no outside path to copy.
+    - ME1 then holds by construction. (Raised by the laptop maille: an owned document received by
+      sync, then saved, would otherwise have its peer-named path read.)
+    - **A neutralised block resolves by its hash in the local store.** When the device that holds
+      the medium receives the document back, the image is shown there again.
+  - **Four tests:**
+    - **the round trip:** A holds a document with a medium. It syncs to B, B edits it and saves,
+      and it syncs back. On A the medium is shown, and no path named by a received state was read;
+    - **the legacy path, last written elsewhere:** a document applied before the update names a
+      sentinel path, and its current state was written on another device. The sentinel is read at
+      most once, by the pass, under the guarded copy, and is never read again;
+    - **the residual, last written here:** a document received before the update, then saved on
+      this device, names a sentinel path. The sentinel is read at most once, by the pass; it is
+      copied only if it is a medium and its hash matches, and is then marked « copied by the
+      migration ». It is never read again;
+    - **the life of a document:** an image is inserted on device A, then a word is corrected on
+      device B, and both sync before the update. After the pass, A shows the image, copied and
+      marked, and B records the path as absent.
+  - **C-DOC's G18 is replaced** on its first clause (*Guarantees*, below). Its tests are updated by
+    the test author.
+- **Whether the store is a folder of encrypted files or records in the database** is a technical
+  choice. It is stated in the lot's design and covered by C-AREA's walk either way.
+- **The cost, said to the user:** the disk space of a second copy. Deleting an original no longer
+  removes the image from the document.
+
+**Guarantees (C-MEDIA, each one a test):**
+- **ME1 — A received path is never opened.** A state that arrives whole from outside the device
+  never leads to a read of a path it names. That covers sync, a restored backup, and a document
+  imported as a Sovereign document. A media field in such a state is data, not a location.
+  - Bulk import of the user's own files, which she chose, is not such a state.
+- **ME2 — Media are resolved only inside the media store.** A hash is computed only over what the
+  media store holds, named by the store. It is never computed from a path that content supplies.
+  - **Lexical refusals come first, before any file-system call:** an absolute path, a network path,
+    a device name, `..`, and on Windows the `\\?\` prefix and alternate data streams.
+  - **Then a resolution inside the store** opens nothing unless the resolved path is inside it. A
+    link or junction that leaves the store is refused there.
+- **ME3 — Streamed and bounded.** Hashing, copying and conversion read a media file in a stream,
+  never whole. Above a size cap, a constant named in the code, the operation stops with a named
+  error. Nothing is read beyond the cap.
+  - **The cap is 4 GiB** (Céline, 2026-11-14, on the laptop maille's proposal). It keeps about ten
+    minutes of 4K at 60 frames a second, and an hour or more of 1080p. These are estimates, not
+    measures.
+    - Many phones split a recording at that size, so each part fits.
+    - A larger file is recorded as « too large », and a later pass with a higher cap can copy it.
+- **ME4 — Every caller.** ME1 to ME3 hold on the seven call paths that hash media today, through
+  `fill_media_hashes`: `create`, `save_locked`, `restore_version`, `apply_state` (both `apply_wire`
+  for sync and `restore_backup`), `convert_one` and `duplicate`.
+  - **The test covers each one,** the application of a received state first.
+  - **It also covers two sources of hostile paths:** a document whose imported content names local
+    files, and a document the assistant writes after reading hostile content.
+
+**Decided as a direction, not built in v0.0.13:** content-addressed media. A block names its media
+by hash and size, and the media store resolves it. With that, a path never travels at all.
+
 ## Document service — contract (C-DOC)
 
-**Status:** ○ Specified 2026-10-10; amended 2026-10-11 with Céline's decisions (versions by
-amount of change, never by time; ingest of titles, captions and alt texts; hook failure; the
-purge marker; trust across devices). Remaining choices marked **[choice]**.
-Contracts C-DOC and C-ENC of the roadmap (lot 1), implemented by lot 2b. The public API and
-the test suite exist before the service: `crates/sovereign-docs` (API with `todo!` bodies,
-tests in `tests/`, map in `TESTS.md`) and `crates/sovereign-docformat` (the v2 model's API).
-The service is built to make that suite pass, by a different author, without changing it.
+**Status:** ✅ Built, released in v0.0.11 — specified 2026-10-10; amended 2026-10-11 with
+Céline's decisions (versions by amount of change, never by time; ingest of titles, captions and
+alt texts; hook failure; the purge marker; trust across devices). Remaining choices marked
+**[choice]**. Contracts C-DOC and C-ENC of the roadmap (lot 1), implemented by lot 2b. The
+public API and the test suite came before the service: `crates/sovereign-docs` (tests in
+`tests/`, map in `TESTS.md`) and `crates/sovereign-docformat` (the v2 model). The service was
+built to make that suite pass, by a different author, without changing it, and every host goes
+through it (*Adoption*, below).
 
 *Why this chapter and not ch. 02:* the contract is about the document record — its stored
 form, its versions, its deletion, its trust — which this chapter defines; ch. 02 lists the two
@@ -748,21 +1167,23 @@ crates.
 ### What the service is
 
 The one door through which documents are **created, read, saved, deleted, restored and
-purged**. Today about thirty places read or write `content` themselves (the shell, the mobile
-host's commands, the assistant's tools, skills, search, import, sync, backup, the PII sweep,
-consolidation, seeding), three stored forms coexist (the v1 envelope, raw text, and v2), and
-each writer decides alone whether to commit, run personal-data ingest, or keep provenance. The
-new editor writes v2 and cannot be switched on until every reader understands it. The service
-puts encoding, versions, ingest, provenance and change events in one place; every other crate
-goes through it.
+purged**. Before it, about thirty places read or wrote `content` themselves (the shell, the
+mobile host's commands, the assistant's tools, skills, search, import, sync, backup, the PII
+sweep, consolidation, seeding), three stored forms coexisted (the v1 envelope, raw text, and
+v2), each writer decided alone whether to commit, run personal-data ingest, or keep provenance,
+and the new editor, which writes v2, could not be switched on until every reader understood it.
+The service puts encoding, versions, ingest, provenance and change events in one place; every
+other crate goes through it.
 
 **What it owns:** the stored form of `content` (C-ENC: one form written, every form read, the
 migration); when a version is made; the trash and the purge, including everything that hangs
 off a document; trust and provenance of documents; linking personal-data records to a document
-on a Sovereign paste, and the resolver rule's answer for documents; media hashes.
+on a Sovereign paste, and the resolver rule's answer for documents; media hashes; and, since
+v0.0.12 (the lanes lot), moving a document to another thread (`move_to_thread`): every move goes
+through it (code: `crates/sovereign-docs/src/moves.rs`).
 
-**What it does not own:** position, pinning and thread moves on the canvas (C-LANE; callers
-keep the store calls until then); detecting personal data (C-PII implements the hook below);
+**What it does not own:** position and pinning on the canvas (C-LANE; callers keep the store
+calls until then); detecting personal data (C-PII implements the hook below);
 deciding who wins a sync (ch. 05 decides; the service applies); the editor's undo (C-TEXT);
 judgments (ch. 04 `Assessment`).
 
@@ -776,7 +1197,7 @@ judgments (ch. 04 `Assessment`).
 | Media file access (`MediaFiles`) | Hashes media for `ref.sha256` — the editor never reads files. |
 | A clock | Times of user writes and trust decisions; trash expiry. It never decides a version. |
 | An event sink | `DocumentChanged{id, kind}`. |
-| This device's name | Recorded on the user's trust decisions, which travel to her other devices (G12). |
+| This device's identity: the persona's peer id, never the display name (ch. 05, *Stamps*; v0.0.12 item 22) | Recorded in the stamps of the writes made here and on the user's trust decisions, which travel to her other devices (G12). |
 
 ### Operations
 
@@ -904,7 +1325,11 @@ the service **[choice]**.
     arrival.** **A purge is local** (same decision, replacing that of 2026-10-15): it removes the
     document from this device only, the 30 days run on this device's clock from the moment the
     document entered this trash, and what travels is the deletion, never the purge. A purge
-    interrupted at any point completes when run again. Nothing else is touched.
+    interrupted at any point completes when run again. Nothing else is touched. **The 30 days follow
+    the device's clock, with no guard** (Céline, 2026-11-18, choosing « Keep the clock, say it »): a
+    clock set wrong can empty the trash early. A clock moved forward by more than 30 days purges the
+    whole trash at the next hourly check, for good; an entry dated while the clock was behind, then
+    corrected, is purged early. The release notes say so.
 14. **Token links come from a Sovereign paste only** (ch. 09, *Where a token resolves*). A save
     adds the document to a record's sources only when it comes from the editor, names the record
     among its pasted tokens, the record is linked to the document the token was copied from, and
@@ -926,22 +1351,28 @@ the service **[choice]**.
     form of every type that holds document text or titles prints sizes, never the text.
 18. **Media hashes are the service's.** At any write, a media block without `ref.sha256` whose
     file can be read gets the file's hash; a present hash is never changed (it is what detects
-    an altered file); an unreadable file leaves the block valid without one.
+    an altered file); an unreadable file leaves the block valid without one. *As built; C-MEDIA
+    (above) replaces the first clause in v0.0.13:* a hash is computed only inside the media store,
+    never from a path that content names, and conversion hashes nothing outside the store.
 19. **Sync applies without losing anything.** The service applies the state sync decided on.
     Before a peer's state replaces the local one, the local state is a version; **no review flag
     is raised** (changed 2026-10-15, C-WIRE 13 — an alert only when the incoming-change analysis
     detects something, G31); a peer's tombstone moves the document to the trash, restorably; a
     live peer state brings a trashed document back; a purged id is ignored unless a live state
     with a later stamp arrives (G27, as amended 2026-10-23); a state equal to the local one changes nothing. Legacy content from an
-    older peer is stored as v2, newer-format content verbatim (read-only). Sync moves to
-    `apply_wire` (G24–G31); `apply_remote` keeps these rules for other callers.
+    older peer is stored as v2, newer-format content verbatim (read-only). Sync applies through
+    `apply_wire` (G24–G31) and a backup through `restore_backup` (G30); `apply_remote` keeps these
+    rules, and no host calls it.
 
 ### Duplicate, adoption gestures, content from outside (G20–G23)
 
-**Status:** ○ Specified 2026-10-15, to be reviewed by Céline — choices marked **[choice]**. From
-the decisions of 2026-10-15 (ch. 04, *Decided (Céline, 2026-10-15) — defaults at creation and
-adoption gestures*). Tests in `crates/sovereign-docs/tests/g20_*`–`g23_*`, written before the
-operations exist; they fail against the service until it is extended.
+**Status:** ◐ Partial — specified 2026-10-15, choices marked **[choice]** to be reviewed by
+Céline. From the decisions of 2026-10-15 (ch. 04, *Decided (Céline, 2026-10-15) — defaults at
+creation and adoption gestures*). Tests in `crates/sovereign-docs/tests/g20_*`–`g23_*`, written
+before the operations. The operations are built in the service (code:
+`crates/sovereign-docs/src/service.rs`); a skill's copy of a document it read goes through
+`duplicate` (code: `crates/sovereign-ai/src/docs_host.rs`); no surface offers the adoption
+gestures yet.
 
 New operations: `duplicate(Duplicate { source, title?, thread?, origin })` ·
 `preview_adoption(AdoptionSelector)` → `AdoptionPreview` · `apply_adoption(&AdoptionPreview)` →
@@ -997,15 +1428,17 @@ New operations: `duplicate(Duplicate { source, title?, thread?, origin })` ·
 
 ### What sync needs from the service (G24–G31)
 
-**Status:** ○ Specified 2026-10-15 for C-WIRE (ch. 05; Céline's decisions the same day), tests
-first — `crates/sovereign-docs/tests/g24_*`–`g31_*`, failing until step 4 builds them. Nothing
+**Status:** ✅ Built — specified 2026-10-15 for C-WIRE (ch. 05; Céline's decisions the same day),
+tests first (`crates/sovereign-docs/tests/g24_*`–`g31_*`), built in C-DOC adoption step 4 and
+released in v0.0.11; G27 and G28 as amended by v0.0.12 item 3 (purges are local), G25 by v0.0.12
+lot 1 (the bound inside the clock). (code: `crates/sovereign-docs/src/wire.rs`) Nothing
 changes an existing type: the wire metadata travels beside a `RemoteDocument` in a `WireMeta`
 (creation time, stamp, previous stamp, author device, the decision's stamp).
 
 New operations: `apply_wire(remote, meta)` · `stored_state(id)` / `stored_states()` ·
 `purge_markers()` · `apply_purge_marker(marker)` · `restore_backup(documents, markers)` ·
-`raise_alert` / `alerts` / `dismiss_alert`; and two pure functions, `normalized_hash(state)`
-and `purge_fingerprint(id, title, content)`.
+`raise_alert` / `alerts` / `dismiss_alert`; and a pure function, `normalized_hash(state)` (a
+purge marker carries no fingerprint: purges are local, G27).
 
 24. **The wire's fields are kept, and a missing one never overwrites a known one.** `apply_wire`
     keeps the original creation time, the author device (the sender when none is named) and the
@@ -1015,18 +1448,31 @@ and `purge_fingerprint(id, title, content)`.
     stamp greater than every stamp this device has issued or received, whatever its clock says.
     A remote state is applied by stamp: one that follows the local state (its previous stamp is the
     local stamp) applies; an older one is ignored; one more than 5 minutes ahead of this device's
-    clock is refused and writes nothing **[choice: 5 minutes]**.
+    clock is refused and writes nothing **[choice: 5 minutes]**. *(v0.0.12 lot 1: the bound is
+    inside the clock — a stamp more than 5 minutes ahead of this device's wall clock never moves
+    it, whatever carries it — so "greater than every stamp received" holds for stamps within the
+    bound; a stamp beyond it already stored keeps winning concurrent conflicts on its document
+    until real time passes it. Ch. 05, *Stamps instead of the wall clock*.)*
 26. **Concurrent edits keep both.** A remote state whose previous stamp is not the local stamp,
     while the local state changed since, is concurrent: the greater stamp is current, the other is
     kept as a version (a remote state with the lower stamp is stored as a version without becoming
     current), and the outcome says it was concurrent.
 27. **Purge markers** *(amended 2026-10-23, Céline: purges are local; built in v0.0.12 item 3)*. A
     purge leaves a local marker — id and deletion stamp, no fingerprint, never content. It travels
-    as a deletion only: a peer's live copy with an earlier stamp goes to that peer's trash, a
-    trashed copy stays there; no peer copy is purged. A purged id ignores a peer's trashed copy and
-    any earlier live state, and comes back, live, as a new arrival with its own first version, from
-    a live state with a later stamp (the exception to G13). The 30 days run on each device's clock
-    from the moment the document entered its trash.
+    as a deletion only: a peer's live copy with an earlier stamp goes to that peer's trash and its
+    state takes the deletion's stamp; a trashed copy stays there, its trash date and stamp
+    unchanged; with no copy, the peer records the deletion (id and stamp, the later of two kept),
+    so an older copy arriving from a third device is ignored; no peer copy is purged. A purged id
+    ignores a peer's trashed copy and any live state whose stamp is earlier than or equal to the
+    deletion's, and comes back, live, as a new arrival with its own first version, from a live
+    state with a later stamp (the exception to G13). The 30 days run on each device's clock from
+    the moment the document entered its trash; the days left the trash shows are counted from the
+    same date (the local trash date, floored at an upgrade by "trash since"). A clock set wrong can
+    empty the trash early: forward by more than 30 days, the whole trash; behind when an entry was
+    dated, that entry (G13; Céline, 2026-11-18, « Keep the clock, say it »). A backup's markers
+    are id and stamp, never a fingerprint, and are recorded as deletions at restore. A
+    fingerprint a v0.0.11 marker still holds is erased at every unlock, each persona at its own
+    (ch. 05, *Deletions and purges*).
 28. **Normalised hash.** The hash covers title, thread, trash state, trust, trust
     decision, provenance and the content as v2 (legacy forms converted, seeded by the document id):
     equal for two copies of one document whatever form each stores, different when any of these
@@ -1048,6 +1494,10 @@ and `purge_fingerprint(id, title, content)`.
 
 ### Adoption — who stops touching `content`
 
+**Status:** ✅ Done — steps 1–6 below, released in v0.0.11; sync and backup adopted `apply_wire`
+and `restore_backup` (G24–G31). Ownership is the exception: the assistant's "adopt" still calls
+`adopt_document` (*Ownership*). What follows is the plan as measured and ordered on 2026-10-10.
+
 Measured 2026-10-10 by grep over every crate but `sovereign-db`: **141 production call sites**
 read or write document content or lifecycle directly (sovereign-app 47, sovereign-skills 34,
 sovereign-ai 26, sovereign-shell 18, sovereign-p2p 14, sovereign-import 2). By operation: 25
@@ -1065,7 +1515,7 @@ tokens. The full table (file, line, operation, form) is kept with the plan (priv
 | Commits (`AutoCommitEngine`, shell per-save commits, mobile close, CLI) | the commit policy, `end_session` |
 | Version restore (shell, mobile, assistant `restore`, peer-review restore) | `restore_version` |
 | Delete, restore from trash, purge (shell, mobile, sync, the hourly purge, CLI hard delete) | `trash`, `restore_from_trash`, `empty_trash` / `purge_from_trash`, `purge_expired` |
-| Sync apply (create under origin id, overwrite with pre-sync commit, tombstone, revive) and backup restore | `apply_remote` |
+| Sync apply (create under origin id, overwrite with pre-sync commit, tombstone, revive) and backup restore | `apply_remote`; as built, `apply_wire` (sync) and `restore_backup` (backup) |
 | Ownership (`adopt_document`) | `set_trust` |
 | Document PII ingest glue (`maybe_ingest_document_body`, sweep body rewrite) | the `PiiIngest` hook, called by the service |
 | Token resolution in documents | `token_status`, `read().tokens` |
@@ -1135,8 +1585,8 @@ and consolidation stops proposing [by code reading; not observed at runtime].
 
 **Status:** ◐ Partial — increment 1 is built as an engine and a CLI (v0.0.9); the CLI lives in
 the `sovereign-tauri` binary, frozen and not shipped, so no shipped build offers import today;
-the provenance record, credential routing, per-file overrides, image tier, stub upgrade and the
-shell import window are not built (code: `crates/sovereign-import/src/lib.rs`,
+the full provenance record (only the kind *import* and the source path are recorded), credential
+routing, per-file overrides, image tier, stub upgrade and the shell import window are not built (code: `crates/sovereign-import/src/lib.rs`,
 `crates/sovereign-app/src/{cli.rs,commands.rs}`).
 
 ### Doctrine — stub-first
@@ -1186,7 +1636,7 @@ Text and extract files over **25 MB** are skipped as oversize; other files are n
 their size does not matter. Office files are read with bounded decompression and PDF extraction
 cannot crash the import (code: `crates/sovereign-import/src/lib.rs`).
 
-The stub body lives inside the encrypted body, so the original path is never plaintext metadata.
+The stub's note lives inside the document's body, which the encrypted layer seals.
 
 Not built: `xls`/`xlsx` extraction (planned via `calamine`), an image tier (images land as
 stubs; OCR or captioning would be a later enrichment pass over imported documents), and **stub
@@ -1204,9 +1654,9 @@ imported (next section); images are stubs.
 **Just documents, no code** (Céline's rule). Source code, scripts, stylesheets, configuration,
 data serialization and build files — including `json`, `yaml`, `toml`, `xml`, `sql`, `css`, `sh`,
 `ps1` — 78 extensions in all — are skipped entirely: not imported, not even as stubs.
-The reason is trust, not tidiness: imported documents land as the user's own content (below),
-and owned content is not screened for injected instructions (ch. 08), so code or config carrying
-such a payload must not enter as if the user had written it. The dry-run counts these files
+The reason is trust, not tidiness: owned content is not screened for injected instructions
+(ch. 08), and an imported document becomes owned once the user adopts it (below), so code or
+config carrying such a payload must not enter where it could pass for something the user wrote. The dry-run counts these files
 instead of listing them.
 
 Zero-byte files are skipped as empty. Credential-like files are handled separately (below).
@@ -1223,7 +1673,11 @@ Zero-byte files are skipped as empty. Credential-like files are handled separate
   it is a first sorting (decided 2026-07-06).
 - **`--single-thread <name>`** puts everything in one named thread.
 - A lane is matched **by name**: distinct folders with the same name map to the same lane, and
-  an existing thread with that name is reused.
+  an existing live thread with exactly that name (ignoring case and surrounding spaces) is reused;
+  a name two live threads share refuses the whole import, before anything is written (since
+  v0.0.12; *Thread*, *Find or create by name*). In v0.0.13 the import asks which one instead, and
+  remembers the answer; it refuses only where nobody can answer (*Two threads of the name sought*,
+  FC5; built in v0.0.13, item 9).
 - When two importable files would land in the same lane with the same title from **different
   folders**, their titles are prefixed with the folder that contains the lane folder (and a
   numeric suffix as last resort), so every distinct document lands and stays legible. Same-title
@@ -1275,11 +1729,13 @@ lanes and their counts, and every skipped file other than code with its reason �
 nothing. `--execute` prints the same plan, asks for the passphrase, and imports into the primary
 workspace, encrypted at rest.
 
-Every plan, dry-run and execute alike, ends with a **trust notice**: imported files become the
-user's own content, owned content is treated as trusted and not screened for prompt injection,
-and a file authored by someone else can carry instructions that steer the model; import only
-what you trust. The notice is restated just before the passphrase prompt, which serves as the
-affirmative consent.
+Every plan, dry-run and execute alike, ends with a **trust notice**: imported files are stored
+as *undetermined* content, and until the user adopts a document the model reads it as data,
+screened for prompt injection, never as her instructions; a file authored by someone else can
+carry hidden instructions, and adopting it makes them read as her own; the notice asks her to
+adopt only what she wrote or trusts. The notice is restated just before the passphrase prompt, which serves as
+the affirmative consent (code: `crates/sovereign-import/src/lib.rs`,
+`crates/sovereign-app/src/commands.rs`).
 
 ### Execute and idempotency
 
@@ -1303,7 +1759,7 @@ to its original by path.
 ### Ownership at import
 
 **Status:** ◐ Partial — imports land undetermined (C-DOC adoption step 3, 2026-10-15); the
-adoption gestures are specified, not built.
+adoption gestures are built in the document service (G21, G22) and offered by no surface yet.
 
 Imported documents land **undetermined** (fenced until the user adopts them), with provenance
 "import" and their source path; the import notice says so. This replaces the decision of
@@ -1315,13 +1771,16 @@ and none becoming a standing rule (ch. 04, *Ownership is not decided at landing*
 
 ### Provenance record
 
-**Status:** ○ Specified, not built — increment 2.
+**Status:** ◐ Partial — the provenance kind and the source path are recorded; the rest is
+increment 2, not built.
 
 Every imported document carries a structural provenance record: `source_path`, `source_format`,
 original modified and created times, `imported_at`, `imported_by` (CLI or UI, with version),
 `tier`, and a **content hash of the original**. The record is what makes stub-first a pipeline
 rather than a one-shot: re-runs skip unchanged files by hash, and stubs are upgraded in place by
-source path. Today only the stub body records the original path, and only for stubs.
+source path. As built, every imported document records provenance *import* with its source
+path (`provenance_kind`, `provenance_detail`); the stub body also notes the original path, for
+stubs (code: `crates/sovereign-import/src/lib.rs`, `crates/sovereign-docs/src/service.rs`).
 
 ### Import window
 
@@ -1350,5 +1809,5 @@ described in ch. 12.
 |---|---|---|
 | `content` encoding: the native shell writes both raw text and the JSON envelope, import writes raw, mobile reads and writes the envelope; sync carries both forms everywhere | ✅ Decided 2026-10-10: versioned typed-block JSON, migration from both current forms | *Content encoding* |
 | Document delete: soft (mobile) vs immediate, and undone by sync (native shell) | ✅ Decided 2026-10-10 (K3): soft delete everywhere, with a trash; 2026-10-17: one click + Undo, trash in Settings, emptying it is the only permanent delete, a deleted thread's documents go to the trash; built in adoption step 5 | *Soft delete and 30-day purge*, *Thread deletion* |
-| Multi-party ownership model: target or stale | ⚠ Open Question D3 (ch. 15) | *○ Target (pending D3)* |
+| Multi-party ownership model: target or stale | ✅ Decided 2026-10-10 (D3, ch. 15): trust is built separately; multi-party ownership waits for a future collaboration chapter | *○ Deferred (D3)* |
 | Undetermined ownership at import | ✅ Decided 2026-10-15: imports land undetermined; adoption per document, thread, import folder, bulk or date (ch. 04) | *Ownership*, *Ownership at import* |

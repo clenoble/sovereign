@@ -11,6 +11,7 @@
  */
 
 import {
+	historiesNotRead,
 	listOrphanedDocuments,
 	listPreviousValues,
 	listSyncAlerts,
@@ -79,8 +80,22 @@ export const syncAlerts = $state({
 	alerts: [] as SyncAlert[],
 	previousValues: [] as PreviousValue[],
 	olderDevices: [] as OlderDevice[],
+	/** Paired devices on a newer version: this device is the one to update
+	 *  (C-WIRE 12 from the other side). */
+	newerDevices: [] as OlderDevice[],
 	/** Documents whose thread was deleted, waiting for a decision (S5-12). */
 	orphans: [] as Orphan[],
+	/** When the alerts, or the documents whose thread was deleted, could not
+	 *  be read: the sentence said in their place, worded by the backend
+	 *  (spec ch. 03, *What cannot be read is never shown as empty*); null when
+	 *  they were read. The documents that could not be read carry theirs in
+	 *  `unreadable.could_not_check`. */
+	alertsCouldNotCheck: null as string | null,
+	orphansCouldNotCheck: null as string | null,
+	/** Item C5 (spec ch. 03, HR3): the backend's sentence for the documents
+	 *  whose history this session could not read; null when none, or when the
+	 *  count was refused (a locked session). */
+	historiesNotRead: null as string | null,
 	/** Documents the one-time conversion could not read (v0.0.12 item 7 V2b),
 	 *  worded by the backend; empty: `''`, `''`, `[]`. */
 	unreadable: { heading: '', meaning: '', lines: [] } as UnreadableDocumentsDto,
@@ -103,14 +118,24 @@ export function noticeText(): string | null {
 	return null;
 }
 
-/** The older-version notice naming the device(s), or null. */
+/** The older-version notice naming the device(s), or null. When a paired
+ *  device runs a newer version, the notice says that this device is the one
+ *  to update (C-WIRE 12 from the other side; wording [choice]). */
 export function olderNotice(): string | null {
+	const parts: string[] = [];
+	const n = syncAlerts.newerDevices;
+	if (n.length > 0)
+		parts.push(
+			`This device runs an older version of Sovereign than ${n.map((x) => x.name).join(', ')}. Update this device to sync documents with ${n.length === 1 ? 'it' : 'them'}; other data still syncs.`
+		);
 	const d = syncAlerts.olderDevices;
 	if (d.length === 1)
-		return `${d[0].name} runs an older version of Sovereign. Update it to sync documents with it; other data still syncs.`;
+		parts.push(`${d[0].name} runs an older version of Sovereign. Update it to sync documents with it; other data still syncs.`);
 	if (d.length > 1)
-		return `${d.map((x) => x.name).join(', ')} run an older version of Sovereign. Update them to sync documents; other data still syncs.`;
-	return null;
+		parts.push(
+			`${d.map((x) => x.name).join(', ')} run an older version of Sovereign. Update them to sync documents; other data still syncs.`
+		);
+	return parts.length > 0 ? parts.join(' ') : null;
 }
 
 /** Nothing left to show in the Alerts dialog. */
@@ -119,7 +144,16 @@ function nothingToShow(): boolean {
 		syncAlerts.alerts.length === 0 &&
 		syncAlerts.previousValues.length === 0 &&
 		syncAlerts.orphans.length === 0 &&
-		syncAlerts.unreadable.lines.length === 0
+		syncAlerts.unreadable.lines.length === 0 &&
+		couldNotCheck().length === 0
+	);
+}
+
+/** The sentences of the lists that could not be read, in the dialog's order
+ *  (spec ch. 03): a failure counts as something to show. */
+export function couldNotCheck(): string[] {
+	return [syncAlerts.alertsCouldNotCheck, syncAlerts.orphansCouldNotCheck, syncAlerts.unreadable.could_not_check].filter(
+		(s): s is string => !!s
 	);
 }
 
@@ -150,6 +184,14 @@ export function onPeerNeedsUpdate(peerId: string, name: string) {
 	syncAlerts.olderDevices = [...syncAlerts.olderDevices, { peerId, name: name || peerId }];
 }
 
+/** A paired device runs a newer version: this device is the one to update
+ *  (the `this-device-needs-update` event). */
+export function onThisDeviceNeedsUpdate(peerId: string, name: string) {
+	roundSaidOlder.set(peerId, true);
+	if (syncAlerts.newerDevices.some((d) => d.peerId === peerId)) return;
+	syncAlerts.newerDevices = [...syncAlerts.newerDevices, { peerId, name: name || peerId }];
+}
+
 /** A sync round with `peerId` starts. */
 export function onSyncRoundStarted(peerId: string) {
 	roundSaidOlder.set(peerId, false);
@@ -163,6 +205,9 @@ export function onSyncRoundCompleted(peerId: string) {
 	if (said === false && syncAlerts.olderDevices.some((d) => d.peerId === peerId)) {
 		syncAlerts.olderDevices = syncAlerts.olderDevices.filter((d) => d.peerId !== peerId);
 	}
+	if (said === false && syncAlerts.newerDevices.some((d) => d.peerId === peerId)) {
+		syncAlerts.newerDevices = syncAlerts.newerDevices.filter((d) => d.peerId !== peerId);
+	}
 }
 
 /** Re-reads the alerts, the previous values, the orphans and the documents
@@ -171,17 +216,34 @@ export function onSyncRoundCompleted(peerId: string) {
  *  are, except the last, which it empties (V2b, B5). */
 export async function reloadSyncAlerts() {
 	try {
-		setAlerts((await listSyncAlerts()).map(alertFromDto));
+		const dto = await listSyncAlerts();
+		syncAlerts.alertsCouldNotCheck = dto.could_not_check ?? null;
+		syncAlerts.alerts = dto.alerts.map(alertFromDto);
 	} catch {
-		/* locked, or no document service */
+		/* locked, or no document service: the list stays as it is, but a
+		   sentence read under another session is not kept (spec ch. 03). */
+		syncAlerts.alertsCouldNotCheck = null;
 	}
 	try {
 		setPreviousValues((await listPreviousValues()).map(previousValueFromDto));
 	} catch {
 		/* locked */
 	}
-	await reloadOrphans();
-	await reloadUnreadable();
+	await readOrphans();
+	await readUnreadable();
+	try {
+		syncAlerts.historiesNotRead = (await historiesNotRead()).sentence ?? null;
+	} catch {
+		/* locked: a sentence read under another session is not kept */
+		syncAlerts.historiesNotRead = null;
+	}
+	// Whether anything is left to show is decided once every list is read:
+	// a list read later may hold something, or say it could not be read.
+	closeIfNothingToShow();
+}
+
+function closeIfNothingToShow() {
+	if (nothingToShow()) syncAlerts.open = false;
 }
 
 // ---- S5-12: documents whose thread was deleted --------------------------
@@ -231,10 +293,18 @@ export function setOrphans(list: Orphan[]) {
 /** Re-reads the documents whose thread was deleted. Best-effort: a locked
  *  workspace, or a host without the command, leaves the list as it is. */
 export async function reloadOrphans() {
+	await readOrphans();
+	closeIfNothingToShow();
+}
+
+async function readOrphans() {
 	try {
-		setOrphans((await listOrphanedDocuments()).map(orphanFromDto));
+		const dto = await listOrphanedDocuments();
+		syncAlerts.orphansCouldNotCheck = dto.could_not_check ?? null;
+		syncAlerts.orphans = dto.orphans.map(orphanFromDto);
 	} catch {
-		/* locked, or a host that cannot list them */
+		/* locked, or a host that cannot list them: as for the alerts */
+		syncAlerts.orphansCouldNotCheck = null;
 	}
 }
 
@@ -259,11 +329,16 @@ export function setUnreadable(list: UnreadableDocumentsDto) {
  *  empties it: a list read under another session never stays on screen
  *  (contract, "Readings settled" 1–2). */
 export async function reloadUnreadable() {
+	await readUnreadable();
+	closeIfNothingToShow();
+}
+
+async function readUnreadable() {
 	try {
-		setUnreadable(await listUnreadableDocuments());
+		syncAlerts.unreadable = await listUnreadableDocuments();
 	} catch {
 		/* locked, or a host without the command */
-		setUnreadable({ heading: '', meaning: '', lines: [] });
+		syncAlerts.unreadable = { heading: '', meaning: '', lines: [] };
 	}
 }
 

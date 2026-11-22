@@ -27,6 +27,7 @@ pub struct MockGraphDB {
     share_records: RwLock<HashMap<String, ShareRecord>>,
     milestones: RwLock<HashMap<String, Milestone>>,
     row_recoveries: RwLock<HashMap<String, RowRecovery>>,
+    thread_choices: RwLock<HashMap<String, ThreadChoice>>,
     next_id: AtomicU64,
 }
 
@@ -46,6 +47,7 @@ impl MockGraphDB {
             share_records: RwLock::new(HashMap::new()),
             milestones: RwLock::new(HashMap::new()),
             row_recoveries: RwLock::new(HashMap::new()),
+            thread_choices: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(1),
         }
     }
@@ -213,6 +215,31 @@ impl GraphDB for MockGraphDB {
         let rec = recs.get_mut(recovery_id).ok_or_else(|| DbError::NotFound(recovery_id.to_string()))?;
         rec.assessment = Some(assessment_json.to_string());
         Ok(())
+    }
+
+    // FC3: one remembered choice per name as compared.
+    async fn remember_thread_choice(&self, choice: &ThreadChoice) -> DbResult<()> {
+        let key = choice.name.trim().to_lowercase();
+        self.thread_choices.write().unwrap().insert(key, choice.clone());
+        Ok(())
+    }
+
+    async fn thread_choice(&self, name: &str) -> DbResult<Option<ThreadChoice>> {
+        Ok(self.thread_choices.read().unwrap().get(&name.trim().to_lowercase()).cloned())
+    }
+
+    async fn forget_thread_choice(&self, name: &str) -> DbResult<()> {
+        self.thread_choices.write().unwrap().remove(&name.trim().to_lowercase());
+        Ok(())
+    }
+
+    async fn list_thread_choices_raw(&self) -> DbResult<Vec<serde_json::Value>> {
+        self.thread_choices
+            .read()
+            .unwrap()
+            .values()
+            .map(|c| serde_json::to_value(c).map_err(|e| DbError::Query(e.to_string())))
+            .collect()
     }
 
     async fn list_pending_row_recoveries(&self) -> DbResult<Vec<RowRecovery>> {
@@ -1106,6 +1133,21 @@ impl GraphDB for MockGraphDB {
             .get_mut(id)
             .ok_or_else(|| DbError::NotFound(id.to_string()))?;
         record.review_state = review_state;
+        Ok(())
+    }
+
+    async fn update_pii_record_review(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+        review_stamp: Option<&str>,
+    ) -> DbResult<()> {
+        let mut records = self.pii_records.write().unwrap();
+        let record = records
+            .get_mut(id)
+            .ok_or_else(|| DbError::NotFound(id.to_string()))?;
+        record.review_state = review_state;
+        record.review_stamp = review_stamp.map(str::to_string);
         Ok(())
     }
 

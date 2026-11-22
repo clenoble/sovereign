@@ -138,6 +138,12 @@ pub struct SyncManifest {
     /// default (C-WIRE).
     #[serde(default)]
     pub thread_stamps: Vec<ThreadStampEntry>,
+    /// C-MERGE MG4: the merge stamp of each thread that has one (merged, or
+    /// its merge undone). `None`: a peer on an older build, which knows no
+    /// merge; then the thread rows are compared by their hashes alone, as
+    /// before. A field with a default (C-WIRE).
+    #[serde(default)]
+    pub thread_merge_stamps: Option<Vec<ThreadStampEntry>>,
 }
 
 /// THREAD-sync: a thread's stamp, in the manifest.
@@ -217,6 +223,7 @@ impl SyncManifest {
             document_wire: Vec::new(),
             purge_markers: Vec::new(),
             thread_stamps: Vec::new(),
+            thread_merge_stamps: None,
         }
     }
 

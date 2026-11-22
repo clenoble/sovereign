@@ -52,6 +52,39 @@ fi
 # default `rocksdb` is pulled into the Android build and fails in bindgen.
 DEBUG_ARG=""
 if [ "$MODE" = debug ]; then DEBUG_ARG="--debug"; fi
+
+# The builder's paths stay out of the APK's native library (v0.0.13 scope, the
+# builder paths; Celine, 2026-11-17; the APK included by PANDA2, 2026-11-17), as
+# in release-shell-linux.sh: --remap-path-prefix through --config, which cargo
+# ADDS to the linker option .cargo/config.toml sets for this target (a
+# RUSTFLAGS variable would REPLACE it), the most specific prefix last; and the
+# same map for the C and C++ sources build scripts compile.
+TRIPLE="aarch64-linux-android"
+TARGET_ABS="$(realpath -m "${CARGO_TARGET_DIR:-$ROOT/target}")"
+CARGO_DIR="$(realpath -m "${CARGO_HOME:-$HOME/.cargo}")"
+# The NDK too: the C and C++ code that build scripts compile carries the NDK's
+# own include folders in its debug info, and the NDK usually sits under the
+# builder's home (measured 2026-11-18: 20 such strings, all NDK include paths).
+# Mapped as written (the compilers are invoked through it) and, if different,
+# resolved.
+NDK_GIVEN="${NDK_HOME%/}"
+NDK_ABS="$(realpath -m "$NDK_HOME")"
+MAPS=(
+    "$NDK_GIVEN=ndk"
+    "$ROOT=sovereign"
+    "$TARGET_ABS=target"
+    "$CARGO_DIR/registry/src=cargo/registry"
+    "$CARGO_DIR/git/checkouts=cargo/git"
+)
+if [ "$NDK_ABS" != "$NDK_GIVEN" ]; then MAPS=("$NDK_ABS=ndk" "${MAPS[@]}"); fi
+RUST_MAPS=""
+C_MAPS=""
+for m in "${MAPS[@]}"; do
+    RUST_MAPS="$RUST_MAPS${RUST_MAPS:+, }\"--remap-path-prefix=$m\""
+    C_MAPS="$C_MAPS -ffile-prefix-map=$m"
+done
+export CFLAGS="${CFLAGS:-}$C_MAPS"
+export CXXFLAGS="${CXXFLAGS:-}$C_MAPS"
 OUT="$ROOT/crates/sovereign-app/gen/android/app/build/outputs/apk/universal/$MODE"
 # Gradle's incremental packaging updates a previous APK in place and leaves the
 # replaced libsovereign_app.so in it as dead space (~850 MB in v0.0.11-rc2, WSL
@@ -60,7 +93,8 @@ rm -f -- "$OUT"/*.apk
 cd "$ROOT/crates/sovereign-app"
 echo "=== cargo tauri android build $DEBUG_ARG --target aarch64 --features mobile -- --no-default-features"
 # shellcheck disable=SC2086  # DEBUG_ARG is empty or one word
-cargo tauri android build $DEBUG_ARG --target aarch64 --features mobile -- --no-default-features
+cargo tauri android build $DEBUG_ARG --target aarch64 --features mobile -- --no-default-features \
+    --config "target.$TRIPLE.rustflags=[$RUST_MAPS]"
 
 APK="$(ls "$OUT"/*.apk 2>/dev/null | head -n1 || true)"
 if [ -z "$APK" ]; then echo "no APK found in $OUT" >&2; exit 1; fi
@@ -79,6 +113,25 @@ print(f"APK {size} bytes, {len(infos)} entries, {gap} bytes unaccounted")
 if gap > 1024 * 1024 + size // 100:
     sys.exit(f"APK has {gap} bytes of dead space: delete {path} and rebuild")
 PY
+
+# The measure: the builder's home folder, as text in the APK's native
+# libraries, must be absent.
+# (Read by Python's zipfile, as above: unzip is not always installed.)
+native_libs() {
+    python3 -I -c 'import fnmatch, sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+for n in z.namelist():
+    if fnmatch.fnmatch(n, "lib/*/libsovereign_app*.so"):
+        sys.stdout.buffer.write(z.read(n))' "$APK"
+}
+if [ -z "$(native_libs | head -c1)" ]; then echo "no native library in $APK" >&2; exit 1; fi
+LEFT="$(native_libs | strings -a | grep -c -F "$HOME" || true)"
+echo "=== strings naming the builder's home ($HOME) in the native libraries: $LEFT"
+if [ "$LEFT" -ne 0 ]; then
+    native_libs | strings -a | grep -F "$HOME" | cut -c1-160 | sort | uniq -c | sort -rn | head -20
+    echo "APK BUILD FAILED: the native library names the builder's home folder" >&2
+    exit 1
+fi
 
 DIST="${SOVEREIGN_DIST_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}/dist}"
 NAME="${SOVEREIGN_APK_NAME:-sovereign-android-aarch64-$MODE.apk}"

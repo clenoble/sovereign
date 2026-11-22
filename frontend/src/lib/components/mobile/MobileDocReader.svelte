@@ -9,6 +9,7 @@
 	 *  Auto-saves 2 s after each edit — same policy as DocumentPanel.
 	 */
 	import { renderMarkdown } from '$lib/utils/markdown';
+	import { shownText, shownTitle } from '$lib/utils/piiLabels';
 	import {
 		type OpenPanel,
 		save,
@@ -23,6 +24,19 @@
 	import SaveNotice from '../SaveNotice.svelte';
 
 	let { panel }: { panel: OpenPanel } = $props();
+
+	// C-SWEEP SW5 (Céline, 2026-11-17: « Étiquettes sur téléphone »): what is
+	// read shows each personal-data token as its type's label. The edit
+	// fields keep the stored text for now (what they show while she edits is
+	// a case pending with the Fable maille).
+	const readTitle = $derived(shownTitle(panel.doc.title, panel.doc.labelled_title));
+	const readBody = $derived(shownText(panel.doc.body ?? '', panel.doc.labelled_body));
+	const editedTitle = $derived(panel.doc.title);
+	// C-SWEEP SW5 (spec v2.0.114; Céline, 2026-11-17): the edit box keeps the
+	// stored form; when the body holds a token, and only then, one line above
+	// it says so, and it is the box's description (not a live region).
+	const bodyHasToken = $derived((panel.doc.body ?? '').includes('[pii:'));
+	const marksLineId = $derived(`edit-marks-${panel.doc.id}`);
 
 	let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -83,7 +97,23 @@
 		setMode(panel.doc.id, panel.mode === 'edit' ? 'preview' : 'edit');
 	}
 
+	// HN4 (spec ch. 12): the backend's sentence when the version chosen was
+	// already the current one; said under that version until another is chosen
+	// or History is left. Kept here, not in a store.
+	let restoreSaid = $state<string | null>(null);
+
+	function chooseVersion(i: number) {
+		restoreSaid = null;
+		selectCommit(panel.doc.id, i);
+	}
+
+	async function useVersion(commitId: string) {
+		restoreSaid = null;
+		restoreSaid = await restoreVersion(panel.doc.id, commitId);
+	}
+
 	async function toggleHistory() {
+		restoreSaid = null;
 		if (panel.mode === 'history') {
 			setMode(panel.doc.id, 'edit');
 			return;
@@ -99,7 +129,7 @@
 	style:transition={dragging ? 'none' : 'transform 0.22s ease'}
 	aria-modal="true"
 	role="dialog"
-	aria-label="Document: {panel.doc.title || 'Untitled'}"
+	aria-label="Document: {readTitle || 'Untitled'}"
 >
 	<!-- Drag-down-to-close top bar -->
 	<div
@@ -118,13 +148,13 @@
 			{#if panel.mode === 'edit'}
 				<input
 					class="title-input"
-					value={panel.doc.title}
+					value={editedTitle}
 					oninput={handleTitleInput}
 					placeholder="Untitled"
 					aria-label="Document title"
 				/>
 			{:else}
-				<span class="title-text">{panel.doc.title || 'Untitled'}</span>
+				<span class="title-text">{readTitle || 'Untitled'}</span>
 			{/if}
 
 			<div class="header-actions">
@@ -150,7 +180,11 @@
 	<div class="reader-body">
 		{#if panel.mode === 'history'}
 			<div class="history">
-				{#if panel.commits.length === 0}
+				{#if panel.historyNotRead}
+					<!-- Item C5: versions that could not be read are said in their
+					     place, in the backend's words, never as no versions. -->
+					<p class="history-empty" role="alert">{panel.historyNotRead}</p>
+				{:else if panel.commits.length === 0}
 					<p class="history-empty">No saved versions yet.</p>
 				{:else}
 					<ul class="commit-list" aria-label="Versions">
@@ -160,33 +194,51 @@
 									class="commit-item"
 									class:selected={panel.selectedCommit === i}
 									aria-pressed={panel.selectedCommit === i}
-									onclick={() => selectCommit(panel.doc.id, i)}
+									onclick={() => chooseVersion(i)}
 								>
-									<span class="commit-msg">{commit.message}</span>
-									<span class="commit-time">{new Date(commit.timestamp).toLocaleString()}</span>
+									<!-- HN1-HN3 (spec ch. 12): the row's words and its local time as the
+									     backend makes them, never a peer id, a commit id or a raw time. -->
+									<span class="commit-msg">{commit.shown_message ?? commit.message}</span>
+									<span class="commit-time"
+										>{commit.local_time ?? new Date(commit.timestamp).toLocaleString()}</span
+									>
 								</button>
 							</li>
 						{/each}
 					</ul>
 				{/if}
-				{#if panel.selectedCommit !== null && panel.commits[panel.selectedCommit]}
+				{#if panel.selectedCommit !== null && panel.commits[panel.selectedCommit]?.could_not_read}
+					<!-- Item C5, HR4: a version that could not be read is said by the
+					     backend's sentence; « Use this version » is not offered. -->
 					<div class="commit-preview">
-						<h4>{panel.commits[panel.selectedCommit].snapshot_title}</h4>
-						<p>{panel.commits[panel.selectedCommit].snapshot_preview}</p>
+						<p>{panel.commits[panel.selectedCommit].could_not_read}</p>
+					</div>
+				{:else if panel.selectedCommit !== null && panel.commits[panel.selectedCommit]}
+					<div class="commit-preview">
+						<h4>{shownTitle(panel.commits[panel.selectedCommit].snapshot_title)}</h4>
+						<p>{shownText(panel.commits[panel.selectedCommit].snapshot_preview)}</p>
 						<button
 							class="use-btn"
-							onclick={() => restoreVersion(panel.doc.id, panel.commits[panel.selectedCommit!].id)}
+							onclick={() => useVersion(panel.commits[panel.selectedCommit!].id)}
 						>
 							Use this version
 						</button>
+						<!-- Present before it speaks, so a screen reader announces it. -->
+						<p class="restore-said" role="status">{restoreSaid ?? ''}</p>
 					</div>
 				{/if}
 			</div>
 		{:else if panel.mode === 'preview'}
-			<div class="preview">{@html renderMarkdown(panel.doc.body ?? '')}</div>
+			<div class="preview">{@html renderMarkdown(readBody)}</div>
 		{:else}
+			{#if bodyHasToken}
+				<p class="marks-line" id={marksLineId}>
+					In this box, personal data shows as marks like [pii:…]. Leave a mark as it is to keep its value.
+				</p>
+			{/if}
 			<textarea
 				class="editor"
+				aria-describedby={bodyHasToken ? marksLineId : undefined}
 				value={panel.doc.body ?? ''}
 				oninput={handleBodyInput}
 				placeholder="Start writing…"
@@ -293,6 +345,11 @@
 	.close-btn:hover, .close-btn:active { color: var(--text-primary, #e0e0e0); }
 
 	/* ── Body ────────────────────────────────────────────────── */
+	.marks-line {
+		margin: 0 0 6px;
+		font-size: 0.85rem;
+		color: var(--text-secondary, #b0b0b8);
+	}
 	.reader-body {
 		flex: 1;
 		min-height: 0;
@@ -376,6 +433,12 @@
 		padding: 12px;
 		border: 1px solid var(--border, #444);
 		border-radius: 8px;
+	}
+	.restore-said {
+		margin: 8px 0 0;
+	}
+	.restore-said:empty {
+		margin: 0;
 	}
 	.commit-preview h4 {
 		margin: 0 0 6px;

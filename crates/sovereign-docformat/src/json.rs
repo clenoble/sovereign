@@ -383,7 +383,7 @@ pub fn encode_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
-#[cfg(test)]
+/// `s` as a JSON string literal.
 pub fn encoded(s: &str) -> String {
     let mut out = String::new();
     encode_string(s, &mut out);

@@ -11,6 +11,23 @@ const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024;
 /// Number of rotated files to keep.
 const MAX_ROTATED: usize = 3;
 
+/// What the person is told when the log is quarantined: Céline's words (v0.0.12 item 10,
+/// 2026-10-26), then the sentence C-LOG's DG5 gives back (spec ch. 08). Both hosts show it as the
+/// session log's rejection; the native shell also says it at its login check.
+pub const QUARANTINE_NOTICE: &str = "Your assistant's conversation log could not be verified: it \
+     may have been changed while Sovereign was closed, or a write was cut short (a crash, a full \
+     disk). The assistant starts without its earlier conversations. Nothing was deleted. Ask the \
+     assistant 'what happened to my log?'";
+
+/// C-LOG LG4: the largest line the check reads. A line the log would write above it is dropped
+/// instead (the application never quarantines its own log for a line's size).
+pub const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// C-LOG LG4: the largest log file the check reads. Above what one session writes before the
+/// next open rotates the file (at `MAX_LOG_SIZE`): the writer stops short of it, dropping an entry
+/// rather than passing it, so the application never quarantines its own log for its size.
+pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Append-only session log in JSONL format.
 ///
 /// Records user inputs and orchestrator actions for auditing and context.
@@ -28,6 +45,15 @@ pub struct SessionLog {
     /// Running line count of the current file, used to update the anchor.
     #[cfg(feature = "encrypted-log")]
     chain_count: u64,
+    /// C-LOG LG1: the current file's id, bound into each entry.
+    #[cfg(feature = "encrypted-log")]
+    file_id: String,
+    /// The current file's size, kept under `MAX_FILE_BYTES` (LG4).
+    #[cfg(feature = "encrypted-log")]
+    bytes: u64,
+    /// The persona's beacon, which holds the sealed record of LG2.
+    #[cfg(feature = "encrypted-log")]
+    beacon: Option<PathBuf>,
 }
 
 impl SessionLog {
@@ -70,186 +96,99 @@ impl SessionLog {
             prev_hash: crate::encrypted_log::GENESIS_HASH.to_string(),
             #[cfg(feature = "encrypted-log")]
             chain_count: 0,
+            #[cfg(feature = "encrypted-log")]
+            file_id: String::new(),
+            #[cfg(feature = "encrypted-log")]
+            bytes: 0,
+            #[cfg(feature = "encrypted-log")]
+            beacon: None,
         })
     }
 
-    /// Open or create the session log with per-entry encryption.
+    /// Open or create the session log with per-entry encryption, in the format of C-LOG (spec
+    /// ch. 08): each entry sealed to its place (LG1), the anchor bound to the file, and the
+    /// sealed record of the log's length and head kept in the beacon (LG2).
     ///
-    /// Each entry is encrypted with XChaCha20-Poly1305 and hash-chained to the
-    /// previous entry for tamper detection. The hash of the last existing line
-    /// is read from the file to maintain chain continuity.
+    /// `beacon` is a path OUTSIDE the log dir (the crypto dir, alongside `auth.store`) that
+    /// records "this account's encrypted session log has had content". It is created here once
+    /// the log is non-empty and consulted to catch the genesis-wipe (sessionlog-genesis-wipe):
+    /// deleting BOTH the log and its anchor reverts the dir to a pristine genesis state the
+    /// in-dir checks can't distinguish from a fresh account — but the beacon, living elsewhere,
+    /// survives that delete and proves the wipe. It holds the sealed record of LG2, written with
+    /// each entry. `None` disables both (tests).
+    ///
+    /// The log is verified BEFORE any rotation or carry (SESSIONLOG-001/003, H-log1): only a
+    /// verified log may rotate, be carried, or have its anchor and record written. A log that
+    /// does not verify is refused, never re-anchored.
     #[cfg(feature = "encrypted-log")]
-    /// `beacon` is a path OUTSIDE the log dir (the crypto dir, alongside
-    /// `auth.store`) that records "this account's encrypted session log has had
-    /// content". It is created here once the log is non-empty and consulted to
-    /// catch the genesis-wipe (sessionlog-genesis-wipe): deleting BOTH the log
-    /// and its anchor reverts the dir to a pristine genesis state the in-dir
-    /// checks can't distinguish from a fresh account — but the beacon, living
-    /// elsewhere, survives that delete and proves the wipe. `None` disables the
-    /// beacon (tests).
     pub fn open_encrypted(dir: &Path, key: [u8; 32], beacon: Option<&Path>) -> Result<Self> {
+        use crate::log_format::{self, LogFiles, Record};
         fs::create_dir_all(dir)?;
-        let path = dir.join("session_log.jsonl");
-        let anchor_path = dir.join("session_log.anchor");
-
-        // SESSIONLOG-001/003 + H-log1: verify the log BEFORE any rotation.
-        // Rotation legitimately empties the file and re-mints a genesis
-        // anchor — running it first let a disk-write attacker LAUNDER
-        // tampering: truncate/rewrite the log, pad it past MAX_LOG_SIZE, and
-        // the next open rotated the evidence away and re-anchored clean,
-        // defeating the entire anti-rollback machinery. Only a VERIFIED log
-        // may rotate. Checks: a valid anchor claiming MORE lines than the
-        // file has (truncation/rollback), a forged anchor MAC, a deleted
-        // anchor with encrypted entries remaining, or a genesis wipe caught
-        // by the out-of-dir beacon.
-        let tamper = Self::tamper_on_open(&path, &anchor_path, &key, beacon);
-
-        // SESSIONLOG-001: FAIL CLOSED. Opening the file for append would let the
-        // first write re-mint a fully-valid anchor over the truncated/forged
-        // prefix — permanently laundering the rollback so even a cold reload
-        // can't detect it. Refuse instead: never lower the anchor's high-water,
-        // never re-anchor a tampered file. The caller degrades to no encrypted
-        // logging for the session rather than trusting laundered history.
-        if let Some(reason) = tamper {
+        let files = LogFiles::in_dir(dir, beacon);
+        let checked = log_format::check(&files, &key, 0);
+        if !checked.passes() {
+            // No bytes of the file: the findings are names and numbers.
+            let reason = format!("the log did not verify: {:?}", checked.found);
             tracing::error!("SESSIONLOG-001: session log tamper on open ({reason}); refusing to append");
             return Err(anyhow::anyhow!(
                 "session log tamper detected ({reason}); refusing to append (SESSIONLOG-001)"
             ));
         }
 
-        // Rotate if needed — the log verified clean above. Rotation
-        // legitimately empties the current file, so the anchor is reset to
-        // match; otherwise the next load would see "0 lines on disk < N
-        // anchored" and fail closed on a benign rotation (the
-        // SESSIONLOG-001-reopen hazard).
-        if path.exists() {
-            if let Ok(meta) = fs::metadata(&path) {
-                if meta.len() > MAX_LOG_SIZE {
-                    Self::rotate(&path);
-                    let _ = crate::encrypted_log::write_chain_anchor(
-                        &anchor_path,
-                        &key,
-                        0,
-                        crate::encrypted_log::GENESIS_HASH,
-                    );
-                }
+        let (mut file_id, mut count, mut head) = (
+            checked.file_id.clone().unwrap_or_else(log_format::new_file_id),
+            checked.entries,
+            checked.head.clone(),
+        );
+        // LG6: a log of the v0.0.12 format that verified is carried into this one, once.
+        if checked.old_format && checked.entries > 0 {
+            (file_id, count, head) = log_format::carry_old_log(&files, &key)?;
+            tracing::info!("Session log carried into the new format ({count} entries)");
+        }
+
+        // Rotate if needed — the log verified clean above. The rotated file is no longer read;
+        // the new one gets its own id, and the anchor and record restart with it.
+        let size = fs::metadata(&files.log).map(|m| m.len()).unwrap_or(0);
+        if size > MAX_LOG_SIZE {
+            Self::rotate(&files.log);
+            file_id = log_format::new_file_id();
+            count = 0;
+            head = crate::encrypted_log::GENESIS_HASH.to_string();
+        }
+
+        // The anchor and the record are written only when the state they hold changes: a
+        // login that finds the log as recorded changes no file (v0.0.12 item 10, L5).
+        if !log_format::anchor_holds(&files.anchor, &key, &file_id, count, &head) {
+            log_format::write_anchor(&files.anchor, &key, &file_id, count, &head)?;
+        }
+        if let Some(beacon) = beacon {
+            let record = checked.record.as_ref();
+            let unchanged = record.is_some_and(|r| r.holds(&file_id, count, &head));
+            // As the beacon before it, the record appears once the log has content.
+            if !unchanged && (count > 0 || beacon.exists()) {
+                log_format::write_record(
+                    beacon,
+                    &key,
+                    &Record { f: file_id.clone(), count, head: head.clone(), verified_at: Utc::now() },
+                )?;
             }
         }
 
-        // Read the line count + hash of the last line for chain continuity and
-        // anchor bookkeeping (post-rotation state).
-        let (chain_count, prev_hash) = Self::read_tail(&path);
+        let file = OpenOptions::new().create(true).append(true).open(&files.log)?;
+        let bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
 
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-
-        // sessionlog-genesis-wipe: once the log has real content, drop the
-        // out-of-dir beacon (created at open-time; the residual window is a wipe
-        // between a log's first content and the next open). Best-effort — a
-        // failure here only weakens future wipe detection, never blocks logging.
-        if chain_count > 0 {
-            if let Some(b) = beacon {
-                if !b.exists() {
-                    if let Some(parent) = b.parent() {
-                        let _ = fs::create_dir_all(parent);
-                    }
-                    let _ = fs::write(b, b"1");
-                }
-            }
-        }
-
-        tracing::info!("Session log (encrypted): {}", path.display());
+        tracing::info!("Session log (encrypted): {}", files.log.display());
         Ok(Self {
             writer: BufWriter::new(file),
-            path,
+            path: files.log,
             encryption_key: Some(key),
-            prev_hash,
-            anchor_path,
-            chain_count,
+            prev_hash: head,
+            anchor_path: files.anchor,
+            chain_count: count,
+            file_id,
+            bytes,
+            beacon: beacon.map(Path::to_path_buf),
         })
-    }
-
-    /// The verification [`open_encrypted`](Self::open_encrypted) runs before
-    /// it appends: `Some(reason)` when the log must not be opened under `key`.
-    /// Read-only — it never writes, rotates or re-anchors anything.
-    ///
-    /// This is the one definition of an unverifiable log (v0.0.12 item 10,
-    /// [`quarantine_unverifiable`]): the hash chain over the file's lines
-    /// (reordered entries; a plaintext line after encryption began,
-    /// SESSIONLOG-002), every encrypted entry decrypting under `key`, and the
-    /// MAC'd anchor (truncation, forgery, deletion: SESSIONLOG-001/003) with
-    /// the out-of-dir beacon (genesis wipe).
-    #[cfg(feature = "encrypted-log")]
-    fn tamper_on_open(
-        path: &Path,
-        anchor_path: &Path,
-        key: &[u8; 32],
-        beacon: Option<&Path>,
-    ) -> Option<String> {
-        use crate::encrypted_log;
-        let lines = Self::read_all_lines(path);
-        if let Err(e) = encrypted_log::verify_chain(&lines) {
-            return Some(format!("hash chain broken: {e}"));
-        }
-        if lines
-            .iter()
-            .filter(|l| encrypted_log::is_encrypted_line(l))
-            .any(|l| encrypted_log::decrypt_entry(l, key).is_err())
-        {
-            return Some("an encrypted entry does not decrypt under this key".into());
-        }
-        match encrypted_log::read_chain_anchor(anchor_path, key) {
-            encrypted_log::AnchorStatus::Valid { count, head } => {
-                encrypted_log::check_no_truncation(&lines, count, &head)
-                    .err()
-                    .map(|e| format!("anchor/file mismatch: {e}"))
-            }
-            encrypted_log::AnchorStatus::Forged => {
-                Some("anchor MAC invalid (forged/corrupt)".into())
-            }
-            encrypted_log::AnchorStatus::Missing => {
-                if lines.iter().any(|l| encrypted_log::is_encrypted_line(l)) {
-                    Some("anchor missing but encrypted entries exist (deleted anchor)".into())
-                } else if beacon.map(|b| b.exists()).unwrap_or(false) {
-                    // sessionlog-genesis-wipe: the log AND its anchor are both
-                    // gone (a pristine genesis state the in-dir checks would
-                    // wave through as a fresh account), yet the out-of-dir
-                    // beacon says this account's log previously had content.
-                    // Both files were wiped together — fail closed.
-                    Some("session log + anchor wiped (genesis beacon present)".into())
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
-    /// All non-empty lines of the log file (empty if missing).
-    #[cfg(feature = "encrypted-log")]
-    fn read_all_lines(path: &Path) -> Vec<String> {
-        let file = match fs::File::open(path) {
-            Ok(f) => f,
-            Err(_) => return Vec::new(),
-        };
-        BufReader::new(file)
-            .lines()
-            .map_while(|l| l.ok())
-            .filter(|l| !l.trim().is_empty())
-            .collect()
-    }
-
-    /// Line count + SHA-256 of the last line, for chain continuity + the anchor
-    /// high-water mark. Returns `(0, GENESIS_HASH)` for a missing/empty file.
-    #[cfg(feature = "encrypted-log")]
-    fn read_tail(path: &Path) -> (u64, String) {
-        use crate::encrypted_log;
-        let lines = Self::read_all_lines(path);
-        match lines.last() {
-            Some(line) => (lines.len() as u64, encrypted_log::sha256_hex(line.as_bytes())),
-            None => (0, encrypted_log::GENESIS_HASH.to_string()),
-        }
     }
 
     /// Rotate log files: .jsonl -> .1.jsonl -> .2.jsonl -> .3.jsonl (oldest deleted).
@@ -311,26 +250,51 @@ impl SessionLog {
         #[cfg(feature = "encrypted-log")]
         if let Some(ref key) = self.encryption_key {
             let json = entry.to_string();
-            match crate::encrypted_log::encrypt_entry(&json, key, &self.prev_hash) {
+            let n = self.chain_count + 1;
+            match crate::log_format::seal_entry(&json, key, &self.file_id, n, &self.prev_hash) {
                 Ok((encrypted_line, new_hash)) => {
+                    // C-LOG LG4: the writer stays under the caps the check reads, so the
+                    // application never quarantines its own log for a size it wrote.
+                    let len = encrypted_line.len() as u64;
+                    if len > MAX_LINE_BYTES || self.bytes + len + 1 > MAX_FILE_BYTES {
+                        tracing::warn!(
+                            "Session log entry of {len} bytes not written: above the log's cap"
+                        );
+                        return;
+                    }
                     if let Err(e) = writeln!(self.writer, "{encrypted_line}") {
                         tracing::error!("Failed to write encrypted session log: {e}");
                         return;
                     }
                     let _ = self.writer.flush();
+                    self.bytes += len + 1;
                     self.prev_hash = new_hash;
                     // SESSIONLOG-003: advance the MAC'd high-water anchor so a
                     // later tail-truncation/rollback is detectable. Written after
                     // the line is flushed, so a crash in between just leaves the
                     // anchor lagging by one (tolerated as a lower bound on read).
-                    self.chain_count += 1;
-                    if let Err(e) = crate::encrypted_log::write_chain_anchor(
+                    self.chain_count = n;
+                    if let Err(e) = crate::log_format::write_anchor(
                         &self.anchor_path,
                         key,
+                        &self.file_id,
                         self.chain_count,
                         &self.prev_hash,
                     ) {
                         tracing::warn!("Failed to update session log integrity anchor: {e}");
+                    }
+                    // C-LOG LG2: the record outside the log's directory follows each entry,
+                    // so a roll-back of that directory is seen.
+                    if let Some(beacon) = &self.beacon {
+                        let record = crate::log_format::Record {
+                            f: self.file_id.clone(),
+                            count: self.chain_count,
+                            head: self.prev_hash.clone(),
+                            verified_at: Utc::now(),
+                        };
+                        if let Err(e) = crate::log_format::write_record(beacon, key, &record) {
+                            tracing::warn!("Failed to update the session log's record: {e}");
+                        }
                     }
                     return;
                 }
@@ -391,123 +355,33 @@ impl SessionLog {
         entries
     }
 
-    /// Load the N most recent entries, decrypting encrypted lines with the given key.
+    /// Load the N most recent entries, decrypting them with the given key.
     ///
-    /// Handles mixed files (plaintext seed data + encrypted entries). Plaintext lines
-    /// are parsed directly; encrypted lines are decrypted then parsed. Chain integrity
-    /// is verified and warnings logged for any breaks.
+    /// The log is read through the one check of its format (C-LOG, [`crate::log_format::check`]):
+    /// a stream of lines under their caps, each entry opened in its place, the anchor against
+    /// the file. SESSIONLOG-001: these entries are fed back to the model as authentic prior
+    /// turns, so a log that does not verify gives nothing back — no plaintext line (LG3), no
+    /// entry out of place, nothing past a truncation, a forged or a deleted anchor.
     #[cfg(feature = "encrypted-log")]
     pub fn load_recent_encrypted(
         dir: &Path,
         max_entries: usize,
         key: &[u8; 32],
     ) -> Vec<SessionEntry> {
-        use crate::encrypted_log;
-
-        let path = dir.join("session_log.jsonl");
-        let file = match fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => return Vec::new(),
-        };
-
-        let reader = BufReader::new(file);
-        let mut entries: Vec<SessionEntry> = Vec::new();
-        let mut raw_lines: Vec<String> = Vec::new();
-
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
-            if line.trim().is_empty() {
-                continue;
-            }
-
-            raw_lines.push(line.clone());
-
-            let json = if encrypted_log::is_encrypted_line(&line) {
-                match encrypted_log::decrypt_entry(&line, key) {
-                    Ok(plaintext) => plaintext,
-                    Err(e) => {
-                        tracing::warn!("Failed to decrypt session log entry: {e}");
-                        continue;
-                    }
-                }
-            } else {
-                line
-            };
-
-            if let Ok(entry) = serde_json::from_str::<SessionEntry>(&json) {
-                entries.push(entry);
-            }
-        }
-
-        // SESSIONLOG-001: fail CLOSED on a broken/forged chain. These entries are
-        // fed back to the model as authentic prior conversation turns, so a
-        // tampered or keyless-forged log (see SESSIONLOG-002) is a
-        // context-poisoning / prompt-injection vector. Never return untrusted
-        // history — discard everything rather than hand the LLM planted turns.
-        if let Err(e) = encrypted_log::verify_chain(&raw_lines) {
+        let files = crate::log_format::LogFiles::in_dir(dir, None);
+        let checked = crate::log_format::check(&files, key, max_entries);
+        if !checked.passes() {
             tracing::error!(
-                "Session log chain integrity check FAILED ({e}); discarding {} entries to \
-                 avoid feeding tampered history to the model",
-                entries.len()
+                "Session log integrity check FAILED ({:?}); giving back no history (fail closed)",
+                checked.found
             );
             return Vec::new();
         }
-
-        // SESSIONLOG-003: verify_chain only proves the lines present link
-        // together — it can't see a truncated tail or a rolled-back older copy.
-        // Cross-check the on-disk chain against the MAC'd high-water anchor.
-        let anchor_path = dir.join("session_log.anchor");
-        match encrypted_log::read_chain_anchor(&anchor_path, key) {
-            encrypted_log::AnchorStatus::Valid { count, head } => {
-                if let Err(e) = encrypted_log::check_no_truncation(&raw_lines, count, &head) {
-                    tracing::error!(
-                        "Session log truncation/rollback detected ({e}); discarding {} entries \
-                         (fail closed) — refusing to feed rolled-back history to the model",
-                        entries.len()
-                    );
-                    return Vec::new();
-                }
-            }
-            encrypted_log::AnchorStatus::Forged => {
-                tracing::error!(
-                    "Session log integrity anchor MAC invalid (forged/corrupt); discarding {} \
-                     entries (fail closed)",
-                    entries.len()
-                );
-                return Vec::new();
-            }
-            encrypted_log::AnchorStatus::Missing => {
-                // SESSIONLOG-001: a missing anchor is only legitimate for a log
-                // that has never been encrypted (pre-encryption seed data / first
-                // run). Once ANY encrypted line exists, the anchor must exist too
-                // — its absence means it was deleted, which is exactly the
-                // rollback-gate downgrade (delete the anchor + truncate to a valid
-                // prefix). Fail closed rather than feed unverifiable history to the
-                // model. Only a log with no encrypted lines tolerates a missing
-                // anchor (genuine pre-encryption state).
-                if raw_lines.iter().any(|l| encrypted_log::is_encrypted_line(l)) {
-                    tracing::error!(
-                        "Session log integrity anchor MISSING while encrypted entries exist — \
-                         treating as tampering (deleted anchor); discarding {} entries (fail closed)",
-                        entries.len()
-                    );
-                    return Vec::new();
-                }
-                tracing::warn!(
-                    "Session log integrity anchor absent and no encrypted entries yet — tolerated \
-                     (legacy/first-run)"
-                );
-            }
-        }
-
-        // Keep only the most recent entries
-        if entries.len() > max_entries {
-            entries.drain(..entries.len() - max_entries);
-        }
-        entries
+        checked
+            .readable
+            .iter()
+            .filter_map(|json| serde_json::from_str::<SessionEntry>(json).ok())
+            .collect()
     }
 }
 
@@ -543,7 +417,14 @@ struct SlotAt {
 impl SessionLogSlot {
     /// Open the plaintext log in `dir`. An I/O error leaves the slot without
     /// a log (nothing is written), as before.
+    ///
+    /// With the encrypted log, nothing is opened until a key is installed: a
+    /// plaintext line is never accepted (C-LOG LG3), so writing one before the
+    /// login would get the persona's log quarantined at that login.
     pub fn open(dir: &Path) -> Self {
+        #[cfg(feature = "encrypted-log")]
+        let log: Option<SessionLog> = None;
+        #[cfg(not(feature = "encrypted-log"))]
         let log = match SessionLog::open(dir) {
             Ok(log) => Some(log),
             Err(e) => {
@@ -673,10 +554,12 @@ impl SessionLogSlot {
         #[cfg(feature = "encrypted-log")]
         let key = at.key;
         drop(at);
+        // C-LOG LG3: with the encrypted log, no key, no history (a plaintext
+        // log is never read back).
         #[cfg(feature = "encrypted-log")]
         let entries = match key {
             Some(key) => SessionLog::load_recent_encrypted(&dir, max_entries, &key),
-            None => SessionLog::load_recent(&dir, max_entries),
+            None => Vec::new(),
         };
         #[cfg(not(feature = "encrypted-log"))]
         let entries = SessionLog::load_recent(&dir, max_entries);
@@ -691,16 +574,16 @@ impl SessionLogSlot {
 }
 
 /// Quarantine of an unverifiable conversation log (v0.0.12 item 10; spec
-/// ch. 08 *Session log*). Runs at every log-key install, before
+/// ch. 08 *Session log*; C-LOG). Runs at every log-key install, before
 /// [`SessionLogSlot::install_key`].
 ///
-/// If the log in `dir` does not verify under `key` — the check
-/// [`SessionLog::open_encrypted`] runs: hash chain, every encrypted entry
-/// decrypting under `key`, anchor, genesis beacon — its files (log, anchor,
-/// rotated logs) and the `beacon`, under its own name, are moved, unread and
-/// unchanged, into a new `quarantine-<UTC time>` directory inside `dir`,
-/// which no read path ever opens. Nothing is deleted. Returns that
-/// directory, or `None` when the log verifies or is missing.
+/// If the log in `dir` does not verify under `key` — the one check of its
+/// format, [`crate::log_format::check`], which [`SessionLog::open_encrypted`]
+/// runs too — its files (log, anchor, rotated logs) and the `beacon`, which
+/// holds the record, each under its own name, are moved, unread and unchanged, into a new `quarantine-<UTC time>`
+/// directory inside `dir`, which no read path ever opens. The diagnosis
+/// ([`crate::log_diagnosis`]) reads them there. Nothing is deleted. Returns
+/// that directory, or `None` when the log verifies or is missing.
 ///
 /// The conversation log is a prompt-injection surface (SESSIONLOG-001 to
 /// 003), so there is no other path: no marker, no one-time rule. If a move
@@ -714,11 +597,11 @@ pub fn quarantine_unverifiable(
     key: [u8; 32],
     beacon: Option<&Path>,
 ) -> Result<Option<PathBuf>> {
-    let log_path = dir.join("session_log.jsonl");
-    let anchor_path = dir.join("session_log.anchor");
-    let Some(reason) = SessionLog::tamper_on_open(&log_path, &anchor_path, &key, beacon) else {
+    let files = crate::log_format::LogFiles::in_dir(dir, beacon);
+    let checked = crate::log_format::check(&files, &key, 0);
+    if checked.passes() {
         return Ok(None);
-    };
+    }
 
     let stamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let mut quarantine = dir.join(format!("quarantine-{stamp}"));
@@ -737,8 +620,8 @@ pub fn quarantine_unverifiable(
             move_file(&from, &quarantine.join(name))?;
         }
     }
-    // The beacon goes with the log it vouched for: left behind, it would make
-    // the empty log read as a genesis wipe and fail closed.
+    // The beacon, and the record it holds, go with the log they vouched for:
+    // left behind, it would make the fresh log read as a wipe.
     if let Some(b) = beacon {
         if b.exists() {
             let name = b
@@ -750,7 +633,8 @@ pub fn quarantine_unverifiable(
     }
 
     tracing::warn!(
-        "Session log did not verify ({reason}); quarantined unread in {}",
+        "Session log did not verify ({:?}); quarantined unread in {}",
+        checked.found,
         quarantine.display()
     );
     Ok(Some(quarantine))
@@ -1122,29 +1006,32 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
         }
 
+        /// C-LOG LG3 (brought to the contract by its test author, 2026-11-18): a
+        /// log holding a plaintext line is not opened for encrypted writing, and
+        /// its plaintext turn is never read back. Until then this test held that
+        /// plaintext seed data followed by encrypted entries opened and read back
+        /// both.
         #[test]
-        fn mixed_plaintext_then_encrypted() {
+        fn plaintext_then_encrypted_is_refused() {
             let dir =
                 std::env::temp_dir().join(format!("session-log-mixed-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
 
-            // Write plaintext first (simulates seed data)
+            // Write plaintext first (seed data from before encryption)
             {
                 let mut log = SessionLog::open(&dir).unwrap();
                 log.log_user_input("chat", "plaintext msg", "chat");
             }
 
-            // Then write encrypted
-            {
-                let mut log = SessionLog::open_encrypted(&dir, TEST_KEY, None).unwrap();
-                log.log_user_input("chat", "encrypted msg", "chat");
-            }
-
-            // load_recent_encrypted handles both
+            assert!(
+                SessionLog::open_encrypted(&dir, TEST_KEY, None).is_err(),
+                "a log holding a plaintext line is refused (LG3)"
+            );
             let entries = SessionLog::load_recent_encrypted(&dir, 100, &TEST_KEY);
-            assert_eq!(entries.len(), 2);
-            assert_eq!(entries[0].content.as_deref(), Some("plaintext msg"));
-            assert_eq!(entries[1].content.as_deref(), Some("encrypted msg"));
+            assert!(
+                !entries.iter().any(|e| e.content.as_deref() == Some("plaintext msg")),
+                "the plaintext turn is never read back (LG3)"
+            );
 
             let _ = fs::remove_dir_all(&dir);
         }
@@ -1262,10 +1149,11 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
         }
 
+        /// C-LOG LG3 (brought to the contract by its test author, 2026-11-18): a
+        /// log written only in plaintext, with no anchor, is never read back as
+        /// history under a key. Until then this test held that it still loaded.
         #[test]
-        fn plaintext_only_missing_anchor_is_tolerated() {
-            // A log that has NEVER been encrypted (pre-encryption seed / first run)
-            // legitimately has no anchor — it still loads.
+        fn plaintext_only_log_is_not_read_back() {
             let dir = std::env::temp_dir()
                 .join(format!("session-log-ptonly-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
@@ -1277,8 +1165,7 @@ mod tests {
             assert!(!dir.join("session_log.anchor").exists());
 
             let entries = SessionLog::load_recent_encrypted(&dir, 100, &TEST_KEY);
-            assert_eq!(entries.len(), 1);
-            assert_eq!(entries[0].content.as_deref(), Some("seed entry"));
+            assert!(entries.is_empty(), "a plaintext-only log is not read back (LG3): {entries:?}");
 
             let _ = fs::remove_dir_all(&dir);
         }

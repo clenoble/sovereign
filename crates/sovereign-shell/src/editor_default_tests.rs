@@ -958,7 +958,10 @@ fn e4_a_failing_save_makes_the_close_button_ask_and_the_prompt_keep_the_text() {
 #[test]
 fn e4_escape_never_closes_a_document_window_without_the_unsaved_check() {
     let text = production("app.rs");
-    let body = fn_body(&text, "window_event").expect("fn window_event");
+    // The key arm of `window_event` is `key_pressed` since SQ11d (spec ch. 12, 2026-11-19): both are read.
+    let body = fn_body(&text, "window_event").expect("fn window_event")
+        + "\n"
+        + &fn_body(&text, "key_pressed").expect("fn key_pressed");
     let code = blank(&body, true);
     let mut generic = Vec::new();
     let mut from = 0;
@@ -981,7 +984,7 @@ fn e4_escape_never_closes_a_document_window_without_the_unsaved_check() {
     }
     assert!(
         !generic.is_empty(),
-        "the Esc that closes the top window (and collapses a fanned deck) was not found in window_event"
+        "the Esc that closes the top window (and collapses a fanned deck) was not found in window_event's key path"
     );
     const GUARDS: &[&str] =
         &["request_close_window", "v2_request_close", "has_unsaved_edits", "WindowContent::Doc", "WindowKind::Doc"];

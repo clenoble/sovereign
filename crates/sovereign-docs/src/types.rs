@@ -91,6 +91,15 @@ pub enum Origin {
     Skill { name: String },
     /// Bulk import.
     Import,
+    /// C-SWEEP SW1 (ch. 09): the background personal-data sweep, the ingest
+    /// that comes late. Its version is tagged `pii-sweep` and shown to her as
+    /// « Personal-data sweep » (the Fable maille, by delegation of Céline,
+    /// 2026-11-17). What it replaces is suspected.
+    PiiSweep,
+    /// C-SWEEP SW5: her review in the personal-data window (a dismissal
+    /// restoring a value, the take-back of a dismissal). Its version is tagged
+    /// `pii-review` and shown as « Personal-data review » (same decision).
+    PiiReview,
 }
 
 /// An opaque token naming the state a writer read. A save carries the
@@ -426,6 +435,11 @@ pub struct VersionInfo {
     pub message: String,
     pub timestamp: DateTime<Utc>,
     pub mac: MacState,
+    /// `Some(VERSION_COULD_NOT_BE_READ)` when this version's own content
+    /// cannot be read (spec ch. 03, *History, in v0.0.13*, HR4): it stays in
+    /// the list, at its place and time, said by that sentence. Marked where
+    /// the version is read, so every caller of the service gets it.
+    pub could_not_read: Option<&'static str>,
 }
 
 /// A version's content, for preview.

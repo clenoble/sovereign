@@ -36,7 +36,28 @@ pub struct WorkspaceContext {
 }
 
 /// Gather workspace context from the database (fast read-only queries).
+/// Document titles are masked as [`gather_workspace_context_masked`] masks
+/// them without the account key: every detected value as its label.
 pub async fn gather_workspace_context(db: &dyn GraphDB) -> WorkspaceContext {
+    gather_workspace_context_masked(db, None).await
+}
+
+/// C-SWEEP SW3 (spec ch. 09): the workspace context, each recent document's
+/// title masked where it is read, with the document's id (`mask`; `None`
+/// reads one without the account key). Thread names are not covered (said in
+/// the contract).
+pub async fn gather_workspace_context_masked(
+    db: &dyn GraphDB,
+    mask: Option<&crate::pii::read_mask::ReadMask>,
+) -> WorkspaceContext {
+    let keyless;
+    let mask = match mask {
+        Some(m) => m,
+        None => {
+            keyless = crate::pii::read_mask::ReadMask::load(db, None).await;
+            &keyless
+        }
+    };
     let threads = db.list_threads().await.unwrap_or_default();
     let docs = db.list_documents(None).await.unwrap_or_default();
     let contacts = db.list_contacts().await.unwrap_or_default();
@@ -51,11 +72,14 @@ pub async fn gather_workspace_context(db: &dyn GraphDB) -> WorkspaceContext {
     WorkspaceContext {
         thread_count: threads.len(),
         doc_count: docs.len(),
-        thread_names: threads.iter().take(10).map(|t| t.name.clone()).collect(),
+        // C-MERGE MG3: the names the model places documents in are the live
+        // threads' only; the count is of all threads, as their lanes are
+        // drawn (the Fable maille, by delegation of Céline, 2026-11-17).
+        thread_names: threads.iter().filter(|t| !t.is_ended()).take(10).map(|t| t.name.clone()).collect(),
         recent_doc_titles: indices
             .iter()
             .take(10)
-            .map(|&i| docs[i].title.clone())
+            .map(|&i| mask.mask(&docs[i].id_string().unwrap_or_default(), &docs[i].title))
             .collect(),
         contact_count: contacts.len(),
         unread_conversations: unread,

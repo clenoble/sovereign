@@ -37,6 +37,65 @@ pub async fn create_db(config: &AppConfig) -> Result<SurrealGraphDB> {
     Ok(db)
 }
 
+/// The persistent persona stores this process has opened, by the path the
+/// configuration names. A persona's store is opened when one of its sessions
+/// first needs it (a login, or the duress decoy's pre-seed at setup); the boot
+/// opens none (`init_backend`).
+///
+/// **How long it stays open depends on the engine** (measured on Windows):
+/// - **RocksDB** (the desktop build): SurrealDB 2.6 never releases a RocksDB
+///   store's lock in-process (still locked 10 s after its last handle was
+///   dropped), so a second open would fail: once opened, the store is kept
+///   for the life of the process.
+/// - **SurrealKV** (the phone): a store whose last handle drops is closed (its
+///   engine's housekeeping stops with it) and can be opened again: only a weak
+///   reference is kept, so a persona switch closes the previous persona's store
+///   once nothing of its session holds it (C-AREA AR4: the primary's store is
+///   not written during a duress session).
+#[cfg(feature = "encryption")]
+static OPEN_STORES: std::sync::LazyLock<tokio::sync::Mutex<std::collections::BTreeMap<String, StoreRef>>> =
+    std::sync::LazyLock::new(Default::default);
+
+#[cfg(all(feature = "encryption", feature = "rocksdb"))]
+type StoreRef = Arc<SurrealGraphDB>;
+#[cfg(all(feature = "encryption", not(feature = "rocksdb")))]
+type StoreRef = std::sync::Weak<SurrealGraphDB>;
+
+#[cfg(all(feature = "encryption", feature = "rocksdb"))]
+fn keep(db: &Arc<SurrealGraphDB>) -> StoreRef {
+    db.clone()
+}
+#[cfg(all(feature = "encryption", not(feature = "rocksdb")))]
+fn keep(db: &Arc<SurrealGraphDB>) -> StoreRef {
+    Arc::downgrade(db)
+}
+
+#[cfg(all(feature = "encryption", feature = "rocksdb"))]
+fn still_open(r: &StoreRef) -> Option<Arc<SurrealGraphDB>> {
+    Some(r.clone())
+}
+#[cfg(all(feature = "encryption", not(feature = "rocksdb")))]
+fn still_open(r: &StoreRef) -> Option<Arc<SurrealGraphDB>> {
+    r.upgrade()
+}
+
+/// The persistent store `config` names (see [`OPEN_STORES`]): the one open
+/// already, or a new open. A memory store (`database.mode = "memory"`) is a
+/// fresh one at each call, as [`create_db`] makes it.
+#[cfg(feature = "encryption")]
+pub async fn open_store(config: &AppConfig) -> Result<Arc<SurrealGraphDB>> {
+    if config.database.mode == "memory" {
+        return Ok(Arc::new(create_db(config).await?));
+    }
+    let mut open = OPEN_STORES.lock().await;
+    if let Some(db) = open.get(&config.database.path).and_then(still_open) {
+        return Ok(db);
+    }
+    let db = Arc::new(create_db(config).await?);
+    open.insert(config.database.path.clone(), keep(&db));
+    Ok(db)
+}
+
 #[cfg(feature = "encryption")]
 pub fn crypto_dir() -> std::path::PathBuf {
     sovereign_core::sovereign_dir().join("crypto")

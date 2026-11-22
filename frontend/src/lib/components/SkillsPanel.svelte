@@ -1,14 +1,24 @@
 <script lang="ts">
 	import { app } from '$lib/stores/app.svelte';
 	import { canvas } from '$lib/stores/canvas.svelte';
-	import { listAllSkills, executeSkill } from '$lib/api/commands';
-	import type { SkillInfo, SkillActionInfo } from '$lib/api/commands';
+	import { listAllSkills, executeSkill, rememberThreadChoice } from '$lib/api/commands';
+	import type { SkillInfo, SkillActionInfo, ThreadOffered } from '$lib/api/commands';
+	import ThreadChooser from './ThreadChooser.svelte';
 	import { focusTrap } from '$lib/actions/focusTrap';
 	import { panels, save, refresh } from '$lib/stores/documents.svelte';
 
 	let skills = $state<SkillInfo[]>([]);
 	let loading = $state(false);
 	let error = $state('');
+	/** Item 9, FC1 and FC2: a skill that answered `ask_thread` waits here,
+	 *  with what to run again once she has answered. */
+	let asking = $state<{
+		name: string;
+		threads: ThreadOffered[];
+		skillName: string;
+		action: SkillActionInfo;
+		docId: string;
+	} | null>(null);
 
 	$effect(() => {
 		if (app.skillsPanelVisible) {
@@ -41,8 +51,17 @@
 				return;
 			}
 		}
+		await run(skillName, action, docId);
+	}
+
+	async function run(skillName: string, action: SkillActionInfo, docId: string) {
 		try {
 			const result = await executeSkill(skillName, action.action_id, docId, '');
+			if (result.kind === 'ask_thread' && result.structured_json) {
+				const q = JSON.parse(result.structured_json) as { name: string; threads: ThreadOffered[] };
+				asking = { name: q.name, threads: q.threads, skillName, action, docId };
+				return;
+			}
 			if (result.kind === 'content_update') await refresh(docId);
 		} catch (e) {
 			console.error('Skill failed:', e);
@@ -52,7 +71,21 @@
 		app.skillsPanelVisible = false;
 	}
 
+	async function pickThread(id: string) {
+		const q = asking;
+		asking = null;
+		if (!q) return;
+		try {
+			await rememberThreadChoice(q.name, id);
+		} catch (e) {
+			error = String(e);
+			return;
+		}
+		await run(q.skillName, q.action, q.docId);
+	}
+
 	function close() {
+		asking = null;
 		app.skillsPanelVisible = false;
 	}
 </script>
@@ -70,7 +103,14 @@
 			onEscape: close
 		}}
 	>
-		{#if loading}
+		{#if asking}
+			<ThreadChooser
+				name={asking.name}
+				threads={asking.threads}
+				onpick={pickThread}
+				oncancel={() => (asking = null)}
+			/>
+		{:else if loading}
 			<div class="status">Loading...</div>
 		{:else if error}
 			<div class="status error">{error}</div>

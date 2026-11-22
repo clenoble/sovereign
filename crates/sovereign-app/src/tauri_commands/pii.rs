@@ -248,11 +248,8 @@ pub async fn confirm_pii_record(
     id: String,
 ) -> Result<(), String> {
     state.require_unlocked(&webview).await?;
-    state
-        .db
-        .update_pii_record_review_state(&id, ReviewState::Confirmed)
-        .await
-        .str_err()
+    // C-SWEEP SW5: through the shared review, stamped so that it travels.
+    pii_review_in(&state, "confirm", vec![id]).await.map(|_| ())
 }
 
 /// Mark an Unreviewed PII finding as Dismissed (user rejects it as a
@@ -264,11 +261,9 @@ pub async fn dismiss_pii_record(
     id: String,
 ) -> Result<(), String> {
     state.require_unlocked(&webview).await?;
-    state
-        .db
-        .update_pii_record_review_state(&id, ReviewState::Dismissed)
-        .await
-        .str_err()
+    // C-SWEEP SW5: through the shared review: the value restored as written,
+    // one version per document, the dismissal stamped so that it travels.
+    pii_review_in(&state, "dismiss", vec![id]).await.map(|_| ())
 }
 
 /// Redact a PII record — soft-deletes it so the dashboard inventory
@@ -296,7 +291,6 @@ pub async fn reveal_pii_record(
     id: String,
 ) -> Result<String, String> {
     crate::tauri_state::require_main_webview(&webview)?;
-    use chrono::Utc;
     use sovereign_crypto::vault::EncryptedBlob;
 
     let account_key = state
@@ -313,7 +307,7 @@ pub async fn reveal_pii_record(
     // hint stays accurate.
     state
         .db
-        .update_pii_record_revealed_at(&id, Utc::now())
+        .update_pii_record_revealed_at(&id, sovereign_core::clock::now())
         .await
         .str_err()?;
     Ok(plaintext)
@@ -356,7 +350,6 @@ pub async fn create_vault_entry(
     input: VaultEntryInput,
 ) -> Result<PiiRecordDto, String> {
     crate::tauri_state::require_main_webview(&webview)?;
-    use chrono::Utc;
     use sovereign_crypto::vault::EncryptedBlob;
     use sovereign_db::schema::{PiiRecord, ReviewState};
 
@@ -372,7 +365,7 @@ pub async fn create_vault_entry(
     let blob = EncryptedBlob::encrypt_str(&input.value, account_key)
         .map_err(|e| format!("vault encrypt failed: {e}"))?;
 
-    let now = Utc::now();
+    let now = sovereign_core::clock::now();
     let record = PiiRecord {
         id: None,
         kind,
@@ -387,6 +380,7 @@ pub async fn create_vault_entry(
         last_revealed_at: None,
         use_count: 0,
         review_state: ReviewState::Confirmed,
+        review_stamp: None,
         deleted_at: None,
     };
     let created = state.db.create_pii_record(record).await.str_err()?;
@@ -464,7 +458,6 @@ pub async fn autofill_pii_record(
     selector: String,
 ) -> Result<(), String> {
     crate::tauri_state::require_main_webview(&webview)?;
-    use chrono::Utc;
     use sovereign_crypto::vault::EncryptedBlob;
 
     let account_key = state
@@ -511,7 +504,7 @@ pub async fn autofill_pii_record(
 
     state
         .db
-        .update_pii_record_revealed_at(&record_id, Utc::now())
+        .update_pii_record_revealed_at(&record_id, sovereign_core::clock::now())
         .await
         .str_err()?;
     Ok(())
@@ -605,7 +598,6 @@ pub async fn commit_signup_capture(
     input: SignupCaptureInput,
 ) -> Result<SignupCaptureResult, String> {
     crate::tauri_state::require_main_webview(&webview)?;
-    use chrono::Utc;
     use sovereign_crypto::vault::EncryptedBlob;
     use sovereign_db::schema::{
         Entity, EntityKind, PiiRecord, ReviewState, ShareChannel, ShareRecord,
@@ -656,7 +648,7 @@ pub async fn commit_signup_capture(
     };
 
     // Step 2: write one PiiRecord per field.
-    let now = Utc::now();
+    let now = sovereign_core::clock::now();
     let mut record_ids: Vec<String> = Vec::with_capacity(input.fields.len());
     for field in &input.fields {
         let kind = parse_pii_kind(&field.kind)
@@ -677,6 +669,7 @@ pub async fn commit_signup_capture(
             last_revealed_at: None,
             use_count: 0,
             review_state: ReviewState::Confirmed,
+            review_stamp: None,
             deleted_at: None,
         };
         let created = state.db.create_pii_record(record).await.str_err()?;
@@ -936,4 +929,229 @@ pub async fn resolve_pii_tokens(
     _access_level: AccessLevel,
 ) -> Result<ResolvedBodyDto, String> {
     Err("PII resolution requires the encryption feature to be enabled at build time".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// C-SWEEP (spec ch. 09, lot LS(a)): the review on the phone, its signal and
+// the labels. Signatures by the test author of lot LS(a); the bodies, and the
+// registration of the commands in `run_tauri`, are the implementer's.
+//
+// Each command checks the caller (`require_unlocked`) and calls its `_in`
+// body, which the C-AREA walk drives in a duress session.
+// ---------------------------------------------------------------------------
+
+/// One type of personal data in the review window, with its records (SW5).
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewGroupDto {
+    /// snake_case kind, as `PiiRecordDto::kind` ("iban", "email", …).
+    pub kind: String,
+    /// The type's name as shown (« IBAN », « E-mail », …).
+    pub label: String,
+    pub rows: Vec<ReviewRowDto>,
+}
+
+/// One record in the review window; its value is never sent.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewRowDto {
+    pub record_id: String,
+    /// "unreviewed" | "confirmed" | "dismissed".
+    pub state: String,
+    /// `PII suspected - TBC`, `PII confirmed` or `PII dismissed` (Céline,
+    /// 2026-11-17).
+    pub state_words: String,
+    /// The documents the record is found in.
+    pub documents: Vec<String>,
+}
+
+/// What a review gesture did: the documents that got one new version.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewOutcomeDto {
+    pub rewritten: Vec<String>,
+}
+
+/// The queue's signal (SW6): how many suspected values wait, and the status
+/// words (`{n} personal data to review`), `None` when none waits.
+#[derive(Debug, Clone, Serialize)]
+pub struct PiiSignalDto {
+    pub waiting: usize,
+    pub status: Option<String>,
+}
+
+/// The notice at login (SW6), in the Fable maille's words.
+#[derive(Debug, Clone, Serialize)]
+pub struct PiiNoticeDto {
+    pub title: String,
+    pub body: String,
+}
+
+/// A document's title and text with each personal-data token as its type's
+/// label (SW5: both hosts show a token as its label, never raw).
+#[derive(Debug, Clone, Serialize)]
+pub struct LabelledDocumentDto {
+    pub title: String,
+    pub body: String,
+}
+
+/// The review window, grouped by type (`sovereign_ai::pii::review::PiiReview::groups`).
+pub(crate) async fn pii_review_groups_in(state: &AppState) -> Result<Vec<ReviewGroupDto>, String> {
+    let review = review_of(state).await?;
+    let groups = review.groups().await.map_err(|e| e.to_string())?;
+    Ok(groups
+        .into_iter()
+        .map(|g| ReviewGroupDto {
+            kind: kind_string(&g.kind),
+            label: kind_label(&g.kind).to_string(),
+            rows: g
+                .rows
+                .into_iter()
+                .map(|r| ReviewRowDto {
+                    record_id: r.record_id,
+                    state: state_string(&r.state).to_string(),
+                    state_words: r.state_words,
+                    documents: r.documents,
+                })
+                .collect(),
+        })
+        .collect())
+}
+
+/// The persona's review: its document service and its account key.
+#[cfg(feature = "encryption")]
+async fn review_of(state: &AppState) -> Result<sovereign_ai::pii::review::PiiReview, String> {
+    let docs = state.docs().await?;
+    let key = state.account_key().await.ok_or("Not authenticated: log in first.")?;
+    Ok(sovereign_ai::pii::review::PiiReview::new(docs, key))
+}
+
+#[cfg(not(feature = "encryption"))]
+async fn review_of(_state: &AppState) -> Result<sovereign_ai::pii::review::PiiReview, String> {
+    Err("The personal-data review requires the encryption feature to be enabled at build time".to_string())
+}
+
+/// snake_case kind, as `PiiRecordDto::kind`.
+fn kind_string(kind: &sovereign_db::schema::PiiKind) -> String {
+    match serde_json::to_value(kind) {
+        Ok(serde_json::Value::String(s)) => s,
+        _ => "other".to_string(),
+    }
+}
+
+/// A type's name as the review window shows it.
+fn kind_label(kind: &sovereign_db::schema::PiiKind) -> &'static str {
+    use sovereign_db::schema::PiiKind;
+    match kind {
+        PiiKind::Email => "E-mail",
+        PiiKind::Phone => "Phone",
+        PiiKind::Ssn => "SSN",
+        PiiKind::CreditCard => "Credit card",
+        PiiKind::Ipv4 => "IP address",
+        PiiKind::Avs => "AVS/AHV",
+        PiiKind::Iban => "IBAN",
+        PiiKind::Passport => "Passport",
+        PiiKind::Dob => "Date of birth",
+        PiiKind::Address => "Address",
+        PiiKind::PersonName => "Name",
+        PiiKind::OrgName => "Organization",
+        PiiKind::Password => "Password",
+        PiiKind::ApiToken => "API token",
+        PiiKind::BankAccount => "Bank account",
+        PiiKind::DocumentId => "Document ID",
+        PiiKind::Note => "Note",
+        PiiKind::Other => "Other",
+    }
+}
+
+fn state_string(state: &ReviewState) -> &'static str {
+    match state {
+        ReviewState::Unreviewed => "unreviewed",
+        ReviewState::Confirmed => "confirmed",
+        ReviewState::Dismissed => "dismissed",
+    }
+}
+
+/// A gesture on the records selected: `gesture` is one of "confirm",
+/// "dismiss", "take_back_dismissal", "take_back_confirmation". One record or
+/// several; never a whole type (Céline, 2026-11-17). An unknown gesture is
+/// refused and changes nothing.
+pub(crate) async fn pii_review_in(state: &AppState, gesture: &str, record_ids: Vec<String>) -> Result<ReviewOutcomeDto, String> {
+    // Only the four gestures, checked before anything is read: an unknown
+    // one (a gesture on a type does not exist) changes nothing.
+    if !matches!(gesture, "confirm" | "dismiss" | "take_back_dismissal" | "take_back_confirmation") {
+        return Err(format!("Unknown review gesture: {gesture}"));
+    }
+    // Record ids only: a type's name is never a record.
+    if let Some(bad) = record_ids.iter().find(|id| !id.starts_with("pii_record:")) {
+        return Err(format!("Not a personal-data record: {bad}"));
+    }
+    let review = review_of(state).await?;
+    let out = match gesture {
+        "confirm" => review.confirm(&record_ids).await,
+        "dismiss" => review.dismiss(&record_ids).await,
+        "take_back_dismissal" => review.take_back_dismissal(&record_ids).await,
+        _ => review.take_back_confirmation(&record_ids).await,
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(ReviewOutcomeDto { rewritten: out.rewritten })
+}
+
+/// The queue's signal now.
+pub(crate) async fn pii_signal_in(state: &AppState) -> Result<PiiSignalDto, String> {
+    let db: std::sync::Arc<dyn GraphDB> = state.db.clone();
+    let waiting = sovereign_ai::pii::signal::waiting(db.as_ref()).await.map_err(|e| e.to_string())?;
+    Ok(PiiSignalDto { waiting, status: sovereign_ai::pii::signal::status_words(waiting) })
+}
+
+/// Called once after a login: renews the count seen at the last login and
+/// answers the notice if the queue has grown (`login_signal`, `login_notice`).
+pub(crate) async fn pii_login_notice_in(state: &AppState) -> Result<Option<PiiNoticeDto>, String> {
+    let db: std::sync::Arc<dyn GraphDB> = state.db.clone();
+    let signal = sovereign_ai::pii::signal::login_signal(db.as_ref()).await.map_err(|e| e.to_string())?;
+    Ok(sovereign_ai::pii::signal::login_notice(&signal).map(|(title, body)| PiiNoticeDto { title, body }))
+}
+
+/// The document `id` with its tokens as labels, by the resolver rule (a token
+/// only in a document among its record's sources).
+pub(crate) async fn get_document_labelled_in(state: &AppState, id: String) -> Result<LabelledDocumentDto, String> {
+    let docs = state.docs().await?;
+    let view = docs.read(&id).await.map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?;
+    Ok(LabelledDocumentDto { title: view.labelled_title(), body: view.labelled_text() })
+}
+
+#[tauri::command]
+pub async fn pii_review_groups(webview: tauri::Webview, state: State<'_, AppState>) -> Result<Vec<ReviewGroupDto>, String> {
+    state.require_unlocked(&webview).await?;
+    pii_review_groups_in(&state).await
+}
+
+#[tauri::command]
+pub async fn pii_review(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+    gesture: String,
+    record_ids: Vec<String>,
+) -> Result<ReviewOutcomeDto, String> {
+    state.require_unlocked(&webview).await?;
+    pii_review_in(&state, &gesture, record_ids).await
+}
+
+#[tauri::command]
+pub async fn pii_signal(webview: tauri::Webview, state: State<'_, AppState>) -> Result<PiiSignalDto, String> {
+    state.require_unlocked(&webview).await?;
+    pii_signal_in(&state).await
+}
+
+#[tauri::command]
+pub async fn pii_login_notice(webview: tauri::Webview, state: State<'_, AppState>) -> Result<Option<PiiNoticeDto>, String> {
+    state.require_unlocked(&webview).await?;
+    pii_login_notice_in(&state).await
+}
+
+#[tauri::command]
+pub async fn get_document_labelled(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<LabelledDocumentDto, String> {
+    state.require_unlocked(&webview).await?;
+    get_document_labelled_in(&state, id).await
 }

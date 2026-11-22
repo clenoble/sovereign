@@ -15,6 +15,7 @@ pub mod recovery;
 pub mod access_recovery;
 pub mod protocol;
 pub mod sync_engine;
+pub mod supervision;
 pub mod sync_service;
 pub mod version_store;
 pub mod wire;

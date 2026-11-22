@@ -82,11 +82,123 @@ pub struct CompletePairedOnboardingInput {
     pub seed_sample_data: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug)]
 pub struct PairedDeviceDto {
     pub peer_id: String,
     pub device_name: String,
     pub paired_at: String,
+}
+
+/// PR2 (spec ch. 05; v0.0.13, item C3): the source side's question when a
+/// device joins under a name a paired device already has: « is it that
+/// device, set up again? ». `candidates` are the paired devices of that name,
+/// other than the one that just joined; she picks one (« Replace it ») or
+/// keeps all (« Keep both »).
+#[derive(Serialize, Clone, Debug)]
+pub struct SameNameQuestionDto {
+    pub new_peer_id: String,
+    pub new_device_name: String,
+    pub candidates: Vec<PairedDeviceDto>,
+}
+
+/// PR2: the question the source side holds, if any (see [`SameNameQuestionDto`]).
+#[cfg(feature = "p2p")]
+pub(crate) fn same_name_question_in(state: &AppState) -> Option<SameNameQuestionDto> {
+    state.same_name.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// PR2: the question to hold after `peer` joined under `name`: the paired
+/// devices other than it that hold that name (the shared lookup,
+/// `PairingManager::same_name`), oldest pairing first; `None` when there are
+/// none.
+#[cfg(feature = "p2p")]
+pub(crate) fn same_name_question_for(
+    manager: &sovereign_p2p::pairing::PairingManager,
+    peer: &str,
+    name: &str,
+) -> Option<SameNameQuestionDto> {
+    let candidates: Vec<PairedDeviceDto> = manager
+        .same_name(name, peer)
+        .into_iter()
+        .map(|d| PairedDeviceDto {
+            peer_id: d.peer_id.clone(),
+            device_name: d.device_name.clone(),
+            paired_at: d.paired_at.clone(),
+        })
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    Some(SameNameQuestionDto {
+        new_peer_id: peer.to_string(),
+        new_device_name: name.to_string(),
+        candidates,
+    })
+}
+
+/// PR1 and PR2: her answer to the held question. `Some(peer_id)`, « Replace
+/// it »: that paired device's record goes, as at unpairing (the store, the
+/// saved file, the allow-list and the sealing map pushed to the node).
+/// `None`, « Keep both »: every record stays. Either way the question is
+/// answered. Nothing is removed that the question did not ask about.
+///
+/// A « Replace it » naming a device the question does not list is refused and
+/// the question stays held, as on the desktop; with no question held it is
+/// refused too (the screen asked about a question that is gone, for instance
+/// after a session switch). A « Keep both » with no question held answers
+/// nothing and is not an error: closing the panel may answer twice.
+#[cfg(feature = "p2p")]
+pub(crate) async fn answer_same_name_in(state: &AppState, replace: Option<String>) -> Result<(), String> {
+    let question = {
+        let mut held = state.same_name.lock().unwrap_or_else(|e| e.into_inner());
+        match (held.as_ref(), replace.as_deref()) {
+            (None, None) => return Ok(()),
+            (None, Some(_)) => {
+                return Err("No question about a device paired again is waiting; nothing was removed.".into())
+            }
+            (Some(q), Some(peer)) if !q.candidates.iter().any(|c| c.peer_id == peer) => {
+                return Err(format!(
+                    "{peer} is not one of the devices the question asks about; nothing was removed."
+                ))
+            }
+            _ => held.take(),
+        }
+    };
+    let Some(peer) = replace else { return Ok(()) };
+    if let Err(e) = forget_paired_device_in(state, &peer).await {
+        // The record may still be there: the question stays, so she can
+        // answer again, unless a newer pairing has asked its own meanwhile.
+        let mut held = state.same_name.lock().unwrap_or_else(|e| e.into_inner());
+        if held.is_none() {
+            *held = question;
+        }
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// PR2: the held question ([`same_name_question_in`]), asked by the screen
+/// once a pairing is reported (`device-paired`).
+#[cfg(feature = "p2p")]
+#[tauri::command]
+pub async fn same_name_question(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<Option<SameNameQuestionDto>, String> {
+    state.require_unlocked(&webview).await?;
+    Ok(same_name_question_in(&state))
+}
+
+/// PR1 and PR2: her answer ([`answer_same_name_in`]).
+#[cfg(feature = "p2p")]
+#[tauri::command]
+pub async fn answer_same_name(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+    replace: Option<String>,
+) -> Result<(), String> {
+    state.require_unlocked(&webview).await?;
+    answer_same_name_in(&state, replace).await
 }
 
 /// Existing device → frontend: produce a pairing QR + code (P3.1).
@@ -102,85 +214,7 @@ pub async fn generate_pair_qr(
     state: State<'_, AppState>,
 ) -> Result<GeneratePairQrResult, String> {
     crate::tauri_state::require_main_webview(&webview)?;
-    #[cfg(feature = "p2p")]
-    {
-        let account_key = state
-            .account_key()
-            .await
-            .ok_or_else(|| "pairing unavailable: account key not loaded".to_string())?;
-        let cmd_tx = state.p2p_command_tx().await.ok_or_else(|| {
-            "pairing requires the P2P node — enable sync in Settings first".to_string()
-        })?;
-        let source_peer_id = peer_id_from_state(&state).await;
-        if source_peer_id.is_empty() {
-            return Err("pairing unavailable: p2p identity not loaded".to_string());
-        }
-        let source_device_name = state.config.p2p.device_name.clone();
-        // The MasterKey salt is released to the new device during the
-        // handshake (it used to travel in the QR).
-        let salt = std::fs::read(crate::setup::crypto_dir().join("salt"))
-            .map_err(|e| format!("read salt: {e}"))?;
-        // Concrete listen addrs collected by the event translator; the
-        // new device falls back to mDNS discovery when empty.
-        //
-        // Filter out loopback + unspecified addresses before advertising
-        // them: they are never reachable by a *remote* joiner, and a
-        // loopback hint (/ip4/127.0.0.1/…) is actively harmful — a joiner
-        // that "tries every address" would dial ITSELF on that port instead
-        // of this device. Routable LAN addresses (192.168.x, 10.x, etc.) are
-        // kept; the joiner races them and uses whichever connects first.
-        let addrs = state
-            .p2p_listen_addrs
-            .read()
-            .map(|a| a.clone())
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|a| sovereign_p2p::is_routable_listen_addr(a))
-            .collect::<Vec<_>>();
-
-        let offer = sovereign_p2p::PairingOffer::new(
-            source_peer_id,
-            source_device_name.clone(),
-            addrs,
-            sovereign_p2p::pairing_offer::OFFER_TTL_SECONDS,
-        );
-        let code = pp::generate_pairing_code();
-
-        // Argon2id stretch (~0.5 s) off the async runtime.
-        let offer_for_kdf = offer.clone();
-        let code_for_kdf = code.clone();
-        let handshake_key = tauri::async_runtime::spawn_blocking(move || {
-            sovereign_p2p::pairing_offer::derive_handshake_key(&code_for_kdf, &offer_for_kdf)
-        })
-        .await
-        .map_err(|e| format!("kdf task: {e}"))?
-        .str_err()?;
-
-        cmd_tx
-            .send(sovereign_p2p::P2pCommand::SetPairingOffer {
-                offer: Box::new(sovereign_p2p::ActivePairingOffer::new(
-                    offer.offer_id.clone(),
-                    handshake_key,
-                    offer.expires_at,
-                    salt,
-                    *account_key.as_bytes(),
-                    source_device_name,
-                )),
-            })
-            .await
-            .map_err(|e| format!("arm pairing offer: {e}"))?;
-
-        return Ok(GeneratePairQrResult {
-            qr_payload_b64: offer.encode().str_err()?,
-            pin: code,
-            expires_at: offer.expires_at,
-        });
-    }
-    #[allow(unreachable_code)]
-    {
-        let _ = &state;
-        Err("pairing requires a build with the p2p feature".to_string())
-    }
+    generate_pair_qr_in(&state).await
 }
 
 /// New device: decode-only preview of a pairing QR. Returns metadata
@@ -394,25 +428,35 @@ pub async fn complete_onboarding_paired(
         if let Some(ref nick) = input.nickname {
             profile.nickname = Some(nick.clone());
         }
-        if let Some(ref style) = input.bubble_style {
-            profile.bubble_style =
-                serde_json::from_str(&format!("\"{style}\"")).unwrap_or_default();
-        }
-        if let Ok(theme_guard) = state.theme.lock() {
-            profile.theme = theme_guard.clone();
-        }
         step(&mut failed, "profile", profile.save(profile_dir).str_err());
+        // C-AREA AR2: the theme and bubble style in the device preferences;
+        // the duress persona's own identity profile, drawn at random.
+        step(
+            &mut failed,
+            "device preferences",
+            crate::tauri_commands::auth::save_wizard_preferences(&state, input.bubble_style.as_deref()).str_err(),
+        );
+        step(&mut failed, "duress profile", crate::tauri_commands::auth::create_duress_identity(profile_dir));
 
         // 6. Optional canary phrase — same shape as fresh onboarding. A failed
         //    authentication is a failed step (before, it was skipped silently).
         if let Some(ref phrase) = input.canary_phrase {
+            // The authentication's failure says what failed, in the login's
+            // words (spec ch. 07, login errors, LE2, LE3).
             let saved = auth_store
                 .authenticate(input.password.as_bytes())
+                .map_err(|e| {
+                    sovereign_crypto::login_error::LoginFailure::from_authenticate(
+                        &e,
+                        &[sovereign_core::sovereign_dir().as_path(), profile_dir.as_path()],
+                    )
+                    .to_string()
+                })
                 .and_then(|auth_result| {
                     sovereign_crypto::canary::CanaryStore::encrypt(phrase, auth_result.kek.as_bytes())
-                })
-                .and_then(|canary| canary.save(&crypto_dir.join("canary.store")))
-                .str_err();
+                        .and_then(|canary| canary.save(&crypto_dir.join("canary.store")))
+                        .str_err()
+                });
             step(&mut failed, "safety phrase", saved);
         }
 
@@ -443,19 +487,154 @@ pub async fn complete_onboarding_paired(
     }
 }
 
-/// List devices this device has paired with. Reads through the
-/// `PairingManager` installed by the post-login P2P startup; returns
-/// an empty list if the manager isn't loaded yet (encryption-only
-/// builds without the p2p feature, or pre-login).
-#[tauri::command]
-pub async fn list_paired_devices(
-    webview: tauri::Webview,
-    state: State<'_, AppState>,
-) -> Result<Vec<PairedDeviceDto>, String> {
-    state.require_unlocked(&webview).await?;
+/// The behaviour under `generate_pair_qr`, on the state alone (C-AREA AR3;
+/// claude-coord from-windows/0241 (a), 0242): arms a pairing offer for the
+/// unlocked session and returns it.
+///
+/// **In a duress session, the decoy** (C-AREA AR3, AR4; Céline 2026-11-13:
+/// « Le même leurre que les gardiens »): an offer of the real form, from the
+/// session's own peer id, and a code from the real generator, after the same
+/// key stretch, but nothing is armed and no node runs: a device that tries it
+/// gets no answer, and the screen waits as for a device that never comes.
+///
+/// **Over a paired list that could not be read**, no offer: a pairing would
+/// have to replace the list, which is kept as it is (C-AREA AR3).
+pub(crate) async fn generate_pair_qr_in(state: &AppState) -> Result<GeneratePairQrResult, String> {
+    #[cfg(feature = "p2p")]
+    {
+        let account_key = state
+            .account_key()
+            .await
+            .ok_or_else(|| "pairing unavailable: account key not loaded".to_string())?;
+        if state.is_duress_session() {
+            return decoy_pair_qr(state).await;
+        }
+        // C-SUP, DEL-0019: while sync is stopped, the stop's text.
+        let cmd_tx = state.p2p_command_tx().await.ok_or_else(|| {
+            state.node_refusal("pairing requires the P2P node — enable sync in Settings first")
+        })?;
+        if let Some(why) = state.pairing_manager.read().await.as_ref().and_then(|m| m.unreadable().map(str::to_string)) {
+            return Err(format!(
+                "Your paired devices could not be read ({why}). The list is kept as it is, and a new pairing would replace it."
+            ));
+        }
+        let source_peer_id = peer_id_from_state(state).await;
+        if source_peer_id.is_empty() {
+            return Err("pairing unavailable: p2p identity not loaded".to_string());
+        }
+        let source_device_name = state.config.p2p.device_name.clone();
+        // The MasterKey salt is released to the new device during the
+        // handshake (it used to travel in the QR).
+        let salt = std::fs::read(crate::setup::crypto_dir().join("salt"))
+            .map_err(|e| format!("read salt: {e}"))?;
+        // Concrete listen addrs collected by the event translator; the
+        // new device falls back to mDNS discovery when empty.
+        //
+        // Filter out loopback + unspecified addresses before advertising
+        // them: they are never reachable by a *remote* joiner, and a
+        // loopback hint (/ip4/127.0.0.1/…) is actively harmful — a joiner
+        // that "tries every address" would dial ITSELF on that port instead
+        // of this device. Routable LAN addresses (192.168.x, 10.x, etc.) are
+        // kept; the joiner races them and uses whichever connects first.
+        let addrs = state
+            .p2p_listen_addrs
+            .read()
+            .map(|a| a.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a| sovereign_p2p::is_routable_listen_addr(a))
+            .collect::<Vec<_>>();
+
+        let offer = sovereign_p2p::PairingOffer::new(
+            source_peer_id,
+            source_device_name.clone(),
+            addrs,
+            sovereign_p2p::pairing_offer::OFFER_TTL_SECONDS,
+        );
+        let code = pp::generate_pairing_code();
+        let handshake_key = stretch(&offer, &code).await?;
+
+        cmd_tx
+            .send(sovereign_p2p::P2pCommand::SetPairingOffer {
+                offer: Box::new(sovereign_p2p::ActivePairingOffer::new(
+                    offer.offer_id.clone(),
+                    handshake_key,
+                    offer.expires_at,
+                    salt,
+                    *account_key.as_bytes(),
+                    source_device_name,
+                )),
+            })
+            .await
+            .map_err(|e| format!("arm pairing offer: {e}"))?;
+
+        return Ok(GeneratePairQrResult {
+            qr_payload_b64: offer.encode().str_err()?,
+            pin: code,
+            expires_at: offer.expires_at,
+        });
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = state;
+        Err("pairing requires a build with the p2p feature".to_string())
+    }
+}
+
+/// The handshake key of `offer` under `code`: the Argon2id stretch (~0.5 s),
+/// off the async runtime.
+#[cfg(feature = "p2p")]
+async fn stretch(offer: &sovereign_p2p::PairingOffer, code: &str) -> Result<[u8; 32], String> {
+    let offer_for_kdf = offer.clone();
+    let code_for_kdf = code.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        sovereign_p2p::pairing_offer::derive_handshake_key(&code_for_kdf, &offer_for_kdf)
+    })
+    .await
+    .map_err(|e| format!("kdf task: {e}"))?
+    .str_err()
+}
+
+/// The duress session's pairing screen (see [`generate_pair_qr_in`]): built
+/// as a real offer is, from this session's own peer id and the device's name,
+/// with the same key stretch so it takes as long, but armed nowhere. No node
+/// runs in a duress session, so it carries no address.
+#[cfg(feature = "p2p")]
+async fn decoy_pair_qr(state: &AppState) -> Result<GeneratePairQrResult, String> {
+    let source_peer_id = peer_id_from_state(state).await;
+    if source_peer_id.is_empty() {
+        return Err("pairing unavailable: p2p identity not loaded".to_string());
+    }
+    let offer = sovereign_p2p::PairingOffer::new(
+        source_peer_id,
+        state.config.p2p.device_name.clone(),
+        Vec::new(),
+        sovereign_p2p::pairing_offer::OFFER_TTL_SECONDS,
+    );
+    let code = pp::generate_pairing_code();
+    let _ = stretch(&offer, &code).await?;
+    Ok(GeneratePairQrResult {
+        qr_payload_b64: offer.encode().str_err()?,
+        pin: code,
+        expires_at: offer.expires_at,
+    })
+}
+
+/// The behaviour under `list_paired_devices`, on the state alone (C-AREA
+/// AR3): the session's paired devices; over a list that cannot be read, an
+/// `Err` naming the failure, never an empty list. Reads through the
+/// `PairingManager` installed by the post-login P2P startup; an empty list
+/// when none is loaded (a build without the p2p feature, before login, or a
+/// duress session, which runs no node and has paired nothing).
+pub(crate) async fn list_paired_devices_in(state: &AppState) -> Result<Vec<PairedDeviceDto>, String> {
     #[cfg(feature = "p2p")]
     {
         if let Some(ref manager) = *state.pairing_manager.read().await {
+            if let Some(why) = manager.unreadable() {
+                return Err(format!(
+                    "Your paired devices could not be read ({why}). The list is kept as it is."
+                ));
+            }
             return Ok(manager
                 .list_devices()
                 .into_iter()
@@ -467,8 +646,18 @@ pub async fn list_paired_devices(
                 .collect());
         }
     }
-    let _ = &state;
+    let _ = state;
     Ok(Vec::new())
+}
+
+/// List devices this device has paired with ([`list_paired_devices_in`]).
+#[tauri::command]
+pub async fn list_paired_devices(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<Vec<PairedDeviceDto>, String> {
+    state.require_unlocked(&webview).await?;
+    list_paired_devices_in(&state).await
 }
 
 /// Remove a paired device from this device's records.
@@ -481,33 +670,42 @@ pub async fn forget_paired_device(
     state.require_unlocked(&webview).await?;
     #[cfg(feature = "p2p")]
     {
-        {
-            // The store is encrypted under the DeviceKey-derived key
-            // (P1.4) — it carries the per-pair sealing keys.
-            let identity_key = state
-                .p2p_identity_key()
-                .await
-                .ok_or_else(|| "p2p identity key not loaded".to_string())?;
-            let store_key = sovereign_p2p::pairing::derive_store_key(&identity_key);
-            let mut guard = state.pairing_manager.write().await;
-            if let Some(manager) = guard.as_mut() {
-                manager.remove_device(&peer_id);
-                manager
-                    .save(&store_key)
-                    .map_err(|e| format!("save paired_devices.json: {e}"))?;
-            }
-        } // drop the write guard before refreshing (which read-locks it)
-          // P2P-001 + P2P-005: push the shrunken allow-list and pair-key
-          // map to the running node so the forgotten device can neither
-          // sync nor be sealed for this session.
-        crate::sync_startup::refresh_paired_peers(&state).await;
-        return Ok(());
+        return forget_paired_device_in(&state, &peer_id).await;
     }
     #[allow(unreachable_code)]
     {
         let _ = (&state, &peer_id);
         Ok(())
     }
+}
+
+/// Unpairing, on the state alone: the device's record leaves the store and
+/// the saved file, and the trimmed allow-list and sealing map are pushed to
+/// the running node. Shared by « Forget » and by « Replace it » (PR1), so a
+/// replaced pairing goes exactly as a forgotten one does.
+#[cfg(feature = "p2p")]
+pub(crate) async fn forget_paired_device_in(state: &AppState, peer_id: &str) -> Result<(), String> {
+    {
+        // The store is encrypted under the DeviceKey-derived key
+        // (P1.4) — it carries the per-pair sealing keys.
+        let identity_key = state
+            .p2p_identity_key()
+            .await
+            .ok_or_else(|| "p2p identity key not loaded".to_string())?;
+        let store_key = sovereign_p2p::pairing::derive_store_key(&identity_key);
+        let mut guard = state.pairing_manager.write().await;
+        if let Some(manager) = guard.as_mut() {
+            manager.remove_device(peer_id);
+            manager
+                .save(&store_key)
+                .map_err(|e| format!("save paired_devices.json: {e}"))?;
+        }
+    } // drop the write guard before refreshing (which read-locks it)
+      // P2P-001 + P2P-005: push the shrunken allow-list and pair-key
+      // map to the running node so the forgotten device can neither
+      // sync nor be sealed for this session.
+    crate::sync_startup::refresh_paired_peers(state).await;
+    Ok(())
 }
 
 /// Trigger a sync with every paired peer. Frontend invokes this from
@@ -529,6 +727,32 @@ pub async fn trigger_sync_now(
     {
         let _ = &state;
         Ok(0)
+    }
+}
+
+/// C-SUP SU3: the gesture « Restart sync »: a fresh node with the open
+/// session's keys, by the login's own start. Never in a duress session (SU4,
+/// C-AREA AR4): there it starts nothing. A start that fails returns its
+/// reason (« Sync could not be restarted: {reason} » on the screens) and
+/// leaves sync stopped (DEL-0019).
+#[tauri::command]
+pub async fn restart_sync(webview: tauri::Webview, state: State<'_, AppState>) -> Result<(), String> {
+    state.require_unlocked(&webview).await?;
+    if state.is_duress_session() {
+        return Ok(());
+    }
+    #[cfg(feature = "p2p")]
+    {
+        crate::sync_startup::stop_p2p_node(&state).await;
+        let started = crate::sync_startup::start_p2p_node(&state).await;
+        if started.is_err() {
+            crate::sync_startup::keep_sync_stopped(&state.profile_dir);
+        }
+        return started;
+    }
+    #[allow(unreachable_code)]
+    {
+        Err("sync is not built into this app".to_string())
     }
 }
 

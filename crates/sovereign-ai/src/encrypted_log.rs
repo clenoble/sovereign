@@ -21,12 +21,15 @@ pub const GENESIS_HASH: &str =
 
 /// Encrypted envelope stored as one JSONL line.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct Envelope {
-    v: u8,
-    prev: String,
+pub(crate) struct Envelope {
+    pub(crate) v: u8,
+    pub(crate) prev: String,
     nonce: String,
     ct: String,
 }
+
+/// The v0.0.12 envelope, as the check of the log's format reads it (C-LOG LG6).
+pub(crate) type OldEnvelope = Envelope;
 
 /// Encrypt a plaintext JSON entry and return `(encrypted_line, hash_of_encrypted_line)`.
 ///
@@ -119,30 +122,17 @@ pub fn is_encrypted_line(line: &str) -> bool {
 /// reaches the quarantine's log line and the "could not be opened" notice.
 pub fn verify_chain(lines: &[String]) -> Result<()> {
     let mut expected_prev = GENESIS_HASH.to_string();
-    let mut seen_encrypted = false;
 
     for (i, line) in lines.iter().enumerate() {
         if !is_encrypted_line(line) {
-            // SESSIONLOG-002: plaintext lines are only legitimate BEFORE
-            // encryption was ever enabled on this file (e.g. v0.0.4 seed data
-            // preceding the first encrypted entry). Once any encrypted line has
-            // appeared, a plaintext line is a forgery: it carries no MAC and the
-            // old code reset the chain anchor to `sha256(plaintext)`, letting an
-            // attacker with append access inject arbitrary "history" WITHOUT the
-            // key and still pass verification. Reject it (fail closed).
-            if seen_encrypted {
-                bail!(
-                    "chain break at line {i}: plaintext line after encryption began \
-                     (possible keyless forgery)"
-                );
-            }
-            // Pre-encryption plaintext: anchor the chain to it so the first
-            // encrypted entry can chain from the last plaintext line.
-            expected_prev = sha256_hex(line.as_bytes());
-            continue;
+            // C-LOG LG3: no plaintext line is accepted, before encryption
+            // began or after it. A plaintext line carries no MAC: after
+            // encrypted lines it is a keyless forgery (SESSIONLOG-002), and
+            // before them it is text the assistant would read back as the
+            // person's own past turns.
+            bail!("line {i}: not sealed (plaintext lines are refused)");
         }
 
-        seen_encrypted = true;
         let envelope: Envelope = serde_json::from_str(line)
             .map_err(|e| anyhow::anyhow!("line {i}: envelope parse: {}", parse_error_kind(&e)))?;
 
@@ -353,9 +343,11 @@ mod tests {
     }
 
     #[test]
-    fn plaintext_before_encryption_still_verifies() {
-        // Legitimate migration: plaintext seed lines precede the first encrypted
-        // entry, which chains from the last plaintext line's hash.
+    fn plaintext_before_encryption_is_refused() {
+        // C-LOG LG3 (brought to the contract by its test author, 2026-11-18): no
+        // plaintext line is accepted, before encryption either. Until then this
+        // test held that a plaintext prefix, chained to by the first encrypted
+        // entry, still verified (a migration from before encryption).
         let p1 = r#"{"type":"seed","n":1}"#.to_string();
         let p2 = r#"{"type":"seed","n":2}"#.to_string();
         let anchor = sha256_hex(p2.as_bytes());
@@ -363,8 +355,8 @@ mod tests {
         let (e2, _h2) = encrypt_entry(r#"{"entry":1}"#, &TEST_KEY, &h1).unwrap();
         let lines = vec![p1, p2, e1, e2];
         assert!(
-            verify_chain(&lines).is_ok(),
-            "a pre-encryption plaintext prefix must still verify"
+            verify_chain(&lines).is_err(),
+            "a plaintext prefix before encryption is refused (LG3)"
         );
     }
 
@@ -408,18 +400,6 @@ mod tests {
         let (encrypted, _) = encrypt_entry(json, &TEST_KEY, GENESIS_HASH).unwrap();
         let wrong_key = [99u8; 32];
         assert!(decrypt_entry(&encrypted, &wrong_key).is_err());
-    }
-
-    #[test]
-    fn mixed_plaintext_and_encrypted_chain_verifies() {
-        let plaintext = r#"{"ts":"2026-02-28T10:00:00Z","type":"user_input","content":"seed"}"#;
-        let prev = sha256_hex(plaintext.as_bytes());
-
-        let (encrypted, _) =
-            encrypt_entry(r#"{"type":"real"}"#, &TEST_KEY, &prev).unwrap();
-
-        let lines = vec![plaintext.to_string(), encrypted];
-        assert!(verify_chain(&lines).is_ok());
     }
 
     // --- SESSIONLOG-003: anchor / truncation detection ---

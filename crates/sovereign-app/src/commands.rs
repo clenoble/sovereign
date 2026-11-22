@@ -104,9 +104,15 @@ async fn open_primary_documents(
     }
     let store = AuthStore::load(&auth_path)?;
     let pass = rpassword::prompt_password(format!("Sovereign passphrase to {what} (or Ctrl-C to cancel): "))?;
-    let auth = store
-        .authenticate(pass.as_bytes())
-        .map_err(|_| anyhow::anyhow!("authentication failed"))?;
+    // Spec ch. 07, login errors, LE2: « wrong password » for a wrong password
+    // only; any other failure says what failed, as the login does.
+    let auth = store.authenticate(pass.as_bytes()).map_err(|e| {
+        use sovereign_crypto::login_error::LoginFailure;
+        match LoginFailure::from_authenticate(&e, &[sovereign_core::sovereign_dir().as_path()]) {
+            LoginFailure::WrongPassword => anyhow::anyhow!("authentication failed: wrong password"),
+            other => anyhow::anyhow!("authentication failed: {other}"),
+        }
+    })?;
     if matches!(auth.persona, PersonaKind::Duress) {
         anyhow::bail!("this command targets your primary workspace — use your primary password");
     }
@@ -374,6 +380,48 @@ pub async fn list_conversations(config: &AppConfig, channel: Option<String>) -> 
 
 // ── Bulk import (stub-first migration) ───────────────────────────────────
 
+/// FC5 (spec ch. 03, *Two threads of the name sought*; v0.0.13, item 9): the
+/// bulk import's question at a terminal. For a name two live threads share, it
+/// writes the name and the threads, numbered from 1 with their creation day,
+/// and that the choice will be remembered, then reads a number: the thread of
+/// that number, or `None` when nothing usable is read (she does not answer).
+/// `import_execute` uses it when standard input is a terminal; without one
+/// it refuses the whole import, as before. Seam by the test author.
+pub struct TerminalChooser {
+    input: std::cell::RefCell<Box<dyn std::io::BufRead>>,
+    output: std::cell::RefCell<Box<dyn std::io::Write>>,
+}
+
+impl TerminalChooser {
+    pub fn new(input: Box<dyn std::io::BufRead>, output: Box<dyn std::io::Write>) -> Self {
+        Self { input: std::cell::RefCell::new(input), output: std::cell::RefCell::new(output) }
+    }
+}
+
+impl sovereign_import::ThreadChooser for TerminalChooser {
+    fn choose(&self, name: &str, threads: &[sovereign_db::schema::Thread]) -> Option<String> {
+        use std::io::{BufRead as _, Write as _};
+        let name = name.trim();
+        {
+            let mut out = self.output.borrow_mut();
+            let _ = writeln!(out, "Two or more threads are named '{name}'. Which one should the import use?");
+            for (i, t) in threads.iter().enumerate() {
+                let day = t.created_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M");
+                let _ = writeln!(out, "  {}. {} (created {day})", i + 1, t.name.trim());
+            }
+            let _ = writeln!(out, "Your choice will be remembered for '{name}'.");
+            let _ = write!(out, "Number, or Enter to import nothing: ");
+            let _ = out.flush();
+        }
+        let mut line = String::new();
+        if self.input.borrow_mut().read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        let n: usize = line.trim().parse().ok()?;
+        threads.get(n.checked_sub(1)?)?.id_string()
+    }
+}
+
 fn import_options(single_thread: Option<String>) -> sovereign_import::ImportOptions {
     let mut opts = sovereign_import::ImportOptions::default();
     if let Some(name) = single_thread {
@@ -419,7 +467,15 @@ pub async fn import_execute(
     );
     let (db, docs) = open_primary_documents(config, "import").await?;
 
-    let outcome = sovereign_import::execute(db.as_ref(), &docs, &manifest).await?;
+    // FC5: at a terminal, a name two live threads share is asked; without one,
+    // the whole import is refused, as before, and the refusal names it.
+    use std::io::IsTerminal as _;
+    let outcome = if std::io::stdin().is_terminal() {
+        let chooser = TerminalChooser::new(Box::new(std::io::stdin().lock()), Box::new(std::io::stdout()));
+        sovereign_import::execute_asking(db.as_ref(), &docs, &manifest, &chooser).await?
+    } else {
+        sovereign_import::execute(db.as_ref(), &docs, &manifest).await?
+    };
     // The raw body of the last documents created (the hook preserves each one
     // at the next write; nothing writes after the last).
     sovereign_ai::docs_host::flush_raw_bodies_of(db.as_ref()).await;

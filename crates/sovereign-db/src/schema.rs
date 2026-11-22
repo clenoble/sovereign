@@ -297,6 +297,20 @@ pub struct PurgeMarker {
     pub revoked: bool,
 }
 
+/// FC3 (spec ch. 03, *Two threads of the name sought: asked once,
+/// remembered*; v0.0.13, item 9): a remembered answer to « which one? ».
+/// `name` is the name as find-or-create compares it, `chosen` the id of the
+/// thread chosen, `among` the ids of the live threads of that name it was
+/// chosen among. Kept in the persona's own store, sealed at rest as a
+/// thread's name is; never synced. Seam named by item 9's implementer
+/// (2026-11-18), declared by the test author.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ThreadChoice {
+    pub name: String,
+    pub chosen: String,
+    pub among: Vec<String>,
+}
+
 /// Thread (project/topic grouping)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
@@ -331,6 +345,22 @@ pub struct Thread {
     /// C-WIRE).
     #[serde(default)]
     pub stamp: Option<String>,
+    /// C-MERGE (spec ch. 03, MG1): when this thread was merged into another,
+    /// its end date — the merge stamp's time (MG2). `None`: not ended. Written
+    /// with `merged_into` and `merge_stamp`, by the document service's thread
+    /// path only.
+    #[serde(default)]
+    pub ended_at: Option<DateTime<Utc>>,
+    /// C-MERGE (MG1): the raw id of the thread this one was merged into.
+    /// `None`: not merged (never, or the merge was undone, MG5).
+    #[serde(default)]
+    pub merged_into: Option<String>,
+    /// C-MERGE (MG4): the stamp of the last merge or undo of a merge of this
+    /// thread (`wall_ms:counter:device`), separate from `stamp`. A received
+    /// row changes `ended_at` and `merged_into` only by this stamp; a row
+    /// without it never changes them.
+    #[serde(default)]
+    pub merge_stamp: Option<String>,
 }
 
 /// Relationship edge between documents
@@ -647,11 +677,25 @@ impl Thread {
             description_nonce: None,
             name_token_hashes: Vec::new(),
             stamp: None,
+            ended_at: None,
+            merged_into: None,
+            merge_stamp: None,
         }
     }
 
     pub fn id_string(&self) -> Option<String> {
         self.id.as_ref().map(|t| thing_to_raw(t))
+    }
+
+    /// C-MERGE (spec ch. 03, MG1): this thread was merged into another and
+    /// has ended. It stays live by `deleted_at`, but takes no new document.
+    pub fn is_ended(&self) -> bool {
+        self.merged_into.is_some()
+    }
+
+    /// A thread a document can be put in: neither deleted nor ended.
+    pub fn takes_documents(&self) -> bool {
+        self.deleted_at.is_none() && !self.is_ended()
     }
 }
 
@@ -1032,6 +1076,34 @@ pub enum PiiKind {
     Other,
 }
 
+impl PiiKind {
+    /// The label a token of this type shows as, everywhere a label is shown:
+    /// titles, cards, the phone and the model's text (spec ch. 09, SW5: one
+    /// form, the model's; a code's own name such as `Iban` is never shown).
+    pub fn label(&self) -> &'static str {
+        match self {
+            PiiKind::Email => "[Email]",
+            PiiKind::Phone => "[Phone]",
+            PiiKind::Ssn => "[SSN]",
+            PiiKind::CreditCard => "[Card]",
+            PiiKind::Ipv4 => "[IP]",
+            PiiKind::Avs => "[AVS]",
+            PiiKind::Iban => "[IBAN]",
+            PiiKind::Passport => "[Passport]",
+            PiiKind::Dob => "[DOB]",
+            PiiKind::Address => "[Address]",
+            PiiKind::PersonName => "[Name]",
+            PiiKind::OrgName => "[Org]",
+            PiiKind::Password => "[Password]",
+            PiiKind::ApiToken => "[API Token]",
+            PiiKind::BankAccount => "[Bank Account]",
+            PiiKind::DocumentId => "[Document ID]",
+            PiiKind::Note => "[Note]",
+            PiiKind::Other => "[PII]",
+        }
+    }
+}
+
 /// What kind of node a `SourceRef` points at.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -1115,6 +1187,14 @@ pub struct PiiRecord {
     #[serde(default)]
     pub use_count: u32,
     pub review_state: ReviewState,
+    /// C-SWEEP SW1, SW5 (spec ch. 09): when her review last set
+    /// `review_state` (RFC 3339, UTC, microseconds), so that a review travels
+    /// by sync and a later review wins. Ingest never writes it: a state written
+    /// by ingest alone (`None`) never replaces a state her review set, and
+    /// between two such states the higher wins (a suspected one never lowers a
+    /// confirmed one).
+    #[serde(default)]
+    pub review_stamp: Option<String>,
     #[serde(default)]
     pub deleted_at: Option<String>,
 }
@@ -1282,6 +1362,7 @@ mod tests {
             last_revealed_at: None,
             use_count: 0,
             review_state: ReviewState::Confirmed,
+            review_stamp: None,
             deleted_at: None,
         };
         let json = serde_json::to_string(&rec).unwrap();

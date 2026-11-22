@@ -1,6 +1,6 @@
 [package]
 name = "sovereign-editor"
-version = "0.0.12"
+version = "0.0.13"
 edition = "2021"
 publish = false
 description = "Document editor component (contract C-TEXT, spec ch. 12)."

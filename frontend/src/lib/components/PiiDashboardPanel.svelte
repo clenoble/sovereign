@@ -11,16 +11,12 @@
 		recordsForEntity,
 		inventoryForEntity,
 		piiCountForEntity,
-		recordsByState,
 		refreshPiiRecords,
-		kindForRecordId,
-		unreviewedCount
+		kindForRecordId
 	} from '$lib/stores/pii.svelte';
 	import {
 		revealPiiRecord,
 		redactPiiRecord,
-		confirmPiiRecord,
-		dismissPiiRecord,
 		deleteCookie,
 		clearEntityCookies,
 		type BrowserCookie,
@@ -28,6 +24,22 @@
 		type PiiEntity
 	} from '$lib/api/commands';
 	import VaultAddDialog from './VaultAddDialog.svelte';
+	import PiiReviewGroups from './PiiReviewGroups.svelte';
+	import { loadReviewGroups, loadPiiSignal, piiStatusWords } from '$lib/stores/piiReview.svelte';
+
+	/** C-SWEEP SW5: a state in words (Céline, 2026-11-17), never the code's name. */
+	function stateWords(state: string): string {
+		switch (state) {
+			case 'unreviewed':
+				return 'PII suspected - TBC';
+			case 'confirmed':
+				return 'PII confirmed';
+			case 'dismissed':
+				return 'PII dismissed';
+			default:
+				return state;
+		}
+	}
 
 	// Drag state — modeled on InboxPanel.
 	let position = $state({ x: 80, y: 60 });
@@ -46,6 +58,9 @@
 		if (!piiState.loaded) {
 			loadPii();
 		}
+		// C-SWEEP SW5, SW6: the review window, grouped by type, and the count.
+		void loadReviewGroups().catch((e) => console.error('review window failed:', e));
+		void loadPiiSignal().catch(() => {});
 	});
 
 	async function toggleReveal(record: PiiRecord) {
@@ -106,34 +121,8 @@
 		}
 	}
 
-	async function confirmReview(record: PiiRecord) {
-		try {
-			await confirmPiiRecord(record.id);
-			refreshPiiRecords();
-		} catch (e) {
-			console.error('confirm failed:', e);
-		}
-	}
 
-	async function dismissReview(record: PiiRecord) {
-		try {
-			await dismissPiiRecord(record.id);
-			refreshPiiRecords();
-		} catch (e) {
-			console.error('dismiss failed:', e);
-		}
-	}
 
-	// Truncate a source-id label so it fits in the narrow right column.
-	function shortSource(record: PiiRecord): string {
-		const src = record.sources[0];
-		if (!src) return '';
-		const id = src.source_id;
-		// Keep "table:" prefix + last 8 of the key for orientation.
-		const colon = id.indexOf(':');
-		if (colon < 0 || id.length <= colon + 9) return id;
-		return `${id.slice(0, colon + 1)}…${id.slice(-8)}`;
-	}
 
 	function selectEntity(id: string | null) {
 		piiState.selectedEntityId = id;
@@ -386,8 +375,8 @@
 		>
 			<h3>
 				PII Dashboard
-				{#if unreviewedCount() > 0}
-					<span class="header-badge">{unreviewedCount()} unreviewed</span>
+				{#if piiStatusWords()}
+					<span class="header-badge">{piiStatusWords()}</span>
 				{/if}
 			</h3>
 			<button
@@ -629,7 +618,7 @@
 									</button>
 								</span>
 								<span class="record-state state-{record.review_state}">
-									{record.review_state}
+									{stateWords(record.review_state)}
 								</span>
 							</div>
 						{/each}
@@ -646,49 +635,18 @@
 				</div>
 			</section>
 
-			<!-- Column 3: Review queue -->
+			<!-- Column 3: the review window, grouped by type (C-SWEEP SW5): every
+			     record, whatever its state, one or several selected at a time,
+			     never a whole type. -->
 			<aside class="review-column" aria-label="Review queue">
 				<header class="review-header">
 					<h4>Review queue</h4>
-					<span class="review-count">{unreviewedCount()}</span>
+					{#if piiStatusWords()}
+						<span class="review-count">{piiStatusWords()}</span>
+					{/if}
 				</header>
 				<div class="review-list">
-					{#each recordsByState('unreviewed') as record (record.id)}
-						<div class="review-item">
-							<div class="review-meta">
-								<span class="review-kind">[{kindLabel(record.kind)}]</span>
-								<span class="review-confidence">
-									{(record.confidence * 100).toFixed(0)}%
-								</span>
-							</div>
-							{#if record.label}
-								<div class="review-label">{record.label}</div>
-							{/if}
-							{#if record.sources.length > 0}
-								<div class="review-source" title={record.sources[0].source_id}>
-									from {record.sources[0].source_kind}: {shortSource(record)}
-								</div>
-							{/if}
-							<div class="review-actions">
-								<button
-									class="row-btn confirm"
-									onclick={() => confirmReview(record)}
-									title="Confirm — this is real PII (L2)"
-								>
-									Confirm
-								</button>
-								<button
-									class="row-btn dismiss"
-									onclick={() => dismissReview(record)}
-									title="Dismiss — false positive (L2)"
-								>
-									Dismiss
-								</button>
-							</div>
-						</div>
-					{:else}
-						<div class="empty">Nothing to review.</div>
-					{/each}
+					<PiiReviewGroups />
 				</div>
 			</aside>
 		</div>
@@ -951,51 +909,10 @@
 		overflow-y: auto;
 	}
 
-	.review-item {
+	.review-list {
 		padding: 10px 14px;
-		border-bottom: 1px solid var(--border);
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
 	}
 
-	.review-meta {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		font-size: 0.75rem;
-	}
-	.review-kind {
-		color: var(--text-primary);
-		font-weight: 500;
-	}
-	.review-confidence {
-		color: var(--text-secondary);
-	}
-	.review-label {
-		font-size: 0.8rem;
-		color: var(--text-primary);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.review-source {
-		font-size: 0.7rem;
-		color: var(--text-secondary);
-		font-family: monospace;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.review-actions {
-		display: flex;
-		gap: 4px;
-		margin-top: 4px;
-	}
-	.review-actions .row-btn {
-		flex: 1;
-	}
 	.row-btn.confirm {
 		background: var(--accent);
 		color: #000;

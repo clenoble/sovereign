@@ -171,15 +171,38 @@ pub(crate) async fn run_purge_ticks(handle: tauri::AppHandle) {
         if !due {
             continue;
         }
-        match sovereign_docs::purge_tick(&docs).await {
+        // Through `purge_tick_in`, on the service open now: a tick never acts
+        // on a session that has ended (C-AREA AR4). The service is held only
+        // as a weak reference between ticks.
+        drop(docs);
+        match purge_tick_in(&state).await {
             Ok(report) if !report.documents.is_empty() => {
                 tracing::info!("Purged {} document(s) 30 days in the trash", report.documents.len())
             }
             Ok(_) => {}
-            Err(e) => tracing::warn!("Trash purge failed ({}); retried in an hour", purge_error_kind(&e)),
+            Err(e) => tracing::warn!("{e}; retried in an hour"),
         }
-        last = Some((Arc::downgrade(&docs), Instant::now()));
+        last = state.docs().await.ok().map(|d| (Arc::downgrade(&d), Instant::now()));
     }
+}
+
+/// One tick of the host's hourly purge (`run_purge_ticks`), on the state
+/// alone, for the session open now: the tick a test forces after a persona
+/// switch (C-AREA AR4, v2.0.80: « A switch ends everything the previous
+/// session started »). **Signature only** (types and signatures, by the test
+/// author): the body, and `run_purge_ticks` running its ticks through it, are
+/// the implementer's.
+///
+/// It acts on the document service of the session open when it runs, read
+/// from the state at that moment, never on one kept from an earlier tick: so
+/// after a persona switch it purges the new persona's trash, and nothing of
+/// the previous session's. A locked state (no service) is an error, and
+/// nothing is purged.
+pub(crate) async fn purge_tick_in(state: &crate::tauri_state::AppState) -> Result<sovereign_docs::PurgeReport, String> {
+    let docs = state.docs().await?;
+    sovereign_docs::purge_tick(&docs)
+        .await
+        .map_err(|e| format!("Trash purge failed ({})", purge_error_kind(&e)))
 }
 
 /// How often the purge loop looks for an unlocked session.
@@ -207,7 +230,7 @@ pub mod commands {
     pub async fn list_trash(webview: tauri::Webview, state: State<'_, AppState>) -> Result<Vec<TrashEntryDto>, String> {
         state.require_unlocked(&webview).await?;
         let docs = state.docs().await?;
-        super::list_trash(&docs, state.db.as_ref(), chrono::Utc::now()).await
+        super::list_trash(&docs, state.db.as_ref(), sovereign_core::clock::now()).await
     }
 
     /// Brings a document back from the trash: into its thread, or into

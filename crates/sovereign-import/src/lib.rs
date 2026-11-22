@@ -823,6 +823,27 @@ fn slide_number(name: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// Who answers « which one? » when two or more live threads share a name the
+/// import looks for (spec ch. 03, FC5).
+pub trait ThreadChooser {
+    /// The id of the thread chosen among `threads` for the folder name `name`,
+    /// or `None` when she does not answer.
+    fn choose(&self, name: &str, threads: &[sovereign_db::schema::Thread]) -> Option<String>;
+}
+
+/// [`execute`], asking `chooser` instead of refusing (FC5): for each name two
+/// live threads share and no remembered choice holds, before writing anything;
+/// each answer is remembered as FC2 says. No answer for any of them: nothing
+/// is written and nothing is remembered.
+pub async fn execute_asking(
+    db: &dyn GraphDB,
+    docs: &DocumentService,
+    m: &Manifest,
+    chooser: &dyn ThreadChooser,
+) -> Result<ImportOutcome> {
+    run(db, docs, m, Some(chooser)).await
+}
+
 /// Execute a [`Manifest`]: create/reuse threads in `db`, then create the
 /// planned documents through the document service `docs` (over the same
 /// persona's store) with their original timestamps — trust undetermined,
@@ -830,19 +851,67 @@ fn slide_number(name: &str) -> u32 {
 /// personal-data ingest. Idempotent by title within a thread (increment-1
 /// form).
 pub async fn execute(db: &dyn GraphDB, docs: &DocumentService, m: &Manifest) -> Result<ImportOutcome> {
+    run(db, docs, m, None).await
+}
+
+async fn run(
+    db: &dyn GraphDB,
+    docs: &DocumentService,
+    m: &Manifest,
+    chooser: Option<&dyn ThreadChooser>,
+) -> Result<ImportOutcome> {
     let mut outcome = ImportOutcome::default();
 
     // 1. Resolve every thread name → id, reusing the live thread with that
     //    exact name (v0.0.12 item 6, A1: a folder "Work" never lands in "Work
-    //    Archive"). Every name is resolved before anything is written, so a
-    //    name two live threads share refuses the whole import, none picked.
+    //    Archive"), or the one remembered for it (FC2). Every name is resolved
+    //    before anything is written. A name two live threads share is asked
+    //    (FC5), every question before any answer is remembered; with nobody to
+    //    ask, or a question left unanswered, the whole import is refused.
     use std::collections::HashMap;
+    use sovereign_db::FindOrCreate;
     let mut existing: HashMap<String, Option<String>> = HashMap::new();
+    let mut answers: Vec<(String, String)> = Vec::new();
     for name in &m.threads {
-        let found = sovereign_db::existing_thread_for_find_or_create(db, name)
+        let found = match sovereign_db::find_or_create_choice(db, name)
+            .await
+            .map_err(|e| anyhow::anyhow!("thread {name}: {e}"))?
+        {
+            FindOrCreate::Use(id) => Some(id),
+            FindOrCreate::Create => None,
+            FindOrCreate::Ask(threads) => {
+                let Some(chooser) = chooser else {
+                    anyhow::bail!(
+                        "thread {name}: {} threads are named '{}'; none was picked — rename one of them first",
+                        threads.len(),
+                        name.trim()
+                    );
+                };
+                let ids: Vec<String> = threads.iter().filter_map(|t| t.id_string()).collect();
+                match chooser.choose(name, &threads) {
+                    Some(id) if ids.contains(&id) => {
+                        answers.push((name.clone(), id.clone()));
+                        Some(id)
+                    }
+                    Some(_) => anyhow::bail!(
+                        "thread {name}: the answer is not one of the threads named '{}'; nothing was imported",
+                        name.trim()
+                    ),
+                    None => anyhow::bail!(
+                        "thread {name}: no thread was chosen among the {} named '{}'; nothing was imported",
+                        threads.len(),
+                        name.trim()
+                    ),
+                }
+            }
+        };
+        existing.insert(name.clone(), found);
+    }
+    // FC2: every name answered, so each answer is remembered.
+    for (name, id) in &answers {
+        sovereign_db::remember_thread_choice(db, name, id)
             .await
             .map_err(|e| anyhow::anyhow!("thread {name}: {e}"))?;
-        existing.insert(name.clone(), found);
     }
     let mut thread_ids: HashMap<String, String> = HashMap::new();
     for name in &m.threads {

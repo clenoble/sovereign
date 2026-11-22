@@ -62,9 +62,25 @@ impl CardMenu {
     /// A click on skill `skill` (an index into the skill registry, which a
     /// workspace reload does not reorder) in the skills submenu: the document
     /// and the skill to run.
+    #[cfg_attr(not(test), allow(dead_code))] // the menu carries skill names since C-HOST AT8
     pub(crate) fn click_skill(&mut self, skill: usize) -> (String, usize) {
         (self.id.clone(), skill)
     }
+
+    /// A click on the skill named `skill` in the skills submenu (C-HOST AT8:
+    /// the row carries the skill's name, never a registry index): the
+    /// document and the skill to run.
+    pub(crate) fn click_skill_named(&mut self, skill: &str) -> (String, String) {
+        (self.id.clone(), skill.to_string())
+    }
+}
+
+/// C-HOST AT8: where document `id` is among the cards as loaded now
+/// (`card_ids`, in card order), resolved when the action runs; `None` when a
+/// reload has removed it. What opens a document window, from a card, a pinned
+/// pill, a search result or the menu, carries the id and goes through this.
+pub(crate) fn card_position<'a>(card_ids: impl IntoIterator<Item = &'a str>, id: &str) -> Option<usize> {
+    card_ids.into_iter().position(|c| c == id)
 }
 
 /// Moves the menu's document to the trash, by id, through the service. If the

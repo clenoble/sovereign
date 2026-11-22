@@ -63,9 +63,9 @@ beforeEach(() => {
 	canvas.threads = [];
 	mockTauriCommand('list_threads', () => []);
 	mockTauriCommand('canvas_load', () => ({ documents: [], threads: [], relationships: [], milestones: [] }));
-	mockTauriCommand('list_sync_alerts', () => []);
+	mockTauriCommand('list_sync_alerts', () => ({ alerts: [], could_not_check: null }));
 	mockTauriCommand('list_previous_values', () => []);
-	mockTauriCommand('list_orphaned_documents', () => []);
+	mockTauriCommand('list_orphaned_documents', () => ({ orphans: [], could_not_check: null }));
 	mockTauriCommand('list_unreadable_documents', () => unreadable(0));
 });
 

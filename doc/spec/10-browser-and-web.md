@@ -7,10 +7,10 @@ addresses, and two decided-but-unbuilt changes — incognito browsing (A5) and a
 proxy (O4). The Identity Firewall of v1.x is recorded here as an open conflict.
 
 *Consolidates:* specification v1.3 §Security Model (Identity Firewall), §Core Tenets;
-`doc/legal/sovereign_os_ethics.md` §2.1, §3.1; `doc/plans/archive/plans/pii-management-dashboard.md`
-(embedded-browser integration); `doc/plans/archive/plans/native-ui-migration-decisions.md`
-(Batch 5, browser); `doc/plans/archive/plans/v0.0.8-release-plan.md` (WEB-001); commit 7fdfed2
-(A6/O1, 2026-10-09); `doc/plans/BACKLOG.md` (A5, O4 decisions of 2026-10-09); code in
+`doc/legal/sovereign_os_ethics.md` §2.1, §3.1; the project's archived plans (private): the PII
+management dashboard design (embedded-browser integration), the native-UI migration decisions
+(Batch 5, browser) and the v0.0.8 release plan (WEB-001); commit 7fdfed2 (A6/O1, 2026-10-09);
+the private backlog (A5, O4 decisions of 2026-10-09); code in
 `crates/sovereign-core/src/net_guard.rs`, `crates/sovereign-app/src/{browser.rs,web.rs,browser_pii.rs,cookie_api.rs}`,
 `crates/sovereign-app/src/tauri_commands/browser.rs`, `crates/sovereign-shell/src/app.rs`.
 
@@ -50,18 +50,22 @@ The shell's webview is the platform webview (WebView2 on Windows, WebKitGTK on L
 
 ## Page text and what it is used for
 
-**Status:** ◐ Partial — page text and *Assess* built in the native shell; *Save as external* does not yet store the page as specified (see below). The frozen Tauri desktop's page-text path is incomplete and not shipped.
+**Status:** ◐ Partial — page text and *Assess* built in the native shell; *Save as external* stores the page as an external document with its URL, but not yet in a *Web* thread nor with its reliability result (see below). The frozen Tauri desktop's page-text path is incomplete and not shipped.
 
 An initialization script injected on every page posts the page's title and visible text (bounded in
 length) to Sovereign over the webview's IPC channel. That text feeds two user actions:
 
-- **Assess** — reliability assessment of the page by the local model (ch. 08). Page text
+- **Assess** — reliability assessment of the page by the local model (ch. 08). *Decided
+  2026-11-13 (Céline, P18), not built: the shell's single score (« Factual · 4.2 / 5 ») is removed
+  until the contract of Crabe v3 is integrated (ch. 04).* Page text
   is external content and is fenced as data before it reaches the model.
 - **Save as external** — stores the page as a document with `is_owned = false` in a *Web* thread,
   with its source URL as provenance and any reliability result attached (see ch. 04 for how judgments
-  are meant to be stored). *As built in the shell:* the page is saved with `is_owned = false` into the
-  first thread rather than a *Web* thread; the URL is only prepended to the body, `source_url` is not
-  set, and no reliability result is attached.
+  are meant to be stored). *As built in the shell:* the page is saved through the document service
+  with trust *external* and provenance *web* with its URL, and the service sets `source_url` (ch. 03,
+  C-DOC); the URL is also prepended to the body. It goes into the first thread rather than a *Web*
+  thread, and no reliability result is attached. (code: `crates/sovereign-shell/src/app.rs`,
+  `crates/sovereign-docs/src/service.rs`)
 
 The IPC channel is reachable by any script on the page, with no origin check. Its payload is
 therefore trusted for title and text only, never for identity or location.

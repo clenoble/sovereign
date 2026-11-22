@@ -59,12 +59,15 @@ describe('documents whose thread was deleted — the store', () => {
 	});
 
 	it('is loaded with the alerts, and leaves the alerts as they are', async () => {
-		mockTauriCommand('list_sync_alerts', () => [alertDto]);
+		mockTauriCommand('list_sync_alerts', () => ({ alerts: [alertDto], could_not_check: null }));
 		mockTauriCommand('list_previous_values', () => []);
-		mockTauriCommand('list_orphaned_documents', () => [
-			orphanDto('document:a', 'Alpha', 'thread:gone', 'Old drafts'),
-			orphanDto('document:b', 'Beta', 'thread:gone', 'Old drafts')
-		]);
+		mockTauriCommand('list_orphaned_documents', () => ({
+			orphans: [
+				orphanDto('document:a', 'Alpha', 'thread:gone', 'Old drafts'),
+				orphanDto('document:b', 'Beta', 'thread:gone', 'Old drafts')
+			],
+			could_not_check: null
+		}));
 		await reloadSyncAlerts();
 		expect(syncAlerts.orphans.map((o) => o.docId)).toEqual(['document:a', 'document:b']);
 		expect(syncAlerts.alerts.map((a) => a.docId)).toEqual(['document:x']);
@@ -72,7 +75,7 @@ describe('documents whose thread was deleted — the store', () => {
 	});
 
 	it('a host that cannot list them leaves the alerts loading as before', async () => {
-		mockTauriCommand('list_sync_alerts', () => [alertDto]);
+		mockTauriCommand('list_sync_alerts', () => ({ alerts: [alertDto], could_not_check: null }));
 		mockTauriCommand('list_previous_values', () => []);
 		// list_orphaned_documents not mocked: the call fails.
 		await reloadSyncAlerts();

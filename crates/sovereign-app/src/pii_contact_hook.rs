@@ -37,7 +37,7 @@ impl PiiContactHook {
 
     async fn run_ingest(&self, contact_id: &str, contact: &Contact) -> anyhow::Result<()> {
         // 1. PiiRecord per ChannelAddress.
-        let now = Utc::now();
+        let now = sovereign_core::clock::now();
         for addr in &contact.addresses {
             let kind = match addr.channel {
                 ChannelType::Email => PiiKind::Email,
@@ -69,6 +69,7 @@ impl PiiContactHook {
                 last_revealed_at: None,
                 use_count: 0,
                 review_state: ReviewState::Confirmed,
+                review_stamp: None,
                 deleted_at: None,
             };
             self.db.create_pii_record(record).await?;

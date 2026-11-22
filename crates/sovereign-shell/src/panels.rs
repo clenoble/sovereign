@@ -826,6 +826,9 @@ pub(crate) struct CommitRow {
     /// passed back unchanged to `restore_version`.
     pub(crate) commit_id: String,
     pub(crate) when: String,
+    /// The version's time, by which a row that names this version names it
+    /// (spec ch. 12, HN2).
+    pub(crate) at: chrono::DateTime<chrono::Utc>,
     /// What the row shows and announces: the stored message, with a peer's
     /// id replaced by the device's name (v0.0.12 item 14, R1;
     /// [`HistoryPanel::name_devices`]).
@@ -836,9 +839,19 @@ pub(crate) struct CommitRow {
     /// says so, and the service refuses to restore it. Unsigned (older)
     /// versions are not marked.
     pub(crate) unverifiable: bool,
+    /// The document service's sentence when this version's content cannot be
+    /// read (spec ch. 03, *History, in v0.0.13*, HR4): the row says it in place
+    /// of its message, and « Use this version » is not offered for it.
+    pub(crate) could_not_read: Option<&'static str>,
 }
 
 impl CommitRow {
+    /// What the row's first line says: the service's sentence for a version
+    /// that cannot be read (HR4), otherwise its message.
+    pub(crate) fn shown(&self) -> &str {
+        self.could_not_read.unwrap_or(&self.message)
+    }
+
     /// The row's second line: its date, and the integrity mark when it fails.
     pub(crate) fn when_line(&self) -> String {
         if self.unverifiable {
@@ -881,8 +894,14 @@ impl HistoryPanel {
     /// `App::device_names` gives them), "this device" for `own_id`, or a
     /// short form for a device no longer paired. Reshapes the rows.
     pub(crate) fn name_devices(&mut self, names: &std::collections::HashMap<String, String>, own_id: &str) {
+        // HN2: a version a row names is named by its time, read in this
+        // document's own history.
+        let versions: Vec<(String, chrono::DateTime<chrono::Utc>)> =
+            self.commits.iter().map(|c| (c.commit_id.clone(), c.at)).collect();
+        let versions: Vec<(&str, chrono::DateTime<chrono::Utc>)> =
+            versions.iter().map(|(id, at)| (id.as_str(), *at)).collect();
         for c in self.commits.iter_mut() {
-            c.message = crate::history_device::shown_message(&c.stored_message, names, own_id);
+            c.message = sovereign_docs::history_names::shown_message(&c.stored_message, names, own_id, &versions);
         }
         self.rows.clear();
         self.drawn.clear();
@@ -912,11 +931,18 @@ impl HistoryPanel {
     }
 
     /// Readable lines for the accessibility tree.
+    /// Whether « Use this version » is offered for the selected row: the
+    /// drawn bar, its click and Enter all ask this. Not for a version that
+    /// cannot be read (spec ch. 03, *History, in v0.0.13*, HR4).
+    pub(crate) fn offers_restore(&self) -> bool {
+        self.selected.and_then(|i| self.commits.get(i)).is_some_and(|c| c.could_not_read.is_none())
+    }
+
     pub(crate) fn a11y_lines(&self) -> Vec<String> {
         if self.commits.is_empty() {
             return vec!["No saved versions yet".into()];
         }
-        self.commits.iter().map(|c| format!("{} \u{2014} {}", c.when_line(), c.message)).collect()
+        self.commits.iter().map(|c| format!("{} \u{2014} {}", c.when_line(), c.shown())).collect()
     }
 
     pub(crate) fn ensure_shaped(&mut self, shaper: &mut TextShaper, inner_w: f64) {
@@ -936,7 +962,7 @@ impl HistoryPanel {
             self.drawn = self
                 .commits
                 .iter()
-                .map(|c| crate::history_device::cut_to_width(shaper, &c.message, mw, HIST_MSG_PX))
+                .map(|c| crate::history_device::cut_to_width(shaper, c.shown(), mw, HIST_MSG_PX))
                 .collect();
             self.rows = self
                 .commits
@@ -966,10 +992,14 @@ pub(crate) async fn load_history(
         .into_iter()
         .map(|v| CommitRow {
             commit_id: v.commit_id,
-            when: v.timestamp.format("%Y-%m-%d %H:%M").to_string(),
+            // Local time, in the words HN2 names this version with (spec
+            // ch. 12; the Fable maille, by delegation of Céline, 2026-11-18).
+            when: sovereign_docs::history_names::local_time(v.timestamp),
+            at: v.timestamp,
             stored_message: v.message.clone(),
             message: if v.message.is_empty() { "(no message)".into() } else { v.message },
             unverifiable: v.mac == sovereign_docs::MacState::Invalid,
+            could_not_read: v.could_not_read,
         })
         .collect();
     Ok(HistoryPanel {
@@ -1000,7 +1030,8 @@ pub(crate) fn draw_history(scene: &mut Scene, hp: &HistoryPanel, bounds: Rect) {
         scene.pop_layer();
     }
 
-    let (list_vp, bar) = hist_split(body_vp, hp.selected.is_some());
+    // HR4: no bar when the selected version cannot be read (nothing offered).
+    let (list_vp, bar) = hist_split(body_vp, hp.offers_restore());
 
     scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &list_vp);
     for (i, (msg, when)) in hp.rows.iter().enumerate() {
@@ -1492,14 +1523,73 @@ pub(crate) struct PiiPanel {
     shaped: Vec<(Layout<Brush>, Layout<Brush>)>, // (headline, meta)
 }
 impl PiiPanel {
+    /// C-SWEEP SW5 (spec ch. 09): the review window from the persona's review
+    /// (`sovereign_ai::pii::review::PiiReview::groups`): grouped by type, each
+    /// row saying its state in words, on the row and in the accessibility line
+    /// (`PII suspected - TBC`, `PII confirmed`, `PII dismissed`; Céline,
+    /// 2026-11-17).
+    ///
+    /// *Signature by the test author of lot LS(a); the body is the implementer's.*
+    ///
+    /// The rows stay one list (each row's buttons are found by its index), the
+    /// groups one after the other in the order given; the accessibility lines
+    /// say each group's type before its rows.
+    pub(crate) fn from_groups(groups: Vec<sovereign_ai::pii::review::ReviewGroup>) -> PiiPanel {
+        let mut rows = vec![];
+        for g in groups {
+            let kind = pii_kind_label(&g.kind).to_string();
+            for r in g.rows {
+                let n = r.documents.len();
+                let headline = format!("(unlabeled {})", kind.to_lowercase());
+                let meta = format!(
+                    "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}   \u{00b7}   {}   \u{00b7}   in {n} document{}",
+                    r.state_words,
+                    if n == 1 { "" } else { "s" },
+                );
+                rows.push(PiiRow { id: r.record_id, kind: kind.clone(), headline, meta, review: r.state });
+            }
+        }
+        PiiPanel::of_rows(rows)
+    }
+
+    fn of_rows(rows: Vec<PiiRow>) -> PiiPanel {
+        PiiPanel {
+            rows,
+            scroll: 0.0,
+            inner_w: 0.0,
+            title_lbl: None,
+            empty_lbl: None,
+            keep_lbl: None,
+            dis_lbl: None,
+            del_lbl: None,
+            shaped: Vec::new(),
+        }
+    }
+
+    /// C-SWEEP SW5: a heading for each type, then its rows, each saying its
+    /// state in words (`PII suspected - TBC`, ...), never the code's name.
     pub(crate) fn a11y_lines(&self) -> Vec<String> {
         if self.rows.is_empty() {
             return vec!["No PII detected or stored yet".into()];
         }
-        self.rows
-            .iter()
-            .map(|r| format!("{} \u{2014} {} \u{2014} {} \u{2014} {:?}", r.kind, r.headline, r.meta, r.review))
-            .collect()
+        let mut out = vec![];
+        let mut i = 0;
+        while i < self.rows.len() {
+            let kind = &self.rows[i].kind;
+            let n = self.rows[i..].iter().take_while(|r| &r.kind == kind).count();
+            out.push(format!("{kind}: {n} record{}", if n == 1 { "" } else { "s" }));
+            for r in &self.rows[i..i + n] {
+                out.push(format!(
+                    "{} \u{2014} {} \u{2014} {} \u{2014} {}",
+                    r.kind,
+                    r.headline,
+                    r.meta,
+                    sovereign_ai::pii::review::state_words(&r.review)
+                ));
+            }
+            i += n;
+        }
+        out
     }
     pub(crate) fn ensure_shaped(&mut self, shaper: &mut TextShaper, inner_w: f64) {
         let width_changed = (inner_w - self.inner_w).abs() > 0.5;
@@ -1549,25 +1639,63 @@ fn pii_kind_label(k: &PiiKind) -> &'static str {
 }
 
 /// Load all PII records (detected + vault) into a dashboard panel. Values stay
-/// encrypted/masked; only plaintext metadata is shown.
+/// encrypted/masked; only plaintext metadata is shown. C-SWEEP SW5: grouped by
+/// type (the types in the order of their names, each type's rows in the
+/// store's order), each row saying its state in words.
 pub(crate) async fn load_pii(db: &Arc<dyn GraphDB>) -> PiiPanel {
-    let records = db.list_pii_records(None, None, None).await.unwrap_or_default();
-    let rows = records
-        .iter()
-        .map(|r| {
-            let kind = pii_kind_label(&r.kind).to_string();
-            let headline = r.label.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| format!("(unlabeled {})", kind.to_lowercase()));
-            let origin = if r.stored_secret { "vault" } else { "detected" };
-            let meta = format!(
-                "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}   \u{00b7}   {:.0}% confidence   \u{00b7}   {} source{}   \u{00b7}   {origin}",
-                r.confidence * 100.0,
-                r.sources.len(),
-                if r.sources.len() == 1 { "" } else { "s" },
-            );
-            PiiRow { id: r.id_string().unwrap_or_default(), kind, headline, meta, review: r.review_state.clone() }
-        })
+    let mut records = db.list_pii_records(None, None, None).await.unwrap_or_default();
+    records.sort_by_key(|r| pii_kind_label(&r.kind));
+    PiiPanel::of_rows(records.iter().map(pii_row).collect())
+}
+
+/// C-SWEEP SW5 and SW9: the window from the one review routine both hosts use
+/// (`PiiReview::groups`), then the vault's entries in a section of their own,
+/// as the window showed them before. Without an open session there is no
+/// review: the window lists the records itself, as before.
+pub(crate) async fn load_pii_window(
+    review: Option<&sovereign_ai::pii::review::PiiReview>,
+    db: &Arc<dyn GraphDB>,
+) -> PiiPanel {
+    let Some(review) = review else { return load_pii(db).await };
+    let groups = match review.groups().await {
+        Ok(groups) => groups,
+        Err(e) => {
+            tracing::warn!("the PII review could not be read, the window lists the records: {e}");
+            return load_pii(db).await;
+        }
+    };
+    let mut panel = PiiPanel::from_groups(groups);
+    let mut vault: Vec<_> = db
+        .list_pii_records(None, None, Some(true))
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.deleted_at.is_none())
         .collect();
-    PiiPanel { rows, scroll: 0.0, inner_w: 0.0, title_lbl: None, empty_lbl: None, keep_lbl: None, dis_lbl: None, del_lbl: None, shaped: Vec::new() }
+    vault.sort_by_key(|r| pii_kind_label(&r.kind));
+    // The vault's section: its own heading per type in the accessibility
+    // lines, never merged with a review group of the same type.
+    panel.rows.extend(vault.iter().map(|r| {
+        let mut row = pii_row(r);
+        row.kind = format!("{} (vault)", row.kind);
+        row
+    }));
+    panel
+}
+
+/// One row of the window, from a record as stored (its value never shown).
+fn pii_row(r: &sovereign_db::schema::PiiRecord) -> PiiRow {
+    let kind = pii_kind_label(&r.kind).to_string();
+    let headline = r.label.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| format!("(unlabeled {})", kind.to_lowercase()));
+    let origin = if r.stored_secret { "vault" } else { "detected" };
+    let meta = format!(
+        "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}   \u{00b7}   {}   \u{00b7}   {:.0}% confidence   \u{00b7}   {} source{}   \u{00b7}   {origin}",
+        sovereign_ai::pii::review::state_words(&r.review_state),
+        r.confidence * 100.0,
+        r.sources.len(),
+        if r.sources.len() == 1 { "" } else { "s" },
+    );
+    PiiRow { id: r.id_string().unwrap_or_default(), kind, headline, meta, review: r.review_state.clone() }
 }
 
 pub(crate) fn draw_pii(scene: &mut Scene, pp: &PiiPanel, bounds: Rect) {
@@ -1708,6 +1836,13 @@ pub(crate) struct AlertsPanel {
     /// orphans: what the one-time conversion found and could not decrypt.
     unreadable: Vec<UnreadableLine>,
     unreadable_shaped: Option<UnreadableShaped>,
+    /// The sentences of the lists that could not be read, each said in its
+    /// section's place (spec ch. 03, *What cannot be read is never shown as
+    /// empty*): `sovereign_docs::COULD_NOT_CHECK_ALERTS`, `_ORPHANS`,
+    /// `_UNREADABLE`, in the window's order.
+    could_not_check: Vec<&'static str>,
+    /// Those sentences, shaped (re-shaped when they change).
+    said_shaped: Option<(Vec<&'static str>, Vec<Layout<Brush>>)>,
 }
 
 /// The heading and the meaning of the Alerts window's list of documents that
@@ -1744,6 +1879,24 @@ struct UnreadableShaped {
 /// Heights in the list of documents that could not be read.
 const UNREADABLE_HEAD_H: f64 = 30.0;
 const UNREADABLE_LINE_H: f64 = 22.0;
+/// The height of a sentence said in place of a list that could not be read.
+const SAID_H: f64 = 34.0;
+
+/// Says, or stops saying, that one list could not be read, keeping the
+/// window's order: the alerts, the orphans, the documents that could not be
+/// read (spec ch. 03, *What cannot be read is never shown as empty*).
+pub(crate) fn mark_could_not_check(list: &mut Vec<&'static str>, sentence: &'static str, failed: bool) {
+    list.retain(|s| *s != sentence);
+    if failed {
+        list.push(sentence);
+        let order = |s: &&'static str| {
+            [sovereign_docs::COULD_NOT_CHECK_ALERTS, sovereign_docs::COULD_NOT_CHECK_ORPHANS, sovereign_docs::COULD_NOT_CHECK_UNREADABLE]
+                .iter()
+                .position(|o| o == s)
+        };
+        list.sort_by_key(order);
+    }
+}
 
 /// The section's shaped text: heading, each line's notice and origin, each
 /// group's label, and the buttons' labels (line, then group; in `ACTIONS`
@@ -1780,6 +1933,61 @@ impl AlertsPanel {
             orphan_shaped: None,
             unreadable: Vec::new(),
             unreadable_shaped: None,
+            could_not_check: Vec::new(),
+            said_shaped: None,
+        }
+    }
+
+    /// The panel with the sentences of the lists that could not be read
+    /// (for `load_alerts_as` and `refresh_alerts`).
+    pub(crate) fn with_could_not_check(mut self, sentences: Vec<&'static str>) -> Self {
+        self.could_not_check = sentences;
+        self
+    }
+
+    /// The sentences of the lists that could not be read, in the window's
+    /// order (alerts, orphans, documents that could not be read).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn could_not_check(&self) -> &[&'static str] {
+        &self.could_not_check
+    }
+
+    /// Says, or stops saying, that one list could not be read (for
+    /// `refresh_orphans`, which re-reads one list only).
+    pub(crate) fn set_could_not_check(&mut self, sentence: &'static str, failed: bool) {
+        mark_could_not_check(&mut self.could_not_check, sentence, failed);
+    }
+
+    /// Whether this list could not be read when last read.
+    fn said(&self, sentence: &'static str) -> bool {
+        self.could_not_check.contains(&sentence)
+    }
+
+    /// The shaped sentence for a list that could not be read, if it is said.
+    fn said_lbl(&self, sentence: &'static str) -> Option<&Layout<Brush>> {
+        let i = self.could_not_check.iter().position(|s| *s == sentence)?;
+        self.said_shaped.as_ref().and_then(|(_, l)| l.get(i))
+    }
+
+    /// The height of the alerts' part of the list: their rows, or the
+    /// sentence that says they could not be read.
+    fn alerts_h(&self) -> f64 {
+        if self.said(sovereign_docs::COULD_NOT_CHECK_ALERTS) {
+            SAID_H
+        } else {
+            self.rows.len() as f64 * ALERT_ROW_H
+        }
+    }
+
+    /// The height of the section of documents whose thread was deleted, or
+    /// of the sentence said in its place.
+    fn orphans_h(&self) -> f64 {
+        if self.said(sovereign_docs::COULD_NOT_CHECK_ORPHANS) {
+            SAID_H
+        } else if self.orphans.count() == 0 {
+            0.0
+        } else {
+            self.orphans.height()
         }
     }
 
@@ -1798,15 +2006,14 @@ impl AlertsPanel {
     /// Where the list of documents that could not be read starts in the
     /// list's content (below the alerts and the orphans).
     fn unreadable_top(&self) -> f64 {
-        if self.orphans.count() == 0 {
-            self.rows.len() as f64 * ALERT_ROW_H
-        } else {
-            self.orphans_top() + self.orphans.height()
-        }
+        self.orphans_top() + self.orphans_h()
     }
 
     /// Its height (none when empty).
     fn unreadable_h(&self) -> f64 {
+        if self.said(sovereign_docs::COULD_NOT_CHECK_UNREADABLE) {
+            return UNREADABLE_HEAD_H + SAID_H;
+        }
         if self.unreadable.is_empty() {
             return 0.0;
         }
@@ -1846,7 +2053,7 @@ impl AlertsPanel {
 
     /// Where the section starts in the list's content (below the alerts).
     pub(crate) fn orphans_top(&self) -> f64 {
-        self.rows.len() as f64 * ALERT_ROW_H
+        self.alerts_h()
     }
 
     /// The keyboard's Up / Down across the alerts and then the section's
@@ -1892,7 +2099,11 @@ impl AlertsPanel {
     /// selected, its actions, and the keys.
     pub(crate) fn a11y_lines(&self) -> Vec<String> {
         let mut out = self.alert_a11y_lines();
-        out.extend(self.orphans.a11y_lines());
+        if self.said(sovereign_docs::COULD_NOT_CHECK_ORPHANS) {
+            out.push(sovereign_docs::COULD_NOT_CHECK_ORPHANS.to_string());
+        } else {
+            out.extend(self.orphans.a11y_lines());
+        }
         out.extend(self.unreadable_a11y_lines());
         out
     }
@@ -1900,6 +2111,9 @@ impl AlertsPanel {
     /// The list of documents that could not be read, for a screen reader:
     /// its heading, what it means, and each document (v0.0.12 item 7, V2).
     fn unreadable_a11y_lines(&self) -> Vec<String> {
+        if self.said(sovereign_docs::COULD_NOT_CHECK_UNREADABLE) {
+            return vec![format!("{UNREADABLE_HEADING}."), sovereign_docs::COULD_NOT_CHECK_UNREADABLE.to_string()];
+        }
         if self.unreadable.is_empty() {
             return vec![];
         }
@@ -1910,6 +2124,9 @@ impl AlertsPanel {
     }
 
     fn alert_a11y_lines(&self) -> Vec<String> {
+        if self.said(sovereign_docs::COULD_NOT_CHECK_ALERTS) {
+            return vec![sovereign_docs::COULD_NOT_CHECK_ALERTS.to_string()];
+        }
         if self.rows.is_empty() {
             return vec!["No alerts. Changes from your devices that look suspicious show up here.".into()];
         }
@@ -1988,6 +2205,11 @@ impl AlertsPanel {
                 lines: self.unreadable.iter().map(|l| shaper.shape(&l.text(), tw, 13.0)).collect(),
             });
         }
+        if width_changed || self.said_shaped.as_ref().map(|(s, _)| s) != Some(&self.could_not_check) {
+            let tw = (inner_w - 24.0).max(120.0) as f32;
+            let lbls = self.could_not_check.iter().map(|s| shaper.shape(s, tw, 13.5)).collect();
+            self.said_shaped = Some((self.could_not_check.clone(), lbls));
+        }
         if self.shaped.len() != self.rows.len() || width_changed {
             self.inner_w = inner_w;
             let tw = (inner_w - 24.0).max(120.0) as f32;
@@ -2008,7 +2230,7 @@ impl AlertsPanel {
     }
 
     pub(crate) fn content_h(&self) -> f64 {
-        if self.orphans.count() == 0 && self.unreadable.is_empty() {
+        if self.orphans.count() == 0 && self.unreadable.is_empty() && self.could_not_check.is_empty() {
             return self.rows.len().max(1) as f64 * ALERT_ROW_H + 8.0;
         }
         self.unreadable_top() + self.unreadable_h() + 8.0
@@ -2034,8 +2256,15 @@ pub(crate) async fn load_alerts_as(
     device_names: &HashMap<String, String>,
     own_id: &str,
 ) -> AlertsPanel {
+    // Spec ch. 03, *What cannot be read is never shown as empty*: a list
+    // that cannot be read is said in its section's place, never left empty.
+    let mut could_not_check = Vec::new();
+    let alerts = docs.alerts().await.unwrap_or_else(|_| {
+        could_not_check.push(sovereign_docs::COULD_NOT_CHECK_ALERTS);
+        Vec::new()
+    });
     let mut rows = Vec::new();
-    for a in docs.alerts().await.unwrap_or_default() {
+    for a in alerts {
         let title = match docs.read(&a.id).await {
             Ok(v) => v.labelled_title(),
             Err(_) => String::new(),
@@ -2043,19 +2272,20 @@ pub(crate) async fn load_alerts_as(
         let device = crate::history_device::device_label(&a.device, device_names, own_id);
         rows.push(AlertRow { doc_id: a.id, title, device, finding: a.finding, previous_version: a.previous_version });
     }
-    let orphans = crate::orphans::OrphansSection::load_as(docs, device_names, own_id)
-        .await
-        .unwrap_or_else(|_| crate::orphans::OrphansSection::empty());
+    let orphans = crate::orphans::OrphansSection::load_as(docs, device_names, own_id).await.unwrap_or_else(|_| {
+        could_not_check.push(sovereign_docs::COULD_NOT_CHECK_ORPHANS);
+        crate::orphans::OrphansSection::empty()
+    });
     // v0.0.12 item 7, V2: what the one-time conversion found and could not
-    // decrypt, from this persona's store (a list that cannot be read is left
-    // empty, as the orphans are).
-    let unreadable = sovereign_docs::unlock_migration_undecryptable(docs)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .map(UnreadableLine::of)
-        .collect();
-    AlertsPanel::new(rows).with_orphans(orphans).with_unreadable(unreadable)
+    // decrypt, from this persona's store.
+    let unreadable = match sovereign_docs::unlock_migration_undecryptable(docs).await {
+        Ok(list) => list.iter().map(UnreadableLine::of).collect(),
+        Err(_) => {
+            could_not_check.push(sovereign_docs::COULD_NOT_CHECK_UNREADABLE);
+            Vec::new()
+        }
+    };
+    AlertsPanel::new(rows).with_orphans(orphans).with_unreadable(unreadable).with_could_not_check(could_not_check)
 }
 
 /// Sample alerts for screenshot/debug (SHELL_OPEN_ALERTS=1).
@@ -2103,7 +2333,7 @@ pub(crate) fn draw_alerts(scene: &mut Scene, ap: &AlertsPanel, bounds: Rect) {
         draw_text(scene, l, Affine::translate((header.x0 + DW_PAD, header.y0 + 14.0)), pal().text);
     }
     scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &body_vp);
-    if ap.rows.is_empty() && ap.orphans.count() == 0 && ap.unreadable.is_empty() {
+    if ap.rows.is_empty() && ap.orphans.count() == 0 && ap.unreadable.is_empty() && ap.could_not_check.is_empty() {
         if let Some(e) = &ap.empty_lbl {
             draw_text(scene, e, Affine::translate((body_vp.x0 + 4.0, body_vp.y0 + 8.0)), dim);
         }
@@ -2145,12 +2375,18 @@ pub(crate) fn draw_alerts(scene: &mut Scene, ap: &AlertsPanel, bounds: Rect) {
             scene.stroke(
                 &Stroke::new(2.0),
                 Affine::IDENTITY,
-                pal().accent,
+                crate::theme::chosen_row_outline(&pal()),
                 None,
                 &RoundedRect::from_rect(Rect::new(row.x0 + 1.0, row.y0 + 2.0, row.x1 - 1.0, row.y1 - 2.0), 6.0),
             );
         }
         scene.fill(Fill::NonZero, Affine::IDENTITY, pal().divider, None, &Rect::new(row.x0, row.y1 - 1.0, row.x1, row.y1));
+    }
+    if let Some(l) = ap.said_lbl(sovereign_docs::COULD_NOT_CHECK_ALERTS) {
+        draw_said(scene, l, list_vp, list_vp.y0 - ap.scroll);
+    }
+    if let Some(l) = ap.said_lbl(sovereign_docs::COULD_NOT_CHECK_ORPHANS) {
+        draw_said(scene, l, list_vp, list_vp.y0 - ap.scroll + ap.orphans_top());
     }
     draw_orphans_section(scene, ap, list_vp);
     draw_unreadable_section(scene, ap, list_vp);
@@ -2166,6 +2402,13 @@ pub(crate) fn draw_alerts(scene: &mut Scene, ap: &AlertsPanel, bounds: Rect) {
 /// and date. Nothing to act on: Sovereign tries again after its next update.
 fn draw_unreadable_section(scene: &mut Scene, ap: &AlertsPanel, list_vp: Rect) {
     let Some(sh) = &ap.unreadable_shaped else { return };
+    if let Some(l) = ap.said_lbl(sovereign_docs::COULD_NOT_CHECK_UNREADABLE) {
+        let y = list_vp.y0 - ap.scroll + ap.unreadable_top();
+        scene.fill(Fill::NonZero, Affine::IDENTITY, pal().divider, None, &Rect::new(list_vp.x0, y + 6.0, list_vp.x1, y + 7.0));
+        draw_text(scene, &sh.heading, Affine::translate((list_vp.x0 + 4.0, y + 12.0)), pal().text);
+        draw_said(scene, l, list_vp, y + UNREADABLE_HEAD_H);
+        return;
+    }
     if ap.unreadable.is_empty() || sh.lines.len() != ap.unreadable.len() {
         return;
     }
@@ -2183,6 +2426,16 @@ fn draw_unreadable_section(scene: &mut Scene, ap: &AlertsPanel, list_vp: Rect) {
         }
         y += UNREADABLE_LINE_H;
     }
+}
+
+/// A sentence that says a list could not be read, in that list's place, at
+/// `top`, marked with the alert's bar (it is something to see, not nothing).
+fn draw_said(scene: &mut Scene, l: &Layout<Brush>, list_vp: Rect, top: f64) {
+    if top + SAID_H < list_vp.y0 || top > list_vp.y1 {
+        return;
+    }
+    scene.fill(Fill::NonZero, Affine::IDENTITY, ALERT_PILL, None, &Rect::new(list_vp.x0, top + 6.0, list_vp.x0 + 3.0, top + SAID_H - 6.0));
+    draw_text(scene, l, Affine::translate((list_vp.x0 + 12.0, top + 8.0)), pal().text);
 }
 
 /// The section "Documents whose thread was deleted" (S5-12 W5), below the
@@ -2231,7 +2484,7 @@ fn draw_orphans_section(scene: &mut Scene, ap: &AlertsPanel, list_vp: Rect) {
                     scene.stroke(
                         &Stroke::new(2.0),
                         Affine::IDENTITY,
-                        pal().accent,
+                        crate::theme::chosen_row_outline(&pal()),
                         None,
                         &RoundedRect::from_rect(Rect::new(r.x0 + 1.0, r.y0 + 2.0, r.x1 - 1.0, r.y1 - 2.0), 6.0),
                     );
@@ -2290,6 +2543,11 @@ pub(crate) struct PreviousValuesPanel {
     pub(crate) selected: usize,
     pub(crate) scroll: f64,
     pub(crate) inner_w: f64,
+    /// The notice of the last restore that failed, « Not restored: {what} —
+    /// {why} », or that has no answer yet (spec ch. 05, *A restore that fails is
+    /// said*), said above the list it was offered in.
+    notice: Option<String>,
+    notice_lbl: Option<Layout<Brush>>,
     title_lbl: Option<Layout<Brush>>,
     empty_lbl: Option<Layout<Brush>>,
     hint_lbl: Option<Layout<Brush>>,
@@ -2305,6 +2563,8 @@ impl PreviousValuesPanel {
             selected: 0,
             scroll: 0.0,
             inner_w: 0.0,
+            notice: None,
+            notice_lbl: None,
             title_lbl: None,
             empty_lbl: None,
             hint_lbl: None,
@@ -2312,6 +2572,16 @@ impl PreviousValuesPanel {
             forget_lbl: None,
             shaped: Vec::new(),
         }
+    }
+
+    /// The notice a restore's outcome gives (`None` for one that worked).
+    pub(crate) fn set_notice(&mut self, notice: Option<String>) {
+        self.notice = notice;
+        self.notice_lbl = None;
+    }
+
+    pub(crate) fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
     }
 
     pub(crate) fn selected_row(&self) -> Option<&PreviousValueRow> {
@@ -2336,7 +2606,8 @@ impl PreviousValuesPanel {
             return vec!["No previous values. When a sync replaces an item, its earlier value is kept here.".into()];
         }
         let n = self.rows.len();
-        let mut out: Vec<String> = self
+        let mut out: Vec<String> = self.notice.iter().cloned().collect();
+        out.extend(self
             .rows
             .iter()
             .enumerate()
@@ -2350,8 +2621,7 @@ impl PreviousValuesPanel {
                     if r.device.is_empty() { "a paired device" } else { &r.device },
                     r.when
                 )
-            })
-            .collect();
+            }));
         out.push(PREVIOUS_KEYS.into());
         out
     }
@@ -2367,6 +2637,10 @@ impl PreviousValuesPanel {
             ));
             self.restore_lbl = Some(shaper.shape("Restore", 140.0, 12.0));
             self.forget_lbl = Some(shaper.shape("Remove from list", 140.0, 12.0));
+        }
+        if self.notice.is_some() && (self.notice_lbl.is_none() || width_changed) {
+            let n = self.notice.as_deref().unwrap_or_default();
+            self.notice_lbl = Some(shaper.shape(n, (inner_w - 24.0).max(120.0) as f32, 13.0));
         }
         if self.shaped.len() != self.rows.len() || width_changed {
             self.inner_w = inner_w;
@@ -2388,7 +2662,11 @@ impl PreviousValuesPanel {
     }
 
     pub(crate) fn hint_h(&self) -> f64 {
-        self.hint_lbl.as_ref().map(|l| l.height() as f64 + 10.0).unwrap_or(24.0)
+        self.notice_h() + self.hint_lbl.as_ref().map(|l| l.height() as f64 + 10.0).unwrap_or(24.0)
+    }
+
+    fn notice_h(&self) -> f64 {
+        self.notice_lbl.as_ref().filter(|_| self.notice.is_some()).map(|l| l.height() as f64 + 8.0).unwrap_or(0.0)
     }
 
     pub(crate) fn content_h(&self) -> f64 {
@@ -2459,8 +2737,11 @@ pub(crate) fn draw_previous_values(scene: &mut Scene, pv: &PreviousValuesPanel, 
         scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &panel_rr);
         return;
     }
+    if let (Some(_), Some(n)) = (&pv.notice, &pv.notice_lbl) {
+        draw_text(scene, n, Affine::translate((body_vp.x0 + 4.0, body_vp.y0 + 4.0)), pal().text);
+    }
     if let Some(h) = &pv.hint_lbl {
-        draw_text(scene, h, Affine::translate((body_vp.x0 + 4.0, body_vp.y0 + 4.0)), dim);
+        draw_text(scene, h, Affine::translate((body_vp.x0 + 4.0, body_vp.y0 + 4.0 + pv.notice_h())), dim);
     }
     let list_vp = alerts_list_vp(body_vp, pv.hint_h());
     scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &list_vp);
@@ -2484,7 +2765,7 @@ pub(crate) fn draw_previous_values(scene: &mut Scene, pv: &PreviousValuesPanel, 
             scene.stroke(
                 &Stroke::new(2.0),
                 Affine::IDENTITY,
-                pal().accent,
+                crate::theme::chosen_row_outline(&pal()),
                 None,
                 &RoundedRect::from_rect(Rect::new(row.x0 + 1.0, row.y0 + 2.0, row.x1 - 1.0, row.y1 - 2.0), 6.0),
             );
@@ -2664,7 +2945,16 @@ pub(crate) struct DevicesPanel {
     empty_lbl: Option<Layout<Brush>>,
     rows_shaped: Vec<(Layout<Brush>, Layout<Brush>)>, // (name, peer+status meta)
     dirty: bool,                                       // identity strings changed
+    /// Why the paired list could not be read, when it could not (C-AREA AR3):
+    /// the panel says so instead of an empty list.
+    pub(crate) unreadable: Option<String>,
 }
+
+/// What the Devices window and the login's notice say over a paired list that
+/// could not be read (C-AREA AR3; ch. 03, *What cannot be read is never shown
+/// as empty*).
+pub(crate) const PAIRED_UNREADABLE: &str =
+    "Your paired devices could not be read. The list is kept as it is; no device is paired until it can be read.";
 
 impl DevicesPanel {
     pub(crate) fn a11y_lines(&self) -> Vec<String> {
@@ -2674,7 +2964,9 @@ impl DevicesPanel {
             if self.enabled { "sync running" } else { "sync off" },
             self.local_peer_id
         )];
-        if self.rows.is_empty() {
+        if self.unreadable.is_some() {
+            v.push(PAIRED_UNREADABLE.into());
+        } else if self.rows.is_empty() {
             v.push("No paired devices yet".into());
         } else {
             v.extend(self.rows.iter().map(|r| format!("{} \u{2014} {} \u{2014} {}", r.name, r.peer_id, r.status)));
@@ -2718,11 +3010,12 @@ impl DevicesPanel {
             self.sync_lbl = Some(shaper.shape("Sync now", 200.0, 12.5));
             self.pair_lbl = Some(shaper.shape("Pair a device\u{2026}", 200.0, 12.5));
             self.forget_lbl = Some(shaper.shape("Forget", 80.0, 12.0));
-            self.empty_lbl = Some(shaper.shape(
-                "No paired devices yet \u{2014} \u{201c}Pair a device\u{2026}\u{201d} shows a code + QR another device scans to join your encrypted sync.",
-                560.0,
-                13.0,
-            ));
+            let empty = if self.unreadable.is_some() {
+                PAIRED_UNREADABLE
+            } else {
+                "No paired devices yet \u{2014} \u{201c}Pair a device\u{2026}\u{201d} shows a code + QR another device scans to join your encrypted sync."
+            };
+            self.empty_lbl = Some(shaper.shape(empty, 560.0, 13.0));
         }
         if self.dirty || self.name_lbl.is_none() {
             let status = if self.enabled { "sync running" } else { "sync off" };
@@ -2748,7 +3041,7 @@ impl DevicesPanel {
 }
 
 /// Shorten a libp2p PeerId for display: keep the first 8 + last 6 chars.
-fn short_peer(id: &str) -> String {
+pub(crate) fn short_peer(id: &str) -> String {
     if id.len() > 18 {
         format!("{}\u{2026}{}", &id[..8], &id[id.len() - 6..])
     } else {
@@ -2784,6 +3077,7 @@ pub(crate) fn devices_panel(
         empty_lbl: None,
         rows_shaped: Vec::new(),
         dirty: true,
+        unreadable: None,
     }
 }
 
@@ -2935,7 +3229,16 @@ pub(crate) struct ChatPanel {
     pub(crate) loading: bool, // the pending reply is the FIRST one (model loading)
     pub(crate) pending_label: Option<Layout<Brush>>,
     pub(crate) loading_label: Option<Layout<Brush>>,
+    /// C-LOG DG3: the indices of the messages that offer « Show what remains
+    /// readable » below them (the quarantine notice, the reply after the
+    /// diagnosis).
+    pub(crate) readable_log_at: Vec<usize>,
+    /// Where those controls were last drawn, for a click.
+    pub(crate) control_rects: Vec<Rect>,
+    pub(crate) control_label: Option<Layout<Brush>>,
 }
+/// The height a « Show what remains readable » control adds below its message.
+pub(crate) const CHAT_CONTROL_H: f64 = 30.0;
 impl ChatPanel {
     pub(crate) fn new() -> Self {
         Self {
@@ -2957,6 +3260,9 @@ impl ChatPanel {
             loading: false,
             pending_label: None,
             loading_label: None,
+            readable_log_at: Vec::new(),
+            control_rects: Vec::new(),
+            control_label: None,
         }
     }
     /// Append the user's message `text` (what the composer sent) and mark a
@@ -2979,6 +3285,7 @@ impl ChatPanel {
             self.pending_label = Some(shaper.shape("Assistant is thinking\u{2026}", 400.0, 13.0));
             self.loading_label =
                 Some(shaper.shape("Loading the model\u{2026} the first reply takes a moment (CPU)", 400.0, 13.0));
+            self.control_label = Some(shaper.shape(crate::log_window::SHOW, 400.0, 12.5));
         }
         let width_changed = (inner_w - self.inner_w).abs() >= 0.5;
         if self.shaped_len != self.msgs.len() || width_changed {
@@ -3001,7 +3308,8 @@ impl ChatPanel {
             .iter()
             .map(|(_, l, b)| l.height() as f64 + b.height() as f64 + IB_MSG_GAP)
             .sum();
-        msgs + if self.pending { 28.0 } else { 0.0 }
+        let controls = self.readable_log_at.iter().filter(|i| **i < self.shaped.len()).count() as f64 * CHAT_CONTROL_H;
+        msgs + controls + if self.pending { 28.0 } else { 0.0 }
     }
 }
 
@@ -3020,7 +3328,8 @@ pub(crate) fn draw_chat(scene: &mut Scene, chat: &mut ChatPanel, bounds: Rect) {
     let asst_c = Color::from_rgb8(120, 175, 135);
     scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &msg_vp);
     let mut y = msg_vp.y0 - chat.scroll;
-    for (role, label, body) in &chat.shaped {
+    let mut control_rects = Vec::new();
+    for (i, (role, label, body)) in chat.shaped.iter().enumerate() {
         let hh = label.height() as f64;
         let bh = body.height() as f64;
         if y + hh + bh + IB_MSG_GAP >= msg_vp.y0 && y <= msg_vp.y1 {
@@ -3029,7 +3338,22 @@ pub(crate) fn draw_chat(scene: &mut Scene, chat: &mut ChatPanel, bounds: Rect) {
             draw_text(scene, body, Affine::translate((msg_vp.x0, y + hh + 2.0)), pal().text_body);
         }
         y += hh + bh + IB_MSG_GAP;
+        // C-LOG DG3: the control below the notice or the diagnosed reply.
+        if chat.readable_log_at.contains(&i) {
+            if let Some(cl) = &chat.control_label {
+                let r = Rect::new(msg_vp.x0, y - IB_MSG_GAP + 2.0, msg_vp.x0 + cl.width() as f64 + 20.0, y - IB_MSG_GAP + 26.0);
+                if r.y1 >= msg_vp.y0 && r.y0 <= msg_vp.y1 {
+                    scene.fill(Fill::NonZero, Affine::IDENTITY, pal().surface_alt, None, &RoundedRect::from_rect(r, 5.0));
+                    scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &RoundedRect::from_rect(r, 5.0));
+                    draw_text(scene, cl, Affine::translate((r.x0 + 10.0, r.y0 + (r.height() - cl.height() as f64) * 0.5)), pal().text);
+                    // Clickable only where it shows in the transcript.
+                    control_rects.push(r.intersect(msg_vp));
+                }
+            }
+            y += CHAT_CONTROL_H;
+        }
     }
+    chat.control_rects = control_rects;
     if chat.pending {
         let label = if chat.loading { &chat.loading_label } else { &chat.pending_label };
         if let Some(pl) = label {
@@ -3465,6 +3789,14 @@ impl AuthForm {
         self.copy().0
     }
 
+    /// The form's drawn hint, whole and as drawn: each secret field's
+    /// description in the accessibility tree (spec ch. 12, L6), so a screen
+    /// reader says the "show" key when the field takes the focus. The hint's
+    /// own label stays in the tree, for scan mode.
+    pub(crate) fn a11y_hint(&self) -> &'static str {
+        self.copy().2
+    }
+
     pub(crate) fn ensure_shaped(&mut self, shaper: &mut TextShaper) {
         if self.title.is_none() {
             let (t, s, hint) = self.copy();
@@ -3528,7 +3860,7 @@ pub(crate) fn draw_auth(scene: &mut Scene, form: &AuthForm, status: Option<&Layo
         scene.stroke(
             &Stroke::new(if focused { 1.6 } else { 1.0 }),
             Affine::IDENTITY,
-            if focused { accent } else { pal().input_border },
+            if focused { crate::theme::focused_field_border(&pal()) } else { pal().input_border },
             None,
             &frr,
         );
@@ -3709,7 +4041,7 @@ pub(crate) fn draw_comms_form(scene: &mut Scene, form: &CommsForm, w: f64, h: f6
         let focused = i == form.focus;
         let frr = RoundedRect::from_rect(*fr, 7.0);
         scene.fill(Fill::NonZero, Affine::IDENTITY, pal().input, None, &frr);
-        scene.stroke(&Stroke::new(if focused { 1.6 } else { 1.0 }), Affine::IDENTITY, if focused { accent } else { pal().input_border }, None, &frr);
+        scene.stroke(&Stroke::new(if focused { 1.6 } else { 1.0 }), Affine::IDENTITY, if focused { crate::theme::focused_field_border(&pal()) } else { pal().input_border }, None, &frr);
         let tx = fr.x0 + 11.0;
         let ty = fr.y0 + (fr.height() - 16.0) * 0.5;
         if let Some(fl) = form.field_layouts.get(i) {
@@ -3734,7 +4066,8 @@ pub(crate) fn draw_comms_form(scene: &mut Scene, form: &CommsForm, w: f64, h: f6
             draw_text(scene, l, Affine::translate((tx, ty)), fg);
         }
     };
-    btn(scene, sync, &form.sync_lbl, accent.with_alpha(0.85), pal().on_accent);
+    let sync_bg = accent.with_alpha(0.85);
+    btn(scene, sync, &form.sync_lbl, sync_bg, crate::theme::text_on_fill(crate::theme::seen_over(sync_bg, pal().modal)));
     btn(scene, save, &form.save_lbl, pal().surface_alt, pal().text);
     btn(scene, cancel, &form.cancel_lbl, pal().surface, pal().text_body);
 }
@@ -3745,6 +4078,74 @@ pub(crate) fn draw_comms_form(scene: &mut Scene, form: &CommsForm, w: f64, h: f6
 // device scans the shell to join) + the pairing code (proven live, never in the
 // QR). A centered modal; the node runs the wire handshake + emits
 // PairingCompleted, which the event translator persists.
+
+/// The pairing offer's buttons, in drawn order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PairControl {
+    Copy,
+    Done,
+}
+
+// Local accessibility ids of the modal windows of spec ch. 12, SQ10 (the
+// pairing offer, the guardian enrolment, the recovery wizard): the dialog,
+// its controls, then its lines from `A11Y_MODAL_LINES` on.
+const A11Y_MODAL_DIALOG: accesskit::NodeId = accesskit::NodeId(1);
+const PAIR_COPY: accesskit::NodeId = accesskit::NodeId(2);
+const PAIR_DONE: accesskit::NodeId = accesskit::NodeId(3);
+const GUARDIAN_DONE: accesskit::NodeId = accesskit::NodeId(2);
+const REC_FIELD: accesskit::NodeId = accesskit::NodeId(2);
+const REC_REVEAL: accesskit::NodeId = accesskit::NodeId(3);
+const REC_CHECK_NOW: accesskit::NodeId = accesskit::NodeId(4);
+const REC_SECONDARY: accesskit::NodeId = accesskit::NodeId(5);
+const REC_PRIMARY: accesskit::NodeId = accesskit::NodeId(6);
+const A11Y_MODAL_LINES: u64 = 16;
+
+/// A modal window's tree: a dialog named by `lines[0]` (its drawn title),
+/// holding its other lines as labels, the line that says its keys (heard,
+/// never drawn, as the prompts' own, SQ4), then `extra` (already built nodes,
+/// in order), then `buttons`, each taking Click and Focus.
+fn a11y_modal_tree(
+    lines: &[String],
+    keys: &str,
+    extra: Vec<(accesskit::NodeId, accesskit::Node)>,
+    buttons: &[(accesskit::NodeId, &str)],
+    focus: accesskit::NodeId,
+) -> accesskit::TreeUpdate {
+    use accesskit::{Action, Node, NodeId, Role, Tree, TreeId, TreeUpdate};
+    let mut nodes = Vec::new();
+    let mut children = Vec::new();
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        let id = NodeId(A11Y_MODAL_LINES + i as u64);
+        // A `Label` is spoken by its value (v0.0.12 rc2, L1).
+        let mut n = Node::new(Role::Label);
+        n.set_value(line.clone());
+        nodes.push((id, n));
+        children.push(id);
+    }
+    let keys_id = NodeId(A11Y_MODAL_LINES);
+    let mut k = Node::new(Role::Label);
+    k.set_value(keys.to_string());
+    nodes.push((keys_id, k));
+    children.push(keys_id);
+    for (id, n) in extra {
+        children.push(id);
+        nodes.push((id, n));
+    }
+    for (id, label) in buttons {
+        let mut b = Node::new(Role::Button);
+        b.set_label(label.to_string());
+        b.add_action(Action::Click);
+        b.add_action(Action::Focus);
+        nodes.push((*id, b));
+        children.push(*id);
+    }
+    let mut dialog = Node::new(Role::Dialog);
+    dialog.set_label(lines.first().cloned().unwrap_or_default());
+    dialog.set_modal();
+    dialog.set_children(children);
+    nodes.insert(0, (A11Y_MODAL_DIALOG, dialog));
+    TreeUpdate { nodes, tree: Some(Tree::new(A11Y_MODAL_DIALOG)), tree_id: TreeId::ROOT, focus }
+}
 
 /// Layout: (card, qr square, copy button, done button). QR is centered;
 /// high-contrast black-on-white (theme colors would break scanners).
@@ -3779,6 +4180,8 @@ pub(crate) struct PairingModal {
     copied_lbl: Option<Layout<Brush>>,
     close_lbl: Option<Layout<Brush>>,
     shaped: bool,
+    /// The button the keyboard is on (spec ch. 12, SQ10); never drawn.
+    pub(crate) focus: PairControl,
 }
 impl PairingModal {
     pub(crate) fn new(code: String, pin: String) -> Self {
@@ -3804,6 +4207,30 @@ impl PairingModal {
             copied_lbl: None,
             close_lbl: None,
             shaped: false,
+            focus: PairControl::Done,
+        }
+    }
+
+    /// The offer as a screen reader reads it (spec ch. 12, SQ10): a modal
+    /// dialog named by its title, its lines, then its two buttons named as
+    /// drawn. Ids are local; the shell inlines the tree under its own range.
+    pub(crate) fn accessibility_tree(&self) -> accesskit::TreeUpdate {
+        let copy = if self.copied { "Copied!" } else { "Copy code" };
+        let buttons = [(PAIR_COPY, copy), (PAIR_DONE, "Done")];
+        let focus = match self.focus {
+            PairControl::Copy => PAIR_COPY,
+            PairControl::Done => PAIR_DONE,
+        };
+        let keys = "Tab moves between the buttons, Enter or Space presses the focused one, Escape closes.";
+        a11y_modal_tree(&self.a11y_lines(), keys, Vec::new(), &buttons, focus)
+    }
+
+    /// Which button a local id of [`Self::accessibility_tree`] is.
+    pub(crate) fn a11y_control(local: accesskit::NodeId) -> Option<PairControl> {
+        match local {
+            PAIR_COPY => Some(PairControl::Copy),
+            PAIR_DONE => Some(PairControl::Done),
+            _ => None,
         }
     }
 
@@ -3881,6 +4308,16 @@ pub(crate) fn draw_pairing_modal(scene: &mut Scene, m: &PairingModal, w: f64, h:
     };
     btn(scene, copy, copy_lbl, pal().surface, copy_fg);
     btn(scene, close, &m.close_lbl, pal().surface_alt, pal().text);
+    focus_outline(scene, pairing_focus_rect(m, w, h));
+}
+
+/// Where the pairing offer's focused button is drawn.
+fn pairing_focus_rect(m: &PairingModal, w: f64, h: f64) -> Rect {
+    let (_, _, copy, done) = pairing_modal_layout(w, h);
+    match m.focus {
+        PairControl::Copy => copy,
+        PairControl::Done => done,
+    }
 }
 
 /// Draw a QR as black modules on a white card, with a 3-module white quiet zone.
@@ -3992,6 +4429,19 @@ impl GuardianEnrollModal {
         }
     }
 
+    /// The enrolment as a screen reader reads it (spec ch. 12, SQ10): a modal
+    /// dialog named by its title, its lines, and « Done », which holds the
+    /// focus (its only control).
+    pub(crate) fn accessibility_tree(&self) -> accesskit::TreeUpdate {
+        let keys = "Enter or Space presses Done, Escape closes.";
+        a11y_modal_tree(&self.a11y_lines(), keys, Vec::new(), &[(GUARDIAN_DONE, "Done")], GUARDIAN_DONE)
+    }
+
+    /// Whether a local id of [`Self::accessibility_tree`] is « Done ».
+    pub(crate) fn a11y_is_done(local: accesskit::NodeId) -> bool {
+        local == GUARDIAN_DONE
+    }
+
     pub(crate) fn a11y_lines(&self) -> Vec<String> {
         vec![
             format!("Enroll guardian {} of 5", self.slot_ordinal),
@@ -4071,13 +4521,14 @@ pub(crate) fn draw_guardian_enroll_modal(scene: &mut Scene, m: &GuardianEnrollMo
         draw_text(scene, f, Affine::translate((card.x0 + 28.0, y)), pal().text_dim);
     }
 
-    // Done button.
+    // Done button: its only control, so it always holds the keyboard.
     scene.fill(Fill::NonZero, Affine::IDENTITY, pal().surface_alt, None, &RoundedRect::from_rect(close, 7.0));
     if let Some(l) = &m.close_lbl {
         let tx = close.x0 + (close.width() - l.width() as f64) * 0.5;
         let ty = close.y0 + (close.height() - l.height() as f64) * 0.5;
         draw_text(scene, l, Affine::translate((tx, ty)), pal().text);
     }
+    focus_outline(scene, close);
 }
 
 // ---- Guardian access recovery wizard (F1 Surface 2) ---------------------
@@ -4131,6 +4582,21 @@ pub(crate) struct RecoveryWizard {
     /// A finalize (reconstruct + re-install) is running.
     pub(crate) finalizing: bool,
     pub(crate) error: Option<String>,
+    /// The control the keyboard is on, and the phase it was set in (spec ch.
+    /// 12, SQ10); never drawn. Off its phase, the phase's first focus holds.
+    focus: Option<(RecoveryPhase, RecControl)>,
+}
+
+/// The recovery wizard's controls (spec ch. 12, SQ10): the new password's
+/// field and its show/hide toggle, « Check now », and the two buttons at the
+/// card's bottom, the secondary on the left and the primary on the right.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RecControl {
+    Field,
+    Reveal,
+    CheckNow,
+    Secondary,
+    Primary,
 }
 
 impl RecoveryWizard {
@@ -4147,6 +4613,7 @@ impl RecoveryWizard {
             next_poll_secs: None,
             finalizing: false,
             error: None,
+            focus: None,
         }
     }
 
@@ -4174,6 +4641,161 @@ impl RecoveryWizard {
             _ if status.ready_to_finalize() => RecoveryPhase::Ready,
             _ => RecoveryPhase::Awaiting,
         };
+    }
+
+    /// The phase's controls, in drawn reading order.
+    pub(crate) fn controls(&self) -> &'static [RecControl] {
+        use RecControl::*;
+        match self.phase {
+            RecoveryPhase::SetPassword => &[Field, Reveal, Secondary, Primary],
+            RecoveryPhase::Awaiting => &[CheckNow, Secondary, Primary],
+            RecoveryPhase::Ready | RecoveryPhase::Failed => &[Secondary, Primary],
+        }
+    }
+
+    /// The control the keyboard is on. A phase opens where Enter lands today
+    /// (the field, « Check now », « Recover »); the failed phase, where Enter
+    /// did nothing, on « Close », which loses nothing.
+    pub(crate) fn focused(&self) -> RecControl {
+        match self.focus {
+            Some((phase, c)) if phase == self.phase && self.controls().contains(&c) => c,
+            _ => match self.phase {
+                RecoveryPhase::SetPassword => RecControl::Field,
+                RecoveryPhase::Awaiting => RecControl::CheckNow,
+                RecoveryPhase::Ready => RecControl::Primary,
+                RecoveryPhase::Failed => RecControl::Secondary,
+            },
+        }
+    }
+
+    pub(crate) fn set_focus(&mut self, c: RecControl) {
+        self.focus = Some((self.phase, c));
+    }
+
+    /// Tab (or Shift+Tab, `back`): the next control of the phase, round.
+    pub(crate) fn move_focus(&mut self, back: bool) {
+        let cs = self.controls();
+        let at = cs.iter().position(|c| *c == self.focused()).unwrap_or(0);
+        let next = if back { (at + cs.len() - 1) % cs.len() } else { (at + 1) % cs.len() };
+        self.set_focus(cs[next]);
+    }
+
+    /// The title `draw_recovery_wizard` draws for the phase.
+    pub(crate) fn title(&self) -> &'static str {
+        match self.phase {
+            RecoveryPhase::SetPassword if self.resuming => "Resume recovery",
+            RecoveryPhase::SetPassword => "Recover access \u{2014} set a new password",
+            RecoveryPhase::Awaiting => "Recover access with guardians",
+            RecoveryPhase::Ready => "Recover now",
+            RecoveryPhase::Failed => "Recovery couldn't finish",
+        }
+    }
+
+    /// A button's name, as `draw_recovery_wizard` draws it.
+    fn control_name(&self, c: RecControl) -> &'static str {
+        match (self.phase, c) {
+            (_, RecControl::Field) => "New password",
+            // As the login form's toggle is named (L4); drawn « show » / « hide ».
+            (_, RecControl::Reveal) => {
+                if self.reveal {
+                    "Hide password"
+                } else {
+                    "Show password"
+                }
+            }
+            (_, RecControl::CheckNow) => {
+                if self.polling {
+                    "Checking\u{2026}"
+                } else {
+                    "Check now"
+                }
+            }
+            (RecoveryPhase::SetPassword, RecControl::Primary) => {
+                if self.finalizing {
+                    "Working\u{2026}"
+                } else if self.resuming {
+                    "Resume"
+                } else {
+                    "Start recovery"
+                }
+            }
+            (RecoveryPhase::Awaiting, RecControl::Primary) => "Close",
+            (RecoveryPhase::Ready, RecControl::Primary) => {
+                if self.finalizing {
+                    "Recovering\u{2026}"
+                } else {
+                    "Recover"
+                }
+            }
+            (RecoveryPhase::Failed, RecControl::Primary) => "Start over",
+            (RecoveryPhase::Failed, RecControl::Secondary) => "Close",
+            (_, RecControl::Secondary) => "Cancel",
+        }
+    }
+
+    /// The wizard as a screen reader reads it (spec ch. 12, SQ10): a modal
+    /// dialog named by its drawn title, its lines, its status or error, the
+    /// new password's field (its length only, « show » on or off) with its
+    /// toggle, and its buttons named as drawn.
+    pub(crate) fn accessibility_tree(&self) -> accesskit::TreeUpdate {
+        use accesskit::{Action, Node, Role};
+        let mut lines = vec![self.title().to_string()];
+        lines.extend(self.a11y_lines());
+        let mut extra = Vec::new();
+        // v0.0.12 items 18+20 (B2, B4): its status line while the new password
+        // is set; else the error it draws, as an alert (the Failed phase
+        // already says its error among its lines).
+        let status = if self.finalizing {
+            Some((Role::Status, crate::auth_work::SETTING_PASSWORD.to_string()))
+        } else {
+            self.error
+                .as_deref()
+                .filter(|e| !e.trim().is_empty() && self.phase != RecoveryPhase::Failed)
+                .map(|e| (Role::Alert, e.to_string()))
+        };
+        if let Some((role, text)) = status {
+            let mut n = Node::new(role);
+            n.set_label(text);
+            extra.push((accesskit::NodeId(A11Y_MODAL_LINES - 1), n));
+        }
+        let id_of = |c: RecControl| match c {
+            RecControl::Field => REC_FIELD,
+            RecControl::Reveal => REC_REVEAL,
+            RecControl::CheckNow => REC_CHECK_NOW,
+            RecControl::Secondary => REC_SECONDARY,
+            RecControl::Primary => REC_PRIMARY,
+        };
+        let mut buttons = Vec::new();
+        for c in self.controls() {
+            if *c == RecControl::Field {
+                let mut f = Node::new(Role::PasswordInput);
+                f.set_label(self.control_name(*c));
+                let n = self.new_password.chars().count();
+                if n > 0 {
+                    f.set_value(format!("{n} characters"));
+                }
+                f.add_action(Action::Focus);
+                extra.push((REC_FIELD, f));
+            } else {
+                buttons.push((id_of(*c), self.control_name(*c)));
+            }
+        }
+        // The field is drawn above its toggle and the buttons: it goes first.
+        let keys = "Tab moves between the controls, Enter or Space presses the focused button, Escape closes \
+                    (the recovery keeps running).";
+        a11y_modal_tree(&lines, keys, extra, &buttons, id_of(self.focused()))
+    }
+
+    /// Which control a local id of [`Self::accessibility_tree`] is.
+    pub(crate) fn a11y_control(local: accesskit::NodeId) -> Option<RecControl> {
+        match local {
+            REC_FIELD => Some(RecControl::Field),
+            REC_REVEAL => Some(RecControl::Reveal),
+            REC_CHECK_NOW => Some(RecControl::CheckNow),
+            REC_SECONDARY => Some(RecControl::Secondary),
+            REC_PRIMARY => Some(RecControl::Primary),
+            _ => None,
+        }
     }
 
     pub(crate) fn a11y_lines(&self) -> Vec<String> {
@@ -4333,7 +4955,12 @@ pub(crate) fn draw_recovery_wizard(
             // The password field (moved up front from the old Ready phase).
             let fr = RoundedRect::from_rect(field, 7.0);
             scene.fill(Fill::NonZero, Affine::IDENTITY, pal().surface, None, &fr);
-            scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &fr);
+            // The focused field: the focused-field border (ch. 12, TC3; WCAG 2.4.7, 1.4.11).
+            if wiz.focused() == RecControl::Field {
+                scene.stroke(&Stroke::new(1.6), Affine::IDENTITY, crate::theme::focused_field_border(&pal()), None, &fr);
+            } else {
+                scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &fr);
+            }
             let shown = if wiz.reveal {
                 wiz.new_password.clone()
             } else {
@@ -4394,6 +5021,22 @@ pub(crate) fn draw_recovery_wizard(
             btn(scene, shaper, secondary, "Close", pal().surface, pal().text_dim);
         }
     }
+    if let Some(r) = recovery_focus_rect(wiz, w, h) {
+        focus_outline(scene, r);
+    }
+}
+
+/// Where the recovery wizard's focused control is drawn; none for the field,
+/// which takes an accent border instead.
+fn recovery_focus_rect(wiz: &RecoveryWizard, w: f64, h: f64) -> Option<Rect> {
+    let (_card, _field, primary, secondary, check_now, reveal) = recovery_wizard_layout(w, h, wiz.phase);
+    match wiz.focused() {
+        RecControl::Field => None,
+        RecControl::Reveal => Some(reveal),
+        RecControl::CheckNow => Some(check_now),
+        RecControl::Primary => Some(primary),
+        RecControl::Secondary => Some(secondary),
+    }
 }
 
 // ---- Injection-decision gate (INJECTION-002) ----------------------------
@@ -4408,7 +5051,49 @@ pub(crate) struct InjectionPrompt {
     pub(crate) severity: u8,
     pub(crate) indicators: Vec<String>,
     pub(crate) preview: String,
+    /// The button with the keyboard, from « Redact & continue » (ch. 12, SQ3).
+    pub(crate) focus: crate::app::shell_a11y::DialogFocus,
 }
+
+/// The prompt's title, as drawn and as its dialog is named (ch. 12, SQ1).
+pub(crate) const INJECTION_TITLE: &str = "Possible prompt injection in tool output";
+/// Its buttons, left to right as drawn: redact, pass through, abort.
+pub(crate) const INJECTION_BUTTONS: [&str; 3] = ["Redact & continue", "Pass through", "Abort turn"];
+
+impl InjectionPrompt {
+    /// The line under the title: where it comes from, and its severity.
+    fn source_line(&self) -> String {
+        format!(
+            "From {}  \u{00b7}  severity {}/10. It may be trying to steer the assistant. Choose what reaches the model.",
+            one_line_clip(&self.source, 48),
+            self.severity
+        )
+    }
+
+    /// The signals line.
+    fn signals_line(&self) -> String {
+        let ind = if self.indicators.is_empty() {
+            "flagged by the injection scanner".to_string()
+        } else {
+            one_line_clip(&self.indicators.join(", "), 70)
+        };
+        format!("Signals: {ind}")
+    }
+
+    /// The flagged content as drawn: one line, clipped, control characters
+    /// removed.
+    fn preview_drawn(&self) -> String {
+        one_line_clip(&self.preview, 500)
+    }
+
+    /// What it draws under its title, as a screen reader hears it (ch. 12,
+    /// SQ1: it is shown to her, so it is heard).
+    pub(crate) fn a11y_lines(&self) -> Vec<String> {
+        vec![self.source_line(), self.signals_line(), PREVIEW_HEADING.to_string(), self.preview_drawn()]
+    }
+}
+
+const PREVIEW_HEADING: &str = "Flagged content (preview):";
 
 /// (panel, redact btn, pass-through btn, abort btn).
 pub(crate) fn injection_prompt_geom(w: f64, h: f64) -> (Rect, Rect, Rect, Rect) {
@@ -4443,12 +5128,22 @@ fn one_line_clip(s: &str, max: usize) -> String {
     }
 }
 
+/// The visible focus outline of the button that holds the keyboard (WCAG
+/// 2.4.7), as the shell draws it elsewhere (the same-name question): a 2 px
+/// stroke in the text colour, 3 px outside the button.
+pub(crate) fn focus_outline(scene: &mut Scene, button: Rect) {
+    scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, pal().text, None, &RoundedRect::from_rect(button.inflate(3.0, 3.0), 9.0));
+}
+
+/// `keyboard`: whether the prompt is on top and its focused button holds the
+/// keyboard (ch. 12, SQ4), which then shows its focus outline.
 pub(crate) fn draw_injection_prompt(
     scene: &mut Scene,
     shaper: &mut TextShaper,
     p: &InjectionPrompt,
     w: f64,
     h: f64,
+    keyboard: bool,
 ) {
     let (panel, redact, pass, abort) = injection_prompt_geom(w, h);
     scene.fill(Fill::NonZero, Affine::IDENTITY, pal().scrim.with_alpha(0.5), None, &Rect::new(0.0, 0.0, w, h));
@@ -4464,32 +5159,19 @@ pub(crate) fn draw_injection_prompt(
     };
     let warn = Color::from_rgb8(230, 160, 90);
 
-    line(scene, shaper, "Possible prompt injection in tool output", 18.0, panel.y0 + 22.0, warn);
-    line(
-        scene, shaper,
-        &format!(
-            "From {}  \u{00b7}  severity {}/10. It may be trying to steer the assistant. Choose what reaches the model.",
-            one_line_clip(&p.source, 48),
-            p.severity
-        ),
-        13.0, panel.y0 + 52.0, pal().text_dim,
-    );
+    line(scene, shaper, INJECTION_TITLE, 18.0, panel.y0 + 22.0, warn);
+    line(scene, shaper, &p.source_line(), 13.0, panel.y0 + 52.0, pal().text_dim);
     // Indicators (bounded).
-    let ind = if p.indicators.is_empty() {
-        "flagged by the injection scanner".to_string()
-    } else {
-        one_line_clip(&p.indicators.join(", "), 70)
-    };
-    line(scene, shaper, &format!("Signals: {ind}"), 12.5, panel.y0 + 88.0, pal().text_body);
+    line(scene, shaper, &p.signals_line(), 12.5, panel.y0 + 88.0, pal().text_body);
 
     // Untrusted preview — plain text, boxed + clipped.
-    line(scene, shaper, "Flagged content (preview):", 12.0, panel.y0 + 122.0, pal().text_dim);
+    line(scene, shaper, PREVIEW_HEADING, 12.0, panel.y0 + 122.0, pal().text_dim);
     let pv = Rect::new(panel.x0 + 28.0, panel.y0 + 144.0, panel.x1 - 28.0, panel.y0 + 300.0);
     scene.fill(Fill::NonZero, Affine::IDENTITY, pal().surface, None, &RoundedRect::from_rect(pv, 7.0));
     scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &RoundedRect::from_rect(pv, 7.0));
     // Wrap the preview to the box width, a few clipped lines. shape() wraps at
     // maxw; draw_text renders it as text only (no markup interpretation).
-    let pv_layout = shaper.shape(&one_line_clip(&p.preview, 500), (pv.width() - 24.0) as f32, 12.5);
+    let pv_layout = shaper.shape(&p.preview_drawn(), (pv.width() - 24.0) as f32, 12.5);
     draw_text(scene, &pv_layout, Affine::translate((pv.x0 + 12.0, pv.y0 + 10.0)), pal().text_body);
 
     let btn = |scene: &mut Scene, shaper: &mut TextShaper, r: Rect, label: &str, bg: Color, fg: Color| {
@@ -4500,9 +5182,15 @@ pub(crate) fn draw_injection_prompt(
         draw_text(scene, &l, Affine::translate((tx, ty)), fg);
     };
     // Redact is the safe default (accent); pass-through is the riskier choice.
-    btn(scene, shaper, redact, "Redact & continue", Color::from_rgb8(120, 200, 235), Color::from_rgb8(10, 20, 26));
-    btn(scene, shaper, pass, "Pass through", pal().surface_alt, pal().text);
-    btn(scene, shaper, abort, "Abort turn", pal().surface, pal().text_dim);
+    let [redact_l, pass_l, abort_l] = INJECTION_BUTTONS;
+    btn(scene, shaper, redact, redact_l, Color::from_rgb8(120, 200, 235), Color::from_rgb8(10, 20, 26));
+    btn(scene, shaper, pass, pass_l, pal().surface_alt, pal().text);
+    btn(scene, shaper, abort, abort_l, pal().surface, pal().text_dim);
+    if keyboard {
+        if let Some(r) = [redact, pass, abort].get(p.focus.at()) {
+            focus_outline(scene, *r);
+        }
+    }
 }
 
 // ---- Email compose (Batch 6b) -------------------------------------------
@@ -4610,7 +5298,7 @@ pub(crate) fn draw_compose_form(scene: &mut Scene, form: &ComposeForm, w: f64, h
         let focused = idx == form.focus;
         let frr = RoundedRect::from_rect(r, 7.0);
         scene.fill(Fill::NonZero, Affine::IDENTITY, pal().input, None, &frr);
-        scene.stroke(&Stroke::new(if focused { 1.6 } else { 1.0 }), Affine::IDENTITY, if focused { accent } else { pal().input_border }, None, &frr);
+        scene.stroke(&Stroke::new(if focused { 1.6 } else { 1.0 }), Affine::IDENTITY, if focused { crate::theme::focused_field_border(&pal()) } else { pal().input_border }, None, &frr);
         scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &r);
         if let Some(fl) = layout {
             let ty = if multiline { r.y0 + 7.0 } else { r.y0 + (r.height() - 16.0) * 0.5 };
@@ -4641,7 +5329,8 @@ pub(crate) fn draw_compose_form(scene: &mut Scene, form: &ComposeForm, w: f64, h
             draw_text(scene, l, Affine::translate((tx, ty)), fg);
         }
     };
-    btn(scene, send, &form.send_lbl, accent.with_alpha(0.85), pal().on_accent);
+    let send_bg = accent.with_alpha(0.85);
+    btn(scene, send, &form.send_lbl, send_bg, crate::theme::text_on_fill(crate::theme::seen_over(send_bg, pal().modal)));
     btn(scene, cancel, &form.cancel_lbl, pal().surface, pal().text_body);
 }
 
@@ -4652,7 +5341,7 @@ pub(crate) const SEARCH_ROW_H: f64 = 30.0;
 pub(crate) struct SearchPanel {
     /// The query: the editor's single-line field (v0.0.12 item 21, K1).
     pub(crate) query: ChatField,
-    pub(crate) results: Vec<(usize, String)>, // (card index, title)
+    pub(crate) results: Vec<(String, String)>, // (document id, title): by id, not card position (C-HOST AT8)
     pub(crate) scroll: f64,
     inner_w: f64,
     results_len_shaped: usize,
@@ -4717,7 +5406,8 @@ pub(crate) fn draw_search(scene: &mut Scene, sp: &mut SearchPanel, bounds: Rect)
         }
     }
     scene.pop_layer();
-    scene.stroke(&Stroke::new(1.4), Affine::IDENTITY, Color::from_rgb8(120, 150, 180), None, &input_rr);
+    // TC5: the text-field border, seen on every fill in both themes.
+    scene.stroke(&Stroke::new(1.4), Affine::IDENTITY, pal().input_border, None, &input_rr);
 
     // Results.
     scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &results);
@@ -5013,7 +5703,9 @@ pub(crate) fn bubble_picker_layout(w: f64, h: f64) -> (Rect, Vec<(Rect, BubbleSt
 
 /// The bubble-style picker: a 3×3 grid of static style swatches; the current one
 /// is highlighted. Click a swatch to choose it.
-pub(crate) fn draw_bubble_picker(scene: &mut Scene, shaper: &mut TextShaper, current: BubbleStyle, w: f64, h: f64) {
+/// `focus`: the control the keyboard holds (a style by its index, « Done » after them), drawn with
+/// a visible focus outline (WCAG 2.4.7), as the shell's other dialogs draw theirs.
+pub(crate) fn draw_bubble_picker(scene: &mut Scene, shaper: &mut TextShaper, current: BubbleStyle, focus: Option<usize>, w: f64, h: f64) {
     let (card, cells, close) = bubble_picker_layout(w, h);
     let accent = pal().accent;
     let on = pal().on_accent;
@@ -5045,4 +5737,16 @@ pub(crate) fn draw_bubble_picker(scene: &mut Scene, shaper: &mut TextShaper, cur
     let tx = close.x0 + (close.width() - done.width() as f64) * 0.5;
     let ty = close.y0 + (close.height() - done.height() as f64) * 0.5;
     draw_text(scene, &done, Affine::translate((tx, ty)), pal().text);
+
+    let focused = match focus {
+        Some(i) if i < cells.len() => {
+            let cell = cells[i].0;
+            Some(Rect::new(cell.x0 + 8.0, cell.y0 + 4.0, cell.x1 - 8.0, cell.y1 - 4.0))
+        }
+        Some(_) => Some(close),
+        None => None,
+    };
+    if let Some(r) = focused {
+        scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, pal().text, None, &RoundedRect::from_rect(r.inflate(3.0, 3.0), 9.0));
+    }
 }

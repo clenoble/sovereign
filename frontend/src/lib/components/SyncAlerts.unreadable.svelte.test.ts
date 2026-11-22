@@ -74,9 +74,9 @@ beforeEach(async () => {
 	canvas.threads = [];
 	mockTauriCommand('list_threads', () => []);
 	mockTauriCommand('canvas_load', () => ({ documents: [], threads: [], relationships: [], milestones: [] }));
-	mockTauriCommand('list_sync_alerts', () => []);
+	mockTauriCommand('list_sync_alerts', () => ({ alerts: [], could_not_check: null }));
 	mockTauriCommand('list_previous_values', () => []);
-	mockTauriCommand('list_orphaned_documents', () => []);
+	mockTauriCommand('list_orphaned_documents', () => ({ orphans: [], could_not_check: null }));
 	lines = [];
 	mockTauriCommand('list_unreadable_documents', () => dto(lines));
 	// Start from an empty list (whatever the store's previous test left).
@@ -188,7 +188,7 @@ describe.each(['desktop', 'mobile'] as const)('SyncAlerts (%s) — documents tha
 	});
 
 	it('B3: below the orphans', async () => {
-		mockTauriCommand('list_orphaned_documents', () => [orphanDto]);
+		mockTauriCommand('list_orphaned_documents', () => ({ orphans: [orphanDto], could_not_check: null }));
 		const { container } = render(SyncAlerts, { props: { variant } });
 		await load();
 		const { dialog } = await openFromNotice(container);
@@ -199,7 +199,7 @@ describe.each(['desktop', 'mobile'] as const)('SyncAlerts (%s) — documents tha
 
 	it('B3: the dialog shows no such section when none remain', async () => {
 		lines = [];
-		mockTauriCommand('list_orphaned_documents', () => [orphanDto]);
+		mockTauriCommand('list_orphaned_documents', () => ({ orphans: [orphanDto], could_not_check: null }));
 		const { container } = render(SyncAlerts, { props: { variant } });
 		await load();
 		syncAlerts.open = true;

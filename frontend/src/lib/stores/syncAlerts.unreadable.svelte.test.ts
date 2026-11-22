@@ -47,9 +47,9 @@ beforeEach(async () => {
 	syncAlerts.olderDevices = [];
 	syncAlerts.orphans = [];
 	syncAlerts.open = false;
-	mockTauriCommand('list_sync_alerts', () => []);
+	mockTauriCommand('list_sync_alerts', () => ({ alerts: [], could_not_check: null }));
 	mockTauriCommand('list_previous_values', () => []);
-	mockTauriCommand('list_orphaned_documents', () => []);
+	mockTauriCommand('list_orphaned_documents', () => ({ orphans: [], could_not_check: null }));
 	lines = [];
 	mockTauriCommand('list_unreadable_documents', () => {
 		calls++;
@@ -107,9 +107,12 @@ describe('the store (B5: loaded with the other alerts)', () => {
 		mockTauriCommand('list_unreadable_documents', () => {
 			throw new Error('unknown command');
 		});
-		mockTauriCommand('list_orphaned_documents', () => [
-			{ doc_id: 'document:a', title: 'Alpha', thread_id: 'thread:g', deleted_thread_name: null, device: 'p', device_name: '' }
-		]);
+		mockTauriCommand('list_orphaned_documents', () => ({
+			orphans: [
+				{ doc_id: 'document:a', title: 'Alpha', thread_id: 'thread:g', deleted_thread_name: null, device: 'p', device_name: '' }
+			],
+			could_not_check: null
+		}));
 		await reloadSyncAlerts();
 		expect(syncAlerts.orphans.map((o) => o.docId)).toEqual(['document:a']);
 	});

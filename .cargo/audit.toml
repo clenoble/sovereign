@@ -111,18 +111,123 @@ ignore = [
     # above (rustpotter -> candle-core 0.2.2), same HARD PRECONDITION. `cargo tree -i
     # zip@0.6.6 -e all --target all` matches no package (WSL and PANDA2, 2026-11-04).
     "RUSTSEC-2026-0429",
-    # libz-sys 1.1.29 — its build script prints the build's environment, secrets
-    # included, into target/, but only when built with cc >= 1.6.0 on a Unix host.
-    # The lock has one cc, 1.2.63, so the leak is not triggered. The fix (1.1.31, of
-    # 2026-10-28) is held back by Céline's two-week rule on new versions. Bump it, and
-    # drop this line, from 2026-11-11. Re-check before any `cargo update` that moves
-    # cc to 1.6 or later.
-    "RUSTSEC-2026-0418",
-    # pulldown-cmark 0.13.5 — quadratic parsing of nested image wikilinks, only with
-    # Options::ENABLE_WIKILINKS (or Options::all()). Our two parsers
-    # (sovereign-skills html_export.rs l. 58, plaintext_export.rs l. 57) start from
-    # Options::empty() and add tables, strikethrough, tasklists, footnotes: never
-    # wikilinks. The fix (0.13.6, of 2026-10-30) is held back by the same rule. Bump
-    # it, and drop this line, from 2026-11-13.
-    "RUSTSEC-2026-0433",
+    # RUSTSEC-2026-0418 (libz-sys) and RUSTSEC-2026-0433 (pulldown-cmark) are fixed by
+    # the lock bump of 2026-11-13 (libz-sys 1.1.31, pulldown-cmark 0.13.6), past the
+    # two-week rule; their ignores are gone.
+
+    # ── Accepted 2026-11-13 (Céline), the triage of the 19 advisories found by
+    # `cargo audit` on 2026-11-13 (traced on the laptop at main ba1dc18; texts read in
+    # the local advisory-db). Two are NOT here: RUSTSEC-2026-0525 (libp2p-quic) and
+    # -0538 (quinn-udp) are fixed in their own lot before rc1 (« Lot avant rc1 »), so
+    # the gate stays red on them until it lands.
+
+    # SurrealDB 2.6.5 / surrealkv 0.9.3 — « Accepter + lot 4.x après licence ». The
+    # cure for all three is SurrealDB 4.x (0454: « removed in 4.0.0 »; 0452: « surrealdb
+    # 4.0.0 ships surrealkv 1.2.0 »), planned as its own lot once its licence is read.
+    # 0453, use-after-free in the KV backends: reached only if a future is leaked
+    # (mem::forget, Box::leak, ManuallyDrop, a reference cycle, a leaked enclosing
+    # future); dropping one is safe. `git grep -E "mem::forget|Box::leak|ManuallyDrop"`
+    # in crates/*/src outside tests matches nothing; the other two ways are not
+    # greppable. CONDITION: re-run that grep at every release; any match near the store
+    # is a blocker.
+    "RUSTSEC-2026-0453",
+    # 0454, unsound Send/Sync in `reblessive`: only through surrealdb-core's own
+    # executor; nothing of ours touches `reblessive` (`git grep`: no match). A latent
+    # unsoundness, not a demonstrated race in that executor.
+    "RUSTSEC-2026-0454",
+    # 0452, out-of-bounds read on a crafted or corrupted SSTable (CVSS AV:L): the
+    # phone's store. Exploiting it needs write access to the app's private files,
+    # which ch. 07's at-rest model already leaves out of scope. CONDITION (binding): no
+    # state that arrives from outside the device is ever written as a store file; it is
+    # applied through the store's calls (sync and backup restore do so today; the
+    # export, backups between contacts and a node replica must too).
+    "RUSTSEC-2026-0452",
+
+    # hickory-proto / hickory-resolver 0.25.2 — libp2p 0.56 pins hickory < 0.26; the
+    # fixes are 0.26.2. Accepted on the grounds of RUSTSEC-2026-0118/-0119 above.
+    # 0491: memory amplification decoding a DNS message (a packet claiming 65,535
+    # records reserves ~18 MB before failing). Live: libp2p-mdns decodes multicast DNS
+    # from every network the device joins (mDNS is on by default, P2P-006 can switch it
+    # off). A LAN-side DoS, the class already accepted.
+    "RUSTSEC-2026-0491",
+    # 0487, 0489, 0490: panics parsing SVCB/HTTPS records and zone files from TEXT.
+    # mDNS and DNS decode wire format; nothing of ours parses zone files.
+    "RUSTSEC-2026-0487",
+    "RUSTSEC-2026-0489",
+    "RUSTSEC-2026-0490",
+    # DNSSEC validation flaws (proto 0504, 0505, 0511, 0512, 0530, 0531, 0532; resolver
+    # 0514): no `dnssec-*` feature is compiled (`cargo tree -e features -i hickory-proto`
+    # and `-i hickory-resolver`, --target all: mdns, std, tokio, socket2, futures-io;
+    # system-config, tokio). CONDITION: re-trace the features at every release.
+    "RUSTSEC-2026-0504",
+    "RUSTSEC-2026-0505",
+    "RUSTSEC-2026-0511",
+    "RUSTSEC-2026-0512",
+    "RUSTSEC-2026-0530",
+    "RUSTSEC-2026-0531",
+    "RUSTSEC-2026-0532",
+    "RUSTSEC-2026-0514",
+
+    # ammonia 4.2.4 — mutation XSS through embedded SVG/MathML. Only through
+    # surrealdb-core's HTML string functions, which none of our queries call
+    # (`git grep string::html`: no match). The fix 4.2.5 is of 2026-11-13: bump it, and
+    # drop this line, from 2026-11-27 (two-week rule).
+    "RUSTSEC-2026-0533",
+
+    # libsqlite3-sys 0.30.1 — SQLite CVE. Lockfile only: `cargo tree -i libsqlite3-sys`
+    # matches no package (under presage-store-sqlite / sqlx, the dormant Signal store),
+    # as rkyv's RUSTSEC-2026-0235.
+    "RUSTSEC-2026-0459",
+
+    # ── Accepted 2026-11-20 (Céline, on the Fable maille's page of the rc1 gates:
+    # « II - à signaler dans les notes de release / à mettre au backlog »), found by
+    # both rc1 gates (Linux on 4688fdd9, Windows on 55ab7bf8).
+
+    # wasmtime 44.0.2 — unbounded host memory on empty AsyncWriteStream writes; an
+    # abort in builds without `threads`; a panic in Caller::get_module_export; unbounded
+    # heap on empty HTTP/2 body writes. Same path as the wasmtime ignores above, same
+    # HARD PRECONDITION, raised: bump to wasmtime >= 48.0.9 / >= 49.0.6 / >= 50.0.2
+    # before wasm-plugins is wired in. `cargo tree --locked -i wasmtime -e all --target
+    # all` matches no package (PANDA2, 2026-11-20).
+    "RUSTSEC-2026-0566",
+    "RUSTSEC-2026-0567",
+    "RUSTSEC-2026-0569",
+    "RUSTSEC-2026-0571",
+    # zip 0.6.6 — AES entries returned unauthenticated when the data ends early, and
+    # ZipStreamReader's local-header names. Same path as the zip 0.6.6 ignores above
+    # (rustpotter -> candle-core 0.2.2), same HARD PRECONDITION. `cargo tree --locked
+    # -i zip@0.6.6 -e all --target all` matches no package (PANDA2, 2026-11-20).
+    # -0548 also names zip 9 < 9.0.5: our zip 9 is bumped to 9.4.1 in the same commit,
+    # so this ID hides nothing that is compiled. Re-trace `cargo tree -i zip` at every
+    # release, as above.
+    "RUSTSEC-2026-0545",
+    "RUSTSEC-2026-0548",
+    # hickory-proto 0.25.2 — three more DNSSEC validation flaws (an NSEC3 NODATA at a
+    # zone apex; an unsigned NSEC/NSEC3 record in a proof; records of another class
+    # marked secure). Fixed only in hickory-net 0.26.2, which libp2p 0.56 does not take.
+    # The `dnssec` module is compiled only with `dnssec-ring` or `dnssec-aws-lc-rs`
+    # (hickory-proto 0.25.2 src/lib.rs l. 55-56), and neither the shell nor the APK
+    # enables one (`cargo tree --locked -e features -i hickory-proto`: futures-io, mdns,
+    # socket2, std, tokio; PANDA2 claude-coord 0509, the laptop 0441). The same grounds
+    # as the DNSSEC group above, the same CONDITION.
+    "RUSTSEC-2026-0549",
+    "RUSTSEC-2026-0550",
+    "RUSTSEC-2026-0551",
+    # lettre 0.11.22 — STARTTLS reply injection, SMTP command injection by a bare CR/LF, two
+    # panics, a quoted local part sent elsewhere, an unbounded reply buffer. Accepted 2026-11-20
+    # (Céline: « lettre : on peut annoncer qu'il sera monté avec l'email pour la prochaine
+    # version et dire qu'il est désactivé pour le moment ? »; the Fable maille's yes). Email is
+    # off in v0.0.13: `sovereign-shell/src/comms.rs` l. 35, `EMAIL_ENABLED: bool = false`, a
+    # constant. lettre is called only through `comms::sync_email` and `comms::send_email`, whose
+    # only callers, `comms_form_sync` and `compose_send` (app.rs), return at their first line
+    # when it is false (PANDA2, 2026-11-20). Not in the APK (`cargo tree --locked -p
+    # sovereign-app --no-default-features --features mobile --target aarch64-linux-android -i
+    # lettre`). HARD PRECONDITION: bump lettre (>= 0.11.24) with email, in v0.0.14, before
+    # EMAIL_ENABLED turns true; remove these then.
+    "RUSTSEC-2026-0560",
+    "RUSTSEC-2026-0561",
+    "RUSTSEC-2026-0562",
+    "RUSTSEC-2026-0563",
+    "RUSTSEC-2026-0564",
+    "RUSTSEC-2026-0565",
 ]

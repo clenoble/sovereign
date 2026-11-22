@@ -46,12 +46,12 @@ beforeEach(() => {
 	mockTauriCommand('list_threads', () => threads);
 	mockTauriCommand('canvas_load', () => ({ documents: [], threads, relationships: [], milestones: [] }));
 	mockTauriCommand('list_previous_values', () => []);
-	mockTauriCommand('list_sync_alerts', () => []);
+	mockTauriCommand('list_sync_alerts', () => ({ alerts: [], could_not_check: null }));
 	waiting = [
 		orphanDto('document:a', 'Alpha', 'thread:gone', 'Old drafts'),
 		orphanDto('document:b', 'Beta', 'thread:gone', 'Old drafts')
 	];
-	mockTauriCommand('list_orphaned_documents', () => waiting);
+	mockTauriCommand('list_orphaned_documents', () => ({ orphans: waiting, could_not_check: null }));
 });
 
 async function openSheet() {

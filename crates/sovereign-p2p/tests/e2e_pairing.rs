@@ -322,3 +322,26 @@ async fn wrong_code_burns_attempts_and_kills_offer() {
     .expect_err("offer must be dead after attempt exhaustion");
     assert!(format!("{err}").contains("rejected"));
 }
+
+/// Spec ch. 05, PO1 (v0.0.13): once the offer is disarmed, as closing its window does, the right code
+/// is refused. Written before the shell's code by its test author (the laptop); protected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cleared_offer_refuses_the_right_code() {
+    let a = spawn_node("device-A", [0xD5; 32], [0x6C; 32]).await;
+    let code = sovereign_crypto::pair_payload::generate_pairing_code();
+    let offer = arm_offer(&a, &code, [0x6C; 32], b"salt").await;
+
+    a.cmd_tx.send(P2pCommand::ClearPairingOffer).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let err = sovereign_p2p::pairing_client::pair_with_source(
+        &offer,
+        &code,
+        "A device that saw the code",
+        |_| Ok("12D3KooWNever".into()),
+        Duration::from_secs(10),
+    )
+    .await
+    .expect_err("a disarmed offer must refuse even the right code");
+    assert!(format!("{err}").contains("rejected"), "refused by the node, not lost on the way: {err}");
+}

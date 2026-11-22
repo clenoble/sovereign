@@ -114,7 +114,12 @@
 //!   **child processes** on fresh temporary profiles (`first_run_tests::launch`,
 //!   which runs this file's `child_entry` with `FIRST_RUN_CHILD=<scenario>`).
 //!   A scenario `name_is:<name>` is a fresh launch that reads this device's
-//!   name before any login.
+//!   name before any login. **Since v2.0.87 (C-AREA AR2) a saved name is a
+//!   persona's, and nothing answers it before login** (DEL-0007): a saved
+//!   name is read after a login of the persona that saved it
+//!   (`name_after_login:<name>`, `name_after_primary_login:<name>`), and
+//!   `name_before_login_not:<name>` checks that a launch shows the
+//!   configuration's name before any login (`l1c-tests-v9`).
 //! - What only reads, or writes a paired-device store in a temporary
 //!   directory, runs in this process on an `App` unlocked over an in-memory
 //!   store (the unlock sequence of `lot1_tests`), with the node-less handle.
@@ -566,9 +571,21 @@ fn child_entry() {
     if let Some(expected) = scenario.strip_prefix("name_is:") {
         return name_is(expected);
     }
+    if let Some(expected) = scenario.strip_prefix("name_after_login:") {
+        return name_after_login(expected);
+    }
+    if let Some(expected) = scenario.strip_prefix("name_after_primary_login:") {
+        return name_after_primary_login(expected);
+    }
+    if let Some(saved) = scenario.strip_prefix("name_before_login_not:") {
+        return name_before_login_not(saved);
+    }
     match scenario.as_str() {
         "name_is_config" => name_is(&config_name()),
         "name_is_long" => name_is(&long_name_saved()),
+        "name_after_login_config" => name_after_login(&config_name()),
+        "name_after_login_long" => name_after_login(&long_name_saved()),
+        "name_before_login_not_long" => name_before_login_not(&long_name_saved()),
         "this_device_keys" => this_device_keys(),
         "offers_after_rename" => offers_after_rename(),
         "setup_prefill" => setup_prefill(),
@@ -578,8 +595,6 @@ fn child_entry() {
         "store_only" => {
             crate::crypto::create_auth_store(PRIMARY.as_bytes(), DURESS.as_bytes()).expect("create auth.store");
         }
-        "duress_renames" => duress_renames(),
-        "primary_sees_shared" => primary_sees_shared(),
         "identity_rename" => identity_rename(),
         "identity_next_launch" => identity_next_launch(),
         other => panic!("unknown scenario {other}"),
@@ -591,6 +606,64 @@ fn name_is(expected: &str) {
     let mut app = App::new();
     let got = this_name(&mut app);
     assert_eq!(got, expected, "this device's name, read at start (N1)");
+    shut_runtime(&mut app);
+    std::mem::forget(app);
+}
+
+/// A fresh launch, then the primary's session opened as `unlocked` opens it
+/// (the unlock sequence of `App::try_login` over an in-memory store, persona
+/// primary: the persona `unlocked` and the join save the name as): this
+/// device's name after that login (`l1c-tests-v9`).
+fn name_after_login(expected: &str) {
+    let mut u = unlocked("name-after-login");
+    assert_eq!(u.app.persona, Some(sovereign_core::auth::PersonaKind::Primary), "precondition: the primary's session");
+    let got = this_name(&mut u.app);
+    assert_eq!(got, expected, "this device's name, read after a login of the persona that saved it (N1)");
+    shut_runtime(&mut u.app);
+    std::mem::forget(u);
+}
+
+/// A fresh launch and a real login with the primary's password (an account
+/// made by a real setup): this device's name after that login
+/// (`l1c-tests-v9`).
+fn name_after_primary_login(expected: &str) {
+    let mut app = App::new();
+    first_frame(&mut app);
+    submit_login(&mut app, PRIMARY);
+    assert!(frames_until(&mut app, 240, login_settled), "the login ends");
+    assert_eq!(
+        app.persona,
+        Some(sovereign_core::auth::PersonaKind::Primary),
+        "precondition: the primary opens: {:?}",
+        app.auth_form.error
+    );
+    let got = this_name(&mut app);
+    assert_eq!(got, expected, "this device's name, read after the primary's login (N1, N2)");
+    shut_runtime(&mut app);
+    std::mem::forget(app);
+}
+
+/// The name a launch shows before any login (DEL-0007): the
+/// configuration's, else « Sovereign Device » (`device_name::resolve`'s
+/// default, the words of N1).
+fn name_before_any_login() -> String {
+    crate::device_name::clean(&config_name()).unwrap_or_else(|| "Sovereign Device".to_string())
+}
+
+/// DEL-0007 (the Fable maille, by delegation of Céline, 2026-11-14), under
+/// C-AREA AR2 (v2.0.87): a fresh launch, before any login, shows the
+/// configuration's name, never `saved`, the one a persona saved.
+fn name_before_login_not(saved: &str) {
+    let mut app = App::new();
+    first_frame(&mut app);
+    assert!(app.locked, "precondition: no session is open");
+    let got = this_name(&mut app);
+    assert_ne!(got, saved, "before any login, this device's name is the one a persona saved (C-AREA AR2, DEL-0007)");
+    assert_eq!(
+        got,
+        name_before_any_login(),
+        "before any login, this device's name is the configuration's, else « Sovereign Device » (DEL-0007)"
+    );
     shut_runtime(&mut app);
     std::mem::forget(app);
 }
@@ -808,35 +881,6 @@ fn join_with_name(typed: &str) {
     std::mem::forget(app);
 }
 
-/// The duress persona renames the device.
-fn duress_renames() {
-    let mut app = App::new();
-    first_frame(&mut app);
-    submit_login(&mut app, DURESS);
-    assert!(frames_until(&mut app, 240, login_settled), "the login ends");
-    assert!(!app.locked, "the duress persona opens: {:?}", app.auth_form.error);
-    assert_eq!(app.persona, Some(sovereign_core::auth::PersonaKind::Duress));
-    open_devices(&mut app);
-    rename(&mut app, RenameTarget::ThisDevice, "Shared desk");
-    assert_eq!(this_name(&mut app), "Shared desk");
-    shut_runtime(&mut app);
-    std::mem::forget(app);
-}
-
-/// The primary reads the name the duress persona gave, before and after its login.
-fn primary_sees_shared() {
-    let mut app = App::new();
-    assert_eq!(this_name(&mut app), "Shared desk", "the name is the device's, read at start (N1)");
-    first_frame(&mut app);
-    submit_login(&mut app, PRIMARY);
-    assert!(frames_until(&mut app, 240, login_settled), "the login ends");
-    assert!(!app.locked, "the primary opens: {:?}", app.auth_form.error);
-    assert_eq!(app.persona, Some(sovereign_core::auth::PersonaKind::Primary));
-    assert_eq!(this_name(&mut app), "Shared desk", "both personas read the same name (N1 [choice])");
-    shut_runtime(&mut app);
-    std::mem::forget(app);
-}
-
 // ================================================================== N1
 
 #[test]
@@ -845,25 +889,28 @@ fn n1_a_fresh_workspace_uses_the_configs_name() {
     launch(module(), "name_is_config", p.path());
 }
 
+/// N1, rewritten by the C-AREA test author (`l1c-tests-v9`): the name is
+/// stored in the workspace and overrides the config. Since v2.0.87 the saved
+/// name is the persona's, so it is read after a login of the persona that
+/// saved it (the primary, as `unlocked` opens it), in two later launches.
+/// Before v9 it was read at start, before any login, which AR2 now forbids
+/// (DEL-0007: `del0007_before_any_login_the_name_shown_is_the_configurations`).
 #[test]
 fn n1_the_name_is_stored_in_the_workspace_read_at_start_and_overrides_the_config() {
     let p = profile();
     launch(module(), "this_device_keys", p.path());
     // "Atelier Nord" differs from the config's name (checked in the launch).
-    launch(module(), "name_is:Atelier Nord", p.path());
-    launch(module(), "name_is:Atelier Nord", p.path());
+    launch(module(), "name_after_login:Atelier Nord", p.path());
+    launch(module(), "name_after_login:Atelier Nord", p.path());
     // Another workspace (data directory) has its own.
     let other = profile();
-    launch(module(), "name_is_config", other.path());
+    launch(module(), "name_after_login_config", other.path());
 }
 
-#[test]
-fn n1_both_personas_read_and_change_the_same_name() {
-    let p = profile();
-    launch(module(), "store_only", p.path());
-    launch(module(), "duress_renames", p.path());
-    launch(module(), "primary_sees_shared", p.path());
-}
+// `n1_both_personas_read_and_change_the_same_name` is retired (2026-11-14, the C-AREA test author).
+// It asserted that both personas share one device name. C-AREA's AR2 (Céline, 2026-11-13) gives
+// each persona its own name, and `c_area_walk_tests::ar2_shell_the_duress_session_has_names_of_its_own`
+// asserts that, both ways.
 
 // ================================================================== N1b
 
@@ -942,11 +989,14 @@ fn n2_the_setup_fields_ask_for_the_name_prefilled_with_the_host_name() {
     launch(module(), "setup_prefill", p.path());
 }
 
+/// N2, rewritten by the C-AREA test author (`l1c-tests-v9`): the wizard's
+/// name is saved trimmed with the setup, read after the primary's login (the
+/// persona the setup saves it as), not at start before any login.
 #[test]
 fn n2_the_wizards_name_is_saved_trimmed_with_the_setup() {
     let p = profile();
     launch(module(), "setup_named", p.path());
-    launch(module(), "name_is:Studio PC", p.path());
+    launch(module(), "name_after_primary_login:Studio PC", p.path());
 }
 
 #[test]
@@ -956,11 +1006,35 @@ fn n2_a_blank_name_at_setup_means_the_default() {
     launch(module(), "name_is_config", p.path());
 }
 
+/// N2, rewritten by the C-AREA test author (`l1c-tests-v9`): the join's name
+/// is saved trimmed to 64 grapheme clusters, read after a login of the
+/// primary (the join makes the primary's account), not at start before any
+/// login.
 #[test]
 fn n2_the_joins_name_is_saved_trimmed_to_64_grapheme_clusters() {
     let p = profile();
     launch(module(), "join_long_name", p.path());
-    launch(module(), "name_is_long", p.path());
+    launch(module(), "name_after_login_long", p.path());
+}
+
+/// DEL-0007 (the Fable maille, by delegation of Céline, 2026-11-14), under
+/// C-AREA AR2 (v2.0.87: « On a device that has an account, before any login,
+/// no command answers or writes a persona's identity »), by the C-AREA test
+/// author (`l1c-tests-v9`): once a persona has saved this device's name — by
+/// a rename in Settings, with the setup, or with a join — a later launch
+/// shows, before any login, the configuration's name (or « Sovereign
+/// Device »), never the one saved.
+#[test]
+fn del0007_before_any_login_the_name_shown_is_the_configurations() {
+    let renamed = profile();
+    launch(module(), "this_device_keys", renamed.path());
+    launch(module(), "name_before_login_not:Atelier Nord", renamed.path());
+    let set_up = profile();
+    launch(module(), "setup_named", set_up.path());
+    launch(module(), "name_before_login_not:Studio PC", set_up.path());
+    let joined = profile();
+    launch(module(), "join_long_name", joined.path());
+    launch(module(), "name_before_login_not_long", joined.path());
 }
 
 #[test]

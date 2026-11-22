@@ -25,6 +25,9 @@ pub async fn create_thread(
         name: created.name,
         description: created.description,
         created_at: created.created_at.to_rfc3339(),
+        merged_into: None,
+        merged_into_name: None,
+        ended_at: None,
     })
 }
 
@@ -50,6 +53,9 @@ pub async fn update_thread(
         name: updated.name,
         description: updated.description,
         created_at: updated.created_at.to_rfc3339(),
+        merged_into: None,
+        merged_into_name: None,
+        ended_at: None,
     })
 }
 
@@ -83,5 +89,33 @@ pub async fn move_document_to_thread(
     docs.move_to_thread(&doc_id, &thread_id)
         .await
         .map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))
+}
+
+/// Item 9, FC1 and FC2 (spec ch. 03): what to do with a name a find-or-create
+/// looks for (`crate::thread_choice::thread_for_name`); the browser asks it for
+/// « Web » before saving a page. Seam by the test author.
+#[tauri::command]
+pub async fn thread_for_name(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<crate::thread_choice::ThreadForNameDto, String> {
+    state.require_unlocked(&webview).await?;
+    let docs = state.docs().await?;
+    crate::thread_choice::thread_for_name(&docs, &name).await
+}
+
+/// Item 9, FC2: her answer, remembered (`crate::thread_choice::remember_choice`).
+/// Seam by the test author.
+#[tauri::command]
+pub async fn remember_thread_choice(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+    name: String,
+    thread_id: String,
+) -> Result<(), String> {
+    state.require_unlocked(&webview).await?;
+    let docs = state.docs().await?;
+    crate::thread_choice::remember_choice(&docs, &name, &thread_id).await
 }
 

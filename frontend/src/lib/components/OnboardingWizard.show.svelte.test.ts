@@ -244,13 +244,18 @@ describe('K5 — the duress and canary inputs carry the password step’s attrib
 		await next(screen);
 		await next(screen);
 		await next(screen);
-		expectK5(
-			[
-				screen.getByLabelText('Password') as HTMLInputElement,
-				screen.getByLabelText('Confirm password') as HTMLInputElement
-			],
-			'password step'
-		);
+		// Since K6 (v2.0.109, Céline 2026-10-28 and 2026-11-17), the password step's autocomplete is
+		// "new-password", held by OnboardingWizard.autocomplete.svelte.test.ts; K5 names its own four
+		// values, so the control keeps the other three.
+		const fields = [
+			screen.getByLabelText('Password') as HTMLInputElement,
+			screen.getByLabelText('Confirm password') as HTMLInputElement
+		];
+		for (const f of fields) {
+			for (const [attr, value] of K5.filter(([a]) => a !== 'autocomplete')) {
+				expect(f.getAttribute(attr), `password step, ${f.id || 'input'}: ${attr}`).toBe(value);
+			}
+		}
 	});
 });
 

@@ -7,8 +7,8 @@ the at-rest chain.
 
 *Consolidates:* specification v1.3 §P2P Storage → Encryption Scheme, §Security Model →
 Encryption & Key Management, §Core Tenets (Data Sovereignty); `CLAUDE.md` "Data-at-rest threat
-model"; `doc/plans/archive/plans/v0.0.8-release-plan.md` (CRYPTO-001, CRYPTO-002 dispositions);
-`doc/plans/archive/plans/HANDOVER-shell-port-and-rename.md` (KEK as content-chain root);
+model"; the project's archived plans (private): the v0.0.8 release plan (CRYPTO-001, CRYPTO-002
+dispositions) and the hand-over of the shell port (KEK as content-chain root);
 `RELEASE_NOTES_v0.0.4.md`–`v0.0.9.md`; code in `crates/sovereign-crypto`,
 `crates/sovereign-db/src/{encrypted.rs,layered.rs}`, `crates/sovereign-app/src/{setup.rs,duress.rs,login_throttle.rs,account_key_migration.rs}`,
 `crates/sovereign-shell/src/crypto.rs`.
@@ -32,7 +32,7 @@ cites it in each of those senses.
 - **Local tamper evidence:** HMAC-SHA256 under a key derived from the Device Key.
 - **Secret hygiene:** every key type implements `Zeroize` + `ZeroizeOnDrop` and redacts itself
   in `Debug`. Secrets held by the UI layers outside these types are not uniformly zeroized
-  [◐ — see the native-shell parity items in `doc/plans/BACKLOG.md`].
+  [◐ — tracked in the private backlog].
 - **No logging surface:** `sovereign-crypto` has no `tracing` dependency, by design — code that
   cannot log cannot log key material. Callers decide what to report.
 
@@ -123,6 +123,13 @@ once at login (the passphrase is present) and re-sealed under the KEK, transpare
 action.
 
 ### AccountKey — the shared data key
+
+*Decided 2026-11-13 (Céline; ch. 01, P5), not built:*
+- **The account key is to be rotated,** so that a lost device can be revoked. As built, it is one
+  secret shared by every device, with no rotation.
+- **This is the first step of the delegations:** a key restricted to a scope, revocable, that
+  expires. It serves revoking a device, a watch function, a collaborator and a temporary reader.
+- **The keys of model providers** are per device, or account-wide, as the user chooses (P17b).
 
 **Status:** ✅ Built — (code: `crates/sovereign-crypto/src/account_key.rs`, `vault.rs`, `auth.rs`; `crates/sovereign-app/src/account_key_migration.rs`).
 
@@ -234,18 +241,41 @@ therefore a deployment requirement**, with field encryption as defence in depth 
 (disposition of ATREST-001; CRYPTO-001). Extending field encryption to further user-authored fields
 is open work.
 
+**Direction (Céline, 2026-11-13, on D12 of 2026-11-10).**
+- **What D12 means here:** Sovereign runs on any machine the user owns, without depending on one
+  hardware maker or one system vendor.
+- **The full-disk-encryption requirement stays for now.**
+- **The direction is to shrink what depends on it:** encrypt more of what stays in clear (ATREST-011,
+  ch. 04).
+- **Each host declares what its system can see.**
+
 *Replaces v1.x:* "No plaintext on disk" — field-level encryption leaves metadata in clear by design;
 the claim is replaced by the full-disk-encryption requirement above.
 
 ### Private file writes
 
-**Status:** ◐ Partial — the private-write helper is built and used for the auth store, key databases and Index Key; two mobile onboarding files are not yet written through it. (code: `crates/sovereign-crypto/src/fs_private.rs`)
+**Status:** ◐ Partial — the private-write helper is built and used for the auth store, key databases, Index Key and salt; one mobile onboarding file is not yet written through it. (code: `crates/sovereign-crypto/src/fs_private.rs`)
 
 All key-material files (auth store, key databases, Index Key, salt, wrapped keys) are written
 atomically — temporary sibling, fsync, rename — and owner-only (`0600`) on Unix; on Windows the
-per-user profile ACL scopes access (CRYPTO-005). Mobile onboarding still writes `salt` and
+per-user profile ACL scopes access (CRYPTO-005). Mobile onboarding still writes
 `keystroke.store` with a plain `std::fs::write`.
 (code: `crates/sovereign-app/src/tauri_commands/auth.rs`)
+
+### The phone's system log
+
+**Status:** ✅ Built in v0.0.13 (Céline, 2026-11-20; the way decided by the Fable maille, by delegation of Céline,
+the same day). In the app's phone entry (`sovereign_app::run`) and the page's first script
+(`frontend/static/phone-silence.js`).
+
+The app writes nothing to the phone's system log (Android's logcat), which USB debugging, a bug report or a
+forensic tool can read: the phone's entry installs no log subscriber and sets a panic hook that writes nothing,
+and on a phone the page's first script silences its console and its uncaught errors. This is said of what the
+app writes: the system, the web view, the device's drivers and the framework the app is built on still log under
+the app's process. On v0.0.13's candidate the framework wrote one line at each start, naming a plugin's command and
+no path. Held by source
+readings of the phone's entry, by the page's own tests, and, on each release candidate's APK, by a measure of the
+log through a whole setup and logins.
 
 ## Authentication and personas
 
@@ -264,7 +294,8 @@ fixed length so their sizes do not reveal which is which. Stores created before 
 unpadded probes until re-created.
 
 **Created once, never replaced by account creation** (decided by Céline 2026-10-19, for v0.0.11
-rc2; to be built). **Every** first write of `auth.store` refuses an existing file (an exclusive
+rc2; built: `AuthStore::save_new`, and the phone's onboarding claim, code:
+`crates/sovereign-crypto/src/auth.rs`, `crates/sovereign-app/src/onboarding_claim.rs`). **Every** first write of `auth.store` refuses an existing file (an exclusive
 create, not a replace): account creation fresh or paired, on the phone and on the desktop, and the
 backup recovery that rebuilds an account (ch. 06). Account creation and backup recovery are
 **single-flight** on the phone, one claim excluding the other: a request
@@ -276,6 +307,22 @@ derivation on a phone, passed the existence check, replaced `auth.store` and `sa
 while the first session had already sealed the key databases under the old one; the account could
 never be unlocked again. v0.0.10 has the same window (the IPC-006 check is check-then-act).
 
+**Never a torn store** (○ specified 2026-11-18, to build in v0.0.13, the torn `auth.store` of the
+v0.0.12 review; written by PANDA2). A torn `auth.store` is a lockout for good: its presence sends to
+login, and its load fails at every attempt.
+- **AS1 — The first write is whole or absent.** A crash or a power loss at any point of the first
+  write leaves no `auth.store`, or the whole new one, never a part of it, on every platform, Android
+  included. It stays exclusive as above. Until v0.0.13, where hard links are refused (measured on
+  Céline's phone, in the app's data directory), the first write fell back to writing the file in
+  place, which a crash could leave torn.
+- **AS2 — A later write replaces it whole or not at all.** Any write of an existing `auth.store`
+  leaves, after a crash or a power loss at any point, the previous file or the new one, never a torn
+  file, Android included. As built, one shipped path rewrites it: guardian access recovery installs
+  the recovered store over the forgotten one (ch. 06), through the store's own replacing write, a
+  temporary file and a rename.
+- **AS3 — No stray file decides.** A temporary file a crash leaves beside it is never read as the
+  store and never sends to login.
+
 **What decides between login and setup is the store** (v0.0.12, lot 1, after the cloud review of
 v0.0.11, findings 4 and 9). With encryption, the app shows the login screen when `auth.store`
 exists and the setup wizard when it does not, on the phone as on the desktop; the
@@ -286,13 +333,22 @@ screen. At the first login that follows, the marker is written and a notice says
 was interrupted before it finished. Your account works; your safety phrase, typing profile and
 sample documents may not have been saved." (Céline, 2026-10-23: "un avis une fois"). In paired
 setup the record of the source device is written before `auth.store`, so an account that opens
-is paired. **The duress passphrase must differ from the primary one**, refused by the store itself
-on every path that creates one (fresh and paired setup on both platforms, crowd backup and guardian
-recovery), with the desktop's words: "Duress password must differ from your password." (Céline,
-2026-10-23: fix it now; testers who made such an account on Android are told in the v0.0.12
-notes). The backend also checks what was typed twice (password, duress password, safety phrase)
-before the claim and before any key derivation. *Status:* ● built in v0.0.12 lot 1 (phone);
-the desktop's interrupted setup is items 18 and 20.
+is paired; a failure to write it fails the setup before anything else is written. A pairing
+retried after `auth.store` failed writes a new record that replaces the first: the paired list is
+keyed by the device's peer id. **The duress passphrase must differ from the primary one**, refused
+by the store itself on every path that creates one (fresh and paired setup on both platforms,
+crowd backup and guardian recovery), with the desktop's words: "Duress password must differ from
+your password." (Céline, 2026-10-23: fix it now, with no detection in the app; the advice to
+testers was first meant for the v0.0.12 notes, and Céline decided on 2026-11-04 that the public
+notes say nothing of the duress password or the canary phrase, so it is not there). **An account created on the
+phone before v0.0.12 with one password for both personas** keeps working: with that password it
+always opens the same persona — the primary or the decoy, whichever of the two entries the store
+tries first, an order drawn at random when the store was created — and never the other. Nothing in
+the app detects or reports it. Céline decided on 2026-10-23 that testers get a recommendation; its
+wording, written by the laptop maille the same day, is to set the phone up again, pairing it again
+from the desktop. The backend also checks what was typed twice (password, duress password,
+safety phrase) before the claim and before any key derivation. *Status:* ● built in v0.0.12 lot 1
+(phone); the desktop's interrupted setup is items 18 and 20.
 
 **The desktop's interrupted setup** (v0.0.12 items 18 and 20, B5b: the laptop's proposal of
 2026-10-24, taken whole by PANDA2; built, merged `7e2f6c9`). The desktop had no marker. Its wizard
@@ -327,11 +383,11 @@ separate database under separate keys and cannot reach the primary persona's row
 
 ### After login — every persona's state stays its own
 
-**Status:** ◐ Partial — built 2026-10-17 (`296c8b7`): per-persona orchestrator state and
-session-log beacon; guardian recovery reachable from the primary persona only. Specified
-2026-10-17 (v2.0.29), to be built: the duress enrollment's waiting screen and the persona's own
-identity profile. The one-time set-aside at migration was built in v0.0.11 and replaced in v0.0.12
-by the quarantine at every login (item 10).
+**Status:** ◐ Partial — built 2026-10-17 and released in v0.0.11: per-persona orchestrator state
+and session-log beacon, and guardian recovery reachable from the primary persona only (`296c8b7`);
+the duress enrollment's waiting screen and the persona's own identity profile in the shell
+(`9f64f9a`). Not covered: the phone host's profile (below). The one-time set-aside at migration
+was built in v0.0.11 and replaced in v0.0.12 by the quarantine at every login (item 10).
 
 What must not be readable is *which* persona a session is (ATREST-011). A live session must not
 show it either. So, after login:
@@ -360,8 +416,10 @@ show it either. So, after login:
   starts, with the alteration notice: **at every login, not once** (v0.0.12 item 10, ch. 08 *Session
   log*). Until v0.0.11, a one-time rule set such a log aside with a gentler notice, recording "done"
   in a plain marker file that nothing authenticated (review finding 17): deleting it made a later
-  alteration pass for the migration. The marker now decides nothing. Existing `set-aside-*`
-  directories stay as they are.
+  alteration pass for the migration. The marker now decides nothing: it is no longer written, and
+  one left behind is ignored, never deleted. Existing `set-aside-*` directories stay as they are,
+  and no read path opens a `set-aside-*` or `quarantine-*` directory: nothing in them reaches the
+  model, the conversation history or any other read.
 - **The shell's user profile is split** (Céline, 2026-10-17: now, unless it pulls in too much of
   C-SESS). **Device preferences** read before login — the theme and the bubble style — stay in
   one file shared by the personas: they identify no one. **The persona's identity** — display
@@ -379,7 +437,9 @@ duress account created in Céline's test opened empty. Completion is tracked in 
 
 The duress workspace is seeded with plausible, innocuous content, spread over a randomized past so
 the workspace does not look created in one instant. Content variation
-across installs is open work. (code: `crates/sovereign-app/src/duress.rs`)
+across installs is open work. Its threads are stamped, as a real workspace's are, with the duress
+persona's own peer id — derived from that persona's device key — never with the configured device
+name nor the primary's id (v0.0.12 item 22). (code: `crates/sovereign-app/src/duress.rs`)
 
 ### Login timing padding
 
@@ -402,6 +462,112 @@ window (defaults: 10 attempts, 300 s). Its purpose is to stop scripted online gu
 application's command surface; it does not defend against an attacker holding the disk, who can
 attack the auth store directly — that case is bounded by Argon2id (CRYPTO-002).
 (code: `crates/sovereign-app/src/login_throttle.rs`)
+
+Since v0.0.13 it counts a wrong password only (LE4, below).
+
+### Login errors say what failed — contract (LE)
+
+**Status:** ● LE1 to LE6 built in v0.0.13 (2026-11-19), read on main: the core returns a wrong password's
+error only when no entry's probe opened; the desktop's login, the app's login and onboarding, and the command
+line turn it into « Invalid password », and every other failure into one of the two other sentences, through one
+shared type, with the data folder's paths in plain words; the app's attempt tracker and login screen count a
+wrong password only; the app's login error is an alert. Céline, 2026-11-19, through the Fable maille:
+« pas forcément résoudre l'échec intermittent et peut-être le bug sous-jacent, mais a minima avoir un
+message d'erreur exact quand il y a un problème. » Contract and tests by WSL, code by PANDA2, second run
+by the laptop.
+
+*Why:* until v0.0.13 both hosts turned every failure of authentication into « Invalid password »: a
+key derivation that failed, a key that would not unwrap after the password had matched, and, on the
+desktop, a persona database that would not open, whose error was dropped. A damaged store and a
+mistyped password read the same, so a user with the right password was told it was wrong, and nobody
+could tell the cases apart afterwards. In the app, each such failure also counted toward the lockout.
+
+The words below are what the user reads; the three are the same on the desktop and in the app.
+- **A wrong password:** « Invalid password » (unchanged).
+- **The password could not be checked** (the key derivation failed, before any probe was tried):
+  « Your password could not be checked: {cause}. This is not a wrong password. »
+- **The password is right, and the account did not open** (a probe opened, then the keys' unwrapping
+  or the session's installation failed): « Your password is right, but your account could not be
+  opened: {cause}. »
+
+`{cause}` is the underlying error's own text, with every path and file name of the data directory
+replaced by plain words (LE3).
+
+- **LE1 — The core tells a wrong password apart.** `AuthStore::authenticate` returns an error of its
+  own for a wrong password: the key derivation succeeded and no entry's probe opened. It returns it in
+  that case only. A derivation that fails, and an unwrap that fails after a probe opened (the KEK, the
+  AccountKey), each return another error, which carries its cause. Until v0.0.13 a failed unwrap and a
+  wrong password returned the same error.
+- **LE2 — « Invalid password » means a wrong password.** The desktop's login, the app's login and the
+  command line say « Invalid password » (the command line: « authentication failed: wrong password »)
+  for LE1's error only.
+  - A derivation that fails reads the second sentence.
+  - Any failure after a probe opened reads the third: the keys' unwrapping, and the session's
+    installation (opening the persona's database, its key databases).
+  - At the end of a first setup the desktop's « Your account was created, but it could not be opened:
+    {error} » keeps its words, and `{error}` is the cause alone, by LE3. LE1's error, should it come
+    there, reads « Invalid password », which is exact: no probe opened with the password just chosen.
+- **LE3 — The cause is kept, and names no file.** The message carries the cause's own text, never a
+  fixed word in its place. Opening a persona's database returns its error instead of dropping it, so a
+  database that cannot open says why. In what is shown, each path or file name of the data directory
+  is replaced by plain words (« the database », « a key database »), and the rest of the text is kept as
+  it is. *Why:* a path can name a persona, and LE5 holds for the cause too. The lot adds no log line that names a persona's file where none did: the full cause,
+  with its paths, is written nowhere new.
+- **LE4 — The lockout counts wrong passwords only** (the app). The persisted attempt tracker records a
+  failure for LE1's error only, and the login screen counts only « Invalid password ». An error that
+  arrives with no text never reads « Invalid password ».
+  - **No guess escapes the throttle:** a wrong password always yields LE1's error, so every wrong guess
+    is still counted. Only failures that are not a wrong password, which a guess cannot cause, stop
+    counting.
+- **LE5 — The words tell no persona apart.** The three sentences are the same whichever entry's probe
+  opened, primary or duress, and LE1 holds for both. The same failure made for each persona (a database
+  that is locked, one that is damaged) reads the same on screen, character for character, cause
+  included. The login timing padding is unchanged.
+- **LE6 — A login failure is announced.** Each of the three sentences, when the login screen shows it,
+  is in an alert (`role="alert"` in the app), so a screen reader says it without the person moving to
+  it. The desktop's login form gives its error the alert role already.
+
+### The lock at the device's sleep
+
+**Status:** ○ Decided 2026-11-13 (Céline), to be built with C-SESS. Neither host locks today:
+- **the phone** keeps its session open when the screen goes off and when it comes back. Its screen
+  protection hides content from screenshots and from the recent-apps view; it is not a lock;
+- **the shell** has no logout and no lock.
+
+**Decided** (Céline, 2026-11-13: « A la mise en veille de l'appareil seulement pour commencer, le
+verrou efface la clé. A programmer avec C-SESS »):
+- **The trigger: the device's sleep, and only that, to begin with.** No lock on inactivity or on
+  leaving the app, for now.
+- **The lock clears the key.** The session's keys leave memory, so a session that comes back from
+  sleep can be read only after a new login. An overlay that hides the screen while the keys stay
+  in memory does not meet this.
+- **It is built with C-SESS,** the session service that holds the keys and their lifetime.
+
+**What the contract will have to say** (to be written with C-SESS):
+- **On each host, what the device's sleep is:**
+  - on the phone, the screen going off;
+  - on the desktop, the system's sleep and hibernation.
+- **When the lock happens, said exactly.** On the desktop, the keys must be cleared before memory is
+  written to the hibernation file.
+  - **The signal is named per platform, and tested on the machines that carry it.** Many recent
+    laptops sleep in a low-power state where the screen goes off without a classic suspend signal.
+  - Whether the console's display going off also counts as sleep on the desktop is Céline's to
+    confirm when the contract is written.
+- **The lock ends everything a switch ends** (C-AREA, AR4): the node, the keys, the timers and
+  background tasks, the pending proposals, and the interface's state. One test serves both. A login
+  after the lock may open the other persona.
+- **What is not yet saved when the lock comes.** What can be saved is saved before the keys are
+  cleared, and anything interrupted leaves the store whole.
+- **The windows that stay open today** (chat, mail, personal data, devices) must be part of the
+  contract.
+- **Whether key memory is pinned** (kept out of swap), with the cost said. That would remove the
+  second limit below for the keys Sovereign holds.
+
+**What this does not protect against:**
+- **A device that is taken while awake.** Its session stays open. A computer set never to sleep is
+  never locked by this rule.
+- **Keys written to the swap file before the sleep.** No key memory is pinned today, so the system
+  may page a key out to disk at any time.
 
 ### Canary phrase
 
@@ -428,6 +594,136 @@ does not compare against the reference, and the enrollment step is not enabled b
 Typing timings are optional input to login: a missing, partial or malformed sample (a password
 filled in by the system's autofill produces key events without a key) is ignored and **never
 makes a login fail** (2026-10-17; Android autofill was refused in v0.0.10).
+
+### One persona, one area — contract (C-AREA)
+
+**Status:** ✅ Built for v0.0.13 on the shell and the phone app (lot L1c and its follow-up); each
+guarantee is held by the walks' tests on both hosts. Not built: what an « As built » line below
+says. The class of defect it closes — a file the two personas share, read or written by a
+session — came back in three releases running.
+
+**Decided:**
+- **2026-11-04 (Céline),** the scope of v0.0.13: the walk below, written first by an author other
+  than whoever fixes the two defects it covers.
+- **2026-11-13,** the walk runs again at the end of each release, extended to the stores that
+  release created.
+
+**Guarantees (C-AREA, each one a test):**
+- **AR1 — The walk.** A duress session drives every feature the host offers, as built.
+  - **For example:** create, edit, move, delete and restore a document; threads; search; chat and
+    the assistant's actions; the embedded browser; pairing and sync; guardian enrollment; settings;
+    trash and purge; logout. The list is illustrative; the test names each feature it drives.
+  - **Pairing and sync** run with a second node in the same process, as the P2P end-to-end tests
+    already do.
+  - **A feature the walk cannot drive is a failure, not a skip.**
+  - **What it asserts:** no file outside the duress persona's own area is created, changed or
+    deleted. The test snapshots the whole Sovereign directory, with each file's existence and
+    content, before and after the walk.
+  - **It runs on both hosts:** the shell and the phone app's backend.
+- **AR2 — Shared files are named, with their reason.** A file both personas use is a stated
+  exception in the test, with the reason it must be shared.
+  - **Each exception says whether a duress session may change it, or only read it,** and the test
+    asserts which. `auth.store` may change: it holds both personas by design (*Auth store*), and a
+    duress login is recorded like any login. Any other shared file that changes fails AR1.
+  - **The verdicts, file by file** (2026-11-13, from the walk's first runs; « into the area » means
+    the file moves into the persona's area):
+
+    | File | Verdict | Reason |
+    |---|---|---|
+    | `auth.store` | exception, **may change** | holds both personas by design; a duress login is recorded like any login |
+    | `crypto/salt` | exception, **read only** | the key-derivation salt, read before login to open either persona; the same bytes whoever logged in last |
+    | `crypto/device_id` | exception, **read only**, never created by a duress session | a random install id. On the phone it is created at the P2P node's start, and a duress session starts no node (AR4) |
+    | the device preferences read before login (theme, bubble style), in their own file, `device_preferences.json` | exception, **may change** | the login screen needs them; they say nothing of which persona is open. Today they sit in `user_profile.json`, which moves into the area |
+    | the login's rate-limit state (`login_attempts.json` on the phone) | exception, **may change** | counted before any persona is known |
+    | `onboarding_started`, `onboarding_done`, `account_key.migrated` | exception, **written once, by whichever persona logs in first** | they say that a setup or a migration finished on this device, not by whom; after that they are read only |
+    | `canary.store`, `keystroke.store` (phone) | exception, **read only** | read at login, before a persona is known |
+    | `crypto/paired_devices.json` | **into the area** | pairings are a persona's (AR3) |
+    | `crypto/sync_versions.json` | **into the area** | a persona's sync state |
+    | `user_profile.json` (both hosts) | **into the area** | it holds the persona's name; the walk saw the primary's shown in a duress session |
+    | `device_name.txt` | **into the area** | it is what the persona's paired devices are shown; it differs per persona |
+    | `comms.toml` | **into the area** | it holds the mail address (C-COMMS: each store's persona) |
+    | the recovery store, the same four files on both hosts: `crypto/recovery_card.json`, `crypto/recovery_roster.enc`, `crypto/recovery.bundle` and `crypto/guardian_enrolled.pending` | **the primary's only** | guardian recovery belongs to the primary (*After login*, above); a duress session neither reads nor writes it, and its decoy answers as a persona with no roster |
+    | `recovery/` (both hosts) | **the primary's only** | an access recovery in progress on this device: what it recovers is the primary's account. It is started from the login screen by someone without the passphrase, so before any login. A primary login clears it (the owner has the passphrase); a duress login leaves it alone, and a duress session neither reads nor writes it |
+
+  - **Any file not in this table** fails AR1 or AR6, until it is given a verdict.
+  - **What the duress persona's own copies start with** (Céline, 2026-11-13): « la persona de
+    contrainte a des noms d'appareil et nom de profil random générés automatiquement. L'utilisateur
+    peut les changer s'il le souhaite ensuite en se loguant sur cette session. »
+    - At setup, the duress persona gets a device name and a profile name generated at random.
+      **An install set up before v0.0.13** never passes through setup again: there, the same draw
+      happens at the first duress login that finds no names of its own.
+    - They are never copied from the primary's, and the primary's later changes never reach them.
+    - **On a device that has an account, before any login, no command answers or writes a persona's
+      identity,** on either host. A process with no session has no identity directory. Setup, on a
+      device with no account yet, is the one case that writes an identity before any login.
+      - **The commands that create an account or answer its designation** are refused once the
+        device has an account, inside a duress session too. A check that reads no file and names no
+        persona still answers: the new password's policy, which recovery uses from the login screen.
+    - **The test:** after setup, the duress session's device name and profile name differ from the
+      primary's, and a primary change leaves them as they were.
+    - **What this does not protect against** (Céline, 2026-11-13: « Laisser ainsi »): a generated name
+      next to a name the user typed may look generated. That risk is accepted, and the user may
+      change the duress names in that session.
+    - The same question for `comms.toml` comes with C-COMMS.
+- **AR6 — Reads count too: a differential walk.** The walk runs in a duress session twice: once with
+  the primary's files and the unnamed shared files present, and once with them absent. Everything
+  the session shows and writes is the same in both runs.
+- **AR7 — Nothing is written outside the Sovereign directory.** The test checks the other places a
+  host could write: the temporary directory, logs and the embedded browser's profile.
+  - **The browser keeps one profile per persona,** in that persona's area (Céline, 2026-11-13: « Un
+    profil par persona »).
+  - As built, the shell keeps it in the open persona's area, and builds no browser without a
+    session. The phone app has no embedded browser. The desktop app, frozen, still uses the
+    platform's default profile.
+- **AR8 — No new shared path.** A check in the gate counts, per crate, the calls to every function
+  that returns a path under the Sovereign directory without taking a persona. It fails if a count
+  grows.
+  - **The check finds the functions itself:** from the roots (those that read `SOVEREIGN_DATA_DIR`
+    or `.sovereign`), it follows to a fixed point every function that returns a path and takes no
+    persona.
+  - **A new function of that kind fails the check** until it is named, and so does a named one that
+    disappears.
+  - **Its limit:** it reads names, not paths.
+  - **The counts are recorded by the check** when it is first written. The spec does not carry them.
+  - C-SESS, the structural cure, comes later.
+- **AR3 — The paired-devices list belongs to its persona.** A duress session never changes the
+  primary's list. It has no pairing of its own either (AR4).
+  - A list that fails to decrypt is **never replaced** by an empty one. It is kept as it is, and
+    the failure is reported (ch. 03, *What cannot be read is never shown as empty*).
+- **AR4 — A duress login never runs on the primary's keys, and runs no P2P node** (Céline,
+  2026-11-13: « Aucun moteur »).
+  - **In a duress session, Sovereign does not sync:** no node is started, nothing is announced on
+    the network, and no device can be paired. Guardian enrollment keeps its decoy waiting screen.
+  - **Pairing shows the same decoy** (Céline, 2026-11-13: « Le même leurre que les gardiens »). The
+    usual screen, with a code and a QR of the real form, waits forever. Nothing is armed, and
+    nothing is announced.
+  - **At a switch to the duress persona,** the primary's node is stopped and its KEK cleared. This
+    holds on the phone after a setup that ends « incomplete », and at every switch.
+  - **At a switch back to the primary,** the primary's node starts under its own device key.
+  - **A switch ends everything the previous session started:** its node, its keys, its timers and
+    background tasks (the hourly purge, the personal-data sweep), and its pending proposals. Nothing
+    started under one persona acts under the other.
+    - **The test:** a primary session, then a switch to duress in the same process. The test forces
+      the purge's tick and the sweep's pass. The primary's store and files do not change, and no
+      proposal of the primary's can be confirmed.
+    - **An approval counts in its own persona only.** The orchestrator's state, earned trust
+      included, is the persona's (ATREST-011): an approval given in one persona never moves the
+      other's count towards auto-approval.
+  - **The interface starts from nothing at a switch.** No window, list, chat or notice of the
+    previous session remains in it.
+    - As built, the interface never goes back from an open session to the login screen. The one
+      login that follows other screens in the same interface is the phone's setup that ends
+      « incomplete ». A lock, or C-SESS, would add more.
+    - **The test,** in the interface's own suite: after a login, every store is in its initial state.
+  - **What this does not protect against:** while a duress session is open, the device is absent
+    from the network. A paired device of the primary sees it go offline.
+  - **The screens of a duress session say that nothing runs** (Céline, 2026-11-14: « Laisser ainsi »):
+    the phone reports sync as not running, the Devices window shows no address, and « sync now »
+    answers that no device is paired. Someone who knows Sovereign may notice the difference from a
+    primary session. That risk is accepted.
+- **AR5 — The walk grows with each release.** At the end of each release, it runs again, extended
+  to every store the release created. In v0.0.13, that is the personal-data sweep's review queue
+  (ch. 09).
 
 ### ATREST-011 — personas distinguishable by file name
 

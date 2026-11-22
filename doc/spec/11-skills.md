@@ -5,7 +5,7 @@ This chapter defines the skill API as built — core skills compiled into the bi
 sandbox for third-party skills — what each may touch, and how the community contributes.
 
 *Consolidates:* specification v1.3 §Skill API Specification, Open Questions 6 and 8 (community
-contribution); archived plan `skills-roadmap.md`; `doc/writing-skills.md`; code in
+contribution); the project's archived skills roadmap (private); `doc/writing-skills.md`; code in
 `crates/sovereign-skills`, `skills/`, and the skill wiring in `crates/sovereign-app` and
 `crates/sovereign-shell`.
 
@@ -75,8 +75,23 @@ Design choices carried by specific skills:
 - **Redactor shares PII Detector's detection rules** (one internal module, `pii_detector`),
   replacing matches with `[REDACTED]`. These rules are the skills' own; the PII pipeline of
   ch. 09 is separate.
-- **Daily Journal** creates a "Journal" thread on first use and one dated document per day,
-  returning the existing one rather than duplicating it.
+- **Daily Journal** finds the thread named exactly "Journal" (ignoring case and surrounding
+  spaces), creating it on first use, and keeps one dated document per day in it, returning the
+  existing one rather than duplicating it. Two live threads named "Journal" are refused, none
+  picked (*Narrow host interfaces*, `find_or_create_thread`). In v0.0.13 the first such call asks
+  which one, and the answer is remembered (ch. 03, *Two threads of the name sought*; built in
+  v0.0.13, item 9). It needs database access, so it does not run in the native shell (ch. 12).
+- **HTML Export escapes the document's text.** **Built in v0.0.13** (the review's item 23, merged
+  2026-11-18; specified 2026-11-18, written by PANDA2). Raw HTML in a document's body, inline or as a block
+  (`<script>`, `<img onerror=…>`, `<iframe>`), is exported as text, shown as written, never as
+  markup. The title, in `<title>` and wherever the page shows it, is escaped the same way. Markdown's
+  own formatting (headings, lists, tables, emphasis, links, code) is still rendered. A link whose
+  address is not `http`, `https`, `mailto`, relative or a fragment keeps its text, and its address
+  is shown as text, not as a link (a `javascript:` link would run a script that can read the page
+  and send it out); images are left as they are (the Fable maille, by delegation of Céline
+  (2026-11-14), on 2026-11-18). Until v0.0.13 a
+  synced or imported document holding `<script>` exported a page that ran it when opened in a
+  browser.
 
 *Replaces v1.x:* "8 core skills" (text editor, image, PDF export, word count, find & replace,
 search, file import, duplicate document) — 24 are built.
@@ -128,6 +143,16 @@ Skills never see the whole database or the orchestrator.
 | `list_all_documents_with_link_counts()` | (id, title, in_degree, out_degree) |
 | `find_or_create_thread(name, description)` | thread id |
 
+**`find_or_create_thread` takes the exact name** (v0.0.12 item 6; Céline, 2026-10-24: "Nom exact
+seulement, sinon il demande"; carried to find-or-create on 2026-10-25, a reading of the mailles
+with the test author, since a skill cannot be asked). It returns the live thread
+whose name equals the given one, ignoring case and surrounding spaces — "Work" never returns "Work
+Archive". With none, the host's bridge creates the thread through the document service, stamped,
+so it travels like any thread write (ch. 03); a skill cannot be asked "which one?", so two live
+threads with that name are refused with an error ("2 threads are named 'Journal'; none was picked —
+rename one of them first"), and nothing is created. The store's bare bridge, without the document
+service, finds but never creates.
+
 **Relationship queries are core-only**: the three relationship methods are not exposed to WASM
 skills until a third-party skill needs them.
 
@@ -140,28 +165,65 @@ orchestrator's own content paths (fencing of untrusted text, PII redaction — c
 
 ### Invocation
 
-**Status:** ◐ Partial — shell: right-click → Skills lists all 24 skills, not filtered by file
-type, and runs each skill's first action with empty parameters; skills that need input do not
-work. Mobile: no skill UI (code: `crates/sovereign-shell/src/app.rs`).
+**Status:** ◐ Partial — shell: right-click → Skills lists 23 of the 24 skills, not filtered by
+file type, and runs each skill's first action with empty parameters; skills that need input do
+not work. Mobile: no skill UI (code: `crates/sovereign-shell/src/app.rs`,
+`crates/sovereign-shell/src/doc_writes.rs`).
 
 Skills are invoked by a direct user gesture. On the desktop, the native shell's document card
-menu (right-click → Skills) lists every registered skill under the label of its first action
-and runs that action; other actions, and parameter input (find-replace, search, file-import,
-adding an image or video), are not reachable. The mobile app has no skill UI. The frozen Tauri
-desktop app had a Skills panel filtered by the document's file type; it is not shipped.
+menu (right-click → Skills) lists every registered skill but one (text-editor, below) under the
+label of its first action and runs that action; other actions, and parameter input (find-replace, search, file-import,
+adding an image or video), are not reachable. text-editor is not listed: its first action,
+Save, run with no parameters, would replace the body with an empty text; the skill stays
+registered. The mobile app has no skill UI. The frozen Tauri desktop app had a Skills panel
+filtered by the document's file type; it is not shipped.
+
+What the shell does with a skill's result:
+- **A content update** is written through the document service, which versions the prior state
+  first and the result after, named after the skill: the notice says "Document updated. The
+  previous version is in History." An update that changes nothing writes nothing.
+- **Refused, nothing changed**, with the reason in the notice: while a window holds unsaved
+  edits of the document ("Save them first"); an update that changes the document's images or videos
+  (skills cannot write that back yet); an update that would replace a non-empty text with
+  nothing; a text-only update of a document with several text blocks.
+- **A file** (an export) is not saved: the notice gives its name and size and says "Saving files
+  isn't wired into the native shell yet."
+- **Structured data** is shown in the notice.
 
 The context grants exactly the capabilities the skill declares, so the capability check guards
 against a skill using more than it declared, not against what it declared.
 
 **Requirement:** a skill that rewrites a document's content never loses content it could not
-read. **Status:** ◐ Partial — skills that rewrite content expect the structured content
-encoding; documents stored as raw text are misread and running such a skill can overwrite
-their body. This is a known defect, tracked in the backlog; it depends on the content-encoding
-decision (ch. 03, *Content encoding*).
+read. **Status:** ✅ Built — both hosts give a skill the document as the document service reads
+it, whatever its stored form (its text as the body, its images and videos as media), and write
+the skill's update back through the service, with the refusals above: a text-only update keeps
+every non-text block (code: `crates/sovereign-ai/src/docs_host.rs`, `skill_output_edit`;
+`crates/sovereign-shell/src/doc_writes.rs`).
 
-The orchestrator does not execute skills: an intent such as `word_count` or `find_replace`
-returns a hint naming the skill to use from the skills panel — on the desktop, the shell's
-Skills menu.
+**A skill asked for in the chat.**
+
+**Status:** ✅ Built for v0.0.13 (lot LH, merged 2026-11-14), decided 2026-11-13 (Céline).
+- **The decision:** « l'assistant devrait indiquer l'existence du skill et l'utiliser sans attendre ». The
+  assistant names the skill and runs it itself, without sending the user to the Skills menu.
+- **The action levels are unchanged** (ch. 08, Céline, same day: « selon le niveau »):
+  - a skill that only reads (`word_count`, level 1) runs at once;
+  - a skill that changes a document (`find_replace`, `duplicate`, `import_file`, level 3) goes through
+    the usual proposal and confirmation.
+- **Not `import_file`, not yet** (Céline, 2026-11-14: « reporter l'import, il y a trop de questions de
+  sécurité pour l'ajouter maintenant »). The assistant answers that importing a file is not available in
+  this version. A later lot first answers the security questions of an import started by the assistant,
+  which Céline has not listed. The implementer met three things it could not settle: a file path that is
+  never guessed, the thread it goes in (C-HOST AT10), and its provenance.
+
+**As built (v0.0.13):**
+- `word_count` runs at once; `find_replace` and `duplicate` are proposed at level 3 and run through
+  the gate. The assistant names the skill it runs.
+- **Export and `import_file` are not the assistant's in v0.0.13** (Céline, 2026-11-14). It says that a
+  document's Skills menu runs an export but saves no file yet, and that importing a file is not
+  available.
+- Until v0.0.13, the orchestrator returned a hint to use the Skills menu instead, where some of these
+  skills could not run.
+- (code: `crates/sovereign-ai/src/orchestrator.rs`, `orchestrator_c_host.rs`)
 
 ---
 
@@ -205,9 +267,12 @@ The contract is `sovereign:skill@0.1.0`, world `skill-plugin`
   text only** — images and videos are not sent. A document fetched through `get-document` is
   returned with its content as stored, not reduced to body text.
 - **Output:** `content-update(string)`, `file(file-output)`, `none`,
-  `structured-data(structured-output)`. `content-update` carries body text only: the host
-  saves it as the document's whole content, so the document's images and videos are dropped.
-  **Status:** ◐ Partial — tracked in the backlog (keep attachments on a body-only update).
+  `structured-data(structured-output)`. `content-update` carries body text only, so it reaches
+  the host with no images or videos: the hosts' write-back (*Invocation*) refuses it on a
+  document that has any, and nothing is changed or dropped. **Status:** ◐ Partial — such a
+  document cannot be updated by a WASM skill; keeping its attachments on a body-only update is
+  tracked in the private backlog. No host loads WASM skills yet (code:
+  `crates/sovereign-skills/src/wasm/wasm_skill.rs`).
 - **Capability enum (WIT):** `read-document`, `write-document`, `read-all-documents`,
   `write-all-documents`, `read-filesystem`, `write-filesystem`, `network`. There is no
   `llm-inference`.
@@ -230,7 +295,7 @@ its manifest. **Status:** ○ Specified, not built — to close before the featu
 
 ### LLM inference is not exposed to WASM
 
-**Status:** ✅ Built — `llm-inference` is absent from the WIT capability enum, by design (skills roadmap, Phase 2b).
+**Status:** ✅ Built — `llm-inference` is absent from the WIT capability enum, by design.
 
 `llm_inference` stays core-only. Exposing it across the component boundary is its own work:
 streaming responses across the boundary, the interaction of fuel limits with multi-second
@@ -328,7 +393,10 @@ strip-comments, tag-extractor, template-stamp, word-frequency, wrap-unwrap-lines
 - **Invocation audit log** — every skill run logged (skill, action, documents touched, network
   calls, duration).
 - **Provenance tracking** — documents modified by a skill record which skill and version, and
-  whether the user reviewed the change.
+  whether the user reviewed the change. ◐ Partly built: a skill's write records `skill:<name>` as
+  the document's last writer, and the version of its result is named "Skill: <name>" in History;
+  the skill's version and whether the user reviewed the change are not recorded (code:
+  `crates/sovereign-docs/src/service.rs`).
 - **Deprecation policy** — on a vulnerability found after audit: alert and warn, leave enabled
   by default (user sovereignty); auto-disable on a critical vulnerability, explain, offer revert
   or uninstall.

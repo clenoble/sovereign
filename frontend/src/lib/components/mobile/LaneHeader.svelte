@@ -7,7 +7,7 @@
 	 *
 	 *  Future (Phase 3): pull-down on this header → global search.
 	 */
-	import { mobileCanvas, mobileLanes } from '$lib/stores/canvas.svelte';
+	import { canvas, endedMark, mobileCanvas, mobileLanes } from '$lib/stores/canvas.svelte';
 	import { longPress } from '$lib/actions/longPress';
 	import LaneSwitcherSheet from './LaneSwitcherSheet.svelte';
 
@@ -16,6 +16,8 @@
 	let activeIndex = $derived(mobileCanvas.currentLaneIndex);
 	let activeName = $derived(lanes.length > 0 ? lanes[activeIndex]?.name ?? '—' : '(no threads)');
 	let totalLanes = $derived(lanes.length);
+	// C-MERGE MG2: the ended lane shows its mark after its name.
+	let mark = $derived(endedMark(canvas.threads.find((t) => t.id === lanes[activeIndex]?.id)));
 
 	let switcherOpen = $state(false);
 
@@ -36,6 +38,9 @@
 		<span class="name-text">{activeName}</span>
 		<span class="caret" aria-hidden="true">▾</span>
 	</button>
+	{#if mark}
+		<span class="mark" aria-label="{activeName}, {mark}">{mark}</span>
+	{/if}
 
 	{#if totalLanes > 1}
 		<div class="dots" role="tablist" aria-label="Lane indicator">
@@ -72,6 +77,14 @@
 		padding: 4px 8px;
 		cursor: pointer;
 		max-width: 80%;
+	}
+
+	.mark {
+		font-size: 0.75rem;
+		opacity: 0.85;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	.name-text {

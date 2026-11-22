@@ -75,6 +75,24 @@ pub(crate) struct OnboardingWizard {
     pub(crate) reveal: bool,
     pub(crate) focus: usize,
     pub(crate) error: Option<String>,
+    /// The control the keyboard is on (spec ch. 12, SQ10), and the step it
+    /// was set on. `None`, or set on another step: the step's field `focus`
+    /// holds it on a step with fields, else the step's group (N4).
+    pub(crate) control_focus: Option<(usize, WizTarget)>,
+}
+
+/// What the keyboard can be on in a step of the setup (spec ch. 12, SQ10): a
+/// field, a choice of a group (the bubble styles, the themes: one Tab stop
+/// together, the arrows inside), or a button or checkbox, as what its click
+/// does.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum WizTarget {
+    Field(usize),
+    Choice(WizAction),
+    Press(WizAction),
+    /// The show/hide toggle drawn in masked field `i`; every toggle of the
+    /// step flips its one `reveal` flag, as a click on its face does.
+    Reveal(usize),
 }
 
 impl OnboardingWizard {
@@ -96,7 +114,126 @@ impl OnboardingWizard {
             reveal: false,
             focus: 0,
             error: None,
+            control_focus: None,
         }
+    }
+
+    /// The step's targets, in the order of its accessibility items (the drawn
+    /// order, top to bottom, left to right on a row): the welcome's two
+    /// buttons; the styles row by row, or Dark and Light; the sample-data
+    /// checkbox; the fields, then the show/hide toggle; then Back, « Skip »
+    /// and the primary.
+    pub(crate) fn a11y_targets(&self) -> Vec<WizTarget> {
+        use WizTarget::*;
+        let mut v = Vec::new();
+        match self.step {
+            STEP_WELCOME => return vec![Press(WizAction::Next), Press(WizAction::ChoosePair)],
+            STEP_BUBBLE => v.extend(BubbleStyle::all().iter().map(|s| Choice(WizAction::SelectBubble(*s)))),
+            STEP_THEME => v.extend([Choice(WizAction::SelectTheme(true)), Choice(WizAction::SelectTheme(false))]),
+            STEP_SAMPLE => v.push(Press(WizAction::ToggleSample)),
+            _ => {
+                for (i, toggle_after) in self.field_entries() {
+                    v.push(Field(i));
+                    if toggle_after {
+                        v.push(Reveal(i));
+                    }
+                }
+            }
+        }
+        v.push(Press(WizAction::Back));
+        if matches!(self.step, STEP_DURESS | STEP_CANARY) {
+            v.push(Press(WizAction::Skip));
+        }
+        v.push(Press(if self.step == STEP_CANARY { WizAction::Finish } else { WizAction::Next }));
+        v
+    }
+
+    /// The step's fields in order, each with whether a show/hide toggle
+    /// follows it: each masked field has its own, drawn in it.
+    fn field_entries(&self) -> Vec<(usize, bool)> {
+        let toggles = self.a11y_show_name().is_some();
+        (0..self.field_count()).map(|i| (i, toggles && self.field_masked(i))).collect()
+    }
+
+    /// The target the keyboard is on: the one set on this step, else the
+    /// focused field, else none (the step's group holds the focus, N4).
+    pub(crate) fn focused_target(&self) -> Option<WizTarget> {
+        match self.control_focus {
+            Some((step, t)) if step == self.step && self.a11y_targets().contains(&t) => Some(t),
+            _ if self.field_count() > 0 => Some(WizTarget::Field(self.focus.min(self.field_count() - 1))),
+            _ => None,
+        }
+    }
+
+    /// Put the keyboard on `t`: a field through `focus`, as a click on it.
+    pub(crate) fn set_target_focus(&mut self, t: WizTarget) {
+        match t {
+            WizTarget::Field(i) => {
+                self.focus = i;
+                self.control_focus = None;
+            }
+            _ => self.control_focus = Some((self.step, t)),
+        }
+    }
+
+    /// The step's Tab stops: each target alone, but a group's choices
+    /// together.
+    fn tab_stops(&self) -> Vec<Vec<WizTarget>> {
+        let mut stops: Vec<Vec<WizTarget>> = Vec::new();
+        for t in self.a11y_targets() {
+            match (t, stops.last_mut()) {
+                (WizTarget::Choice(_), Some(last)) if matches!(last[0], WizTarget::Choice(_)) => last.push(t),
+                _ => stops.push(vec![t]),
+            }
+        }
+        stops
+    }
+
+    /// The checked choice of a group (where Tab enters it).
+    fn checked(&self, group: &[WizTarget]) -> WizTarget {
+        group
+            .iter()
+            .copied()
+            .find(|t| match t {
+                WizTarget::Choice(WizAction::SelectBubble(st)) => *st == self.bubble,
+                WizTarget::Choice(WizAction::SelectTheme(dark)) => *dark == self.theme_dark,
+                _ => false,
+            })
+            .unwrap_or(group[0])
+    }
+
+    /// Tab (or Shift+Tab, `back`): the next stop, round; from the step's
+    /// group, the first (or the last). A group is entered on its checked
+    /// choice.
+    pub(crate) fn move_target_focus(&mut self, back: bool) {
+        let stops = self.tab_stops();
+        let n = stops.len();
+        let at = self.focused_target().and_then(|f| stops.iter().position(|s| s.contains(&f)));
+        let next = match (at, back) {
+            (None, false) => 0,
+            (None, true) => n - 1,
+            (Some(i), false) => (i + 1) % n,
+            (Some(i), true) => (i + n - 1) % n,
+        };
+        let t = if matches!(stops[next][0], WizTarget::Choice(_)) { self.checked(&stops[next]) } else { stops[next][0] };
+        self.set_target_focus(t);
+    }
+
+    /// An arrow inside a group: the next choice (`by` 1) or the one before
+    /// (`by` -1), in order, round, as a radio group does. Whether it moved
+    /// (false off a group).
+    pub(crate) fn move_in_group(&mut self, by: isize) -> bool {
+        let Some(f @ WizTarget::Choice(_)) = self.focused_target() else {
+            return false;
+        };
+        let Some(group) = self.tab_stops().into_iter().find(|s| s.contains(&f)) else {
+            return false;
+        };
+        let n = group.len() as isize;
+        let at = group.iter().position(|t| *t == f).unwrap_or(0) as isize;
+        let t = group[(at + by).rem_euclid(n) as usize];
+        self.set_target_focus(t);
+        true
     }
 
     /// Number of editable text fields on the current step.
@@ -351,18 +488,22 @@ impl OnboardingWizard {
                     if self.step == STEP_NICKNAME && i == DEVICE_NAME_FIELD {
                         v.push(item(Role::Label, crate::device_name::SEEN_BY, String::new(), false));
                     }
+                    // The strength line, under the password it measures.
+                    if self.step == STEP_PASSWORD && i == 0 && !self.password.is_empty() {
+                        let s = strength_label(strength_score(&self.password));
+                        v.push(item(Role::Label, &format!("Password strength: {s}"), String::new(), false));
+                    }
+                    // Each masked field's own show/hide toggle, right after
+                    // it (SQ10), named for what it reveals on this step (K2:
+                    // "Show phrase" on the canary step); all flip one flag.
+                    if let Some(name) = self.a11y_show_name().filter(|_| self.field_masked(i)) {
+                        v.push(item(Role::Button, name, String::new(), false));
+                    }
                 }
-                if self.step == STEP_PASSWORD && !self.password.is_empty() {
-                    let s = strength_label(strength_score(&self.password));
-                    v.push(item(Role::Label, &format!("Password strength: {s}"), String::new(), false));
-                }
-                // The wizard's single "show" toggle, named for what it reveals
-                // on this step (K2: "Show phrase" on the canary step).
-                if let Some(name) = self.a11y_show_name() {
-                    v.push(item(Role::Button, name, String::new(), false));
+                if self.a11y_show_name().is_some() {
                     // v0.0.12 rc2 (V0012-rc2-labels-spoken, L4): the key, heard
-                    // right after the toggle and never drawn. Not in the
-                    // toggle's own name: K1/K2 (first_run) and N5
+                    // after the toggles and never drawn. Not in the toggles'
+                    // own name: K1/K2 (first_run) and N5
                     // (setup_step_announced) pin that name as it is.
                     let what = if self.step == STEP_CANARY { "the phrase" } else { "the passwords" };
                     v.push(item(Role::Label, &format!("{} shows or hides {what}", crate::panels::SHOW_KEY), String::new(), false));
@@ -379,6 +520,13 @@ impl OnboardingWizard {
             }
             let primary = if self.step == STEP_CANARY { "Get started" } else { "Next" };
             v.push(item(Role::DefaultButton, primary, String::new(), false));
+        }
+        // SQ10: the target the keyboard is on holds the focus. The items of
+        // target roles are the step's targets, in order.
+        let targets = self.a11y_targets();
+        let focused = self.focused_target();
+        for (k, it) in v.iter_mut().filter(|it| is_target_role(it.0)).enumerate() {
+            it.3 = focused.is_some() && targets.get(k).copied() == focused;
         }
         v
     }
@@ -407,6 +555,14 @@ impl OnboardingWizard {
             title.to_string()
         }
     }
+}
+
+/// Whether an accessibility item of a step is one of its targets (a field, a
+/// button, a choice or the checkbox), as `OnboardingWizard::a11y_targets`
+/// lists them.
+pub(crate) fn is_target_role(role: accesskit::Role) -> bool {
+    use accesskit::Role::*;
+    matches!(role, TextInput | PasswordInput | Button | DefaultButton | RadioButton | CheckBox)
 }
 
 /// 5-criteria password strength (mirrors `PasswordPolicy::default_policy`):
@@ -630,10 +786,49 @@ pub(crate) fn draw_onboarding(
             button(scene, shaper, s, "Skip", dim, pal().surface, idle);
         }
         let primary_label = if wiz.step == STEP_CANARY { "Get started" } else { "Next" };
-        button(scene, shaper, nav.primary, primary_label, pal().on_accent, accent, idle && wiz.can_advance());
+        button(scene, shaper, nav.primary, primary_label, crate::theme::text_on_fill(accent), accent, idle && wiz.can_advance());
+    }
+
+    // The keyboard's control has a visible focus outline (WCAG 2.4.7); a
+    // focused field has its focused-field border instead (`draw_fields`, TC3).
+    for r in focus_rects(wiz, card) {
+        scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, pal().text, None, &RoundedRect::from_rect(r.inflate(3.0, 3.0), 9.0));
     }
 
     scene.pop_layer();
+}
+
+/// Where the control the keyboard is on is drawn (its outline goes around
+/// it): none on a field or on the step's group.
+fn focus_rects(wiz: &OnboardingWizard, card: Rect) -> Vec<Rect> {
+    let Some(t) = wiz.focused_target() else {
+        return Vec::new();
+    };
+    let nav = wiz_nav(card, wiz.step);
+    let a = match t {
+        WizTarget::Field(_) => return Vec::new(),
+        // Only the focused toggle's own face.
+        WizTarget::Reveal(i) => return field_rects(card, wiz.field_count()).get(i).map(|fr| reveal_btn(*fr)).into_iter().collect(),
+        WizTarget::Choice(a) | WizTarget::Press(a) => a,
+    };
+    match (wiz.step, a) {
+        (STEP_WELCOME, WizAction::Next) => vec![welcome_buttons(card).0],
+        (STEP_WELCOME, WizAction::ChoosePair) => vec![welcome_buttons(card).1],
+        (_, WizAction::SelectBubble(st)) => bubble_cells(card)
+            .into_iter()
+            .filter(|(_, s)| *s == st)
+            .map(|(cell, _)| Rect::new(cell.x0 + 6.0, cell.y0 + 2.0, cell.x1 - 6.0, cell.y1 - 2.0))
+            .collect(),
+        (_, WizAction::SelectTheme(dark)) => {
+            let (d, l) = theme_buttons(card);
+            vec![if dark { d } else { l }]
+        }
+        (_, WizAction::ToggleSample) => vec![sample_toggle(card)],
+        (_, WizAction::Back) => nav.back.into_iter().collect(),
+        (_, WizAction::Skip) => nav.skip.into_iter().collect(),
+        (_, WizAction::Next | WizAction::Finish) => vec![nav.primary],
+        _ => Vec::new(),
+    }
 }
 
 fn step_copy(step: usize) -> (&'static str, &'static str) {
@@ -716,7 +911,7 @@ fn draw_sample_step(scene: &mut Scene, shaper: &mut TextShaper, wiz: &Onboarding
     scene.fill(Fill::NonZero, Affine::IDENTITY, if on { pal().accent } else { pal().surface_alt }, None, &track);
     let r = t.height() * 0.5 - 3.0;
     let cx = if on { t.x1 - r - 3.0 } else { t.x0 + r + 3.0 };
-    scene.fill(Fill::NonZero, Affine::IDENTITY, if on { pal().on_accent } else { pal().text_dim }, None, &vello::kurbo::Circle::new(Point::new(cx, t.y0 + t.height() * 0.5), r));
+    scene.fill(Fill::NonZero, Affine::IDENTITY, if on { crate::theme::text_on_fill(pal().accent) } else { pal().text_dim }, None, &vello::kurbo::Circle::new(Point::new(cx, t.y0 + t.height() * 0.5), r));
     text_at(scene, shaper, if on { "Enabled" } else { "Disabled" }, t.x1 + 14.0, t.y0 + 5.0, 13.0, pal().text);
     let hint = if on {
         "Sample documents, threads, and contacts will be created."
@@ -745,13 +940,14 @@ fn draw_fields(scene: &mut Scene, shaper: &mut TextShaper, wiz: &OnboardingWizar
         if let Some(lbl) = labels.get(i) {
             text_at(scene, shaper, lbl, fr.x0, fr.y0 - 18.0, 11.5, pal().text_dim);
         }
-        let focused = i == wiz.focus;
+        // Not while a button holds the keyboard (SQ10).
+        let focused = wiz.focused_target() == Some(WizTarget::Field(i));
         let frr = RoundedRect::from_rect(*fr, 8.0);
         scene.fill(Fill::NonZero, Affine::IDENTITY, crate::theme::field_fill(&pal()), None, &frr);
         scene.stroke(
             &Stroke::new(if focused { 1.6 } else { 1.0 }),
             Affine::IDENTITY,
-            if focused { pal().accent } else { pal().input_border },
+            if focused { crate::theme::focused_field_border(&pal()) } else { pal().input_border },
             None,
             &frr,
         );

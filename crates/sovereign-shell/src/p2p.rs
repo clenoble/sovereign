@@ -32,6 +32,7 @@ use sovereign_crypto::device_key::DeviceKey;
 use sovereign_db::traits::GraphDB;
 use sovereign_p2p::pairing::{PairedDevice, PairingManager};
 use sovereign_p2p::pairing_offer::derive_handshake_key;
+use sovereign_p2p::supervision::{NodeEnd, NodeSupervisor};
 use sovereign_p2p::{
     ActiveGuardianOffer, ActivePairingOffer, P2pCommand, P2pConfig, P2pEvent, PairKeyMap,
     PairingOffer, SovereignNode, SyncService,
@@ -58,13 +59,21 @@ pub(crate) struct PairingOfferOut {
     pub(crate) pin: String,
 }
 
+/// C-SUP SU5: how long an asked end waits for the node to end on Shutdown
+/// before it aborts it. The node handles Shutdown between two handlers, and a
+/// handler is short (milliseconds; a sync round's apply of one state), so ten
+/// seconds is far beyond a node that works, and an abort only meets a node
+/// that is stuck.
+const NODE_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Channel buffer for P2P commands (mDNS bursts queue many StartSync requests).
 const COMMAND_BUFFER: usize = 64;
 /// Channel buffer for P2P events flowing into the translator.
 const EVENT_BUFFER: usize = 256;
 
 /// Live handle to the running P2P node, held by the App. Dropping it does NOT
-/// stop the node (the swarm + translator are detached tasks on the runtime);
+/// stop the node (the swarm + translator are tasks on the runtime; the node's
+/// is supervised, C-SUP, and `stop_node` ends it);
 /// it's the App's control surface for the Devices & Sync window.
 pub(crate) struct P2pHandle {
     pub(crate) command_tx: mpsc::Sender<P2pCommand>,
@@ -84,9 +93,33 @@ pub(crate) struct P2pHandle {
     pub(crate) store_key: [u8; 32],
     /// This device's human-readable name (shown to peers, and in the offer).
     pub(crate) device_name: String,
+    /// C-SUP: the node's supervisor (SU1), and where it reports an end the
+    /// session did not ask for. `None` for a handle with no node behind it.
+    supervision: Option<(NodeSupervisor, std::sync::mpsc::Receiver<NodeEnd>)>,
 }
 
 impl P2pHandle {
+    /// C-SUP SU1: how the node ended, once, if it ended without the session
+    /// asking for it (reported by its supervisor).
+    pub(crate) fn node_end(&self) -> Option<NodeEnd> {
+        self.supervision.as_ref().and_then(|(_, rx)| rx.try_recv().ok())
+    }
+
+    /// C-SUP SU5: an end the session asked for (the application's exit): the
+    /// node ends, and nothing is said. The end is recorded first, then the
+    /// node is sent Shutdown, which it handles between two handlers; it is
+    /// aborted only if it has not ended within [`NODE_STOP_GRACE`].
+    pub(crate) fn stop_node(self, rt: &tokio::runtime::Runtime) {
+        let Some((supervisor, _)) = self.supervision else { return };
+        let stopping = supervisor.stop();
+        let command_tx = self.command_tx;
+        rt.block_on(async move {
+            let _ = command_tx.send(P2pCommand::Shutdown).await;
+            drop(command_tx);
+            stopping.await;
+        });
+    }
+
     /// Snapshot of paired devices for the Devices window: (peer_id, name).
     pub(crate) fn paired_devices(&self, rt: &tokio::runtime::Runtime) -> Vec<(String, String)> {
         rt.block_on(async {
@@ -139,9 +172,71 @@ impl P2pHandle {
                 account_key: Arc::new(account_key),
                 store_key,
                 device_name: device_name.to_string(),
+                supervision: None,
             },
             command_rx,
         )
+    }
+
+    /// For tests: runs this handle's event translator on `rt`, as a started
+    /// node's events are translated (persisting a pairing, then telling the app),
+    /// over this handle's paired-device store, account key and command channel,
+    /// and sending what it makes to `orch_tx`. Returns the sender a test feeds
+    /// the node's events into. For the C3 tests, by their author.
+    #[cfg(test)]
+    pub(crate) fn translate_events_for_test(
+        &self,
+        rt: &tokio::runtime::Runtime,
+        orch_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
+    ) -> mpsc::Sender<P2pEvent> {
+        let (event_tx, event_rx) = mpsc::channel::<P2pEvent>(EVENT_BUFFER);
+        // The context `start_p2p_node` builds, over this handle's own parts.
+        // No persona (no guardian queue) and no document service (no sweep).
+        let ctx = TranslatorCtx {
+            command_tx: self.command_tx.clone(),
+            orch_tx,
+            pairing_manager: self.pairing_manager.clone(),
+            listen_addrs: self.listen_addrs.clone(),
+            account_key: self.account_key.clone(),
+            store_key: self.store_key,
+            local_peer_id: self.local_peer_id.clone(),
+            persona: None,
+            sweep_docs: None,
+        };
+        rt.spawn(async move {
+            spawn_event_translator(event_rx, ctx).await;
+        });
+        event_tx
+    }
+
+    /// A handle whose node is a test's own future, supervised as a real node
+    /// is (C-SUP, with the same stop grace): `node` receives the commands the
+    /// handle sends, so `stop_node` sends it Shutdown and waits for it to end,
+    /// as it waits for a real node. Otherwise as [`P2pHandle::fake`], with an
+    /// empty paired list that is never saved. For the C6 tests, by their
+    /// author; the implementer does not edit it.
+    #[cfg(test)]
+    pub(crate) fn fake_supervised<F, Fut>(rt: &tokio::runtime::Runtime, node: F) -> P2pHandle
+    where
+        F: FnOnce(mpsc::Receiver<P2pCommand>) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
+    {
+        let dir = std::env::temp_dir().join("sov-c6-unused-paired-store");
+        let (mut handle, command_rx) =
+            P2pHandle::fake("12D3KooWC6TestNode", "C6 test node", PairingManager::new(dir.join("paired.json")), [6u8; 32]);
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<NodeEnd>();
+        let supervisor = NodeSupervisor::spawn(rt.handle(), node(command_rx), move |end| {
+            let _ = stop_tx.send(end);
+        })
+        .with_stop_grace(NODE_STOP_GRACE);
+        handle.supervision = Some((supervisor, stop_rx));
+        handle
+    }
+
+    /// Why the paired list could not be read, when it could not (C-AREA AR3):
+    /// it is kept as it is, nothing is saved over it, and no pairing is armed.
+    pub(crate) fn paired_unreadable(&self, rt: &tokio::runtime::Runtime) -> Option<String> {
+        rt.block_on(async { self.pairing_manager.read().await.unreadable().map(str::to_string) })
     }
 
     /// Current listen addresses (for display / pairing-offer dial hints).
@@ -176,17 +271,6 @@ impl P2pHandle {
                 }
             }
         });
-    }
-
-    /// Ask the node to restore a peer-overwritten row to its pre-sync value —
-    /// the node holds the key to unseal the `RowRecovery` (Previous values).
-    /// Returns false if the command channel is full/closed.
-    pub(crate) fn restore_row(&self, recovery_id: &str) -> bool {
-        self.command_tx
-            .try_send(P2pCommand::RestoreRowRecovery {
-                recovery_id: recovery_id.to_string(),
-            })
-            .is_ok()
     }
 
     /// Fire `StartSync` for every paired peer. Returns how many were queued.
@@ -256,6 +340,13 @@ impl P2pHandle {
         rt: &tokio::runtime::Runtime,
     ) -> Result<PairingOfferOut, String> {
         rt.block_on(async {
+            // C-AREA AR3: over a list that could not be read, a pairing would
+            // have to replace it; it is kept as it is.
+            if let Some(why) = self.pairing_manager.read().await.unreadable() {
+                return Err(format!(
+                    "your paired devices could not be read ({why}); the list is kept as it is, and a new pairing would replace it"
+                ));
+            }
             // The MasterKey salt is released to the new device over the
             // handshake (it used to travel in the QR).
             let salt = std::fs::read(crate::crypto::crypto_dir().join("salt"))
@@ -284,10 +375,9 @@ impl P2pHandle {
             let offer_for_kdf = offer.clone();
             let pin_for_kdf = pin.clone();
             let handshake_key =
-                tokio::task::spawn_blocking(move || derive_handshake_key(&pin_for_kdf, &offer_for_kdf))
+                tokio::task::spawn_blocking(move || stretch_pairing_key(&pin_for_kdf, &offer_for_kdf))
                     .await
-                    .map_err(|e| format!("kdf task: {e}"))?
-                    .map_err(|e| format!("derive_handshake_key: {e}"))?;
+                    .map_err(|e| format!("kdf task: {e}"))??;
 
             self.command_tx
                 .send(P2pCommand::SetPairingOffer {
@@ -311,6 +401,63 @@ impl P2pHandle {
     }
 }
 
+/// The pairing handshake key of `offer` under `code`: the Argon2id stretch
+/// (~0.5 s), as `derive_handshake_key` computes it. **The real offer
+/// ([`P2pHandle::arm_pairing_offer`]) and the duress session's decoy
+/// ([`decoy_pairing_offer`]) both go through this one function,** so the two
+/// screens take as long by construction, not by a measured delay (C-AREA AR4,
+/// « the same decoy »; SIDECHANNEL-001's rule; from-fable-2nde-position/0037
+/// §2). Each call counts in `pairing_key_stretches` (tests).
+///
+/// Signature by the C-AREA test author (`l1c-tests-v7`); its body is the
+/// implementer's.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn stretch_pairing_key(code: &str, offer: &PairingOffer) -> Result<[u8; 32], String> {
+    #[cfg(test)]
+    PAIRING_KEY_STRETCHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    derive_handshake_key(code, offer).map_err(|e| format!("derive_handshake_key: {e}"))
+}
+
+/// The runs of [`stretch_pairing_key`] in this process (tests only).
+#[cfg(test)]
+static PAIRING_KEY_STRETCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many times this process has run [`stretch_pairing_key`] (tests only):
+/// the C-AREA walk reads it around the real offer and around the decoy.
+///
+/// Signature by the C-AREA test author (`l1c-tests-v7`); its body is the
+/// implementer's.
+#[cfg(test)]
+pub(crate) fn pairing_key_stretches() -> usize {
+    PAIRING_KEY_STRETCHES.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The pairing screen of a duress session (C-AREA AR3, AR4; Céline,
+/// 2026-11-13: « Le même leurre que les gardiens »): built as
+/// [`P2pHandle::arm_pairing_offer`] builds a real one (the same offer type
+/// and TTL, a code from the same generator), from this persona's own peer id
+/// and device name, but armed nowhere: no node runs in a duress session, so
+/// it carries no address, and a device that tries it gets no answer. The
+/// screen waits as for a device that never comes.
+///
+/// It runs the same key stretch as the real offer ([`stretch_pairing_key`]),
+/// and throws the key away: the decoy takes as long as the real screen by
+/// construction (from-fable-2nde-position/0037 §2).
+pub(crate) fn decoy_pairing_offer(own_peer_id: String, device_name: String) -> PairingOfferOut {
+    let offer = PairingOffer::new(own_peer_id, device_name, Vec::new(), OFFER_TTL_SECS);
+    let pin = sovereign_crypto::pair_payload::generate_pairing_code();
+    if let Err(e) = stretch_pairing_key(&pin, &offer) {
+        // The same failure a real offer would meet; the screen is shown anyway,
+        // as it waits for nothing.
+        eprintln!("pairing: {e}");
+    }
+    PairingOfferOut {
+        // A struct of strings and integers always serializes.
+        code: offer.encode().unwrap_or_default(),
+        pin,
+    }
+}
+
 /// A freshly-armed guardian-enrollment offer to show on the owner's device.
 pub(crate) struct GuardianOfferOut {
     /// base64url `GuardianEnrollOffer` — rendered as the QR the guardian scans.
@@ -321,11 +468,48 @@ pub(crate) struct GuardianOfferOut {
     pub(crate) slot_ordinal: usize,
 }
 
+/// The guardian-enrollment key of `offer` under `code`: the Argon2id stretch
+/// (~0.5 s), as `sovereign_p2p::guardian_enroll::derive_enroll_key` computes
+/// it. **The real offer ([`P2pHandle::arm_guardian_offer`]) and the duress
+/// session's decoy ([`decoy_guardian_offer`]) both go through this one
+/// function,** so the two screens take as long by construction, not by a
+/// measured delay (C-AREA AR4, guardian enrollment's decoy; SIDECHANNEL-001's
+/// rule; claude-coord from-windows/0286). Each call counts in
+/// `enroll_key_stretches` (tests).
+///
+/// Signature by the C-AREA test author (`l1c-tests-v9`); its body is the
+/// implementer's.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn stretch_enroll_key(
+    code: &str,
+    offer: &sovereign_p2p::guardian_enroll::GuardianEnrollOffer,
+) -> Result<[u8; 32], String> {
+    #[cfg(test)]
+    ENROLL_KEY_STRETCHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    sovereign_p2p::guardian_enroll::derive_enroll_key(code, offer).map_err(|e| format!("derive_enroll_key: {e}"))
+}
+
+/// The runs of [`stretch_enroll_key`] in this process (tests only).
+#[cfg(test)]
+static ENROLL_KEY_STRETCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many times this process has run [`stretch_enroll_key`] (tests only):
+/// the C-AREA walk reads it around the real guardian offer and around the
+/// decoy.
+///
+/// Signature by the C-AREA test author (`l1c-tests-v9`); its body is the
+/// implementer's.
+#[cfg(test)]
+pub(crate) fn enroll_key_stretches() -> usize {
+    ENROLL_KEY_STRETCHES.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// The decoy guardian-enrollment offer of a duress session (spec ch. 07,
 /// v2.0.29): built exactly as [`P2pHandle::arm_guardian_offer`] builds a real
 /// one — same offer type, same TTL, a code from the same generator — so the
-/// screen reads the same, but nothing is armed: no share, no enrollment key
-/// derived, nothing sent to the node, nothing written. No guardian can ever
+/// screen reads the same, but nothing is armed: no share, the enrollment key
+/// stretched as for a real offer and thrown away (so the screen takes as long),
+/// nothing sent to the node, nothing written. No guardian can ever
 /// complete it, so the enrollment screen simply waits. Slot 1: a duress
 /// session reads as a persona with no roster yet.
 pub(crate) fn decoy_guardian_offer(
@@ -336,11 +520,17 @@ pub(crate) fn decoy_guardian_offer(
     use sovereign_p2p::guardian_enroll::{GuardianEnrollOffer, GUARDIAN_OFFER_TTL_SECONDS};
 
     let offer = GuardianEnrollOffer::new(owner_peer_id, owner_label, addrs, GUARDIAN_OFFER_TTL_SECONDS);
+    let code = sovereign_crypto::pair_payload::generate_pairing_code();
+    // The same key stretch as the real offer (`stretch_enroll_key`), its key
+    // thrown away: the decoy takes as long as the real screen by construction.
+    if let Err(e) = stretch_enroll_key(&code, &offer) {
+        eprintln!("guardian enrollment: {e}");
+    }
     GuardianOfferOut {
         // A struct of strings and integers always serializes; an empty payload
         // would only draw an empty QR, never reach the node.
         qr_payload: offer.encode().unwrap_or_default(),
-        code: sovereign_crypto::pair_payload::generate_pairing_code(),
+        code,
         slot_ordinal: 1,
     }
 }
@@ -380,9 +570,7 @@ impl P2pHandle {
         persona: Option<sovereign_core::auth::PersonaKind>,
     ) -> Result<GuardianOfferOut, String> {
         use sovereign_crypto::recovery_roster::{GUARDIAN_THRESHOLD, GUARDIAN_TOTAL};
-        use sovereign_p2p::guardian_enroll::{
-            derive_enroll_key, GuardianEnrollOffer, GUARDIAN_OFFER_TTL_SECONDS,
-        };
+        use sovereign_p2p::guardian_enroll::{GuardianEnrollOffer, GUARDIAN_OFFER_TTL_SECONDS};
 
         // The caller sends a duress session to the decoy offer first; this is
         // the backstop: no roster is ever created or read under another
@@ -445,10 +633,9 @@ impl P2pHandle {
             let offer_for_kdf = offer.clone();
             let code_for_kdf = code.clone();
             let handshake_key =
-                tokio::task::spawn_blocking(move || derive_enroll_key(&code_for_kdf, &offer_for_kdf))
+                tokio::task::spawn_blocking(move || stretch_enroll_key(&code_for_kdf, &offer_for_kdf))
                     .await
-                    .map_err(|e| format!("kdf task: {e}"))?
-                    .map_err(|e| format!("derive_enroll_key: {e}"))?;
+                    .map_err(|e| format!("kdf task: {e}"))??;
 
             self.command_tx
                 .send(P2pCommand::SetGuardianOffer {
@@ -522,17 +709,13 @@ pub(crate) fn start_p2p_node(
 
         // Load the paired-device store BEFORE the SyncService so per-pair keys
         // are available from the first sync. The store is encrypted under a
-        // DeviceKey-derived key; a corrupt file resets the list (Risk 7).
+        // DeviceKey-derived key. A list that cannot be read is kept as it is,
+        // never replaced (C-AREA AR3; ch. 03, *What cannot be read is never
+        // shown as empty*): the manager lists nothing and refuses to save, and
+        // the shell says so (`P2pHandle::paired_unreadable`).
         let store_key = sovereign_p2p::pairing::derive_store_key(&device_key);
         let paired_path = crate::crypto::crypto_dir().join("paired_devices.json");
-        let mut manager = if paired_path.exists() {
-            PairingManager::load(&paired_path, &store_key).unwrap_or_else(|e| {
-                eprintln!("paired_devices.json invalid ({e}); starting fresh");
-                PairingManager::new(paired_path.clone())
-            })
-        } else {
-            PairingManager::new(paired_path.clone())
-        };
+        let mut manager = PairingManager::load_or_keep(&paired_path, &store_key);
         // P1.4: populate any missing per-pair keys (deterministic from the
         // shared AccountKey), then persist (also migrates a legacy plaintext
         // file to the encrypted shape).
@@ -559,6 +742,8 @@ pub(crate) fn start_p2p_node(
         )
         .with_analysis(Arc::new(sovereign_ai::peer_audit::PeerChangeAnalysis::deterministic()));
         let mut verdict_docs = None;
+        // C-SWEEP SW1: the translator sweeps after a sync round.
+        let sweep_docs = docs.clone();
         match docs {
             Some(docs) => {
                 verdict_docs = Some(docs.clone());
@@ -596,11 +781,21 @@ pub(crate) fn start_p2p_node(
         let listen_addrs = Arc::new(std::sync::RwLock::new(vec![listen_addr.to_string()]));
         let pairing_manager = Arc::new(tokio::sync::RwLock::new(manager));
 
-        // Spawn the swarm event loop.
-        tokio::spawn(async move {
-            node.run().await;
-            println!("P2P node event loop exited");
-        });
+        // The swarm event loop, under its supervisor (C-SUP SU1): an end the
+        // session did not ask for reaches the App (`P2pHandle::node_end`),
+        // which says it; nothing restarts the node (SU3).
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<NodeEnd>();
+        let supervisor = NodeSupervisor::spawn(
+            &tokio::runtime::Handle::current(),
+            async move {
+                node.run().await;
+                Ok(())
+            },
+            move |end| {
+                let _ = stop_tx.send(end);
+            },
+        )
+        .with_stop_grace(NODE_STOP_GRACE);
 
         // Spawn the event translator.
         let ctx = TranslatorCtx {
@@ -612,6 +807,7 @@ pub(crate) fn start_p2p_node(
             store_key,
             local_peer_id: local_peer_id.clone(),
             persona,
+            sweep_docs,
         };
         tokio::spawn(async move {
             spawn_event_translator(event_rx, ctx).await;
@@ -641,6 +837,7 @@ pub(crate) fn start_p2p_node(
             account_key,
             store_key,
             device_name: cfg.device_name,
+            supervision: Some((supervisor, stop_rx)),
         })
     })
 }
@@ -790,6 +987,27 @@ struct TranslatorCtx {
     local_peer_id: String,
     /// The open persona: the enrollment queue is the primary's only.
     persona: Option<sovereign_core::auth::PersonaKind>,
+    /// C-SWEEP SW1: the session's document service, which the personal-data
+    /// sweep runs over after a sync round.
+    sweep_docs: Option<Arc<sovereign_docs::DocumentService>>,
+}
+
+/// C-SWEEP SW1 (spec ch. 09): « after a sync round that brought content not
+/// yet analysed, in bounded batches ». Passes of the shared routine until none
+/// is left (a pass that analyses nothing ends it: what failed is tried again
+/// after the next round). Inside the translator's own task, so it ends with
+/// the session's node.
+pub(crate) const SWEEP_BATCH: usize = 25;
+
+async fn sweep_after_sync_round(docs: &sovereign_docs::DocumentService) -> usize {
+    let mut analysed = 0;
+    loop {
+        let report = sovereign_ai::pii::sweep::run_sweep_pass(docs, SWEEP_BATCH).await;
+        analysed += report.analysed.len();
+        if !report.remaining || report.analysed.is_empty() {
+            return analysed;
+        }
+    }
 }
 
 /// Translate `P2pEvent`s into `OrchestratorEvent`s for the shell's event drain,
@@ -825,10 +1043,19 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
             P2pEvent::SyncCompleted {
                 peer_id,
                 docs_synced,
-            } => Some(OrchestratorEvent::SyncStatus {
-                peer_id,
-                status: format!("completed ({docs_synced} items)"),
-            }),
+            } => {
+                // C-SWEEP SW1: the round may have brought content no device
+                // analysed; the sweep runs before the round is reported, so
+                // the status bar's count, read again when the shell takes the
+                // report, includes what it found.
+                if let Some(docs) = &ctx.sweep_docs {
+                    sweep_after_sync_round(docs).await;
+                }
+                Some(OrchestratorEvent::SyncStatus {
+                    peer_id,
+                    status: format!("completed ({docs_synced} items)"),
+                })
+            }
             P2pEvent::SyncConflict {
                 doc_id,
                 description,
@@ -860,6 +1087,20 @@ async fn spawn_event_translator(mut event_rx: mpsc::Receiver<P2pEvent>, ctx: Tra
                     .map(|d| d.device_name.clone())
                     .unwrap_or_default();
                 Some(OrchestratorEvent::PeerNeedsUpdate { peer_id, device_name })
+            }
+            P2pEvent::ThisDeviceNeedsUpdate { peer_id } => {
+                // C-WIRE 12 from the other side: the peer runs a newer build;
+                // this device is the one to update. The notice names the peer.
+                let device_name = ctx
+                    .pairing_manager
+                    .read()
+                    .await
+                    .list_devices()
+                    .into_iter()
+                    .find(|d| d.peer_id == peer_id)
+                    .map(|d| d.device_name.clone())
+                    .unwrap_or_default();
+                Some(OrchestratorEvent::ThisDeviceNeedsUpdate { peer_id, device_name })
             }
             P2pEvent::ListenAddr { address } => {
                 if let Ok(mut addrs) = ctx.listen_addrs.write() {
@@ -953,7 +1194,7 @@ pub(crate) fn queue_guardian_enrollment(
         shard_id: shard_id.to_string(),
         guardian_peer_id: guardian_peer_id.to_string(),
         guardian_label: guardian_label.to_string(),
-        enrolled_at: chrono::Utc::now().to_rfc3339(),
+        enrolled_at: sovereign_core::clock::now().to_rfc3339(),
     })
 }
 

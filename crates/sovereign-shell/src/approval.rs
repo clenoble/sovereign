@@ -1,15 +1,18 @@
 //! Lot 0.7 (shell side) — approval hygiene for the action-confirmation and
 //! injection-decision modals (review `05-orchestrator.md` item 2).
 //!
-//! The orchestrator's decision channels are not tied to a proposal: whatever
-//! decision is in the channel answers whichever proposal is waiting. So the
-//! shell must only ever send an answer for the prompt the user actually saw,
-//! while the orchestrator is still waiting for it:
+//! An action decision is bound to its proposal (C-HOST AT6): the prompt keeps
+//! the proposal's request id ([`DecisionSlot::open_bound`]), the answer carries
+//! it ([`DecisionSlot::open_request`]), and the orchestrator applies a decision
+//! only to the proposal with that id. The injection decision is not bound yet.
+//! On top of that, the shell only ever sends an answer for the prompt the user
+//! actually saw, while the orchestrator is still waiting for it:
 //!
-//! - **Local deadline.** The orchestrator gives up after 120 s and fails closed
-//!   (Reject / Redact) without telling the shell. The modal closes itself a
-//!   little before that, so a late click can never sit in the channel and
-//!   answer the *next* proposal.
+//! - **Deadline.** The orchestrator gives up at the deadline the proposal
+//!   carries (120 s from issue) and fails closed (Reject / Redact) without
+//!   telling the shell. The modal closes itself a little before that
+//!   ([`MODAL_SAFETY_MARGIN`]), counting down to the carried deadline (AT6);
+//!   the injection modal, whose request carries none, to 120 s from receipt.
 //! - **Shown, and seen.** A click (or Esc) counts only for the prompt drawn on
 //!   screen, and only once it has been on screen long enough to be read — a
 //!   prompt that replaced another under the cursor cannot inherit the click
@@ -56,6 +59,9 @@ struct OpenPrompt {
     id: u64,
     deadline: Instant,
     shown_at: Option<Instant>,
+    /// The proposal's request id (AT6); `None` for a prompt opened by
+    /// [`DecisionSlot::open`] (the injection modal).
+    request: Option<sovereign_core::security::RequestId>,
 }
 
 /// One modal's lifecycle: at most one open prompt, which a newer one replaces.
@@ -75,7 +81,7 @@ impl DecisionSlot {
     pub(crate) fn open(&mut self, now: Instant) -> u64 {
         self.next_id += 1;
         let deadline = now + ORCHESTRATOR_DECISION_TIMEOUT - MODAL_SAFETY_MARGIN;
-        self.open = Some(OpenPrompt { id: self.next_id, deadline, shown_at: None });
+        self.open = Some(OpenPrompt { id: self.next_id, deadline, shown_at: None, request: None });
         self.next_id
     }
 
@@ -110,6 +116,38 @@ impl DecisionSlot {
         }
         self.open = None;
         AnswerGate::Send
+    }
+
+    /// C-HOST AT6 (spec ch. 08: « the proposal carries its deadline, and a host
+    /// counts down to it »): a prompt for the proposal `request_id`, open until
+    /// the deadline the proposal carries (`deadline`, wall clock) less
+    /// [`MODAL_SAFETY_MARGIN`]. `now` and `wall_now` are the same moment, read
+    /// on the two clocks when the prompt arrived. It replaces any unanswered
+    /// prompt, as [`Self::open`] does. Returns its id.
+    ///
+    /// The time left is measured on the wall clock (`deadline - wall_now`),
+    /// then counted on the monotonic one from `now`, so a later change of the
+    /// wall clock does not move it. A deadline already past, less the margin,
+    /// gives a prompt that is expired at once: it is never answered.
+    pub(crate) fn open_bound(
+        &mut self,
+        now: Instant,
+        wall_now: chrono::DateTime<chrono::Utc>,
+        request_id: sovereign_core::security::RequestId,
+        deadline: chrono::DateTime<chrono::Utc>,
+    ) -> u64 {
+        self.next_id += 1;
+        let left = (deadline - wall_now).to_std().unwrap_or(Duration::ZERO);
+        let until = now + left.saturating_sub(MODAL_SAFETY_MARGIN);
+        self.open = Some(OpenPrompt { id: self.next_id, deadline: until, shown_at: None, request: Some(request_id) });
+        self.next_id
+    }
+
+    /// C-HOST AT6: the request id of the open prompt, the one an answer is
+    /// bound to; `None` when no prompt is open, or when the open prompt is not
+    /// bound to a proposal.
+    pub(crate) fn open_request(&self) -> Option<sovereign_core::security::RequestId> {
+        self.open.as_ref().and_then(|p| p.request)
     }
 
     /// The id of the open prompt, if any.

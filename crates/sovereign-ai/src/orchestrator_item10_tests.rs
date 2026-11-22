@@ -31,6 +31,27 @@ const NOTICE: &str = "Your assistant's conversation log could not be verified: i
                       disk). The assistant starts without its earlier conversations. Nothing was \
                       deleted.";
 
+/// C-LOG DG5 (spec ch. 08): the sentence the quarantine notice gives back, after Céline's words.
+/// Brought in by the C-LOG test author: the notice is no longer only `NOTICE`, so the tests below
+/// hold Céline's words and this sentence, not the exact old text.
+const ASK_THE_ASSISTANT: &str = "Ask the assistant 'what happened to my log?'";
+
+/// Whether `notice` is the quarantine notice: Céline's words, whole, and DG5's sentence.
+fn is_quarantine_notice(notice: &str) -> bool {
+    notice.contains(NOTICE) && notice.contains(ASK_THE_ASSISTANT)
+}
+
+/// The quarantine notice, said once and nothing else.
+fn assert_quarantine_notice_once(notices: &[String], what: &str) {
+    assert!(
+        notices.len() == 1 && is_quarantine_notice(&notices[0]),
+        "{what}: the quarantine notice, once (Céline's words and DG5's sentence); the notices were {notices:?}"
+    );
+}
+
+/// What `Outcome` records for the quarantine notice.
+const QUARANTINE_NOTICE: &str = "the quarantine notice";
+
 /// The v0.0.11 marker, by its file name: the constant may go away with the one-time rule.
 const MARKER: &str = "session_log.layout-v2";
 
@@ -375,7 +396,7 @@ async fn quarantined_and_said(tag: &str, alteration: Alteration) {
     );
     let q = qs[0].clone();
     assert_quarantine_name(&q);
-    assert_eq!(session_notices(&events), vec![NOTICE.to_string()], "{alteration:?}: the notice, once");
+    assert_quarantine_notice_once(&session_notices(&events), &format!("{alteration:?}"));
     assert_no_set_aside_wording(&events);
     assert!(!env.beacon().exists(), "{alteration:?}: the beacon went with the log it vouched for");
     assert!(!dir.join(MARKER).exists(), "{alteration:?}: no marker is written (L2)");
@@ -511,7 +532,10 @@ async fn outcome_with_marker(tag: &str, marker: Option<&[u8]>, delete_it: bool) 
     let outcome = Outcome {
         quarantines: quarantines(&dir).len(),
         set_asides: subdirs_with_prefix(&dir, "set-aside-").len(),
-        notices: session_notices(&events),
+        notices: session_notices(&events)
+            .into_iter()
+            .map(|n| if is_quarantine_notice(&n) { QUARANTINE_NOTICE.to_string() } else { n })
+            .collect(),
         logging_off: orch.session_log.is_disabled(),
         history_after_a_write: orch.load_session_entries(1000).len(),
     };
@@ -522,7 +546,7 @@ fn quarantined() -> Outcome {
     Outcome {
         quarantines: 1,
         set_asides: 0,
-        notices: vec![NOTICE.to_string()],
+        notices: vec![QUARANTINE_NOTICE.to_string()],
         logging_off: false,
         history_after_a_write: 1,
     }
@@ -577,7 +601,7 @@ async fn l2_a_second_alteration_gets_a_second_quarantine() {
     let dir = env.dir();
     alter(&env, Alteration::TailTruncated);
     let (orch, events) = login(&env, PersonaKind::Primary, PRIMARY_KEY);
-    assert_eq!(session_notices(&events), vec![NOTICE.to_string()], "first alteration");
+    assert_quarantine_notice_once(&session_notices(&events), "first alteration");
     let first = quarantines(&dir);
     assert_eq!(first.len(), 1, "{:?}", listing(&dir));
     orch.session_log.with_log(|l| l.log_user_input("chat", "SECOND-ROUND turn one", "chat"));
@@ -591,7 +615,7 @@ async fn l2_a_second_alteration_gets_a_second_quarantine() {
     let second_log = fs::read(dir.join("session_log.jsonl")).unwrap();
 
     let (orch, events) = login(&env, PersonaKind::Primary, PRIMARY_KEY);
-    assert_eq!(session_notices(&events), vec![NOTICE.to_string()], "second alteration: said again");
+    assert_quarantine_notice_once(&session_notices(&events), "second alteration: said again");
     assert_no_set_aside_wording(&events);
     let all = quarantines(&dir);
     assert_eq!(all.len(), 2, "a second quarantine directory: {:?}", listing(&dir));
@@ -623,7 +647,7 @@ async fn l2_existing_set_aside_directories_are_left_untouched() {
 
     alter(&env, Alteration::AnchorForged);
     let (orch, events) = login(&env, PersonaKind::Primary, PRIMARY_KEY);
-    assert_eq!(session_notices(&events), vec![NOTICE.to_string()]);
+    assert_quarantine_notice_once(&session_notices(&events), "the notice");
     assert_eq!(quarantines(&dir).len(), 1, "{:?}", listing(&dir));
     assert_eq!(subdirs_with_prefix(&dir, "set-aside-"), vec![aside.clone()], "no new set-aside directory");
     assert_eq!(tree(&aside), aside_before, "the set-aside directory is left exactly as it was");
@@ -742,7 +766,7 @@ async fn l4_a_failed_quarantine_fails_closed_and_the_next_login_tries_again() {
     let notices = session_notices(&events);
     assert_eq!(notices.len(), 1, "one notice: {events:?}");
     assert!(notices[0].contains("could not be opened"), "today's off notice: {notices:?}");
-    assert_ne!(notices[0], NOTICE, "nothing was quarantined, so the quarantine notice is not said");
+    assert!(!is_quarantine_notice(&notices[0]), "nothing was quarantined, so the quarantine notice is not said");
     assert_no_set_aside_wording(&events);
     assert!(orch.session_log.is_disabled(), "logging is off for the session");
 
@@ -765,7 +789,7 @@ async fn l4_a_failed_quarantine_fails_closed_and_the_next_login_tries_again() {
 
     // The next login tries again, and succeeds.
     let (orch, events) = login(&env, PersonaKind::Primary, PRIMARY_KEY);
-    assert_eq!(session_notices(&events), vec![NOTICE.to_string()], "the next login quarantines");
+    assert_quarantine_notice_once(&session_notices(&events), "the next login quarantines");
     assert!(!orch.session_log.is_disabled());
     let qs = quarantines(&dir);
     assert!(!qs.is_empty(), "{:?}", listing(&dir));
@@ -824,9 +848,13 @@ async fn l5_a_missing_log_starts_fresh_with_no_notice() {
     assert_fresh_log_works(&orch, &dir, "first turn");
 }
 
-/// L5: a plaintext-only log with no anchor stays tolerated, as today.
+/// L5, brought to C-LOG LG3 by the C-LOG test author (2026-11-18): a plaintext-only log with no
+/// anchor and no beacon, from before encryption, is no longer tolerated. LG3 has no exception and
+/// a plaintext log is never carried (the Fable maille, by delegation of Céline, 2026-11-18, for
+/// spec v2.0.125): it is quarantined at login, kept unchanged, with the notice, and its turn is
+/// not history. Until then this test held « stays tolerated, as today ».
 #[tokio::test]
-async fn l5_a_plaintext_only_log_without_anchor_is_tolerated() {
+async fn l5_a_plaintext_only_log_without_anchor_is_quarantined() {
     let env = env("plainonly").await;
     let dir = env.dir();
     {
@@ -835,13 +863,19 @@ async fn l5_a_plaintext_only_log_without_anchor_is_tolerated() {
     }
     let before = fs::read(dir.join("session_log.jsonl")).unwrap();
     let (orch, events) = login(&env, PersonaKind::Primary, PRIMARY_KEY);
-    assert!(session_notices(&events).is_empty(), "no notice: {events:?}");
-    assert!(quarantines(&dir).is_empty(), "{:?}", listing(&dir));
-    assert_eq!(fs::read(dir.join("session_log.jsonl")).unwrap(), before);
-    assert!(!orch.session_log.is_disabled());
+    let notices = session_notices(&events);
+    assert_quarantine_notice_once(&notices, "a plaintext-only log");
+    let qs = quarantines(&dir);
+    assert_eq!(qs.len(), 1, "one quarantine: {:?}", listing(&dir));
+    assert_eq!(
+        fs::read(qs[0].join("session_log.jsonl")).ok(),
+        Some(before),
+        "the plaintext log is kept, unchanged, in the quarantine"
+    );
+    assert!(!orch.session_log.is_disabled(), "logging is on, in a fresh log");
     let history: Vec<Option<String>> =
         orch.load_session_entries(1000).into_iter().map(|e| e.content).collect();
-    assert_eq!(history, vec![Some("seed entry".to_string())]);
+    assert!(!history.contains(&Some("seed entry".to_string())), "the plaintext turn is not carried: {history:?}");
 }
 
 /// L5: the other persona's directory and beacon are never touched; its log still opens.
@@ -855,7 +889,7 @@ async fn l5_the_other_personas_log_is_never_touched() {
 
     alter(&env, Alteration::AnchorForged);
     let (orch, events) = login(&env, PersonaKind::Primary, PRIMARY_KEY);
-    assert_eq!(session_notices(&events), vec![NOTICE.to_string()]);
+    assert_quarantine_notice_once(&session_notices(&events), "the notice");
     assert_eq!(quarantines(&env.dir()).len(), 1, "{:?}", listing(&env.dir()));
     drop(orch);
     assert_eq!(tree(&duress.dir), duress_before, "the duress directory is untouched");
@@ -1297,7 +1331,7 @@ async fn l7_a_prev_cut_inside_a_character_is_quarantined_without_panic_or_echo()
         format!("{L7_LINE}\n").into_bytes(),
         "moved unchanged"
     );
-    assert_eq!(session_notices(&events), vec![NOTICE.to_string()], "the notice, once");
+    assert_quarantine_notice_once(&session_notices(&events), "the notice, once");
     assert_no_echo(&events, &logged, clean, "crafted prev");
     assert_fresh_log_works(&orch, &dir, "after the crafted line");
 }
@@ -1315,7 +1349,7 @@ async fn l7_a_version_given_as_text_is_quarantined_without_echo() {
     );
     let (orch, events, logged) = login_on_crafted_line(&env, &line);
     assert_eq!(quarantines(&dir).len(), 1, "{:?}", listing(&dir));
-    assert_eq!(session_notices(&events), vec![NOTICE.to_string()]);
+    assert_quarantine_notice_once(&session_notices(&events), "the notice");
     assert_no_echo(&events, &logged, clean, "version as text");
     assert_fresh_log_works(&orch, &dir, "after the crafted version");
 }

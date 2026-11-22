@@ -292,7 +292,7 @@ impl DeviceRename {
         scene.push_layer(Fill::NonZero, vello::peniko::Mix::Normal, 1.0, Affine::IDENTITY, &r);
         scene.append(&self.scene, Some(Affine::translate((r.x0, r.y0))));
         scene.pop_layer();
-        scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, p.accent, None, &r);
+        scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, crate::theme::focused_field_border(&p), None, &r);
         if let Some(m) = &self.message {
             let l = shaper.shape(m, r.width().max(120.0) as f32, 12.0);
             let box_r = Rect::new(r.x0, r.y1 + 2.0, r.x0 + l.width() as f64 + 16.0, r.y1 + 8.0 + l.height() as f64);

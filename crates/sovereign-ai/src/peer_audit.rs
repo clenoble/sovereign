@@ -310,18 +310,34 @@ impl OrchestratorJudge {
     ) -> Self {
         Self { model: ModelSource::Lazy(slot) }
     }
+
+    /// The orchestrator, once there is one. The slot is not held while the
+    /// model runs.
+    async fn orchestrator(&self) -> Option<std::sync::Arc<crate::Orchestrator>> {
+        match &self.model {
+            ModelSource::Fixed(o) => Some(o.clone()),
+            ModelSource::Lazy(slot) => slot.lock().await.clone(),
+        }
+    }
 }
 
 #[cfg(feature = "p2p")]
 #[async_trait::async_trait]
 impl sovereign_p2p::wire::ModelJudge for OrchestratorJudge {
+    /// Without a document's id: every value detected in the texts reaches the
+    /// model as its label (C-SWEEP SW3, no dismissal applies).
     async fn judge(&self, prior_text: &str, incoming_text: &str) -> Option<Option<String>> {
-        let orch = match &self.model {
-            ModelSource::Fixed(o) => o.clone(),
-            // Clone the handle out; the slot is not held while the model runs.
-            ModelSource::Lazy(slot) => slot.lock().await.clone()?,
-        };
-        Some(model_finding(&orch.audit_change(prior_text, incoming_text).await))
+        let orch = self.orchestrator().await?;
+        Some(model_finding(&orch.audit_document_change(None, prior_text, incoming_text).await))
+    }
+
+    /// C-SWEEP SW3: the verdict with the texts masked where they are read,
+    /// with the document's id. *Signature by the test author of lot LS(a); the
+    /// body is the implementer's.* Her dismissals of that document reach the
+    /// model as written, every other detected value as its label.
+    async fn judge_document(&self, document_id: &str, prior_text: &str, incoming_text: &str) -> Option<Option<String>> {
+        let orch = self.orchestrator().await?;
+        Some(model_finding(&orch.audit_document_change(Some(document_id), prior_text, incoming_text).await))
     }
 }
 

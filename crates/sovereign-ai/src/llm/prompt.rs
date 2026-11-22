@@ -49,6 +49,7 @@ Actions:\n\
 - create_milestone: create a milestone on a thread timeline\n\
 - list_milestones: list milestones for a thread\n\
 - merge_threads: merge two threads\n\
+- undo_merge_threads: undo the merge of a thread into another (target: the name of the thread that was merged)\n\
 - split_thread: split documents out of a thread into a new one\n\
 - list_contacts: list all contacts\n\
 - view_messages: view messages in a conversation\n\
@@ -90,7 +91,7 @@ Analyze the user's request carefully and output JSON with a reasoning field.\n\
 Format: {{\"action\": \"...\", \"target\": \"...\", \"confidence\": 0.0-1.0, \"entities\": [], \"reasoning\": \"...\"}}\n\n\
 Actions: search, open, create_document, create_thread, rename_thread, delete_thread, \
 move_document, history, restore, summarize, adopt, create_milestone, list_milestones, \
-merge_threads, split_thread, list_contacts, view_messages, list_models, swap_model, chat, unknown\n\n\
+merge_threads, undo_merge_threads, split_thread, list_contacts, view_messages, list_models, swap_model, chat, unknown\n\n\
 Examples:\n\
 User: I need to reorganize my API docs into the dev project\n\
 {{\"action\": \"move_document\", \"target\": \"API docs\", \"confidence\": 0.85, \

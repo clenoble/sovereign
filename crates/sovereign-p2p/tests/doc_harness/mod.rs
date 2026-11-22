@@ -62,6 +62,18 @@ pub fn service(edb: Arc<EncryptedGraphDB>, device: &str) -> DocumentService {
         fn sha256(&self, _p: &str) -> Option<String> {
             None
         }
+        fn copy_into_store(&self, _p: &str, _mark: Option<sovereign_docs::MediaMark>) -> Result<sovereign_docs::StoredMedium, sovereign_docs::MediaError> {
+            Err(sovereign_docs::MediaError::Unreadable("no media in this test".into()))
+        }
+        fn copy_into_store_checked(&self, _: &str, _: &str, _: Option<sovereign_docs::MediaMark>) -> Result<sovereign_docs::StoredMedium, sovereign_docs::MediaError> {
+            Err(sovereign_docs::MediaError::Unreadable("no media in this test".into()))
+        }
+        fn first_bytes(&self, _: &str, _: usize) -> Result<Vec<u8>, sovereign_docs::MediaError> {
+            Err(sovereign_docs::MediaError::Unreadable("no media in this test".into()))
+        }
+        fn store_name_for(&self, _: &str) -> Option<String> {
+            None
+        }
     }
     struct PassThrough;
     #[async_trait::async_trait]

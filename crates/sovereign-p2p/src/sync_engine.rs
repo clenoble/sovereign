@@ -228,6 +228,32 @@ pub fn compute_thread_diff_stamped(
     diff
 }
 
+/// C-MERGE MG4: a thread both devices hold whose merge stamps differ goes
+/// toward the older merge stamp (none is older than any), even when the rows'
+/// hashes are equal, since the hash leaves the merge out. Only when both
+/// manifests carry the list: an older peer knows no merge, and its rows are
+/// compared by their hashes alone.
+fn add_merge_diff(d: &mut RowDiff, local: &SyncManifest, remote: &SyncManifest) {
+    let (Some(lm), Some(rm)) = (&local.thread_merge_stamps, &remote.thread_merge_stamps) else { return };
+    let stamps = |v: &[ThreadStampEntry]| -> HashMap<String, (i64, u32, String)> {
+        v.iter().map(|e| (e.thread_id.clone(), (e.stamp.wall_ms, e.stamp.counter, e.stamp.device.clone()))).collect()
+    };
+    let (ls, rs) = (stamps(lm), stamps(rm));
+    let remote_ids: HashSet<&str> = remote.threads.iter().map(|t| t.thread_id.as_str()).collect();
+    for l in &local.threads {
+        let id = l.thread_id.as_str();
+        if !remote_ids.contains(id) {
+            continue;
+        }
+        let (a, b) = (ls.get(id), rs.get(id));
+        if a > b && !d.push_to_remote.iter().any(|x| x == id) {
+            d.push_to_remote.push(id.to_string());
+        } else if b > a && !d.need_from_remote.iter().any(|x| x == id) {
+            d.need_from_remote.push(id.to_string());
+        }
+    }
+}
+
 /// How thread entry `l` (stamp `lst`) orders against `r` (stamp `rst`), see
 /// [`compute_thread_diff_stamped`].
 fn thread_entry_order(
@@ -267,18 +293,42 @@ pub fn compute_entity_diff(
     )
 }
 
+///
+/// C-SWEEP SW1, SW5 (spec ch. 09): two copies of one record that differ are
+/// exchanged **both ways**, whatever their times. A record's review state is
+/// merged on arrival (`review_stamp`: her review wins over ingest, a later
+/// review over an earlier one, and between two states ingest wrote the higher
+/// wins), so each side must see the other's: two devices that swept the same
+/// version hold the same record id with different discovery times, and the
+/// later one may hold only a suspicion where the earlier holds her review.
 pub fn compute_pii_record_diff(
     locals: &[PiiRecordManifestEntry],
     remotes: &[PiiRecordManifestEntry],
 ) -> RowDiff {
-    compute_row_diff_generic(
+    let mut diff = compute_row_diff_generic(
         locals,
         remotes,
         |l| l.record_id.as_str(),
         |r| r.record_id.as_str(),
         |l| (l.discovered_at.as_str(), l.content_hash.as_str()),
         |r| (r.discovered_at.as_str(), r.content_hash.as_str()),
-    )
+    );
+    let local_hash: HashMap<&str, &str> = locals.iter().map(|l| (l.record_id.as_str(), l.content_hash.as_str())).collect();
+    let remote_hash: HashMap<&str, &str> = remotes.iter().map(|r| (r.record_id.as_str(), r.content_hash.as_str())).collect();
+    let differ = |id: &str| matches!((local_hash.get(id), remote_hash.get(id)), (Some(l), Some(r)) if l != r);
+    let pulled: Vec<String> = diff.push_to_remote.iter().filter(|id| differ(id)).cloned().collect();
+    let pushed: Vec<String> = diff.need_from_remote.iter().filter(|id| differ(id)).cloned().collect();
+    for id in pulled {
+        if !diff.need_from_remote.contains(&id) {
+            diff.need_from_remote.push(id);
+        }
+    }
+    for id in pushed {
+        if !diff.push_to_remote.contains(&id) {
+            diff.push_to_remote.push(id);
+        }
+    }
+    diff
 }
 
 /// Diff for any table whose manifest uses the generic `RowManifestEntry`
@@ -323,7 +373,8 @@ pub fn compute_all_row_diffs(
 ) -> HashMap<SyncTable, RowDiff> {
     let mut out = HashMap::new();
 
-    let d = compute_thread_diff_stamped(&local.threads, &local.thread_stamps, &remote.threads, &remote.thread_stamps);
+    let mut d = compute_thread_diff_stamped(&local.threads, &local.thread_stamps, &remote.threads, &remote.thread_stamps);
+    add_merge_diff(&mut d, local, remote);
     if d.has_work() {
         out.insert(SyncTable::Thread, d);
     }
@@ -485,6 +536,51 @@ mod tests {
     }
 
     // ----- Row-level diff tests (LWW tables) -----
+
+    /// C-MERGE MG4: two manifests, each holding thread `t` with the same
+    /// hash; `merge` gives each side's merge-stamp list (`None`: an older
+    /// build, which sends none).
+    fn merge_pair(
+        local: Option<Vec<(i64, u32)>>,
+        remote: Option<Vec<(i64, u32)>>,
+    ) -> (SyncManifest, SyncManifest) {
+        let side = |device: &str, merge: Option<Vec<(i64, u32)>>| {
+            let mut m = SyncManifest::new(device.into());
+            m.threads = vec![thread_entry("thread:t", "2026-11-17T10:00:00Z", "same")];
+            m.thread_merge_stamps = merge.map(|v| {
+                v.into_iter()
+                    .map(|(wall_ms, counter)| ThreadStampEntry {
+                        thread_id: "thread:t".into(),
+                        stamp: crate::protocol::manifest::WireStamp { wall_ms, counter, device: "merger".into() },
+                    })
+                    .collect()
+            });
+            m
+        };
+        (side("a", local), side("b", remote))
+    }
+
+    #[test]
+    fn a_merged_thread_is_not_resent_to_an_older_peer() {
+        // This device merged the thread; the older peer holds the same row
+        // (same hash) and sends no merge-stamp list: nothing to do.
+        let (l, r) = merge_pair(Some(vec![(1_000, 0)]), None);
+        assert!(compute_all_row_diffs(&l, &r).get(&SyncTable::Thread).is_none());
+        let (l, r) = merge_pair(None, Some(vec![(1_000, 0)]));
+        assert!(compute_all_row_diffs(&l, &r).get(&SyncTable::Thread).is_none());
+    }
+
+    #[test]
+    fn a_newer_merge_stamp_travels_even_with_equal_hashes() {
+        let (l, r) = merge_pair(Some(vec![(2_000, 0)]), Some(vec![]));
+        let d = compute_all_row_diffs(&l, &r).remove(&SyncTable::Thread).expect("work");
+        assert_eq!((d.push_to_remote, d.need_from_remote), (vec!["thread:t".to_string()], vec![]));
+        let (l, r) = merge_pair(Some(vec![(1_000, 0)]), Some(vec![(2_000, 0)]));
+        let d = compute_all_row_diffs(&l, &r).remove(&SyncTable::Thread).expect("work");
+        assert_eq!((d.push_to_remote, d.need_from_remote), (vec![], vec!["thread:t".to_string()]));
+        let (l, r) = merge_pair(Some(vec![(2_000, 0)]), Some(vec![(2_000, 0)]));
+        assert!(compute_all_row_diffs(&l, &r).get(&SyncTable::Thread).is_none(), "the same merge: nothing");
+    }
 
     fn thread_entry(id: &str, ts: &str, hash: &str) -> ThreadManifestEntry {
         ThreadManifestEntry {

@@ -14,64 +14,22 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::text::TextShaper;
 
-/// The stored forms that name a device: R1's two (the sending peer's id) and,
-/// since item 22 (D5), a concurrent edit kept as a version, whose device is
-/// the stamp's author (`sovereign_docs` `keep_as_version`).
-const FORMS: [&str; 3] = ["Synced from ", "Received from ", "Concurrent edit from "];
+/// R1: the text a History row shows and announces for a version's stored
+/// `message`, with no versions to name: the document service's one function
+/// (spec ch. 12, HN5), which the phone calls too. A History row passes its
+/// document's versions through [`crate::panels::HistoryPanel::name_devices`].
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn shown_message(message: &str, names: &HashMap<String, String>, own_id: &str) -> String {
+    sovereign_docs::history_names::shown_message(message, names, own_id, &[])
+}
 
-/// What a row says for this device's own id (R1).
-const THIS_DEVICE: &str = "this device";
+/// How a device is named on screen (R1, item 22 D5; spec ch. 12, HN1): the
+/// document service's rule, the same on both hosts.
+pub(crate) fn device_label(device: &str, names: &HashMap<String, String>, own_id: &str) -> String {
+    sovereign_docs::history_names::device_label(device, names, own_id)
+}
 
 const ELLIPSIS: &str = "\u{2026}";
-
-/// How many characters of a forgotten device's id are shown: its **last**
-/// ones, since every libp2p id starts with `12D3KooW` (R1, laptop 0139).
-const SHORT_ID: usize = 8;
-
-/// R1: the text a History row shows and announces for a version's stored
-/// `message`: "Synced from {id}" / "Received from {id}" / "Concurrent edit
-/// from {author}" with the device named as [`device_label`] names it; any
-/// other message as it is.
-pub(crate) fn shown_message(message: &str, names: &HashMap<String, String>, own_id: &str) -> String {
-    for form in FORMS {
-        let Some(id) = message.strip_prefix(form) else { continue };
-        let id = id.trim();
-        if id.is_empty() {
-            return message.to_string();
-        }
-        return format!("{form}{}", device_label(id, names, own_id));
-    }
-    message.to_string()
-}
-
-/// How a device is named on screen, from a stamp or a peer's id (R1, item 22
-/// D5 — one identity space for display): "this device" for `own_id` (this
-/// persona's peer id); the device's name from `names` (peer id → name, as
-/// `App::device_names` gives them, renamed or learned); a device string that
-/// is not a libp2p peer id as it is (a display name a stamp carried before
-/// item 22); and "…" with the last 8 characters for a peer id no longer
-/// paired.
-pub(crate) fn device_label(device: &str, names: &HashMap<String, String>, own_id: &str) -> String {
-    if !own_id.is_empty() && device == own_id {
-        THIS_DEVICE.to_string()
-    } else if let Some(name) = names.get(device).filter(|n| !n.trim().is_empty()) {
-        name.clone()
-    } else if !sovereign_crypto::peer_identity::is_peer_id(device) {
-        device.to_string()
-    } else {
-        short_id(device)
-    }
-}
-
-/// "…" and the id's last [`SHORT_ID`] characters (the whole id when shorter).
-fn short_id(id: &str) -> String {
-    let n = id.chars().count();
-    if n <= SHORT_ID {
-        return id.to_string();
-    }
-    let tail: String = id.chars().skip(n - SHORT_ID).collect();
-    format!("{ELLIPSIS}{tail}")
-}
 
 /// The shaped width of `text` on one line.
 fn one_line_width(shaper: &mut TextShaper, text: &str, font_px: f32) -> f64 {

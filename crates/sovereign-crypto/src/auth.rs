@@ -197,6 +197,17 @@ impl AuthStore {
     /// Try to authenticate with a passphrase.
     /// Derives keys, tries each persona probe. Returns the matching persona,
     /// DeviceKey, and unwrapped KEK on success.
+    ///
+    /// The error says what failed (spec ch. 07, login errors, LE1):
+    /// - [`CryptoError::WrongPassphrase`] when the derivation succeeded and no
+    ///   entry's probe opened, and only then;
+    /// - [`CryptoError::DerivationFailed`] when the derivation itself failed,
+    ///   before any probe was tried, whatever the passphrase;
+    /// - the unwrap's own error when a probe opened and the entry's KEK or
+    ///   AccountKey would not unwrap.
+    ///
+    /// Every derivation happens before the first probe, so an error returned
+    /// after a probe opened is never a `DerivationFailed`.
     pub fn authenticate(&self, passphrase: &[u8]) -> CryptoResult<AuthSuccess> {
         let master = MasterKey::derive(passphrase, &self.salt, &self.kdf)?;
         let device_key = DeviceKey::derive(&master, &self.device_id)?;
@@ -206,6 +217,9 @@ impl AuthStore {
         // devices keep their imported key even though the local passphrase
         // would derive a different one.
         let derived_account_key = AccountKey::derive(&master)?;
+        // A probe that opened under this passphrase but holds neither tag: the
+        // passphrase matched an entry, so this is not a wrong passphrase.
+        let mut opened_unknown_probe = false;
 
         for entry in &self.personas {
             if let Ok(plaintext) = aead::decrypt(
@@ -221,14 +235,14 @@ impl AuthStore {
                 } else if plaintext == padded_probe(DURESS_TAG) || plaintext == DURESS_TAG {
                     PersonaKind::Duress
                 } else {
+                    opened_unknown_probe = true;
                     continue;
                 };
                 let kek = Kek::unwrap(&entry.wrapped_kek, &device_key)?;
                 let account_key = match &entry.wrapped_account_key {
                     Some(wrapped) => AccountKey::unwrap_with(wrapped, &device_key)?,
-                    None => AccountKey::derive(&master)?,
+                    None => derived_account_key,
                 };
-                let _ = &derived_account_key; // suppress unused warning when wrapped path is taken
                 return Ok(AuthSuccess {
                     persona,
                     device_key,
@@ -238,7 +252,12 @@ impl AuthStore {
             }
         }
 
-        Err(CryptoError::DecryptionFailed)
+        if opened_unknown_probe {
+            return Err(CryptoError::InvalidInput(
+                "an entry this password opens names no account".into(),
+            ));
+        }
+        Err(CryptoError::WrongPassphrase)
     }
 
     /// Save to disk as JSON.
@@ -256,7 +275,8 @@ impl AuthStore {
     /// behind. Same owner-only permissions as [`AuthStore::save`]. Publishing
     /// goes through a temp sibling and a no-replace hard link, so a crash
     /// cannot leave a half-written store (see `fs_private::write_private_new`)
-    /// — or, where hard links are refused, by an exclusive in-place write. The
+    /// — or, where hard links are refused, by a no-replace rename of that
+    /// temp sibling, equally never torn (spec ch. 07, AS1). The
     /// returned [`NewWrite`](crate::fs_private::NewWrite) says which, for the
     /// caller to log.
     pub fn save_new(&self, path: &std::path::Path) -> CryptoResult<crate::fs_private::NewWrite> {

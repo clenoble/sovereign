@@ -398,7 +398,7 @@ pub(crate) fn draw_modal(scene: &mut Scene, shaper: &mut TextShaper, modal: &Tra
             scene.fill(Fill::NonZero, Affine::IDENTITY, bg, None, &RoundedRect::from_rect(*r, 6.0));
             if idx == selected {
                 // The keyboard's row: a visible focus outline (WCAG 2.4.7).
-                scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, pal().accent, None, &RoundedRect::from_rect(*r, 6.0));
+                scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, crate::theme::chosen_row_outline(&pal()), None, &RoundedRect::from_rect(*r, 6.0));
             }
             let nl = shaper.shape(name, (r.width() - 20.0) as f32, 13.0);
             draw_text(scene, &nl, Affine::translate((r.x0 + 10.0, r.y0 + (r.height() - nl.height() as f64) * 0.5)), pal().text);
@@ -415,7 +415,7 @@ pub(crate) fn draw_modal(scene: &mut Scene, shaper: &mut TextShaper, modal: &Tra
         let bg = if c.contains(cursor) { danger } else { danger.with_alpha(0.82) };
         scene.fill(Fill::NonZero, Affine::IDENTITY, bg, None, &RoundedRect::from_rect(c, 7.0));
         let l = shaper.shape("Empty trash", 200.0, 13.5);
-        draw_text(scene, &l, Affine::translate(centered(c, &l)), pal().on_accent);
+        draw_text(scene, &l, Affine::translate(centered(c, &l)), crate::theme::text_on_fill(crate::theme::seen_over(bg, pal().modal)));
     }
     let bg = if cancel.contains(cursor) { pal().border } else { pal().surface_alt };
     scene.fill(Fill::NonZero, Affine::IDENTITY, bg, None, &RoundedRect::from_rect(cancel, 7.0));
@@ -429,15 +429,22 @@ fn centered(r: Rect, l: &parley::Layout<crate::text::Brush>) -> (f64, f64) {
 
 // ---- the delete notice -----------------------------------------------------
 
-const TOAST_W: f64 = 470.0;
+// Ch. 12, SQ7: the button says its key, so the toast is wider than before
+// (470 px, an 84 px button) and its text keeps the same room (350 px).
+const TOAST_W: f64 = 510.0;
 const TOAST_H: f64 = 46.0;
+const UNDO_W: f64 = 120.0;
+
+/// The toast's button, drawn and spoken (ch. 12, SQ7: Ctrl+Z presses it when
+/// a click on it would).
+pub(crate) const UNDO_LABEL: &str = "Undo (Ctrl+Z)";
 
 /// (toast, Undo button): bottom-centre of the canvas, above the taskbar.
 pub(crate) fn toast_geom(w: f64, h: f64) -> (Rect, Rect) {
     let x0 = ((w - TOAST_W) * 0.5).max(8.0);
     let y1 = h - BOTTOM_CHROME - 20.0;
     let toast = Rect::new(x0, y1 - TOAST_H, x0 + TOAST_W, y1);
-    let undo = Rect::new(toast.x1 - 10.0 - 84.0, toast.y0 + 8.0, toast.x1 - 10.0, toast.y1 - 8.0);
+    let undo = Rect::new(toast.x1 - 10.0 - UNDO_W, toast.y0 + 8.0, toast.x1 - 10.0, toast.y1 - 8.0);
     (toast, undo)
 }
 
@@ -450,10 +457,10 @@ pub(crate) fn draw_toast(scene: &mut Scene, shaper: &mut TextShaper, notice: &De
     let rr = RoundedRect::from_rect(toast, 9.0);
     scene.fill(Fill::NonZero, Affine::IDENTITY, pal().popup, None, &rr);
     scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, pal().border, None, &rr);
-    let tl = shaper.shape(&notice.text(), (TOAST_W - 120.0) as f32, 13.0);
+    let tl = shaper.shape(&notice.text(), (TOAST_W - UNDO_W - 40.0) as f32, 13.0);
     draw_text(scene, &tl, Affine::translate((toast.x0 + 14.0, toast.y0 + (TOAST_H - tl.height() as f64) * 0.5)), pal().text);
     let bg = if undo.contains(cursor) { pal().accent } else { pal().accent.with_alpha(0.82) };
     scene.fill(Fill::NonZero, Affine::IDENTITY, bg, None, &RoundedRect::from_rect(undo, 6.0));
-    let ul = shaper.shape("Undo", 100.0, 13.5);
-    draw_text(scene, &ul, Affine::translate(centered(undo, &ul)), pal().on_accent);
+    let ul = shaper.shape(UNDO_LABEL, (UNDO_W - 4.0) as f32, 13.5);
+    draw_text(scene, &ul, Affine::translate(centered(undo, &ul)), crate::theme::text_on_fill(crate::theme::seen_over(bg, pal().popup)));
 }

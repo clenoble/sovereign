@@ -128,7 +128,10 @@ pub async fn receive_shared_content(
         body,
         sovereign_docs::Trust::External,
         provenance,
-        sovereign_docs::Origin::Editor { session: sovereign_ai::docs_host::new_edit_session() },
+        // C-SWEEP SW1 (spec v2.0.111): content shared from another app takes
+        // the import's origin, not the editor's: she did not see its values
+        // replaced, so they are suspected.
+        sovereign_docs::Origin::Import,
     );
     let created = sovereign_ai::docs_host::create(&docs, new)
         .await

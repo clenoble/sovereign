@@ -37,9 +37,59 @@ pub fn decrypt(
         .map_err(|_| CryptoError::DecryptionFailed)
 }
 
+/// Encrypt plaintext with XChaCha20-Poly1305, binding `aad` (authenticated, not
+/// encrypted): decryption succeeds only with the same `aad`.
+pub fn encrypt_with_aad(
+    plaintext: &[u8],
+    aad: &[u8],
+    key: &[u8; KEY_SIZE],
+) -> CryptoResult<(Vec<u8>, [u8; NONCE_SIZE])> {
+    use chacha20poly1305::aead::Payload;
+    let cipher = XChaCha20Poly1305::new(key.into());
+    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let ciphertext = cipher
+        .encrypt(&nonce, Payload { msg: plaintext, aad })
+        .map_err(|_| CryptoError::EncryptionFailed)?;
+    let mut nonce_bytes = [0u8; NONCE_SIZE];
+    nonce_bytes.copy_from_slice(&nonce);
+    Ok((ciphertext, nonce_bytes))
+}
+
+/// Decrypt what [`encrypt_with_aad`] sealed; fails if `aad` differs.
+pub fn decrypt_with_aad(
+    ciphertext: &[u8],
+    aad: &[u8],
+    nonce: &[u8; NONCE_SIZE],
+    key: &[u8; KEY_SIZE],
+) -> CryptoResult<Vec<u8>> {
+    use chacha20poly1305::aead::Payload;
+    let cipher = XChaCha20Poly1305::new(key.into());
+    let nonce = chacha20poly1305::XNonce::from_slice(nonce);
+    cipher
+        .decrypt(nonce, Payload { msg: ciphertext, aad })
+        .map_err(|_| CryptoError::DecryptionFailed)
+}
+
+/// `NONCE_SIZE` fresh random bytes from the OS generator, for an identifier.
+pub fn random_bytes() -> [u8; NONCE_SIZE] {
+    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let mut out = [0u8; NONCE_SIZE];
+    out.copy_from_slice(&nonce);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aad_binds_the_ciphertext() {
+        let key = [42u8; KEY_SIZE];
+        let (ct, nonce) = encrypt_with_aad(b"entry", b"place 1", &key).unwrap();
+        assert_eq!(decrypt_with_aad(&ct, b"place 1", &nonce, &key).unwrap(), b"entry");
+        assert!(decrypt_with_aad(&ct, b"place 2", &nonce, &key).is_err());
+        assert!(decrypt(&ct, &nonce, &key).is_err());
+    }
 
     #[test]
     fn encrypt_decrypt_roundtrip() {

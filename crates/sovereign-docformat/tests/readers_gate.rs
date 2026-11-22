@@ -74,7 +74,10 @@ const WRITE_PATTERNS: &[&str] = &[
 /// (path under `crates/`, pattern, which adoption step moves it, or why it
 /// stays).
 const WRITES_ALLOWED: &[(&str, &str, &str)] = &[
-    ("sovereign-app/src/pii_sweep.rs", ".update_document(", "dead code, replaced by the C-PII sweep (K10)"),
+    // `sovereign-app/src/pii_sweep.rs` (`.update_document(`, dead code): its
+    // exception retired by the test author of lot LS(a), the file being retired
+    // by C-SWEEP SW9 (spec ch. 09, Céline, 2026-11-17). Red until the code
+    // removes the file.
     // Sync and backup restore no longer write documents (step 4, C-WIRE):
     // both go through the document service (`sovereign_p2p::wire`).
     // Step 3 stopped on the decoy (doc/plans/C-DOC-adoption.md, *Step 3*): it

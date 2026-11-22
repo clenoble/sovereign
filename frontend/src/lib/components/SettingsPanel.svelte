@@ -35,6 +35,7 @@
 	import { sync, clearError, dismissConflict } from '$lib/stores/sync.svelte';
 	import { openById, setMode, loadCommits } from '$lib/stores/documents.svelte';
 	import { pairing } from '$lib/stores/pairing.svelte';
+	import { onGestureNeedingTheNode } from '$lib/stores/syncStopped.svelte';
 	import { vision, setWindowSeconds } from '$lib/stores/vision.svelte';
 
 	type Tab = 'profile' | 'ai' | 'security' | 'trust' | 'comms' | 'devices' | 'recovery' | 'trash' | 'vision';
@@ -862,11 +863,17 @@
 							Device pairing isn't available in this build yet.
 						</span>
 					{:else if !pairPanelOpen}
-						<button class="primary-btn" onclick={() => (pairPanelOpen = true)}>
+						<button class="primary-btn" onclick={() => {
+							// C-SUP, DEL-0019: while sync is stopped, the stop's notice and its gesture.
+							if (!onGestureNeedingTheNode()) pairPanelOpen = true;
+						}}>
 							Pair a new device
 						</button>
 					{:else}
-						<PairQrPanel onClose={() => { pairPanelOpen = false; loadDevices(); }} />
+						<PairQrPanel
+							onClose={() => { pairPanelOpen = false; loadDevices(); }}
+							onDevicesChanged={loadDevices}
+						/>
 					{/if}
 
 					<!-- P2P configuration (read-only; edited via config.toml) -->

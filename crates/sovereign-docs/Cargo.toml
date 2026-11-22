@@ -39,6 +39,6 @@ serde_json = { workspace = true }
 # A one-time migration that does not complete says so (step 6): counts and
 # errors only, never a document's title or content.
 tracing = { workspace = true }
-
-[dev-dependencies]
+# History's names (spec ch. 12, HN1): whether a device string is a peer id.
+# Already linked through sovereign-db.
 sovereign-crypto = { workspace = true }

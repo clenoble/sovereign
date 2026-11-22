@@ -47,7 +47,7 @@ The system does not address the operationally hard parts of criminal activity:
 
 - No network-level anonymity (no built-in Tor, VPN, or onion routing)
 - No cryptocurrency integration or financial tooling
-- No communication platform (no messaging, email, or social features)
+- No communication network of its own. Sovereign GE operates no messaging service and no social features. It reads and sends the user's own messages through accounts the user already holds with existing services (email today, possibly others such as Signal or WhatsApp later), from the user's own devices. It adds no anonymity and no channel that does not already exist. Collaboration, if it is built, happens between contacts whose identity has been verified, never over an anonymous or public channel. *(Revised 2026-11-13, Céline: the line read « No communication platform (no messaging, email, or social features) ».)*
 - No weapons of any kind (no exploit frameworks, no offensive tooling)
 - Local AI models are too small for sophisticated social engineering at scale
 - Comprehensive local audit logs, provenance chains, and version histories create a forensic record that is *worse* for criminals than ephemeral tools
@@ -225,7 +225,7 @@ Sovereign GE is **distributed software**, not a hosted service. The project:
 - Has no ability to access, intercept, modify, or delete any user's data
 - Cannot comply with data requests because it holds no data to produce
 
-This is legally and operationally identical to distributing GnuPG, LUKS, or the Linux kernel. The software runs entirely on the user's hardware under the user's control.
+This is legally and operationally identical to distributing GnuPG, LUKS, or the Linux kernel. The software runs entirely on the user's hardware under the user's control, except a remote model the user explicitly chooses, reached through the user's own account with its provider (ch. 08). *(Completed 2026-11-13, Céline.)*
 
 ### 5.2 Implications for Law Enforcement
 

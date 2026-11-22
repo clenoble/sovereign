@@ -17,15 +17,56 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+ROOT="$(pwd)"
 TARGET_DIR="${CARGO_TARGET_DIR:-target}"
 JOBS="${SOVEREIGN_JOBS:-4}"
 DIST="${SOVEREIGN_DIST_DIR:-$TARGET_DIR/dist}"
 NAME="sovereign-linux-x86_64"
+TRIPLE="x86_64-unknown-linux-gnu"
+
+# The builder's paths stay out of the binary (v0.0.13 scope, the builder paths;
+# Celine, 2026-11-17). Panic locations and debug paths would otherwise name the
+# builder's home folder, through the cargo registry, the git checkouts, the
+# repository and the target folder.
+#
+# Rust: --remap-path-prefix, given through --config so that cargo ADDS it to the
+# linker option .cargo/config.toml sets for this target. A RUSTFLAGS variable
+# would REPLACE that option. When several prefixes match, the last one given
+# wins, so the most specific folders come last.
+# C and C++ (the sources build scripts compile): the same map through
+# -ffile-prefix-map, which covers __FILE__ in their asserts.
+TARGET_ABS="$(realpath -m "$TARGET_DIR")"
+CARGO_DIR="$(realpath -m "${CARGO_HOME:-$HOME/.cargo}")"
+MAPS=(
+    "$ROOT=sovereign"
+    "$TARGET_ABS=target"
+    "$CARGO_DIR/registry/src=cargo/registry"
+    "$CARGO_DIR/git/checkouts=cargo/git"
+)
+RUST_MAPS=""
+C_MAPS=""
+for m in "${MAPS[@]}"; do
+    RUST_MAPS="$RUST_MAPS${RUST_MAPS:+, }\"--remap-path-prefix=$m\""
+    C_MAPS="$C_MAPS -ffile-prefix-map=$m"
+done
+export CFLAGS="${CFLAGS:-}$C_MAPS"
+export CXXFLAGS="${CXXFLAGS:-}$C_MAPS"
 
 echo "=== cargo build -p sovereign-shell --release --locked (target: $TARGET_DIR)"
-cargo build -p sovereign-shell --release --locked -j "$JOBS"
+cargo build -p sovereign-shell --release --locked -j "$JOBS" \
+    --config "target.$TRIPLE.rustflags=[$RUST_MAPS]"
+
+# The measure: the builder's home folder, as text in the binary, must be absent.
+BIN="$TARGET_DIR/release/sovereign"
+LEFT="$(strings -a "$BIN" | grep -c -F "$HOME" || true)"
+echo "=== strings naming the builder's home ($HOME): $LEFT"
+if [ "$LEFT" -ne 0 ]; then
+    strings -a "$BIN" | grep -F "$HOME" | cut -c1-160 | sort | uniq -c | sort -rn | head -20
+    echo "RELEASE BUILD FAILED: the binary names the builder's home folder"
+    exit 1
+fi
 
 mkdir -p "$DIST"
-cp -f "$TARGET_DIR/release/sovereign" "$DIST/$NAME"
+cp -f "$BIN" "$DIST/$NAME"
 ( cd "$DIST" && sha256sum "$NAME" > "$NAME.sha256" && cat "$NAME.sha256" )
 echo "RELEASE BUILD OK: $DIST/$NAME"

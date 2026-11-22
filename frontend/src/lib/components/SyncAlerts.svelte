@@ -38,7 +38,7 @@
 		resolveOrphansOfThread,
 		type OrphanResolutionDto
 	} from '$lib/api/commands';
-	import { canvas, refresh as refreshCanvas } from '$lib/stores/canvas.svelte';
+	import { canvas, liveThreads, refresh as refreshCanvas } from '$lib/stores/canvas.svelte';
 	import { openById, openHistoryAt } from '$lib/stores/documents.svelte';
 	import {
 		syncAlerts,
@@ -53,6 +53,7 @@
 		orphansNotice,
 		reloadOrphans,
 		unreadableNotice,
+		couldNotCheck,
 		type Orphan,
 		type SyncAlert,
 		type PreviousValue
@@ -62,6 +63,9 @@
 
 	let busy = $state<string | null>(null);
 	let error = $state('');
+	/** The notice of the last restore that failed or has no answer yet, shown
+	 *  on its entry. */
+	let notRestored = $state<{ id: string; text: string } | null>(null);
 	let dialogEl = $state<HTMLElement | null>(null);
 	let opener: HTMLElement | null = null;
 
@@ -69,6 +73,9 @@
 	const older = $derived(olderNotice());
 	const waiting = $derived(orphansNotice());
 	const unreadable = $derived(unreadableNotice());
+	/** The lists that could not be read (spec ch. 03, *What cannot be read is
+	 *  never shown as empty*): each said, in the notices and in its place. */
+	const failed = $derived(couldNotCheck());
 
 	// ---- S5-12: documents whose thread was deleted ----
 
@@ -120,7 +127,7 @@
 	function openForm(target: Target, mode: 'move' | 'new') {
 		error = '';
 		form = { target, mode };
-		chosenThread = canvas.threads[0]?.id ?? '';
+		chosenThread = liveThreads()[0]?.id ?? '';
 		newName = '';
 	}
 
@@ -210,9 +217,13 @@
 	async function restore(v: PreviousValue) {
 		busy = v.id;
 		error = '';
+		notRestored = null;
 		try {
-			await restorePreviousValue(v.id);
-			removePreviousValue(v.id);
+			// A failure, or an answer that has not come yet, is said on its
+			// entry, which stays (spec ch. 05, *A restore that fails is said*).
+			const said = await restorePreviousValue(v.id);
+			if (said) notRestored = { id: v.id, text: said };
+			else removePreviousValue(v.id);
 		} catch (e) {
 			error = `The previous value could not be restored: ${e}`;
 		} finally {
@@ -239,8 +250,16 @@
 	}
 </script>
 
-{#if notice || older || waiting || unreadable}
+{#if notice || older || waiting || unreadable || failed.length > 0 || syncAlerts.historiesNotRead}
 	<div class="notices {variant}">
+		{#if syncAlerts.historiesNotRead}
+			<!-- Item C5 (spec ch. 03, HR3): the histories this session could not
+			     read, in the backend's words; a failure, said as every failure is
+			     (role="alert"). Opening that document's History says it again. -->
+			<div class="notice failed" role="alert">
+				<span class="notice-text">{syncAlerts.historiesNotRead}</span>
+			</div>
+		{/if}
 		{#if notice}
 			<div class="notice alert" role="alert">
 				<span class="notice-text">{notice}</span>
@@ -249,6 +268,19 @@
 				</button>
 			</div>
 		{/if}
+		{#each failed as sentence (sentence)}
+			<!-- A list that could not be read is a failure, said as the app says
+			     every failure (role="alert"; the Fable maille, by delegation of
+			     Céline, 2026-11-17). -->
+			<div class="notice failed" role="alert">
+				<span class="notice-text">{sentence}</span>
+				<!-- No separate label: the visible words are the name (WCAG 2.5.3; the
+				     Fable maille, by delegation of Céline, 2026-11-17). -->
+				<button class="notice-btn" onclick={open} aria-haspopup="dialog">
+					Open Alerts
+				</button>
+			</div>
+		{/each}
 		{#if waiting}
 			<div class="notice waiting" role="status">
 				<span class="notice-text">{waiting}</span>
@@ -293,7 +325,7 @@
 {#snippet orphanForm(target: Target)}
 	{#if isOpen(target, 'move')}
 		<div class="orphan-form">
-			{#if canvas.threads.length === 0}
+			{#if liveThreads().length === 0}
 				<p class="hint">There is no thread to move into: choose “New thread…” instead.</p>
 			{:else}
 				<label class="field-label" for="orphan-thread-choice">Thread</label>
@@ -302,7 +334,7 @@
 					class="field"
 					onchange={(e) => (chosenThread = (e.currentTarget as HTMLSelectElement).value)}
 				>
-					{#each canvas.threads as t (t.id)}
+					{#each liveThreads() as t (t.id)}
 						<option value={t.id} selected={t.id === chosenThread}>{t.name}</option>
 					{/each}
 				</select>
@@ -358,7 +390,9 @@
 			<p class="error" role="alert">{error}</p>
 		{/if}
 
-		{#if syncAlerts.alerts.length === 0}
+		{#if syncAlerts.alertsCouldNotCheck}
+			<p class="could-not-check">{syncAlerts.alertsCouldNotCheck}</p>
+		{:else if syncAlerts.alerts.length === 0}
 			<p class="empty">No alerts. Changes from your devices apply on their own; one that looks suspicious shows up here.</p>
 		{:else}
 			<ul class="list" aria-label="Alerts">
@@ -395,6 +429,9 @@
 					<li class="card">
 						<p class="card-title">{v.label}</p>
 						<p class="card-meta">Replaced by a sync from {v.device || 'a paired device'} · {when(v.at)}</p>
+						{#if notRestored?.id === v.id}
+							<p class="error" role="alert">{notRestored.text}</p>
+						{/if}
 						<div class="actions">
 							{#if v.canRestore}
 								<button
@@ -420,7 +457,9 @@
 			</ul>
 		{/if}
 
-		{#if syncAlerts.orphans.length > 0}
+		{#if syncAlerts.orphansCouldNotCheck}
+			<p class="could-not-check">{syncAlerts.orphansCouldNotCheck}</p>
+		{:else if syncAlerts.orphans.length > 0}
 			<h3 class="section-title" id="orphans-title">Documents whose thread was deleted</h3>
 			<p class="hint">
 				Each waits for a decision, and stays on the canvas (in “Unfiled”) until then. The trash keeps a document 30
@@ -474,7 +513,12 @@
 			{/each}
 		{/if}
 
-		{#if syncAlerts.unreadable.lines.length > 0}
+		{#if syncAlerts.unreadable.could_not_check}
+			<!-- Its heading stays; the sentence takes the place of the meaning
+			     and the lines. -->
+			<h3 class="section-title" id="unreadable-title">{syncAlerts.unreadable.heading}</h3>
+			<p class="could-not-check">{syncAlerts.unreadable.could_not_check}</p>
+		{:else if syncAlerts.unreadable.lines.length > 0}
 			<h3 class="section-title" id="unreadable-title">{syncAlerts.unreadable.heading}</h3>
 			<p class="hint">{syncAlerts.unreadable.meaning}</p>
 			<ul class="list unreadable-list" aria-labelledby="unreadable-title">
@@ -527,6 +571,17 @@
 	.notice.waiting .notice-btn,
 	.notice.unreadable .notice-btn {
 		background: #4f46e5;
+	}
+	/* A list that could not be read: the alert's colours in the notices, the
+	   alert's bar in the dialog (spec ch. 03, said, never shown as nothing). */
+	.notice.failed {
+		background: #f59e0b;
+		color: #1a1a1a;
+	}
+	.could-not-check {
+		margin: 8px 0;
+		padding: 6px 10px;
+		border-left: 3px solid #f59e0b;
 	}
 	.notice.unreadable {
 		background: var(--bg-panel, #22222a);

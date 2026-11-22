@@ -31,10 +31,35 @@ cd /d "%~dp0"
 call "%~dp0_env.bat"
 if not defined SOVEREIGN_DIST_DIR set "SOVEREIGN_DIST_DIR=%CARGO_TARGET_DIR%\dist"
 
+REM The builder's paths stay out of the exe (v0.0.13 scope, the builder paths;
+REM Celine, 2026-11-17), as scripts/release-shell-linux.sh does on Linux. Panic
+REM locations would otherwise name the builder's home folder through the cargo
+REM registry and the git checkouts, and llama.cpp's C++ through __FILE__.
+REM Rust: --remap-path-prefix, given through --config so that cargo ADDS it to
+REM the /FORCE:MULTIPLE that .cargo/config.toml sets for this target; RUSTFLAGS
+REM would REPLACE it. The most specific folders come last (the last match wins).
+REM TOML literal strings ('...') keep the backslashes as they are.
+REM C and C++ compiled by cl.exe: /d1trimfile: strips the same folders from
+REM __FILE__ (cl has no -ffile-prefix-map).
+set "SOV_ROOT=%~dp0"
+set "SOV_ROOT=%SOV_ROOT:~0,-1%"
+set "SOV_CARGO=%CARGO_HOME%"
+if not defined SOV_CARGO set "SOV_CARGO=%USERPROFILE%\.cargo"
+set "SOV_MAPS='--remap-path-prefix=%SOV_ROOT%=sovereign', '--remap-path-prefix=%CARGO_TARGET_DIR%=target', '--remap-path-prefix=%SOV_CARGO%\registry\src=cargo/registry', '--remap-path-prefix=%SOV_CARGO%\git\checkouts=cargo/git'"
+set "CFLAGS=%CFLAGS% /d1trimfile:%SOV_CARGO%\registry\src\ /d1trimfile:%SOV_CARGO%\git\checkouts\"
+set "CXXFLAGS=%CXXFLAGS% /d1trimfile:%SOV_CARGO%\registry\src\ /d1trimfile:%SOV_CARGO%\git\checkouts\"
+
 echo.
-echo === cargo build -p sovereign-shell --release --locked
-cargo build -p sovereign-shell --release --locked -j %SOVEREIGN_JOBS%
+echo === cargo build -p sovereign-shell --release --locked (paths remapped)
+cargo build -p sovereign-shell --release --locked -j %SOVEREIGN_JOBS% --config "target.x86_64-pc-windows-msvc.rustflags=[%SOV_MAPS%]"
 if errorlevel 1 goto :fail
+
+REM The measure: the builder's home folder, as text in the exe, must be absent.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\count-builder-home.ps1" "%CARGO_TARGET_DIR%\release\sovereign.exe"
+if errorlevel 1 (
+    echo RELEASE BUILD FAILED: the exe names the builder's home folder
+    goto :fail
+)
 
 if not exist "%SOVEREIGN_DIST_DIR%" mkdir "%SOVEREIGN_DIST_DIR%"
 copy /y "%CARGO_TARGET_DIR%\release\sovereign.exe" "%SOVEREIGN_DIST_DIR%\sovereign.exe" >nul

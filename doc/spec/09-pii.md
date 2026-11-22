@@ -4,10 +4,10 @@ How Sovereign holds personal information: by reference, in an encrypted vault ke
 entity it belongs to, with a ledger of where it was disclosed. This chapter specifies the design
 and then states, separately, how much of it runs today.
 
-*Consolidates:* `doc/plans/archive/plans/pii-management-dashboard.md` (main design source,
-2026-04-30); `RELEASE_NOTES_v0.0.4.md` (dashboard, vault, ledger, browser flows), `v0.0.5`
+*Consolidates:* the PII management dashboard design in the project's archived plans (private;
+main design source, 2026-04-30); `RELEASE_NOTES_v0.0.4.md` (dashboard, vault, ledger, browser flows), `v0.0.5`
 (AccountKey), `v0.0.8` (PII-001/PII-002 locale and read-time redaction), `v0.0.9` (shell
-session-log parity); `doc/plans/archive/plans/v0.0.8-release-plan.md` (COMMS-001 disposition);
+session-log parity); the v0.0.8 release plan, archived (private; COMMS-001 disposition);
 specification v1.3 §Core Tenets (Identity Firewall); code in `crates/sovereign-ai/src/pii/*`,
 `crates/sovereign-db/src/schema.rs`, `crates/sovereign-crypto/src/{vault,password_gen}.rs`,
 `crates/sovereign-app/src/{pii_*.rs,browser_pii.rs,cookie_api.rs}`,
@@ -25,7 +25,7 @@ not shipped.
 
 ## Principle: PII by reference
 
-**Status:** ◐ Partial — data model and resolver built; the desktop shell shows a token as its label in the editor and, since v0.0.12, in titles (item 8, ch. 12 *Documents*), card bodies excepted; enforcement at ingest is partial (see *The "no stray PII" ingest invariant*).
+**Status:** ◐ Partial — data model and resolver built; since v0.0.13 (lot LS(a)) both hosts show a token as its label in titles (cards, windows, alerts, suggested links) and in the phone's reader, the phone's edit box excepted for v0.0.13 (SW5); enforcement at ingest is partial (see *The "no stray PII" ingest invariant*).
 
 At rest, the graph holds **references** to PII, never raw values in unmanaged places. Each piece of
 personal information lives in an encrypted `PiiRecord` attached to the entity it belongs to; the
@@ -108,7 +108,7 @@ The `Self` entity is the sentinel for the user's own PII.
 
 ## Commit and review
 
-**Status:** ✅ Built — (code: `crates/sovereign-ai/src/pii/{commit,ingest}.rs`; `crates/sovereign-app/src/pii_ingest.rs`).
+**Status:** ✅ Built — (code: `crates/sovereign-ai/src/pii/{commit,ingest}.rs`; `crates/sovereign-ai/src/docs_host.rs`).
 
 Commit writes the `PiiRecord`s and any proposed entities, rewrites the source to its canonical body,
 encrypts the raw original, writes the `SourceRef` back-links, and stamps `pii_scanned_at`.
@@ -130,10 +130,12 @@ For documents, **the title, captions and alt texts are ingested as well as the b
 
 **What runs today.**
 
-- **Documents:** ingest runs **regex-only**, at the Swiss locale, when a document is saved or imported
-  through the app commands — that is, on mobile only. It runs once per document: a document already
-  marked scanned is not rescanned. (code: `crates/sovereign-app/src/pii_ingest.rs`,
-  `crates/sovereign-app/src/tauri_commands/documents.rs`)
+- **Documents:** ingest runs **regex-only**, at the Swiss locale, in the document service's hook, on
+  every write that changes a document — create, save, import, a skill's output, the restore of a
+  version and sync — in the native shell and on mobile, whenever the persona's account key is
+  installed; without it the write is stored *not scanned* (G10). Each ingest takes every text
+  field: the title, the text blocks, captions and alt texts. (code:
+  `crates/sovereign-ai/src/docs_host.rs`, `crates/sovereign-docs/src/service.rs`)
 - **NER is not invoked at ingest.** Person names, organization names and free-form addresses are
   therefore not detected at ingest.
 - **Session log:** user input and chat responses are tokenized before they are written to the
@@ -149,10 +151,36 @@ every path by which content can reach a model. Bodies remain field-encrypted at 
 
 ### Idle sweep
 
-**Status:** ○ Decided 2026-10-10, to be built.
+**Status:** ◐ Partial — decided 2026-10-10, replaced 2026-11-17 (below); the document half built in v0.0.13 (lot LS(a), merged 2026-11-17), the message half in v0.0.14.
 
-**Decided 2026-10-10 (Céline): detect without rewriting, review in a queue, mask on the fly
-until reviewed.**
+**Built in two parts, designed once** (Céline, 2026-11-13):
+
+> on coupe le balayage des données personnelles, première partie sur les docs, cela découple cette
+> fonction du mail, tout en obligeant à la concevoir aussi pour le mail.
+
+- **The parts:** documents in v0.0.13, after C-HOST; messages in v0.0.14, with email.
+- **One contract covers both kinds of content.** It is stated for a document and for a message, and
+  the review queue, its store and its persona are designed once, for both.
+- **The queue's cadence and form** (Céline, 2026-11-13, the two points left open on 2026-10-10):
+  - **cadence, « Un signal discret »:** a count in the status bar when findings wait (« 12 personal
+    data to review »), and a notice at login if the queue has grown since the last one. No window
+    ever opens by itself;
+  - **form, « Par type de donnée »:** the review window groups findings by type (addresses,
+    numbers, IBAN…) across all content. Each value is confirmed or dismissed, alone or with others
+    selected; never a whole type at once (Céline, 2026-11-17: « Je ne donnerai pas la possibilité à
+    l'utilisateur d'écarter tout un type d'un coup. Au plus, il peut sélectionner (checkboxes) de
+    multiples records et les écarter d'un coup. » « Par type » is how the window groups.)
+
+**Decided 2026-11-17 (Céline), replacing the decision of 2026-10-10 below: the sweep is the same
+process as a save.** « Oui, le balayage en arrière-plan remplace cette décision. C'est le même
+processus. C'est juste qu'à l'enregistrement, c'est visible directement par l'utilisateur, et donc
+confirmé par défaut. Si c'est une erreur, l'utilisateur peut aller rejeter dans le gestionnaire des
+PII. En arrière-plan, il ne le voit pas, donc cela rentre dans la file à confirmer. » The sweep
+replaces each value by a token, as a save does, and marks it « PII suspected - TBC », to tell it
+from a value replaced under her eyes. C-SWEEP below says how.
+
+**Decided 2026-10-10 (Céline), replaced on 2026-11-17: detect without rewriting, review in a queue,
+mask on the fly until reviewed.**
 - A background scan **detects and inventories** personal data in every document not yet
   scanned (proposed records), **without rewriting the document**, and marks the document as
   analysed — so it can be summarised and read by the model.
@@ -164,15 +192,131 @@ until reviewed.**
 - Nothing in a document is rewritten without the user's confirmation.
 
 Preconditions: ingest runs on every write path (shell, import, sync); an interface that shows
-tokens and labels cleanly (none does today); masking at read time is the single path by which
-document content reaches the model (summaries, chat tools, skills, consolidation).
+tokens and labels cleanly; masking at read time is the single path by which document content
+reaches the model (summaries, chat tools, skills, consolidation). Where they stand: the first is
+met for documents (above); the native shell's editor shows tokens as labels, mobile does not
+(*Resolution and access levels*, below); the third is not met.
 
 The v1 design rescans, when the system is idle, any content lacking `pii_scanned_at`, and re-scans
 when the detection taxonomy changes. A sweep routine exists in code but is not wired to any trigger;
 it was unwired on 2026-05-03 and deferred since. It is also compiled only with the `comms` feature,
-so it is absent from the mobile build. What the sweep does with what it finds is the decision of
-2026-10-10 above. It replaces the 2026-10-09 plan to specify it together with A5. (code:
-`crates/sovereign-app/src/pii_sweep.rs`)
+so it is absent from the mobile build, and it rewrites bodies outside the document service. It is
+retired in v0.0.13 (SW9). What the sweep does with what it finds is the decision of 2026-11-17
+above. (code: `crates/sovereign-app/src/pii_sweep.rs`)
+
+**Guarantees (C-SWEEP, each one a test).** ◐ The document half is built in v0.0.13 (lot LS(a), merged
+2026-11-17), on both hosts. Its second run read each host: the sweeps after login and after a sync
+round, the incoming-change analysis by document, the review state on arrival, the shell's window from
+the review routine, the phone's commands, the masking of titles and bodies toward the model, and one
+label table. The message half is specified with it and built in v0.0.14, behind the message hook.
+Specified 2026-11-13, revised 2026-11-17 against the code and Céline's answers of that day.
+- **SW1 — One process, two states.** The sweep runs, on content not yet analysed, the ingest a save
+  runs: each detected value is replaced by its token, the raw original is kept encrypted, the content
+  gets one new version, and it is marked analysed.
+  - **The state follows the write's origin, which ingest is given.** A value replaced where she sees it
+    happen, a save or a creation through the editor, is confirmed by default (Céline, 2026-11-17:
+    « uniquement l'enregistrement via l'éditeur. Pas l'import de document. »). A save or a creation by
+    the assistant shares the editor's write path, not its origin: it is suspected.
+  - **A value replaced on any other path is suspected,** shown in words on each row as « PII
+    suspected - TBC » (Céline, 2026-11-17: « Suspected seul ne dit pas ce qui est suspected »), and
+    waits in the review queue: she did not see it. That is the sweep, an import, a skill's output, the
+    restore of a version, the assistant's writes, content shared into Sovereign from another app on
+    the phone (which takes the import's origin, not the editor's), a page saved from the browser
+    (likewise), and content received by sync that no device had analysed.
+  - **The two other states take the same form,** « PII confirmed » and « PII dismissed » (Céline,
+    2026-11-17: « on garde la forme longue pour les libellés PII »).
+  - **A state is never lowered by another device's ingest.** On the sync path, a record that already
+    exists, received or local, keeps its state; only a value the hook replaces with no record yet is
+    suspected. A document and its records may arrive in either order: when a confirmed or dismissed
+    record arrives after its document, its state replaces the suspected one the hook wrote.
+  - Only her review changes a suspected value's state.
+  - **When it runs:** after a login, once the session is open, and after a sync round that brought
+    content not yet analysed, in bounded batches. On the phone, only while the app is open.
+- **SW2 — One identity for a finding.** A finding is keyed by its content's identity, the content's
+  version and the span, within its field.
+  - The identity is the document's id, or a message's identity (ch. 13).
+  - The version is the normalised hash, or the stamp (C-WIRE).
+  - Two devices that scan the same version produce the same record, and sync converges instead of
+    duplicating.
+  - **The token's record id is derived from that identity,** not minted by the store, so two devices
+    that sweep the same version write the same new version, which converges by its hash instead of
+    making two concurrent versions.
+  - A finding whose version is no longer current is found again, or dropped, at the next scan.
+- **SW3 — Masked where it is read, for every path to the model.**
+  - **The mask is computed on the text as it is read, each time,** with the content's id, by the same
+    detection. It rests neither on the sweep having passed nor on stored spans. It is applied where
+    content is read for a prompt (the chat's workspace context and tools, the summary, the
+    incoming-change analysis), not at the model call, where the content's id is gone.
+  - **What gets masked:** a document whole, its body, title, captions and alternative texts.
+    Detected values are replaced by their type labels; a token stays a token; a value she
+    **dismissed** (SW5) is left as written, so that her dismissal reaches the assistant too.
+  - **What it does not cover, said here and in the notes:** thread and contact names, her own message
+    to the assistant, the browser page sent to the reliability check, and the two callers that run
+    in no shipped build (consolidation and `thread_summary`).
+  - **The gate check:** a source scan, as AR8's, fails on any call to the model outside the named
+    ones (the masking readers, the classifier of her own message, the detector). It reads names, not
+    data flow: its limits are written beside it.
+  - **The summary no longer refuses an unscanned document:** masking at read covers it.
+  - **The tests:** a dismissed IBAN reaches the model as written, and an undismissed one as its label,
+    in a body and in a title; the gate check fails on a new call outside the named ones.
+- **SW4 — The queue belongs to its persona.** Findings, dismissals and the count seen at the last
+  login live in the persona's area (C-AREA, ch. 07). A duress session never sees the primary's
+  queue. The walks know them by name.
+- **SW5 — Review, grouped by type, on both hosts.**
+  - **Any record can be confirmed or dismissed,** whether the sweep suspected it or a save replaced
+    it: one, or several selected at once. No gesture acts on a whole type (Céline, 2026-11-17).
+  - **Confirming a suspected value** keeps its token and makes it confirmed.
+  - **Dismissing a value** restores it as written from the encrypted original, one new version per
+    document. Her cases: « une erreur d'identification, ou un exemple générique ».
+  - **A dismissal holds for as long as that value stands in that content,** wherever an edit moves it.
+    It is the value's record, in the state « PII dismissed », matched against the record's encrypted
+    value, so the store holds no raw value. **Ingest reads the dismissals
+    at every save, on every device,** and does not replace that value again.
+  - **Both can be taken back** in the window. Taking back a dismissal replaces the value by its token
+    again, confirmed, since she has now seen it; one new version per document. Taking back a
+    confirmation, whoever confirmed it (her review, or a save in the editor), makes the value
+    suspected again, and its token stays.
+  - **The review state and the dismissals travel by sync** (Céline, 2026-11-17: « Voyage, +
+    téléphone complet »).
+    - **A review received from another device is read as a time before it can win** (v0.0.13 rc2;
+      Céline, 2026-11-20: « oui, à faire »). ✅ Built (rc2's lot R3): in `sovereign-p2p`, `merged_review` and the new-record branch of
+      `apply_pii_record_row`, the one path a PII row takes. A review merges by its own stamp, whichever copy
+      of the record wins the rest, and a later review wins over an earlier one. Its stamp is taken only when
+      it is in the form a review writes (RFC 3339, UTC, to the microsecond, ending in `Z`) and no later
+      than the bound on future times that every synced row has (ch. 05, *Documents*). Otherwise the review
+      it carries is ignored: the local review state and stamp stand, and the rest of the record is handled
+      as before. A review of the past, or within the bound, travels as before. A record that arrives new, with
+      a review whose stamp is not taken, is created unreviewed and with no stamp, for her to review on this
+      device (the Fable maille, by delegation of Céline, 2026-11-20).
+    - **The tests:** a stamp far ahead in the review's form, one two days ahead, and strings not in that
+      form are each ignored, over ingest's state and over a review of hers; a review an hour old, and one an
+      hour ahead, travel; after an ignored stamp, her next review stands; a new record with a stamp not
+      taken arrives unreviewed and unstamped, and her review of it then stands.
+  - **Both hosts show a token as its type's label,** never raw (Céline, 2026-11-17, for the phone:
+    « Étiquettes sur téléphone »).
+  - **A label has one form,** the one the model reads (`[IBAN]`, `[Card]`, `[IP]`, `[Name]`…), in titles,
+    cards, the phone and the model's text alike. A code's own name (`[Iban]`) is never shown (the Fable
+    maille, by delegation, 2026-11-17).
+  - **« One new version per document »** is the review's own version. A document whose current state is
+    not yet a version first gets the usual restore point (the Fable maille, by delegation, 2026-11-17).
+  - **One exception, the phone's edit box, for v0.0.13** (Céline, 2026-11-17: « oui, 1 pour la
+    v0.0.13 »). The box holds the stored form `[pii:…]`, since a label there would be saved as text;
+    labels everywhere else. When the body holds a token, and only then, one line above the box says:
+    « In this box, personal data shows as marks like [pii:…]. Leave a mark as it is to keep its
+    value. » It is the box's description for a screen reader, not a live region (the Fable maille,
+    by delegation, 2026-11-17). An editor on the phone that shows labels comes later.
+  - **The test:** she dismisses a value, edits another paragraph and saves, here and on a second
+    device. The value is not back in the queue, and it reaches the model as written.
+- **SW6 — A discreet signal, on both hosts** (Céline: « Un signal discret »). A count in the status
+  bar shows when suspected values wait, and a notice at login says if the queue has grown since the
+  last login. No window opens by itself.
+- **SW7 — Ingest is not an act of the assistant** (D9, as Céline stated it on 2026-11-17: « C'est le
+  même processus »). The sweep is the ingest that comes late; what it replaced waits for her as
+  suspected, and only her review confirms it.
+- **SW8 — Detection is regex-only, and the notes say so.** Named entities are not detected at
+  ingest or in the sweep.
+- **SW9 — One routine, in the crate both hosts link.** It is built on `sovereign-ai`'s ingest and run
+  by the shell and the phone app (Céline, 2026-11-17). The app's `pii_sweep.rs` is retired.
 
 ### Message, contact and share hooks
 
@@ -180,12 +324,12 @@ so it is absent from the mobile build. What the sweep does with what it finds is
 
 `PiiMessageHook` (inbound messages), `PiiContactHook` (contact addresses and notes) and `PiiShareHook`
 (outbound ledger writes) are implemented and tested. They are not constructed by any running path;
-communication channels are dormant in v0.0.9 and are to be wired together with their hardening.
+communication channels are dormant since v0.0.9 and are to be wired together with their hardening.
 (code: `crates/sovereign-app/src/{pii_message_hook,pii_contact_hook,pii_share_hook}.rs`)
 
 ## Resolution and access levels
 
-**Status:** ◐ Partial — the resolver is built and used toward the model (type-only labels); the desktop shell shows a token as its label in the editor and, since v0.0.12, wherever it draws a title (item 8, ch. 12 *Documents*), card bodies excepted; mobile shows raw tokens in scanned documents.
+**Status:** ◐ Partial — the resolver is built and used toward the model (type-only labels); since v0.0.13 both hosts show a token as its label wherever they draw a title, and the phone's reader does too; the phone's edit box keeps the stored form for v0.0.13 (SW5).
 
 (code: `crates/sovereign-ai/src/pii/resolve.rs`; `crates/sovereign-app/src/tauri_commands/pii.rs`)
 
@@ -200,8 +344,12 @@ A token resolves at one of four levels:
 
 ### Where a token resolves
 
-**Status:** ○ Decided 2026-10-10 (Céline), not built — the resolver today resolves any token in
-any text.
+**Status:** ◐ Partial — decided 2026-10-10 (Céline); built for documents: the document service
+and the native shell's editor treat token-form text as a token only in a document listed among
+its record's sources (G13; code: `crates/sovereign-docs/src/service.rs`,
+`crates/sovereign-shell/src/app/editor_v2.rs`). Not yet toward the model: the read-time redaction
+renders any token-form text that names a record as its type-only label (code:
+`crates/sovereign-ai/src/pii/resolve.rs`, `crates/sovereign-ai/src/tools.rs`).
 
 A token resolves **only in a document or message listed among its record's sources**. Anywhere
 else, text in token form is ordinary text. Record ids are random and cannot be guessed, but they

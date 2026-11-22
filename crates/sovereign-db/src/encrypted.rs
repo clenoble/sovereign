@@ -64,6 +64,12 @@ pub struct EncryptedGraphDB {
     device_key: Arc<DeviceKey>,
 }
 
+/// The failed decryptions of each open store (see
+/// [`EncryptedGraphDB::undecryptable_rows_met`]), keyed by the store's own
+/// index key: kept beside the struct, not in it, so the struct's shape (which
+/// tests build field by field) is unchanged. An entry goes with its store.
+static UNDECRYPTABLE: std::sync::Mutex<Vec<(std::sync::Weak<IndexKey>, usize)>> = std::sync::Mutex::new(Vec::new());
+
 impl EncryptedGraphDB {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -89,6 +95,45 @@ impl EncryptedGraphDB {
             kek,
             index_key,
             device_key,
+        }
+    }
+
+    // C-MEDIA (spec ch. 03, *The media store*; keys within ch. 07): the media
+    // store wraps each medium's key under this store's KEK, as this store
+    // wraps its document keys, so it opens with this store and nothing else.
+    // The KEK stays here: three narrow operations, and no accessor to it.
+
+    /// A fresh random key for one medium, and that key wrapped by this
+    /// store's KEK.
+    pub fn new_medium_key(
+        &self,
+    ) -> std::io::Result<(sovereign_crypto::document_key::DocumentKey, sovereign_crypto::document_key::WrappedDocumentKey)>
+    {
+        sovereign_crypto::media_seal::MediaKeys::new_medium_key(&*self.kek)
+    }
+
+    /// A medium's key, unwrapped by this store's KEK.
+    pub fn unwrap_medium_key(
+        &self,
+        wrapped: &sovereign_crypto::document_key::WrappedDocumentKey,
+    ) -> std::io::Result<sovereign_crypto::document_key::DocumentKey> {
+        sovereign_crypto::media_seal::MediaKeys::unwrap_medium_key(&*self.kek, wrapped)
+    }
+
+    /// The key that names the media store's files, derived from this store's
+    /// KEK (domain-separated); never the KEK itself.
+    pub fn medium_name_key(&self) -> [u8; 32] {
+        sovereign_crypto::media_seal::MediaKeys::medium_name_key(&*self.kek)
+    }
+
+    /// Counts one failed decryption against this store.
+    fn count_undecryptable(&self) {
+        let mut all = UNDECRYPTABLE.lock().unwrap_or_else(|e| e.into_inner());
+        all.retain(|(k, _)| k.strong_count() > 0);
+        let me = Arc::as_ptr(&self.index_key);
+        match all.iter_mut().find(|(k, _)| k.as_ptr() == me) {
+            Some((_, n)) => *n += 1,
+            None => all.push((Arc::downgrade(&self.index_key), 1)),
         }
     }
 
@@ -151,7 +196,25 @@ impl EncryptedGraphDB {
 
     /// Decrypt content with the given key DB. `nonce_b64` must be a 24-byte
     /// XChaCha20 nonce. Returns the plaintext as a UTF-8 String.
+    ///
+    /// Every failure is counted ([`Self::undecryptable_rows_met`]): whatever
+    /// the caller does with it (a listing skips the row, DB-M1), it is never
+    /// lost from view.
     async fn decrypt_with(
+        &self,
+        key_db: &Arc<RwLock<KeyDatabase>>,
+        entity_id: &str,
+        ciphertext_b64: &str,
+        nonce_b64: &str,
+    ) -> DbResult<String> {
+        let r = self.decrypt_with_uncounted(key_db, entity_id, ciphertext_b64, nonce_b64).await;
+        if r.is_err() {
+            self.count_undecryptable();
+        }
+        r
+    }
+
+    async fn decrypt_with_uncounted(
         &self,
         key_db: &Arc<RwLock<KeyDatabase>>,
         entity_id: &str,
@@ -232,6 +295,18 @@ impl EncryptedGraphDB {
     }
 
     /// Hash the (lowercased, deduped) tokens in `text` using the per-DB index key.
+    /// FC3: the blind index of a remembered choice's name, as find-or-create
+    /// compares it (ignoring case and surrounding spaces).
+    fn choice_index(&self, name: &str) -> String {
+        let compared = name.trim().to_lowercase();
+        let b64 = self.index_key.hash_token(format!("thread-choice\n{compared}").as_bytes());
+        // Hex, already in the form the store compares a name in.
+        base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .map(|bytes| bytes.iter().map(|b| format!("{b:02x}")).collect())
+            .unwrap_or(b64)
+    }
+
     fn token_hashes(&self, text: &str) -> Vec<String> {
         let tokens = index_key::tokenize(text, MESSAGE_TOKEN_CAP);
         tokens.iter().map(|t| self.index_key.hash_token(t.as_bytes())).collect()
@@ -272,6 +347,21 @@ impl EncryptedGraphDB {
             }
         }
         Ok(result)
+    }
+
+    /// How many rows this store has met and could not decrypt since it was
+    /// opened, over every read (lists and gets, every entity type): the rows
+    /// a listing skips (DB-M1) are counted here, never lost (C-AREA, open vs
+    /// write; claude-coord from-fable-2nde-position/0017 §1). Under C-AREA a
+    /// session's store holds only its own rows, so this is zero.
+    ///
+    /// Counted at the one decryption every read goes through: a row is
+    /// counted each time a read meets it (a row met twice counts twice), and
+    /// the first field that fails ends the row's read.
+    pub fn undecryptable_rows_met(&self) -> usize {
+        let all = UNDECRYPTABLE.lock().unwrap_or_else(|e| e.into_inner());
+        let me = Arc::as_ptr(&self.index_key);
+        all.iter().find(|(k, _)| k.as_ptr() == me).map_or(0, |(_, n)| *n)
     }
 
     /// Every document row, tombstones included, as
@@ -1648,6 +1738,15 @@ impl GraphDB for EncryptedGraphDB {
         self.inner.update_pii_record_review_state(id, review_state).await
     }
 
+    async fn update_pii_record_review(
+        &self,
+        id: &str,
+        review_state: ReviewState,
+        review_stamp: Option<&str>,
+    ) -> DbResult<()> {
+        self.inner.update_pii_record_review(id, review_state, review_stamp).await
+    }
+
     async fn update_pii_record_value(
         &self,
         id: &str,
@@ -2094,6 +2193,43 @@ impl GraphDB for EncryptedGraphDB {
         self.decrypt_threads(threads).await
     }
 
+    // FC3 (spec ch. 03; item 9): a remembered answer is sealed at rest as a
+    // thread's name is. The inner store receives, for the name, a blind index
+    // under this persona's index key (other keys find nothing), and, as the
+    // chosen thread, the sealed body: the name, the thread chosen and the
+    // threads it was chosen among. Nothing of them is in the clear.
+    async fn remember_thread_choice(&self, choice: &crate::schema::ThreadChoice) -> DbResult<()> {
+        let blind = self.choice_index(&choice.name);
+        let body = serde_json::to_vec(choice).map_err(|e| DbError::Query(format!("thread choice: {e}")))?;
+        let (ct, nonce) = self.encrypt_with(&self.threads_key_db, &choice_entity(&blind), &body).await?;
+        let sealed = crate::schema::ThreadChoice { name: blind, chosen: format!("{nonce}.{ct}"), among: Vec::new() };
+        self.inner.remember_thread_choice(&sealed).await
+    }
+
+    async fn thread_choice(&self, name: &str) -> DbResult<Option<crate::schema::ThreadChoice>> {
+        let blind = self.choice_index(name);
+        let Some(sealed) = self.inner.thread_choice(&blind).await? else { return Ok(None) };
+        let Some((nonce, ct)) = sealed.chosen.split_once('.') else {
+            self.count_undecryptable();
+            return Ok(None);
+        };
+        // A row this persona cannot open is not its own: nothing is remembered.
+        let Ok(body) = self.decrypt_with(&self.threads_key_db, &choice_entity(&blind), ct, nonce).await else {
+            return Ok(None);
+        };
+        let choice: crate::schema::ThreadChoice =
+            serde_json::from_str(&body).map_err(|e| DbError::Query(format!("thread choice: {e}")))?;
+        Ok(Some(choice))
+    }
+
+    async fn forget_thread_choice(&self, name: &str) -> DbResult<()> {
+        self.inner.forget_thread_choice(&self.choice_index(name)).await
+    }
+
+    async fn list_thread_choices_raw(&self) -> DbResult<Vec<serde_json::Value>> {
+        self.inner.list_thread_choices_raw().await
+    }
+
     async fn list_entities_including_deleted(&self) -> DbResult<Vec<Entity>> {
         // Entities carry no field-encrypted content at this layer (DB-M6 is a
         // separate, open finding) — pass through.
@@ -2284,6 +2420,26 @@ fn check_store_record_key(key: &str) -> DbResult<()> {
         return Err(DbError::Query(format!("invalid store record key: {key:?}")));
     }
     Ok(())
+}
+
+impl sovereign_crypto::media_seal::MediaKeys for EncryptedGraphDB {
+    fn new_medium_key(
+        &self,
+    ) -> std::io::Result<(sovereign_crypto::document_key::DocumentKey, sovereign_crypto::document_key::WrappedDocumentKey)>
+    {
+        EncryptedGraphDB::new_medium_key(self)
+    }
+
+    fn unwrap_medium_key(
+        &self,
+        wrapped: &sovereign_crypto::document_key::WrappedDocumentKey,
+    ) -> std::io::Result<sovereign_crypto::document_key::DocumentKey> {
+        EncryptedGraphDB::unwrap_medium_key(self, wrapped)
+    }
+
+    fn medium_name_key(&self) -> [u8; 32] {
+        EncryptedGraphDB::medium_name_key(self)
+    }
 }
 
 #[cfg(test)]
@@ -3279,4 +3435,10 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+
+/// FC3: the key database entry a remembered choice is sealed under.
+fn choice_entity(blind: &str) -> String {
+    format!("thread_choice:{blind}")
 }

@@ -6,8 +6,8 @@ that decide what actually ships.
 
 *Consolidates:* specification v1.3 §System Architecture Overview and Open Question 2 (tech
 stack); `CLAUDE.md` (workspace architecture, sovereign-app modules); `CONTRIBUTING.md`
-(architecture overview, data flow, feature table); `README.md`; `RELEASE_NOTES_v0.0.3`–`v0.0.9`;
-archived `native-ui-migration.md`, `native-ui-migration-decisions.md` (D1, D2, Phase 4).
+(architecture overview, data flow, feature table); `README.md`; `RELEASE_NOTES_v0.0.3`–`v0.0.12`;
+the project's archived plans for the native-UI migration (private; D1, D2, Phase 4).
 
 ---
 
@@ -20,6 +20,7 @@ archived `native-ui-migration.md`, `native-ui-migration-decisions.md` (D1, D2, P
 │ USER INTERFACE                                                        │
 │  native shell (desktop)          │  Tauri + Svelte (mobile UI;        │
 │  vello / parley / winit / wgpu   │  desktop frozen)                   │
+│  editor (sovereign-editor)       │                                    │
 │  in-process calls                │  Tauri IPC (invoke / emit)         │
 ├─────────────────────────────────────────────────────────────────────┤
 │ AI ORCHESTRATOR  (sovereign-ai)                                       │
@@ -29,6 +30,9 @@ archived `native-ui-migration.md`, `native-ui-migration-decisions.md` (D1, D2, P
 ├─────────────────────────────────────────────────────────────────────┤
 │ SKILLS (sovereign-skills)     │ COMMS (sovereign-comms, dormant)     │
 │ 24 core skills · WASM sandbox │ IMPORT (sovereign-import)            │
+├─────────────────────────────────────────────────────────────────────┤
+│ DOCUMENT SERVICE  (sovereign-docs · format v2: sovereign-docformat)  │
+│  create · read · save · trash · restore · purge · trust · PII ingest │
 ├─────────────────────────────────────────────────────────────────────┤
 │ LOCAL GRAPH  (sovereign-db)                                           │
 │  embedded SurrealDB · EncryptedGraphDB field-encryption decorator     │
@@ -40,10 +44,12 @@ archived `native-ui-migration.md`, `native-ui-migration-decisions.md` (D1, D2, P
         shared types, config, security primitives: sovereign-core
 ```
 
-The orchestrator does not sit *between* the UI and the store on every path: the UI reads and
-writes the graph directly for ordinary work (open, edit, move, pin), and goes through the
-orchestrator for language requests and AI-proposed actions. Every AI-proposed write passes the
-action gate (ch. 08).
+The orchestrator does not sit *between* the UI and the store on every path: for ordinary work
+(open, edit, move, pin) the UI calls the backend directly, and it goes through the orchestrator
+for language requests and AI-proposed actions. Document reads and writes — create, open, save,
+move to a thread, trash, restore, purge — go through the document service (ch. 03, C-DOC), the
+one door for documents; a few record-level settings, such as pinning, still go to the store
+directly. Every AI-proposed write passes the action gate (ch. 08).
 
 *Replaces v1.x:* "Local graph database (JSON)" and "skill registry with native processes" —
 the graph is embedded SurrealDB; skills are compiled Rust plus a WASM Component Model sandbox
@@ -51,7 +57,8 @@ the graph is embedded SurrealDB; skills are compiled Rust plus a WASM Component 
 
 ## Crates
 
-**Status:** ✅ Built — 13 workspace members, about 90k lines of Rust (measured 2026-10-09).
+**Status:** ✅ Built — 16 workspace members, about 181k lines of Rust including tests (the
+crates' tracked `.rs` files, counted 2026-11-13).
 
 | Crate | Role |
 |---|---|
@@ -63,8 +70,9 @@ the graph is embedded SurrealDB; skills are compiled Rust plus a WASM Component 
 | `sovereign-p2p` | libp2p node: pairing, encrypted sync, peer review, guardian enrollment, access-recovery driver, guardian-side release gate (ch. 05, ch. 06). |
 | `sovereign-comms` | Email (IMAP/SMTP), Signal, WhatsApp types — dormant since v0.0.9 (ch. 13). |
 | `sovereign-import` | Stub-first bulk import engine and its CLI (ch. 03). |
-| `sovereign-docs` | ○ The document service (contract C-DOC, ch. 03): the one door for creating, reading, saving, deleting, restoring and purging documents. Contract and test suite only (2026-10-10); not built. |
-| `sovereign-docformat` | ○ The stored document format v2 (C-ENC, ch. 03), with no I/O, so the editor can use it without storage crates. API only (2026-10-10); the editor's provisional model moves here when built. |
+| `sovereign-docs` | The document service (contract C-DOC, ch. 03): the one door for creating, reading, saving, deleting, restoring and purging documents, with encoding, commits, personal-data ingest, provenance and trust in one place. Used by the shell, the Tauri host, the orchestrator, bulk import, and sync and backup restore (`sovereign-p2p`). |
+| `sovereign-docformat` | The stored document format v2 (C-ENC, ch. 03), with no I/O and no dependencies, so the editor can use it without storage crates. It holds the editor's model; the editor re-exports it, and the document service and the orchestrator read and write through it. |
+| `sovereign-editor` | The document editor component (contract C-TEXT, ch. 12): edits one v2 document in memory, owns no storage and opens no connection; the host gives it a save function. Used by the native shell. |
 | `sovereign-relay` | Deployable relay and seed node with a store-and-forward mailbox; sees only ciphertext and routing metadata (ch. 05). |
 | `sovereign-guardian` | Guardian-side engine: holds friends' Recovery Key shares, answers heartbeats, approves recovery (ch. 06). |
 | `sovereign-guardian-app` | The friend-side desktop application (Tauri) wrapping `sovereign-guardian` (ch. 06). |
@@ -77,7 +85,7 @@ Plus two Python sidecars outside the workspace (below), and the Svelte frontend 
 *Replaces v1.x:* the 10-crate workspace with the Iced-based `sovereign-ui` and
 `sovereign-canvas` crates. Both were retired in v0.0.3; the crates added since are
 `sovereign-shell`, `sovereign-import`, `sovereign-relay`, `sovereign-guardian`,
-`sovereign-guardian-app`.
+`sovereign-guardian-app`, `sovereign-editor`, `sovereign-docformat`, `sovereign-docs`.
 
 ## Binaries and user interfaces
 
@@ -122,7 +130,8 @@ if that cannot be done (ch. 07).
 
 ◐ The shell does not yet consume every orchestrator event. Dropped today: suggestions and
 link suggestions, sync conflicts, bubble state, reliability results, thread merge and split,
-skill results, milestone events and recovery progress events, among others. Sync conflicts are
+skill results other than a summary, milestone events and recovery progress events, among
+others. Sync conflicts are
 a correctness matter, not a display one. The work is tracked in the backlog.
 
 ### Tauri on desktop is frozen (decision 2026-10-09)
@@ -144,8 +153,8 @@ a correctness matter, not a display one. The work is tracked in the backlog.
   layers rather than in shared crates; moving it is open work (backlog), to be specified before
   it is done.
 - ◐ **Consequence to settle:** the developer CLI — including bulk import (ch. 03), which has no
-  UI yet — lives in the `sovereign-tauri` binary, which was not part of the v0.0.9 release
-  assets either. A shipped import path (a CLI binary of its own, or the shell's import window)
+  UI yet — lives in the `sovereign-tauri` binary, which is not among the release assets either
+  (v0.0.12 release notes: bulk import is built from source). A shipped import path (a CLI binary of its own, or the shell's import window)
   is open.
 
 ### The Tauri host
@@ -165,18 +174,37 @@ crypto initialisation, orchestrator wiring) and sample-data seeding.
 |---|---|---|---|
 | Windows | native shell | RocksDB | Daily-driver target. |
 | Linux | native shell | RocksDB | The `wry` webview uses the system WebKitGTK on Linux. |
-| Android | Tauri mobile | SurrealKV | RocksDB has no clean Android cross-compile; SurrealKV is pure Rust. The `mobile` feature set has no voice, email or embedded browser. |
+| Android | Tauri mobile | SurrealKV | RocksDB has no clean Android cross-compile; SurrealKV is pure Rust. The `mobile` feature set has no voice, email, embedded browser or local AI: llama.cpp is not linked, and loading a model fails with "local AI is not available in this build" (K12, ch. 14). |
 | iOS | — | — | ○ Feature set declared (`mobile`), not built or tested. |
 
 When both engines are compiled in, RocksDB wins. With neither, the store falls back to
 in-memory and logs a warning; no shipped build is configured that way.
 
 ◐ The Android build's recipe is `scripts/build-android.sh` (`--debug` or `--release`, Linux or
-WSL2 only), with its prerequisites in `doc/RELEASE.md`, *Android — the APK*. The published APKs so
-far are debug builds, signed with the SDK's debug key; a `--release` build comes out unsigned (the
-Gradle scaffold declares no signing config) and must be signed with a release key held outside the
-repository. Which features the v0.0.9 APK was built with is not recorded; SurrealKV on Android
-follows from the `mobile` feature set.
+WSL2 only), with its prerequisites in `doc/RELEASE.md`, *Android — the APK*. The recipe fixes the
+feature set: `mobile`, without the defaults. The published APKs, v0.0.12 included, are signed with
+the SDK's debug key (release notes); a `--release` build comes out unsigned (the Gradle scaffold
+declares no signing config) and must be signed with a release key held outside the repository.
+
+## Network egress
+
+**Status:** ○ Decided 2026-11-13 (Céline, P14; ch. 01), not built. Its first part comes in
+v0.0.14, the email release, with mail. The other components move behind it later; that is not scheduled.
+
+**One gate for all network egress, in the core.**
+- Every outgoing request carries a persona, a purpose and a consent: mail, remote models, search
+  and checks.
+- The identity firewall lives at the gate.
+- Nothing leaves by another path. This makes « no communication network of its own » (Appendix C
+  §1.3) verifiable.
+
+**As built:** each component opens its own connections.
+- **The components:** the P2P node; the email engine, which is dormant; the embedded browser's
+  webview; and the Tauri app's web fetch, on the frozen desktop.
+- **The browser and the web fetch already check every navigation** through `net_guard` (a page's subresources do not pass through it): public addresses only,
+  bounded DNS (code: `crates/sovereign-core/src/net_guard.rs`).
+- **Models are not downloaded by the app.**
+- **The Python sidecars are reached on loopback only.** That is not egress, and the gate leaves it out.
 
 ## Data flow of a request
 
@@ -232,10 +260,11 @@ present".
 | `encryption` | on | Field-level encryption, key store, auth (ch. 07). |
 | `encrypted-log` | on | Session log sealed at rest (ch. 08). |
 | `rocksdb` | on | Desktop persistent engine. |
+| `llama` | on | Local inference through llama.cpp. Left out of `mobile` (K12, ch. 14). |
 | `surrealkv` | off | Mobile persistent engine. |
-| `cuda` | off | GPU inference through llama.cpp's CUDA backend. |
+| `cuda` | off | GPU inference through llama.cpp's CUDA backend (turns `llama` on). |
 | `p2p` | off | libp2p node: pairing, sync, recovery (ch. 05, ch. 06). |
-| `comms-email` / `comms-signal` / `comms-whatsapp` | off | Communication channels (ch. 13). |
+| `comms` / `comms-email` / `comms-signal` / `comms-whatsapp` | off | Communication channels (ch. 13); `comms` links the crate, and each channel feature turns it on. |
 | `web-browse` | off | Web fetch, readability extraction and reliability assessment for the embedded browser (ch. 10). |
 | `wasm-plugins` | off | WASM skill sandbox (ch. 11). |
 | `voice-stt` / `wake-word` | off | Whisper speech-to-text; Rustpotter wake word (ch. 08). |
@@ -256,12 +285,13 @@ beside it, or on `PATH`; only an NVIDIA driver is required on the user's machine
 **Status:** ◐ Partial — CPU-only, email switched off, no voice/vision/GPU (code:
 `crates/sovereign-shell/Cargo.toml`, `src/comms.rs`).
 
-The shell has no features of its own: it always builds with RocksDB, field encryption, the
-encrypted session log, the p2p node, the 24 core skills, the `wry` browser and the email
-engine compiled in. It is **CPU-only** (no `cuda`), so `sovereign.exe` ships as a single
+The shell's only feature of its own is `dev-switches` (below), off by default and never in a
+shipped build. It always builds with RocksDB, field encryption, the encrypted session log, local
+inference (llama.cpp), the p2p node, the 24 core skills, the editor, the `wry` browser and the
+email engine compiled in. It is **CPU-only** (no `cuda`), so `sovereign.exe` ships as a single
 executable with no CUDA runtime.
 
-- **Email is compiled in but switched off** in v0.0.9 by a constant in the shell's comms
+- **Email is compiled in but switched off** (since v0.0.9) by a constant in the shell's comms
   module; Settings → Comms reads "not in this release". The Tauri host never constructs an
   email channel, so a Tauri build with `comms-email` keeps email dormant too.
 - ◐ Voice, vision, the sidecars, WASM plugins and GPU inference are not available in the
@@ -269,9 +299,9 @@ executable with no CUDA runtime.
   the desktop UI runs both models on the CPU, which is the main gap between what ships and the
   hardware target of ch. 14.
 
-The v0.0.9 release assets (checked 2026-10-09): `sovereign.exe` (native shell, Windows),
-`sovereign-linux-x86_64` (native shell), `sovereign-v0.0.9.apk`, `SHA256SUMS`. No Tauri desktop
-build and no CUDA build were shipped.
+The release assets, as the v0.0.12 release notes list them: `sovereign.exe` (native shell,
+Windows, CPU-only), `sovereign-linux-x86_64` (native shell), `sovereign-v0.0.12.apk`
+(debug-signed), `SHA256SUMS`. No Tauri desktop build and no CUDA build is shipped.
 
 ## Developer and verification hooks
 

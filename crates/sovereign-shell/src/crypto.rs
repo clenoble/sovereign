@@ -9,8 +9,9 @@ use std::sync::Arc;
 use sovereign_db::traits::GraphDB;
 use sovereign_core::auth::PersonaKind as CorePersona;
 use sovereign_crypto::auth::{AuthStore, PersonaKind as CryptoPersona};
+use sovereign_crypto::login_error::LoginFailure;
 
-use crate::canvas::open_db_at;
+use crate::canvas::open_db_at_or_error;
 
 pub(crate) fn crypto_dir() -> PathBuf {
     sovereign_core::sovereign_dir().join("crypto")
@@ -43,8 +44,10 @@ pub(crate) fn recovery_store_for(
     }
 }
 
-/// Notice shown when guardian enrollment is asked for without the KEK.
-pub(crate) const ENROLL_NEEDS_LOGIN: &str = "Log in first — the guardian roster is encrypted.";
+/// Notice shown when guardian enrollment is asked for without the KEK. It takes the shell's one
+/// form for a gesture refused for lack of a session (the Fable maille, by delegation of Céline,
+/// 2026-11-16; spec ch. 01, *General rules*).
+pub(crate) const ENROLL_NEEDS_LOGIN: &str = "The workspace is locked: log in to enroll a guardian.";
 /// Notice shown when guardian enrollment (or pairing, sync) needs the P2P node
 /// and it is not running.
 pub(crate) const ENROLL_SYNC_NOT_RUNNING: &str = "Sync isn't running. Log in to start the P2P node.";
@@ -149,6 +152,14 @@ pub(crate) fn persona_index_filename(persona: CorePersona) -> &'static str {
         CorePersona::Primary => "index.key",
         CorePersona::Duress => "index.duress.key",
     }
+}
+
+/// The embedded browser's profile directory for `persona`, in that persona's
+/// own area (C-AREA AR7: « one profile per persona »; Céline, 2026-11-13).
+/// It is under the persona's own state directory (`orchestrator_state_dir`),
+/// `browser/`; the shell hands it to the WebView (`sync_browser_webview`).
+pub(crate) fn persona_browser_profile_dir(persona: CorePersona) -> PathBuf {
+    sovereign_core::auth::orchestrator_state_dir(&sovereign_core::sovereign_dir(), persona).join("browser")
 }
 
 /// Per-persona model-TOFU store path (MODELTRUST-003-PERSONA).
@@ -358,6 +369,13 @@ pub(crate) async fn recover_and_install(
 /// the AccountKey (vault-secret encryption), and the DeviceKey (the P2P identity
 /// key — derives the libp2p keypair + the paired-store key).
 /// Fail-CLOSED: a wrong password or an encryption-install error returns Err.
+///
+/// The error is a [`LoginFailure`]: its text is the sentence the login form
+/// shows (spec ch. 07, login errors, LE2), and the end of a first setup takes
+/// its cause alone. A wrong password reads « Invalid password »; a derivation
+/// that failed, and any failure after the password matched (the keys'
+/// unwrapping, opening the persona's database or its key databases), say so,
+/// with their cause cleared of the data directory's paths (LE3).
 pub(crate) async fn install_session(
     store: &AuthStore,
     password: &[u8],
@@ -368,22 +386,25 @@ pub(crate) async fn install_session(
     Arc<sovereign_crypto::device_key::DeviceKey>,
     Arc<sovereign_crypto::kek::Kek>,
 )> {
+    let data_dir = sovereign_core::sovereign_dir();
+    let data_dirs: &[&Path] = &[&data_dir];
     let auth = store
         .authenticate(password)
-        .map_err(|_| anyhow::anyhow!("Invalid password"))?;
+        .map_err(|e| anyhow::Error::new(LoginFailure::from_authenticate(&e, data_dirs)))?;
     let persona = map_persona(auth.persona);
     let device_key = Arc::new(auth.device_key);
     let kek = Arc::new(auth.kek);
     // The AccountKey encrypts vault secrets (e.g. the saved email password,
     // stored as a PiiRecord) — keep it for the session.
     let account_key = Arc::new(auth.account_key);
-    let raw = open_db_at(&persona_raw_db_path(persona))
+    let raw = open_db_at_or_error(&persona_raw_db_path(persona))
         .await
-        .ok_or_else(|| anyhow::anyhow!("could not open the persona database"))?;
+        .map_err(|e| anyhow::Error::new(LoginFailure::not_opened(&e, data_dirs)))?;
     // The DeviceKey + KEK are consumed by the EncryptedGraphDB; clone the Arcs
     // first so P2P can derive its identity from the device key and onboarding
     // can seal the canary store under the KEK.
-    let encrypted = build_encrypted_db(raw, device_key.clone(), kek.clone(), persona)?;
+    let encrypted = build_encrypted_db(raw, device_key.clone(), kek.clone(), persona)
+        .map_err(|e| anyhow::Error::new(LoginFailure::not_opened(&e, data_dirs)))?;
     Ok((
         persona,
         encrypted,

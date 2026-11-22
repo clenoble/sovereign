@@ -12,6 +12,185 @@
 use std::io::{self, Write};
 use std::path::Path;
 
+/// Test-only fault injection for the two write paths of this module, so that
+/// a test can stand a crash or a power loss at any point of a write (spec
+/// ch. 07, *Never a torn store*, AS1-AS3).
+///
+/// **Every** filesystem operation [`write_private`] and [`write_private_new`]
+/// perform (an open or create, a write, a sync, a hard link, a rename, a
+/// removal, a directory sync) goes through this plan, in the order the write
+/// performs them. Nothing here is compiled outside tests.
+#[cfg(test)]
+pub(crate) mod fault {
+    /// What a test asks of this process's writes. Installed once, at the start
+    /// of a child process that a test launched for this purpose.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct Plan {
+        /// Hard links fail, with `PermissionDenied`, as they do in the app's
+        /// data directory on Céline's phone (measured 2026-10-21).
+        pub refuse_hard_links: bool,
+        /// The process aborts (`std::process::abort`: no unwinding, no drop, no
+        /// cleanup) just before its operation number `n`, counted from 0 over
+        /// every operation of this module's writes in this process.
+        pub abort_before: Option<usize>,
+        /// When the operation the process aborts before is a write of bytes, half
+        /// of those bytes reach the file first, then the process aborts.
+        pub half_write: bool,
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::OnceLock;
+
+    static PLAN: OnceLock<Plan> = OnceLock::new();
+    static OPS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Installs `plan` for every later write of this process.
+    pub(crate) fn install(plan: Plan) {
+        OPS.store(0, Ordering::SeqCst);
+        let _ = PLAN.set(plan);
+    }
+
+    /// The number of filesystem operations this module's writes have performed
+    /// in this process since the plan was installed.
+    pub(crate) fn ops() -> usize {
+        OPS.load(Ordering::SeqCst)
+    }
+
+    /// Counts one operation about to be performed; aborts the process if the
+    /// plan says to crash before it. No plan installed: nothing counted.
+    pub(super) fn step() {
+        let Some(plan) = PLAN.get() else { return };
+        let n = OPS.fetch_add(1, Ordering::SeqCst);
+        if plan.abort_before == Some(n) {
+            std::process::abort();
+        }
+    }
+
+    /// As [`step`], for a write of `bytes` to `file`: with `half_write`, half
+    /// of them reach the file before the abort.
+    pub(super) fn step_write(file: &mut std::fs::File, bytes: &[u8]) {
+        let Some(plan) = PLAN.get() else { return };
+        let n = OPS.fetch_add(1, Ordering::SeqCst);
+        if plan.abort_before == Some(n) {
+            if plan.half_write {
+                use std::io::Write;
+                let _ = file.write_all(&bytes[..bytes.len() / 2]);
+            }
+            std::process::abort();
+        }
+    }
+
+    /// Whether this process's plan refuses hard links.
+    pub(super) fn refuses_hard_links() -> bool {
+        PLAN.get().is_some_and(|p| p.refuse_hard_links)
+    }
+}
+
+// ---- every filesystem operation of the two writes, one per function, so the
+// fault plan sees each of them in tests; outside tests these are the plain
+// calls.
+
+fn op_open(options: &std::fs::OpenOptions, path: &Path) -> io::Result<std::fs::File> {
+    #[cfg(test)]
+    fault::step();
+    options.open(path)
+}
+
+fn op_write(file: &mut std::fs::File, bytes: &[u8]) -> io::Result<()> {
+    #[cfg(test)]
+    fault::step_write(file, bytes);
+    file.write_all(bytes)
+}
+
+fn op_sync(file: &std::fs::File) -> io::Result<()> {
+    #[cfg(test)]
+    fault::step();
+    file.sync_all()
+}
+
+fn op_rename(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    fault::step();
+    std::fs::rename(from, to)
+}
+
+fn op_remove(path: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    fault::step();
+    std::fs::remove_file(path)
+}
+
+fn op_hard_link(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    {
+        fault::step();
+        if fault::refuses_hard_links() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "hard links refused (test plan)"));
+        }
+    }
+    std::fs::hard_link(from, to)
+}
+
+/// Syncs `path`'s directory, so a rename or a new entry survives a power
+/// loss. Best effort: a directory that cannot be opened is left as it is.
+fn op_sync_dir(path: &Path) {
+    #[cfg(test)]
+    fault::step();
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Renames `from` to `to` only if `to` does not exist, atomically at the
+/// directory entry: `renameat2(RENAME_NOREPLACE)` on Linux and Android, where
+/// an app's data directory may refuse hard links. Elsewhere, or where the
+/// filesystem does not support the flag, a check then a rename: atomic for the
+/// file's content, no-replace only against a single writer.
+fn op_rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    fault::step();
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let c = |p: &Path| {
+            CString::new(p.as_os_str().as_bytes()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path holds a NUL byte"))
+        };
+        let (f, t) = (c(from)?, c(to)?);
+        // SAFETY: two valid NUL-terminated paths, resolved against the
+        // current directory (AT_FDCWD), and a flag the kernel checks.
+        let r = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                f.as_ptr(),
+                libc::AT_FDCWD,
+                t.as_ptr(),
+                libc::RENAME_NOREPLACE as libc::c_uint,
+            )
+        };
+        if r == 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::EEXIST) => return Err(already_exists(to)),
+            // The kernel or the filesystem does not know the flag.
+            Some(libc::EINVAL) | Some(libc::ENOSYS) => {}
+            _ => return Err(e),
+        }
+    }
+    if std::fs::symlink_metadata(to).is_ok() {
+        return Err(already_exists(to));
+    }
+    std::fs::rename(from, to)
+}
+
 /// Atomically write `bytes` to `path`, restricted to the owner (0600) on
 /// Unix. On Windows the per-user profile ACL already scopes access.
 pub fn write_private(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
@@ -26,26 +205,20 @@ pub fn write_private(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
     }
 
     let result = (|| {
-        let mut file = options.open(&tmp)?;
-        file.write_all(bytes.as_ref())?;
-        file.sync_all()?;
+        let mut file = op_open(&options, &tmp)?;
+        op_write(&mut file, bytes.as_ref())?;
+        op_sync(&file)?;
         drop(file);
-        std::fs::rename(&tmp, path)
+        op_rename(&tmp, path)
     })();
 
     if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = op_remove(&tmp);
         return result;
     }
 
     // Make the rename itself durable across power loss.
-    #[cfg(unix)]
-    if let Some(dir) = path.parent() {
-        if let Ok(d) = std::fs::File::open(dir) {
-            let _ = d.sync_all();
-        }
-    }
-
+    op_sync_dir(path);
     Ok(())
 }
 
@@ -65,9 +238,10 @@ pub fn write_private(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
 /// since its mere existence refuses the next one.
 ///
 /// Fallback: on a filesystem or sandbox that refuses hard links (any error
-/// other than `AlreadyExists`), the target is opened with `create_new(true)`
-/// (still exclusive) and written in place; only on that path can a crash
-/// mid-write leave a torn file.
+/// other than `AlreadyExists`, as in the app's data directory on Android), the
+/// temp sibling is renamed into place without replacing
+/// (`renameat2(RENAME_NOREPLACE)` on Linux and Android). Either way a crash
+/// leaves no `path`, or the whole file, never a torn one (spec ch. 07, AS1).
 ///
 /// Returns which of the two published the file ([`NewWrite`]), so a caller
 /// can log it (whether a platform's sandbox allows hard links is a fact to
@@ -89,33 +263,37 @@ pub fn write_private_new(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<New
     }
 
     let written = (|| {
-        let mut file = options.open(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()
+        let mut file = op_open(&options, &tmp)?;
+        op_write(&mut file, bytes)?;
+        op_sync(&file)
     })();
     if let Err(e) = written {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = op_remove(&tmp);
         return Err(e);
     }
 
-    let linked = std::fs::hard_link(&tmp, path);
-    let _ = std::fs::remove_file(&tmp);
-    let mode = match linked {
-        Ok(()) => NewWrite::Linked,
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(already_exists(path)),
-        Err(_) => {
-            write_in_place_exclusive(path, bytes)?;
-            NewWrite::InPlace
+    let mode = match op_hard_link(&tmp, path) {
+        Ok(()) => {
+            let _ = op_remove(&tmp);
+            NewWrite::Linked
         }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            let _ = op_remove(&tmp);
+            return Err(already_exists(path));
+        }
+        // Hard links refused here: the temp file itself is moved into place,
+        // never replacing, so the store is still never written in place.
+        Err(_) => match op_rename_noreplace(&tmp, path) {
+            Ok(()) => NewWrite::InPlace,
+            Err(e) => {
+                let _ = op_remove(&tmp);
+                return Err(e);
+            }
+        },
     };
 
     // Make the new directory entry durable across power loss.
-    #[cfg(unix)]
-    if let Some(dir) = path.parent() {
-        if let Ok(d) = std::fs::File::open(dir) {
-            let _ = d.sync_all();
-        }
-    }
+    op_sync_dir(path);
     Ok(mode)
 }
 
@@ -124,33 +302,12 @@ pub fn write_private_new(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<New
 pub enum NewWrite {
     /// Temp sibling + no-replace hard link: a crash cannot leave a torn file.
     Linked,
-    /// Hard links refused here: exclusive in-place write (`create_new`), which
-    /// a crash mid-write can leave torn.
+    /// Hard links refused here. Since v0.0.13 the temp sibling is renamed
+    /// into place, never replacing ([`op_rename_noreplace`]), so a crash
+    /// cannot leave a torn file here either (spec ch. 07, AS1). The name is
+    /// kept from when this path wrote the file in place: the log reads it, and
+    /// a test pins it.
     InPlace,
-}
-
-/// The fallback of [`write_private_new`] when hard links are refused: an
-/// exclusive open of the target itself. If the write fails after the create,
-/// the file this call created is removed.
-fn write_in_place_exclusive(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = match options.open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(already_exists(path)),
-        Err(e) => return Err(e),
-    };
-    let result = file.write_all(bytes).and_then(|()| file.sync_all());
-    if result.is_err() {
-        drop(file);
-        let _ = std::fs::remove_file(path);
-    }
-    result
 }
 
 fn already_exists(path: &Path) -> io::Error {

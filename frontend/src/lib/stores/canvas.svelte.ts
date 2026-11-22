@@ -103,6 +103,7 @@ export async function load() {
 		const docs = timelineLayout(data.documents, data.threads);
 		canvas.documents = docs;
 		canvas.threads = data.threads;
+		followCurrentLane(); // C-HOST AT8: the phone's lane, by its id
 		canvas.relationships = data.relationships;
 		canvas.milestones = data.milestones;
 		canvas.messages = []; // loaded separately via viewport-scoped requestMessagesForViewport()
@@ -125,6 +126,7 @@ export async function refresh() {
 		const docs = timelineLayout(data.documents, data.threads);
 		canvas.documents = docs;
 		canvas.threads = data.threads;
+		followCurrentLane(); // C-HOST AT8: the phone's lane, by its id
 		canvas.relationships = data.relationships;
 		canvas.milestones = data.milestones;
 		// Messages will be refreshed by the viewport $effect
@@ -509,14 +511,20 @@ export const MAX_MOBILE_PX_PER_MS = 2000 / MS_PER_DAY; // 2000 px/day — minute
 export const LOD_THRESHOLD_PX_PER_MS = 30 / MS_PER_DAY; // 30 px/day
 
 export interface MobileCanvasState {
-	/** Index into canvas.threads for the centered lane. */
+	/** Index into mobileLanes() for the centered lane, as drawn now. */
 	currentLaneIndex: number;
+	/** C-HOST AT8: the id of the lane the person is on (a thread id, or
+	 *  FALLBACK_LANE_ID), set with the index by `setLaneIndex`. What acts on
+	 *  "the current lane" goes by this id, never by the index, which a reload
+	 *  can make point at another thread. `null` until a lane is picked. */
+	currentLaneId: string | null;
 	/** Pixels per millisecond on the time (Y) axis. Adjusted by pinch zoom. */
 	pxPerMs: number;
 }
 
 export const mobileCanvas: MobileCanvasState = $state({
 	currentLaneIndex: 0,
+	currentLaneId: null,
 	pxPerMs: MOBILE_PX_PER_DAY / MS_PER_DAY
 });
 
@@ -541,6 +549,28 @@ export interface MobileLane {
 
 /** The phone's lanes: one per active thread, in order, then the fallback lane
  *  when a document's thread is not among them. */
+/** C-MERGE (spec ch. 03, MG1): a thread merged into another has ended. */
+export function isEnded(t: ThreadDto): boolean {
+	return !!t.merged_into;
+}
+
+/** C-MERGE MG3: the threads a document can go in — no picker offers an ended
+ *  thread. */
+export function liveThreads(): ThreadDto[] {
+	return canvas.threads.filter((t) => !isEnded(t));
+}
+
+/** C-MERGE MG2: an ended thread's mark, « merged into '{target}' on
+ *  {YYYY-MM-DD} », the day in the device's local time; `null` for a live
+ *  thread. */
+export function endedMark(t: ThreadDto | undefined): string | null {
+	if (!t || !isEnded(t)) return null;
+	const day = t.ended_at ? new Date(t.ended_at) : null;
+	const p = (n: number) => String(n).padStart(2, '0');
+	const date = day && !isNaN(day.getTime()) ? `${day.getFullYear()}-${p(day.getMonth() + 1)}-${p(day.getDate())}` : '';
+	return `merged into '${t.merged_into_name ?? t.merged_into}' on ${date}`;
+}
+
 export function mobileLanes(): MobileLane[] {
 	const lanes: MobileLane[] = canvas.threads.map((t) => ({ id: t.id, name: t.name, fallback: false }));
 	const known = new Set(canvas.threads.map((t) => t.id));
@@ -556,8 +586,34 @@ export function laneIdOf(doc: { thread_id: string }): string {
 }
 
 export function setLaneIndex(i: number) {
-	const max = Math.max(0, mobileLanes().length - 1);
+	const lanes = mobileLanes();
+	const max = Math.max(0, lanes.length - 1);
 	mobileCanvas.currentLaneIndex = Math.min(max, Math.max(0, i));
+	// C-HOST AT8: the lane picked is remembered by its id.
+	mobileCanvas.currentLaneId = lanes[mobileCanvas.currentLaneIndex]?.id ?? null;
+}
+
+/** C-HOST AT8: the thread of the lane the person is on, by the lane's id.
+ *  `undefined` when that lane is the fallback lane or its thread is gone.
+ *  Before any lane is picked, the lane drawn at the current index. */
+export function currentLaneThreadId(): string | undefined {
+	const id = mobileCanvas.currentLaneId;
+	if (id === null) return canvas.threads[mobileCanvas.currentLaneIndex]?.id;
+	return canvas.threads.find((t) => t.id === id)?.id;
+}
+
+/** C-HOST AT8: after a reload, the centered lane follows the lane picked, by
+ *  its id, wherever the reload put it. A lane that is gone leaves the index
+ *  as it is (clamped to the lanes there are). */
+export function followCurrentLane() {
+	const lanes = mobileLanes();
+	const id = mobileCanvas.currentLaneId;
+	const at = id === null ? -1 : lanes.findIndex((l) => l.id === id);
+	if (at >= 0) {
+		mobileCanvas.currentLaneIndex = at;
+	} else {
+		mobileCanvas.currentLaneIndex = Math.min(Math.max(0, lanes.length - 1), Math.max(0, mobileCanvas.currentLaneIndex));
+	}
 }
 
 export function nextLane() {

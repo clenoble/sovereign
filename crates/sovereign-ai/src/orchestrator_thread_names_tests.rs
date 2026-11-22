@@ -485,11 +485,12 @@ async fn a2_no_exact_match_means_no_proposal() {
 /// renamed "Office" and a new thread "Work" is created: the new "Work" — never
 /// proposed — is untouched.
 ///
-/// Reading (marked, the contract allows either): on the approved id, the
-/// action either runs (the thread now called "Office" is deleted, its
-/// documents trashed) or is refused as changed since the proposal (nothing
-/// done, not reported as done). Both are accepted; acting on the new "Work"
-/// is not.
+/// Updated for C-HOST AT4 (spec ch. 08, v2.0.78; LH test author,
+/// 2026-11-14). It accepted before that the action "either runs or is
+/// refused". A thread deletion (Destruct) whose thread was renamed since the
+/// proposal is not executed: it is proposed again, within the same request,
+/// with its own request id, and the new proposal shows the thread as it is now
+/// ("Office", the approved id). The new "Work" is never acted on.
 #[tokio::test]
 async fn a2_after_approval_the_action_runs_on_the_resolved_id() {
     let script: Script = Arc::new(|_, _, i| if i == 0 { intent_json("delete_thread", Some("Work")) } else { String::new() });
@@ -510,23 +511,19 @@ async fn a2_after_approval_the_action_runs_on_the_resolved_id() {
         let _ = store;
     })
     .await;
-    assert_eq!(proposals(&evs).len(), 1);
     let (fresh, fresh_doc) = newcomer.lock().unwrap().clone().expect("the proposal arrived");
     assert!(w.is_live(&fresh).await, "the new Work, never proposed, is not deleted");
     assert!(!w.trashed(&fresh_doc).await, "its document is not trashed");
 
-    let ok = executed(&evs);
-    assert_eq!(ok.len(), 1, "one executed event: {evs:?}");
-    if ok[0] {
-        assert!(!w.is_live(&work).await, "done: the approved id (now 'Office') is the one deleted");
-        for d in &originals {
-            assert!(w.trashed(d).await);
-        }
-    } else {
-        assert!(w.is_live(&work).await, "refused: nothing done to the approved id");
-        for d in &originals {
-            assert!(!w.trashed(d).await);
-        }
+    let ps = proposals(&evs);
+    assert_eq!(ps.len(), 2, "AT4: proposed again after the change: {ps:?}");
+    assert_ne!(ps[0].request_id, ps[1].request_id, "AT4: the new proposal has its own request id");
+    assert_eq!(ps[1].target.id, work, "the new proposal is for the approved id");
+    assert!(ps[1].description.contains("Office"), "it shows the thread as it is now: {}", ps[1].description);
+    assert!(executed(&evs).iter().all(|ok| !ok), "not executed: {evs:?}");
+    assert!(w.is_live(&work).await, "nothing done to the approved id");
+    for d in &originals {
+        assert!(!w.trashed(d).await, "its documents are not trashed");
     }
 }
 

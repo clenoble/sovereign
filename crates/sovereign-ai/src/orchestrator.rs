@@ -10,7 +10,7 @@ use sovereign_core::interfaces::{
 };
 use sovereign_core::profile::{AdaptiveParams, SuggestionFeedback, UserProfile};
 use sovereign_core::security::{
-    self, ActionDecision, BubbleVisualState, InjectionDecision, ProposedAction,
+    self, ActionDecision, ActionTarget, BubbleVisualState, InjectionDecision, ProposedAction, RequestId, TargetKind,
 };
 use sovereign_db::schema::{Milestone, Thread};
 use sovereign_db::GraphDB;
@@ -29,6 +29,12 @@ enum GatedOutput {
     Content(String),
     Aborted,
 }
+
+/// Contract C-HOST (spec ch. 08, *Action targets*): the action target, the
+/// re-check at execution, the request ids, the undo, and the skills asked for
+/// in the chat.
+#[path = "orchestrator_c_host.rs"]
+mod c_host;
 
 /// Where the orchestrator keeps its state, given by the host: the directory
 /// holding the session log, user profile and trust state, and the session-log
@@ -62,6 +68,15 @@ pub struct Orchestrator {
     /// (set_session_log_key), or turned off if that open fails (lot 0.6).
     session_log: SessionLogSlot,
     decision_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ActionDecision>>>,
+    /// C-HOST AT6: decisions bound to their proposal by its request id. A
+    /// decision carrying another proposal's id answers nothing.
+    request_decision_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<security::RequestDecision>>>,
+    /// The next proposal's request id (AT6). Seeded from the clock, so the
+    /// ids of two orchestrators built one after the other do not overlap.
+    next_request_id: std::sync::atomic::AtomicU64,
+    /// C-HOST AT7: what undoes each action carried out on a proposal that has
+    /// an undo (rename, move, merge), by the proposal's request id.
+    undo_log: Mutex<std::collections::HashMap<RequestId, c_host::Undo>>,
     /// INJECTION-002: the user's redact/pass/abort choice on a flagged tool
     /// output. Separate channel from `decision_rx` so an injection choice is
     /// never answered by a write-approval, or vice-versa.
@@ -70,16 +85,43 @@ pub struct Orchestrator {
     feedback_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<FeedbackEvent>>>,
     trust: Mutex<TrustTracker>,
     profile: Mutex<UserProfile>,
+    /// The state directory this orchestrator was built with. The persona's
+    /// own paths, once a host has switched it ([`Self::switch_persona`]), are
+    /// in `persona_paths`; [`Self::state_dir`] reads whichever holds.
     profile_dir: PathBuf,
+    /// The open persona's state paths, set at every persona switch by a host
+    /// whose one orchestrator outlives the persona it was built for (the
+    /// phone). `None`: the paths it was built with.
+    persona_paths: Mutex<Option<OrchestratorStatePaths>>,
+    /// The session counter (C-AREA AR4, « a switch ends everything the
+    /// previous session started »): bumped at every persona switch. A proposal
+    /// waits on it as well as on the user's decision, so a switch ends it,
+    /// and nothing of it is recorded under the persona that follows.
+    session: tokio::sync::watch::Sender<u64>,
+    /// Spec ch. 08, AT13: one question with a deadline at a time. Both kinds,
+    /// the action confirmation and the injection gate's choice, hold it from
+    /// before they are sent until they end, so a second question, from any
+    /// turn, waits its turn unsent and its deadline has not started. Taken
+    /// before the question's own receiver locks.
+    question: tokio::sync::Mutex<()>,
     /// The persona's session-log beacon, outside `profile_dir`: with
     /// `profile_dir`, the paths `set_session_log_key` points the log at.
     #[cfg(feature = "encrypted-log")]
     session_log_beacon: PathBuf,
     /// Held across one log-key install (point, quarantine, open), so two
     /// logins cannot interleave and open one persona's directory with the
-    /// other's key.
+    /// other's key. Holds the paths and the key of the last install, which
+    /// the diagnosis of a quarantined log reads (C-LOG).
     #[cfg(feature = "encrypted-log")]
-    session_log_login: Mutex<()>,
+    session_log_login: Mutex<Option<(OrchestratorStatePaths, [u8; 32])>>,
+    /// C-LOG DG4 on a host: the choices the host carries out, in its order
+    /// (`set_log_choices`); `None` until a host sets them, which means all three.
+    #[cfg(feature = "encrypted-log")]
+    log_choices: Mutex<Option<Vec<crate::log_diagnosis::Choice>>>,
+    /// C-LOG DG3: set when the diagnosis tool found a quarantine in the turn
+    /// under way, which sent `QuarantinedLogDiagnosed` then; cleared where a
+    /// chat turn starts and ends, so the event goes once per turn.
+    log_diagnosed_this_turn: std::sync::atomic::AtomicBool,
     model_dir: String,
     n_gpu_layers: i32,
     /// Account key for PII pipeline encryption of session-log content.
@@ -154,15 +196,24 @@ impl Orchestrator {
             event_tx,
             session_log,
             decision_rx: None,
+            request_decision_rx: None,
+            next_request_id: c_host::first_request_id(),
+            undo_log: Mutex::new(std::collections::HashMap::new()),
             injection_decision_rx: None,
             feedback_rx: None,
             trust: Mutex::new(trust),
             profile: Mutex::new(profile),
             profile_dir,
+            persona_paths: Mutex::new(None),
+            session: tokio::sync::watch::channel(0).0,
+            question: tokio::sync::Mutex::new(()),
             #[cfg(feature = "encrypted-log")]
             session_log_beacon: beacon,
             #[cfg(feature = "encrypted-log")]
-            session_log_login: Mutex::new(()),
+            session_log_login: Mutex::new(None),
+            #[cfg(feature = "encrypted-log")]
+            log_choices: Mutex::new(None),
+            log_diagnosed_this_turn: std::sync::atomic::AtomicBool::new(false),
             model_dir,
             n_gpu_layers,
             pii_account_key: Mutex::new(None),
@@ -187,6 +238,34 @@ impl Orchestrator {
         Self::for_test(db, event_tx, profile_dir)
     }
 
+    /// An orchestrator over a fake model, for host tests (C-AREA's walk in the
+    /// shell, claude-coord from-windows/0242): its session log, trust state
+    /// and beacon at `paths` (a persona's own, as the host gives them), and a
+    /// router whose `generate` is answered by `generate` (no model is loaded).
+    /// Behind the `test-support` feature, which only a host's
+    /// `[dev-dependencies]` enables: no production build has it. Test wiring
+    /// only: the same construction as `for_test`, with the fake backend the
+    /// crate's own assistant harness installs.
+    #[cfg(feature = "test-support")]
+    pub fn for_host_tests_with_model(
+        db: Arc<dyn GraphDB>,
+        event_tx: std::sync::mpsc::Sender<OrchestratorEvent>,
+        paths: OrchestratorStatePaths,
+        n_ctx: u32,
+        generate: crate::llm::async_backend::FakeGenerate,
+    ) -> Self {
+        #[cfg_attr(not(feature = "encrypted-log"), allow(unused_mut))]
+        let mut o = Self::for_test(db, event_tx, paths.dir.clone());
+        #[cfg(feature = "encrypted-log")]
+        {
+            o.session_log_beacon = paths.beacon.clone();
+        }
+        let mut classifier = IntentClassifier::new(AiConfig { n_ctx, ..AiConfig::default() });
+        classifier.router = crate::llm::async_backend::AsyncLlmBackend::fake(n_ctx, generate);
+        o.classifier = tokio::sync::Mutex::new(classifier);
+        o
+    }
+
     /// An orchestrator with no model loaded, for tests of everything that does
     /// not classify or generate.
     #[cfg(any(test, feature = "test-support"))]
@@ -201,6 +280,9 @@ impl Orchestrator {
             event_tx,
             session_log: SessionLogSlot::open(&profile_dir),
             decision_rx: None,
+            request_decision_rx: None,
+            next_request_id: c_host::first_request_id(),
+            undo_log: Mutex::new(std::collections::HashMap::new()),
             injection_decision_rx: None,
             feedback_rx: None,
             trust: Mutex::new(TrustTracker::new()),
@@ -208,8 +290,14 @@ impl Orchestrator {
             #[cfg(feature = "encrypted-log")]
             session_log_beacon: profile_dir.with_extension("beacon"),
             #[cfg(feature = "encrypted-log")]
-            session_log_login: Mutex::new(()),
+            session_log_login: Mutex::new(None),
+            #[cfg(feature = "encrypted-log")]
+            log_choices: Mutex::new(None),
+            log_diagnosed_this_turn: std::sync::atomic::AtomicBool::new(false),
             profile_dir,
+            persona_paths: Mutex::new(None),
+            session: tokio::sync::watch::channel(0).0,
+            question: tokio::sync::Mutex::new(()),
             model_dir: String::new(),
             n_gpu_layers: 0,
             pii_account_key: Mutex::new(None),
@@ -233,6 +321,23 @@ impl Orchestrator {
     /// Attach a decision channel for user confirmations of Level 3+ actions.
     pub fn set_decision_rx(&mut self, rx: tokio::sync::mpsc::Receiver<ActionDecision>) {
         self.decision_rx = Some(tokio::sync::Mutex::new(rx));
+    }
+
+    /// Attach the channel of decisions bound to their proposal (C-HOST AT6):
+    /// each decision applies only to the proposal whose request id it carries;
+    /// one carrying another id is discarded. It can sit beside the bare
+    /// channel of [`set_decision_rx`](Self::set_decision_rx): a proposal is
+    /// answered by the first decision that applies to it on either.
+    pub fn set_request_decision_rx(&mut self, rx: tokio::sync::mpsc::Receiver<security::RequestDecision>) {
+        self.request_decision_rx = Some(tokio::sync::Mutex::new(rx));
+    }
+
+    /// Undo the action the proposal `request_id` carried out, addressing the
+    /// same object by its id (C-HOST AT7: rename, move, merge). An action with
+    /// no undo, one not carried out, or one already undone: nothing is done,
+    /// and the outcome says so.
+    pub async fn undo(&self, request_id: &security::RequestId) -> ActionOutcome {
+        self.undo_request(request_id).await
     }
 
     /// Attach the injection-decision channel (INJECTION-002). Hosts wire this so
@@ -278,7 +383,7 @@ impl Orchestrator {
     pub fn reset_trust_action(&self, action: &str) {
         if let Ok(mut trust) = self.trust.lock() {
             trust.reset_action(action);
-            if let Err(e) = trust.save(&self.profile_dir) {
+            if let Err(e) = trust.save(&self.state_dir()) {
                 tracing::warn!("Failed to save trust after reset: {e}");
             }
         }
@@ -288,7 +393,7 @@ impl Orchestrator {
     pub fn reset_trust_all(&self) {
         if let Ok(mut trust) = self.trust.lock() {
             trust.reset_all();
-            if let Err(e) = trust.save(&self.profile_dir) {
+            if let Err(e) = trust.save(&self.state_dir()) {
                 tracing::warn!("Failed to save trust after reset: {e}");
             }
         }
@@ -305,6 +410,14 @@ impl Orchestrator {
         if let Ok(mut guard) = self.pii_account_key.lock() {
             *guard = Some(key);
         }
+    }
+
+    /// C-SWEEP SW3: what masking at read needs, read now from the persona's
+    /// store, with its account key when login gave it (without it, a value she
+    /// dismissed is masked too).
+    async fn read_mask(&self) -> crate::pii::read_mask::ReadMask {
+        let key = self.pii_account_key.lock().ok().and_then(|g| g.clone());
+        crate::pii::read_mask::ReadMask::load(self.db.as_ref(), key.as_deref()).await
     }
 
     /// Install the document service (C-DOC adoption step 2): the assistant's
@@ -341,7 +454,7 @@ impl Orchestrator {
     /// verifies whichever UI opens the profile.
     pub fn arm_trust_state(&self, account_key: [u8; 32]) {
         if let Ok(mut trust) = self.trust.lock() {
-            trust.arm_key(&self.profile_dir, account_key);
+            trust.arm_key(&self.state_dir(), account_key);
         }
     }
 
@@ -365,11 +478,72 @@ impl Orchestrator {
     /// built for calls [`set_session_log_key_for`](Self::set_session_log_key_for).
     #[cfg(feature = "encrypted-log")]
     pub fn set_session_log_key(&self, key: [u8; 32]) {
-        let own = OrchestratorStatePaths {
+        let own = self.persona_paths.lock().ok().and_then(|g| g.clone()).unwrap_or_else(|| OrchestratorStatePaths {
             dir: self.profile_dir.clone(),
             beacon: self.session_log_beacon.clone(),
-        };
+        });
         self.set_session_log_key_for(&own, key);
+    }
+
+    /// The open persona's state directory: where its trust state and profile
+    /// are read and written. The paths of the last [`Self::switch_persona`],
+    /// else those the orchestrator was built with.
+    fn state_dir(&self) -> PathBuf {
+        match self.persona_paths.lock() {
+            Ok(g) => g.as_ref().map(|p| p.dir.clone()).unwrap_or_else(|| self.profile_dir.clone()),
+            Err(_) => self.profile_dir.clone(),
+        }
+    }
+
+    /// A persona switch (C-AREA AR4, spec ch. 07: « A switch ends everything
+    /// the previous session started »), for a host whose one orchestrator
+    /// outlives the persona it was built for (the phone). Called at every
+    /// login, before the new persona's keys are installed:
+    /// - **the previous session ends:** a proposal still waiting for its
+    ///   answer is withdrawn: it can no longer be approved, and nothing of it
+    ///   (trust, log, event) is recorded under the persona that follows;
+    /// - **its keys and services go:** the personal-data key, the document
+    ///   service and the P2P command channel are forgotten until the host
+    ///   installs the new persona's;
+    /// - **the state moves to `paths`, the new persona's own** (ATREST-011):
+    ///   its trust state and profile are read from there, unarmed until
+    ///   [`Self::arm_trust_state`], and every later write goes there. The
+    ///   session log is turned off and pointed there; the host installs its
+    ///   key ([`Self::set_session_log_key_for`]). The switch itself writes
+    ///   nothing.
+    pub fn switch_persona(&self, paths: &OrchestratorStatePaths) {
+        self.session.send_modify(|n| *n = n.wrapping_add(1));
+        if let Ok(mut g) = self.persona_paths.lock() {
+            *g = Some(paths.clone());
+        }
+        // Without the encrypted log (builds without `encrypted-log`), the
+        // plaintext log is not moved: such a build has no persona to keep apart.
+        #[cfg(feature = "encrypted-log")]
+        self.session_log.point_at(&paths.dir);
+        let trust = TrustTracker::load(&paths.dir).unwrap_or_else(|e| {
+            tracing::warn!("Trust load failed at the persona switch, using default: {e}");
+            TrustTracker::new()
+        });
+        if let Ok(mut t) = self.trust.lock() {
+            *t = trust;
+        }
+        let profile = UserProfile::load(&paths.dir).unwrap_or_else(|_| UserProfile::default_new());
+        if let Ok(mut p) = self.profile.lock() {
+            *p = profile;
+        }
+        if let Ok(mut k) = self.pii_account_key.lock() {
+            *k = None;
+        }
+        self.clear_document_service();
+        #[cfg(feature = "p2p")]
+        if let Ok(mut tx) = self.p2p_command_tx.lock() {
+            *tx = None;
+        }
+    }
+
+    /// The session counter now (see `session`).
+    fn session_now(&self) -> u64 {
+        *self.session.borrow()
     }
 
     /// Point the session log, its directory and its beacon, at `paths`, the
@@ -391,10 +565,11 @@ impl Orchestrator {
     /// is.
     #[cfg(feature = "encrypted-log")]
     pub fn set_session_log_key_for(&self, paths: &OrchestratorStatePaths, key: [u8; 32]) {
-        let _login = match self.session_log_login.lock() {
+        let mut login = match self.session_log_login.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
+        *login = Some((paths.clone(), key));
         // Off, and pointed at the logging-in persona's directory, before
         // anything is read: from here no line is written and no history is
         // read until the open below succeeds.
@@ -422,6 +597,74 @@ impl Orchestrator {
                 let _ = self.event_tx.send(session_log_off_notice(&e.to_string()));
             }
         }
+    }
+
+    /// C-LOG DG4 on a host: the choices this host carries out, in the order it offers them.
+    /// [`Self::log_diagnosis`], and so what the diagnosis tool gives the model, offers only these.
+    /// Without a call, all three. The app gives Keep and Delete: it has no Export (Céline,
+    /// 2026-11-18: « Mettre l'export du téléphone au backlog »).
+    /// Named by C-LOG's implementer, declared by the host lot's test author; the body is the
+    /// implementer's.
+    #[cfg(feature = "encrypted-log")]
+    pub fn set_log_choices(&self, choices: Vec<crate::log_diagnosis::Choice>) {
+        match self.log_choices.lock() {
+            Ok(mut g) => *g = Some(choices),
+            Err(poisoned) => *poisoned.into_inner() = Some(choices),
+        }
+    }
+
+    /// C-LOG DG1-DG4: the diagnosis of the logged-in persona's most recent quarantine, from the
+    /// paths and the log key of the last log-key install (`set_session_log_key_for`); `None` when
+    /// no key is installed or the persona has no quarantine. What the tool
+    /// [`crate::log_diagnosis::DIAGNOSIS_TOOL`] gives the model, as its `for_the_model()`.
+    /// Signature by the C-LOG test author; its body is the implementer's.
+    #[cfg(feature = "encrypted-log")]
+    pub fn log_diagnosis(&self) -> Option<crate::log_diagnosis::Diagnosis> {
+        let (paths, key) = match self.session_log_login.lock() {
+            Ok(g) => g.clone()?,
+            Err(poisoned) => poisoned.into_inner().clone()?,
+        };
+        let host = match self.log_choices.lock() {
+            Ok(g) => g.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        match crate::log_diagnosis::diagnose(&paths, &key) {
+            // The host's list, in its order: what it does not carry out is not offered.
+            Ok(Some(mut d)) => {
+                if let Some(host) = host {
+                    d.choices = host;
+                }
+                Some(d)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!("The diagnosis of the quarantined log could not be read: {e}");
+                None
+            }
+        }
+    }
+
+    /// C-LOG: the diagnosis tool's turn, when `call` is that tool: the logged-in persona's
+    /// diagnosis as [`crate::log_diagnosis::Diagnosis::for_the_model`], made of fixed sentences
+    /// and numbers. It reads no argument and carries out no choice. `None` for any other tool.
+    fn diagnosis_tool(&self, call: &crate::tools::ToolCall) -> Option<crate::tools::ToolResult> {
+        #[cfg(feature = "encrypted-log")]
+        if call.name == crate::log_diagnosis::DIAGNOSIS_TOOL {
+            let output = match self.log_diagnosis() {
+                Some(d) => {
+                    // DG3: once per turn, and before the turn's reply, so the
+                    // host offers the window below the reply that comes next.
+                    if !self.log_diagnosed_this_turn.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        let _ = self.event_tx.send(OrchestratorEvent::QuarantinedLogDiagnosed);
+                    }
+                    d.for_the_model()
+                }
+                None => crate::log_diagnosis::NO_QUARANTINE.to_string(),
+            };
+            return Some(crate::tools::ToolResult { tool_name: call.name.clone(), success: true, output, name_not_found: false });
+        }
+        let _ = call;
+        None
     }
 
     /// Install the P2P command channel post-login. Intent handlers
@@ -464,6 +707,14 @@ impl Orchestrator {
 
     /// Handle a user query: classify intent, gate check, execute or await confirmation.
     pub async fn handle_query(&self, query: &str) -> Result<()> {
+        // C-LOG DG5: the notice tells her to ask « what happened to my log? ».
+        // While the persona has a quarantine, that question goes to the chat
+        // agent loop, where the diagnosis tool is offered, without the router:
+        // its classification could send it to an action that never offers it.
+        #[cfg(feature = "encrypted-log")]
+        if crate::log_diagnosis::asks_what_happened(query) && self.log_diagnosis().is_some() {
+            return self.execute_action("chat", None, query).await;
+        }
         let intent = self.classifier.lock().await.classify(query).await?;
         tracing::info!(
             "Intent: action={}, confidence={:.2}, target={:?}, origin={:?}",
@@ -538,68 +789,99 @@ impl Orchestrator {
                 let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
                     BubbleVisualState::Executing,
                 ));
+                // AT7 (v2.0.109): an action approved by earned trust keeps
+                // its undo, as one the user approved does.
+                let request_id = self.new_request_id();
                 let outcome = self
-                    .run_prepared(&intent.action, intent.target.as_deref(), query, prepared)
+                    .run_prepared_for(&intent.action, intent.target.as_deref(), query, prepared, Some(request_id))
                     .await;
                 self.emit_executed(&intent.action, outcome);
                 let _ = self
                     .event_tx
                     .send(OrchestratorEvent::BubbleState(BubbleVisualState::Idle));
             } else {
-                let mut proposal = action_gate::build_proposal(&intent);
-                // A2: the prompt names what will be acted on (the resolved
-                // threads, the document moved) and what follows; the
-                // proposal's thread is the resolved thread's id.
-                if let Some(d) = &prepared.description {
-                    proposal.description = d.clone();
-                }
-                if let Some(t) = &prepared.thread {
-                    proposal.thread_id = Some(t.id.clone());
-                }
-                if let Some((doc_id, _)) = &prepared.doc {
-                    proposal.doc_id = Some(doc_id.clone());
-                }
-
-                // Signal bubble state
-                let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
-                    BubbleVisualState::Proposing,
-                ));
-
-                // Emit the proposal and wait for the user's decision.
-                let decision = self.propose_and_wait(proposal).await;
-                match decision {
-                    ActionDecision::Approve => {
-                        // Record approval in trust tracker + persist
-                        if let Ok(mut trust) = self.trust.lock() {
-                            trust.record_approval(crate::trust::WORKFLOW_QUERY, &intent.action);
-                            if let Err(e) = trust.save(&self.profile_dir) {
-                                tracing::warn!("Failed to save trust state: {e}");
-                            }
-                        }
-                        let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
-                            BubbleVisualState::Executing,
-                        ));
-                        // A2: on the resolved ids, never a second lookup.
-                        let outcome = self
-                            .run_prepared(&intent.action, intent.target.as_deref(), query, prepared)
-                            .await;
-                        self.emit_executed(&intent.action, outcome);
+                let mut prepared = prepared;
+                let mut round = 1usize;
+                loop {
+                    // A2: the prompt names what will be acted on (the resolved
+                    // threads, the document moved) and what follows; the
+                    // proposal's thread is the resolved thread's id. AT1: it
+                    // carries its action target.
+                    let mut proposal = self.proposal_for(&intent, &prepared);
+                    if round > 1 {
+                        // AT4: proposed again, said as such.
+                        proposal.description = format!("{}{}", c_host::PROPOSED_AGAIN, proposal.description);
                     }
-                    ActionDecision::Reject(reason) => {
-                        // Record rejection in trust tracker (resets counter) + persist
-                        if let Ok(mut trust) = self.trust.lock() {
-                            trust.record_rejection(crate::trust::WORKFLOW_QUERY, &intent.action);
-                            if let Err(e) = trust.save(&self.profile_dir) {
-                                tracing::warn!("Failed to save trust state: {e}");
-                            }
-                        }
-                        tracing::info!("Action rejected: {reason}");
-                        self.log_action("rejected", &format!("{}: {reason}", intent.action));
-                        let _ = self.event_tx.send(OrchestratorEvent::ActionRejected {
-                            action: intent.action.clone(),
-                            reason,
-                        });
+
+                    // Signal bubble state
+                    let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                        BubbleVisualState::Proposing,
+                    ));
+
+                    // Emit the proposal and wait for the user's decision (AT6:
+                    // its own request id, its deadline counted from now).
+                    let (request_id, decision) = self.propose_bound(proposal).await;
+                    if session_ended(&decision) {
+                        // C-AREA AR4: the persona that proposed it is gone;
+                        // nothing of it reaches the one that follows — a
+                        // proposal made again (AT4) included.
+                        return Ok(());
                     }
+                    match decision {
+                        ActionDecision::Approve => {
+                            // Record approval in trust tracker + persist
+                            if let Ok(mut trust) = self.trust.lock() {
+                                trust.record_approval(crate::trust::WORKFLOW_QUERY, &intent.action);
+                                if let Err(e) = trust.save(&self.state_dir()) {
+                                    tracing::warn!("Failed to save trust state: {e}");
+                                }
+                            }
+                            // AT4: what the proposal showed is checked again
+                            // before anything runs.
+                            match self.recheck(&intent.action, &prepared).await {
+                                c_host::Recheck::Same => {}
+                                c_host::Recheck::Gone(outcome) => {
+                                    self.log_action("not_executed", &intent.action);
+                                    self.emit_executed(&intent.action, outcome);
+                                    break;
+                                }
+                                c_host::Recheck::Changed(fresh) => {
+                                    self.log_action("proposed_again", &intent.action);
+                                    if round >= c_host::MAX_PROPOSALS {
+                                        self.emit_executed(&intent.action, c_host::changed_again());
+                                        break;
+                                    }
+                                    prepared = *fresh;
+                                    round += 1;
+                                    continue;
+                                }
+                            }
+                            let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
+                                BubbleVisualState::Executing,
+                            ));
+                            // A2: on the resolved ids, never a second lookup.
+                            let outcome = self
+                                .run_prepared_for(&intent.action, intent.target.as_deref(), query, prepared, Some(request_id))
+                                .await;
+                            self.emit_executed(&intent.action, outcome);
+                        }
+                        ActionDecision::Reject(reason) => {
+                            // Record rejection in trust tracker (resets counter) + persist
+                            if let Ok(mut trust) = self.trust.lock() {
+                                trust.record_rejection(crate::trust::WORKFLOW_QUERY, &intent.action);
+                                if let Err(e) = trust.save(&self.state_dir()) {
+                                    tracing::warn!("Failed to save trust state: {e}");
+                                }
+                            }
+                            tracing::info!("Action rejected: {reason}");
+                            self.log_action("rejected", &format!("{}: {reason}", intent.action));
+                            let _ = self.event_tx.send(OrchestratorEvent::ActionRejected {
+                                action: intent.action.clone(),
+                                reason,
+                            });
+                        }
+                    }
+                    break;
                 }
 
                 let _ = self
@@ -682,9 +964,11 @@ impl Orchestrator {
         let session_entries = self.load_session_entries(50);
         let mut turns = crate::llm::context::session_entries_to_chat_turns(&session_entries);
 
-        // 3. Gather workspace context
+        // 3. Gather workspace context, its document titles masked where they
+        // are read (C-SWEEP SW3; thread names are not covered).
+        let mask = self.read_mask().await;
         let workspace_ctx =
-            crate::llm::context::gather_workspace_context(self.db.as_ref()).await;
+            crate::llm::context::gather_workspace_context_masked(self.db.as_ref(), Some(&mask)).await;
 
         // 4. Read user profile for verbosity, name, designation, and nickname
         let (verbosity, user_name, designation, nickname) = {
@@ -735,6 +1019,23 @@ impl Orchestrator {
             sp
         };
 
+        // C-LOG, the route her question takes (the Fable maille, by delegation of
+        // Céline, 2026-11-18): while the persona has a quarantined log, the
+        // model is offered the diagnosis as a tool. It takes no argument, and
+        // its turn is the diagnosis's fixed sentences, nothing of the log.
+        #[cfg(feature = "encrypted-log")]
+        let system_prompt = {
+            let mut sp = system_prompt;
+            if self.log_diagnosis().is_some() {
+                sp.push_str(&format!(
+                    "\nWhile her conversation log is quarantined, you also have this tool:\n- {}: {} Parameters: {{}}\n",
+                    crate::log_diagnosis::DIAGNOSIS_TOOL,
+                    crate::log_diagnosis::DIAGNOSIS_TOOL_DESCRIPTION,
+                ));
+            }
+            sp
+        };
+
         // 6. Append current user message to turns
         turns.push(crate::llm::context::ChatTurn {
             role: crate::llm::context::ChatRole::User,
@@ -756,6 +1057,14 @@ impl Orchestrator {
         // the gate. Arm it up front whenever any context was gathered.
         let mut loop_ingested_data_plane = !workspace_ctx.thread_names.is_empty()
             || !workspace_ctx.recent_doc_titles.is_empty();
+        // RT2-RT3: once a chat tool has answered that a name did not resolve
+        // (no exact match, or two or more), every write proposed in the rest of
+        // this turn is shown to the person, whatever its trust, its object and
+        // its action. The model sees the close names and could retry with one
+        // of them; under earned trust it would then write without her
+        // choosing. This holds on its own, apart from the data-plane gate
+        // above. It lives in this turn only: her reply is a new request.
+        let mut name_not_found_this_turn = false;
         let mut iterations = 0;
         loop {
             iterations += 1;
@@ -813,7 +1122,26 @@ impl Orchestrator {
                 if let Some(call) = calls.first() {
                     tracing::info!("Tool call: {} (iteration {})", call.name, iterations);
 
-                    let (tool_output, came_of_it) = if crate::tools::is_write_tool(&call.name) {
+                    // AT1, AT10: what a write tool acts on is resolved before it
+                    // is proposed or run; a tool whose object does not resolve
+                    // is neither (the model is told why, and asks).
+                    let tool_prep = if crate::tools::is_write_tool(&call.name) {
+                        Some(self.prepare_tool(call).await)
+                    } else {
+                        None
+                    };
+                    let (tool_output, came_of_it) = if let Some(Err(refused)) = &tool_prep {
+                        // RT1: the model reads the reply unchanged, close names
+                        // included; RT2 holds from here to the end of the turn.
+                        name_not_found_this_turn |= refused.name_not_found;
+                        let why = &refused.said;
+                        let written = write_result(&call.name, false, None, why);
+                        let came_of_it = trace_step_of(&written, false);
+                        writes.push(written);
+                        let (fenced, _) = injection::fence_external(&format!("{} result", call.name), why);
+                        (format!("[{}] {}", call.name, fenced), came_of_it)
+                    } else if crate::tools::is_write_tool(&call.name) {
+                        let tool_prep = tool_prep.and_then(Result::ok).unwrap_or_default();
                         // Write tool — gate through action gravity system
                         let level = security::action_level(&call.name);
                         let trusted = {
@@ -847,14 +1175,24 @@ impl Orchestrator {
                             );
                         }
 
-                        // A plane violation overrides both the level check and
-                        // the trust auto-approval: the write is always proposed.
+                        if name_not_found_this_turn {
+                            tracing::info!(
+                                "RT2: write tool '{}' shown for approval: a name in this turn was not found",
+                                call.name
+                            );
+                            self.log_action("retried_after_no_match", &call.name);
+                        }
+
+                        // A plane violation, or a name not found earlier in the
+                        // turn (RT2), overrides both the level check and the
+                        // trust auto-approval: the write is always proposed.
                         if plane_violation.is_none()
+                            && !name_not_found_this_turn
                             && (!action_gate::requires_confirmation(level) || trusted)
                         {
                             // Auto-execute (Observe/Annotate or trusted)
                             let svc = self.document_service();
-                            let result = crate::tools::execute_write_tool(call, self.db.as_ref(), svc.as_deref()).await;
+                            let result = crate::tools::execute_write_tool_with_key(call, self.db.as_ref(), svc.as_deref(), self.pii_key().as_deref()).await;
                             if let Some(event) = result.event {
                                 let _ = self.event_tx.send(event);
                             }
@@ -892,12 +1230,18 @@ impl Orchestrator {
                                 } else {
                                     security::Plane::Control
                                 },
-                                doc_id: None,
-                                thread_id: None,
-                                description: format_tool_proposal(
-                                    &call.name,
-                                    &call.arguments,
-                                ),
+                                doc_id: (tool_prep.target.kind == TargetKind::Document)
+                                    .then(|| tool_prep.target.id.clone()),
+                                thread_id: (tool_prep.target.kind == TargetKind::Thread)
+                                    .then(|| tool_prep.target.id.clone()),
+                                description: tool_prep
+                                    .description
+                                    .clone()
+                                    .unwrap_or_else(|| format_tool_proposal(&call.name, &call.arguments)),
+                                target: tool_prep.target.clone(),
+                                // Given by propose_and_wait when it is issued (AT6).
+                                request_id: RequestId::default(),
+                                deadline: ProposedAction::NO_DEADLINE,
                             };
                             // Conversational confirmation: send a natural-language question first.
                             // When forced by a plane violation, prepend the reason so the user
@@ -909,6 +1253,13 @@ impl Orchestrator {
                                 ),
                                 None => format_confirmation_message(&call.name, &call.arguments),
                             };
+                            // RT4: a proposal forced by a name not found says so
+                            // first, before any other reason.
+                            let confirm_text = if name_not_found_this_turn {
+                                format!("{}\n\n{confirm_text}", c_host::ASKED_AFTER_NO_MATCH)
+                            } else {
+                                confirm_text
+                            };
                             let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
                                 text: confirm_text,
                             });
@@ -916,14 +1267,20 @@ impl Orchestrator {
                             let _ = self.event_tx.send(OrchestratorEvent::BubbleState(
                                 BubbleVisualState::Proposing,
                             ));
-                            match self.propose_and_wait(proposal).await {
+                            let decision = self.propose_and_wait(proposal).await;
+                            if session_ended(&decision) {
+                                // C-AREA AR4: the turn belonged to the session
+                                // that ended; it stops here, silently.
+                                return ChatOutcome { writes, end: ChatEnd::Completed };
+                            }
+                            match decision {
                                 ActionDecision::Approve => {
                                     if let Ok(mut trust) = self.trust.lock() {
                                         trust.record_approval(
                                             crate::trust::WORKFLOW_CHAT,
                                             &call.name,
                                         );
-                                        if let Err(e) = trust.save(&self.profile_dir) {
+                                        if let Err(e) = trust.save(&self.state_dir()) {
                                             tracing::warn!("Failed to save trust: {e}");
                                         }
                                     }
@@ -932,7 +1289,7 @@ impl Orchestrator {
                                     ));
                                     let svc = self.document_service();
                                     let result =
-                                        crate::tools::execute_write_tool(call, self.db.as_ref(), svc.as_deref()).await;
+                                        crate::tools::execute_write_tool_with_key(call, self.db.as_ref(), svc.as_deref(), self.pii_key().as_deref()).await;
                                     if let Some(event) = result.event {
                                         let _ = self.event_tx.send(event);
                                     }
@@ -969,7 +1326,7 @@ impl Orchestrator {
                                             crate::trust::WORKFLOW_CHAT,
                                             &call.name,
                                         );
-                                        if let Err(e) = trust.save(&self.profile_dir) {
+                                        if let Err(e) = trust.save(&self.state_dir()) {
                                             tracing::warn!("Failed to save trust: {e}");
                                         }
                                     }
@@ -989,7 +1346,18 @@ impl Orchestrator {
                         }
                     } else {
                         // Read-only tool — execute immediately
-                        let result = crate::tools::execute_tool(call, self.db.as_ref()).await;
+                        // C-SWEEP SW3: what the tool reads, masked where it is
+                        // read (the mask read again: a write this turn may have
+                        // changed the records). The key finds a title given with
+                        // its values or its labels (C-TPII, TP4).
+                        let mask = self.read_mask().await;
+                        let result = match self.diagnosis_tool(call) {
+                            Some(r) => r,
+                            None => crate::tools::execute_tool_masked(call, self.db.as_ref(), &mask, self.pii_key().as_deref()).await,
+                        };
+                        // RT2: a read tool that answered that a name did not
+                        // resolve counts as a write tool's would.
+                        name_not_found_this_turn |= result.name_not_found;
                         // GATING-001 (v0.0.7): arm the data-plane gate after ANY
                         // read tool, regardless of the "(owned)"/"(external)"
                         // label. "Owned" is not "trusted": owned document and
@@ -1028,6 +1396,15 @@ impl Orchestrator {
                         )
                     };
 
+                    // C-SWEEP SW3: every tool turn passes the mask before the
+                    // model reads it, whatever sentence the tool built (close
+                    // titles, a move's reply, a write that did not resolve). A
+                    // document's reading was already masked with its id; here no
+                    // id is known, so a value she dismissed anywhere stays as
+                    // written (the Fable maille, by delegation of Céline,
+                    // 2026-11-17).
+                    let tool_output = self.read_mask().await.mask_unattributed(&tool_output);
+
                     // Record the round as the model will see it: the tool result is
                     // kept exactly as it is fed back (fenced, filtered if the user chose).
                     trace.push_round(crate::chat_trace::TraceRound {
@@ -1037,10 +1414,15 @@ impl Orchestrator {
                         came_of_it,
                     });
 
-                    // Append assistant turn (tool call) and tool result to history
+                    // Append assistant turn (tool call) and tool result to history.
+                    // C-SWEEP SW3: the assistant's own words are read again
+                    // for the next prompt, masked like any text read for one
+                    // (a value she dismissed anywhere as written); the call was
+                    // parsed from them as written.
+                    let echoed = self.read_mask().await.mask_unattributed(&response);
                     turns.push(crate::llm::context::ChatTurn {
                         role: crate::llm::context::ChatRole::Assistant,
-                        content: response.clone(),
+                        content: echoed,
                     });
                     turns.push(crate::llm::context::ChatTurn {
                         role: crate::llm::context::ChatRole::Tool,
@@ -1210,15 +1592,43 @@ impl Orchestrator {
     /// is emitted (a queued PassThrough must never answer a request the user
     /// has not seen), and with no channel wired the request is not emitted
     /// (the detection itself was already surfaced by `InjectionDetected`).
+    ///
+    /// Spec ch. 08, AT13: it is sent only once no other question with a
+    /// deadline is waiting for its answer, and its 120 s run from its sending.
+    /// If the session ends while it waits its turn, it is withdrawn unsent; if
+    /// the session ends while it is shown, it stops waiting. Both fail closed,
+    /// to `Redact`, as a confirmation is rejected then.
     async fn request_injection_decision(&self, request: OrchestratorEvent) -> InjectionDecision {
         if let Some(ref rx_mutex) = self.injection_decision_rx {
+            let mut session = self.session.subscribe();
+            let opened = *session.borrow_and_update();
+            let Some(_turn) = self.wait_question_turn(&mut session).await else {
+                tracing::info!("Injection question withdrawn unsent: its session ended — redacting");
+                return InjectionDecision::Redact;
+            };
             let mut rx = rx_mutex.lock().await;
+            if self.session_now() != opened {
+                tracing::info!("Injection question withdrawn unsent: its session ended — redacting");
+                return InjectionDecision::Redact;
+            }
             let stale = drain_queued(&mut rx);
             if stale > 0 {
                 tracing::warn!("Discarded {stale} stale injection decision(s) from earlier requests");
             }
             let _ = self.event_tx.send(request);
-            match tokio::time::timeout(Duration::from_secs(120), rx.recv()).await {
+            let answer = tokio::select! {
+                _ = session.changed() => {
+                    tracing::info!("Injection question ended with its session — redacting (fail closed)");
+                    return InjectionDecision::Redact;
+                }
+                a = tokio::time::timeout(Duration::from_secs(120), rx.recv()) => a,
+            };
+            match answer {
+                // As for a proposal (C-AREA AR4), a choice that arrives after
+                // the session ended is not applied.
+                Ok(Some(_)) if self.session_now() != opened => {
+                    tracing::info!("Injection choice arrived after its session ended — redacting");
+                }
                 Ok(Some(decision)) => return decision,
                 Ok(None) => {
                     tracing::warn!("Injection-decision channel closed — redacting (fail closed)");
@@ -1275,31 +1685,145 @@ impl Orchestrator {
     /// can only answer this proposal. With no channel wired the proposal is
     /// not emitted at all: nobody could answer it.
     async fn propose_and_wait(&self, proposal: ProposedAction) -> ActionDecision {
-        if let Some(ref rx_mutex) = self.decision_rx {
-            let mut rx = rx_mutex.lock().await;
-            let stale = drain_queued(&mut rx);
-            if stale > 0 {
-                tracing::warn!("Discarded {stale} stale action decision(s) from earlier proposals");
+        self.propose_bound(proposal).await.1
+    }
+
+    /// [`propose_and_wait`](Self::propose_and_wait), returning the request id
+    /// the proposal was issued with (C-HOST AT6).
+    ///
+    /// The proposal gets a new request id and its deadline, 120 s from now,
+    /// before it is emitted: a host counts down to the deadline it carries.
+    /// It is answered by the first decision that applies to it: any decision
+    /// on the bare channel (`set_decision_rx`), or, on the bound channel
+    /// (`set_request_decision_rx`), a decision carrying its request id — one
+    /// carrying another id is discarded. Decisions queued on either before it
+    /// was emitted are discarded too (lot 0.7). Past the deadline, with every
+    /// channel closed, or with none wired, it is rejected (fail closed).
+    ///
+    /// C-AREA AR4: a persona switch before it is emitted, while it waits, or
+    /// before its decision is applied withdraws it (`SESSION_ENDED`): the
+    /// caller records nothing. This holds for every proposal, one made again
+    /// after a change (AT4) included.
+    async fn propose_bound(&self, mut proposal: ProposedAction) -> (RequestId, ActionDecision) {
+        let request_id = self.new_request_id();
+        proposal.request_id = request_id;
+        let mut session = self.session.subscribe();
+        let opened = *session.borrow_and_update();
+
+        if self.decision_rx.is_none() && self.request_decision_rx.is_none() {
+            // ai-orch M2: no decision channel wired — FAIL CLOSED. Auto-approving
+            // here turned a missing-wiring bug into an unattended authorization of
+            // Level 3+ writes (a Hard Barriers violation). Hosts that want
+            // unattended writes must wire a channel that approves explicitly.
+            tracing::warn!("No decision channel wired — rejecting action (fail closed)");
+            return (request_id, ActionDecision::Reject("No confirmation channel available".into()));
+        }
+        // AT13: its turn first; its deadline is set below, only once it holds it.
+        let Some(_turn) = self.wait_question_turn(&mut session).await else {
+            tracing::info!("Proposal withdrawn unsent: its session ended while it waited its turn");
+            return (request_id, ActionDecision::Reject(SESSION_ENDED.into()));
+        };
+        let mut bare = match &self.decision_rx {
+            Some(m) => Some(m.lock().await),
+            None => None,
+        };
+        let mut bound = match &self.request_decision_rx {
+            Some(m) => Some(m.lock().await),
+            None => None,
+        };
+        let mut stale = 0;
+        if self.session_now() != opened {
+            return (request_id, ActionDecision::Reject(SESSION_ENDED.into()));
+        }
+        if let Some(rx) = bare.as_mut() {
+            stale += drain_queued(rx);
+        }
+        if let Some(rx) = bound.as_mut() {
+            stale += drain_queued(rx);
+        }
+        if stale > 0 {
+            tracing::warn!("Discarded {stale} stale action decision(s) from earlier proposals");
+        }
+        // Issued now: the deadline runs from here, and the proposal carries it.
+        let deadline = chrono::Utc::now() + chrono::Duration::seconds(c_host::PROPOSAL_SECONDS);
+        proposal.deadline = deadline;
+        let _ = self.event_tx.send(OrchestratorEvent::ActionProposed { proposal });
+
+        let wait = (deadline - chrono::Utc::now()).to_std().unwrap_or_default();
+        let timeout = tokio::time::sleep(wait);
+        tokio::pin!(timeout);
+        let mut bare_open = bare.is_some();
+        let mut bound_open = bound.is_some();
+        loop {
+            if !bare_open && !bound_open {
+                tracing::warn!("Decision channel closed — rejecting action");
+                return (request_id, ActionDecision::Reject("Decision channel closed".into()));
             }
-            let _ = self.event_tx.send(OrchestratorEvent::ActionProposed { proposal });
-            match tokio::time::timeout(Duration::from_secs(120), rx.recv()).await {
-                Ok(Some(decision)) => return decision,
-                Ok(None) => {
-                    tracing::warn!("Decision channel closed — rejecting action");
-                    return ActionDecision::Reject("Decision channel closed".into());
+            let decision = tokio::select! {
+                _ = session.changed() => {
+                    tracing::info!("Proposal withdrawn: the session that made it ended");
+                    return (request_id, ActionDecision::Reject(SESSION_ENDED.into()));
                 }
-                Err(_) => {
+                _ = &mut timeout => {
                     tracing::warn!("Decision timeout — rejecting action");
-                    return ActionDecision::Reject("Timeout waiting for user decision".into());
+                    return (request_id, ActionDecision::Reject("Timeout waiting for user decision".into()));
                 }
+                d = async { match bare.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } }, if bare_open => {
+                    match d {
+                        Some(decision) => Some(decision),
+                        None => {
+                            bare_open = false;
+                            None
+                        }
+                    }
+                }
+                d = async { match bound.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } }, if bound_open => {
+                    match d {
+                        Some(rd) if rd.request_id == request_id => Some(rd.decision),
+                        Some(rd) => {
+                            tracing::warn!(
+                                "Discarded a decision for request {} while request {} waits",
+                                rd.request_id.0,
+                                request_id.0
+                            );
+                            None
+                        }
+                        None => {
+                            bound_open = false;
+                            None
+                        }
+                    }
+                }
+            };
+            if let Some(decision) = decision {
+                // AR4: a decision that arrives after a switch is not applied.
+                if self.session_now() != opened {
+                    return (request_id, ActionDecision::Reject(SESSION_ENDED.into()));
+                }
+                return (request_id, decision);
             }
         }
-        // ai-orch M2: no decision channel wired — FAIL CLOSED. Auto-approving
-        // here turned a missing-wiring bug into an unattended authorization of
-        // Level 3+ writes (a Hard Barriers violation). Hosts that want
-        // unattended writes must wire a channel that approves explicitly.
-        tracing::warn!("No decision channel wired — rejecting action (fail closed)");
-        ActionDecision::Reject("No confirmation channel available".into())
+    }
+
+    /// Spec ch. 08, AT13: waits until no other question with a deadline is
+    /// waiting for its answer, and holds the turn until the returned guard is
+    /// dropped. `None` if the session `session` was subscribed in ends first:
+    /// the question is then withdrawn unsent, never carried into the next
+    /// session.
+    async fn wait_question_turn(
+        &self,
+        session: &mut tokio::sync::watch::Receiver<u64>,
+    ) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        tokio::select! {
+            biased;
+            _ = session.changed() => None,
+            turn = self.question.lock() => Some(turn),
+        }
+    }
+
+    /// A request id no proposal of this orchestrator has had (AT6).
+    fn new_request_id(&self) -> RequestId {
+        RequestId(self.next_request_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
     }
 
     /// ai-orch M7 / v0.0.12 item 11: a refused or failed action is said as not
@@ -1356,17 +1880,27 @@ impl Orchestrator {
 
     /// T7: a document title the action read from the person's words, resolved
     /// as written first, then stripped (as [`Self::thread_read`]).
-    async fn document_read(&self, n: &ReadName) -> std::result::Result<sovereign_db::schema::Document, NameError> {
+    async fn document_read(&self, n: &ReadName) -> std::result::Result<crate::document_titles::Named, NameError> {
         let written = self.document_lookup(&n.written).await;
         let picked = if n.written == n.stripped {
             written.map_err(Some)
         } else {
-            pick_reading(written, self.document_lookup(&n.stripped).await, |a, b| a.id_string() == b.id_string())
+            pick_reading(written, self.document_lookup(&n.stripped).await, |a, b| a.doc.id_string() == b.doc.id_string())
         };
         picked.map_err(|e| match e {
             Some(u) => NameError::Refused(unresolved_outcome(u, "title", true)),
             None => NameError::TwoReadings,
         })
+    }
+
+    /// C-MERGE MG3: a thread a document would be put in, refused with the
+    /// contract's answer when it has ended (merged into another thread).
+    async fn refuse_ended(&self, t: &ThreadRef) -> std::result::Result<(), ActionOutcome> {
+        let Ok(row) = self.db.get_thread(&t.id).await else { return Ok(()) };
+        match crate::thread_names::ended_answer(self.db.as_ref(), &row).await {
+            Some(reason) => Err(ActionOutcome::Failed { reason }),
+            None => Ok(()),
+        }
     }
 
     /// A2: the thread resolved before the proposal, read again by its id when
@@ -1386,25 +1920,37 @@ impl Orchestrator {
     /// item 23, T1), or the outcome that says why there is none to act on
     /// (`Failed`, T5). The title is taken whole, so a no-match reply does not
     /// suggest quotes.
-    async fn document_named(&self, title: &str) -> std::result::Result<sovereign_db::schema::Document, ActionOutcome> {
+    async fn document_named(&self, title: &str) -> std::result::Result<crate::document_titles::Named, ActionOutcome> {
         self.document_lookup(title).await.map_err(|u| unresolved_outcome(u, "title", false))
+    }
+
+    /// The account key given at login, which opens the personal-data
+    /// records (C-TPII); `None` while there is none.
+    pub(crate) fn pii_key(&self) -> Option<Arc<sovereign_crypto::account_key::AccountKey>> {
+        self.pii_account_key.lock().ok().and_then(|g| g.clone())
     }
 
     /// The one live document titled `title`, by its exact title, or why there
     /// is none to act on.
-    async fn document_lookup(&self, title: &str) -> std::result::Result<sovereign_db::schema::Document, Unresolved> {
-        match crate::document_titles::resolve_document_or_explain(self.db.as_ref(), title).await? {
-            d if d.id_string().is_some() => Ok(d),
-            d => Err(Unresolved::Unreadable(format!("document '{}' has no id", d.title))),
+    async fn document_lookup(&self, title: &str) -> std::result::Result<crate::document_titles::Named, Unresolved> {
+        let key = self.pii_key();
+        match crate::document_titles::resolve_document_or_explain(self.db.as_ref(), key.as_deref(), title).await? {
+            n if n.doc.id_string().is_some() => Ok(n),
+            n => Err(Unresolved::Unreadable(format!("document '{}' has no id", n.shown))),
         }
     }
 
     /// T2: the document resolved before the proposal, read again by its id
     /// when the action runs — never looked up again by title. A document
     /// purged in between, or moved to the trash, is refused.
-    async fn document_still_live(&self, id: &str, title: &str) -> std::result::Result<sovereign_db::schema::Document, ActionOutcome> {
+    /// The document as stored, and its title as shown for the outcome line
+    /// (C-TPII, TP3).
+    pub(crate) async fn document_still_live(&self, id: &str, title: &str) -> std::result::Result<crate::document_titles::Named, ActionOutcome> {
         match self.db.get_document(id).await {
-            Ok(d) if d.deleted_at.is_none() => Ok(d),
+            Ok(d) if d.deleted_at.is_none() => {
+                let shown = crate::document_titles::shown_title(self.db.as_ref(), &d).await;
+                Ok(crate::document_titles::Named { doc: d, shown })
+            }
             Ok(_) => Err(ActionOutcome::Failed {
                 reason: format!("'{title}' was moved to the trash meanwhile; nothing was done"),
             }),
@@ -1450,7 +1996,21 @@ impl Orchestrator {
     /// moved, the new name; and the proposal's sentence naming them and what
     /// follows. `Err` is the outcome to report instead of proposing anything
     /// (not found, ambiguous — A1 — or no change — B2).
+    ///
+    /// C-HOST: the names are resolved to ids here ([`Self::resolve_action`]);
+    /// then everything the proposal shows — its sentence, its action target
+    /// (AT1), and what the re-check at execution compares (AT4) — is read
+    /// from the store by those ids ([`Self::describe`]), the same way it is
+    /// read again after the approval.
     async fn prepare_action(&self, action: &str, target: Option<&str>, query: &str) -> std::result::Result<Prepared, ActionOutcome> {
+        let p = self.resolve_action(action, target, query).await?;
+        self.describe(action, p).await
+    }
+
+    /// The ids of what `action` acts on, resolved from the names given
+    /// (exact names, v0.0.12 items 6 and 23), with what the action needs
+    /// besides (a new name, a title). `Err`: nothing to act on, and why.
+    async fn resolve_action(&self, action: &str, target: Option<&str>, query: &str) -> std::result::Result<Prepared, ActionOutcome> {
         let no_target = || ActionOutcome::Failed { reason: format!("{action}: no target given") };
         match action {
             "rename_thread" => {
@@ -1458,10 +2018,12 @@ impl Orchestrator {
                 // target does not hold them.
                 // T7: a name read from unquoted words — the request's, or the
                 // router's target split at " to " — always shows the proposal.
+                // AT12: the stripping finds the thread; the new name is kept
+                // as written.
                 let (old, new, parsed) = match Self::names_from_request(action, target, query)? {
                     Some((old, new)) => {
                         let parsed = !(old.quoted && new.quoted);
-                        (old, new.stripped, parsed)
+                        (old, new.written, parsed)
                     }
                     None => {
                         let target = target.filter(|t| !t.trim().is_empty()).ok_or_else(no_target)?;
@@ -1479,31 +2041,23 @@ impl Orchestrator {
                         reason: format!("no new name was given, so thread '{}' keeps its name", t.name),
                     });
                 }
-                if new == t.name.trim() {
-                    return Err(ActionOutcome::NoChange { reason: format!("thread '{}' already has that name", t.name) });
-                }
-                Ok(Prepared {
-                    description: Some(format!("Rename thread '{}' to '{}'", t.name, new)),
-                    thread: Some(t),
-                    new_name: Some(new),
-                    parsed,
-                    ..Prepared::default()
-                })
+                Ok(Prepared { thread: Some(t), new_name: Some(new), parsed, ..Prepared::default() })
             }
             "delete_thread" => {
                 let target = target.filter(|t| !t.trim().is_empty()).ok_or_else(no_target)?;
                 let t = self.thread_named(target).await?;
-                let n = self.db.list_documents(Some(&t.id)).await.map(|d| d.len()).unwrap_or(0);
-                let follows = match n {
-                    0 => "it holds no documents".to_string(),
-                    1 => "its 1 document goes to the trash".to_string(),
-                    n => format!("its {n} documents go to the trash"),
-                };
-                Ok(Prepared {
-                    description: Some(format!("Delete thread '{}': {follows}", t.name)),
-                    thread: Some(t),
-                    ..Prepared::default()
-                })
+                Ok(Prepared { thread: Some(t), ..Prepared::default() })
+            }
+            // C-MERGE MG5 (Céline, 2026-11-17: « Assistant seul »): the undo
+            // of a merge, by naming the thread merged away.
+            sovereign_core::security::UNDO_MERGE_ACTION => {
+                let target = target.filter(|t| !t.trim().is_empty()).ok_or_else(no_target)?;
+                let t = self.thread_named(target).await?;
+                match self.db.get_thread(&t.id).await {
+                    Ok(row) if row.is_ended() => Ok(Prepared { thread: Some(t), ..Prepared::default() }),
+                    Ok(row) => Err(ActionOutcome::Failed { reason: crate::thread_names::undo_refused_words(&row.name) }),
+                    Err(e) => Err(self.failed("", format!("thread '{}' could not be read ({e})", t.name))),
+                }
             }
             "move_document" => {
                 // T6: the two names from the person's words when the router's
@@ -1536,35 +2090,22 @@ impl Orchestrator {
                         ]
                     })
                 })?;
-                let doc_id = doc.id_string().unwrap_or_default();
+                let doc_id = doc.doc.id_string().unwrap_or_default();
                 let t = self.thread_read(&thread_name).await.map_err(|e| {
                     e.outcome(action, query, || {
                         vec![
-                            (doc.title.clone(), thread_name.written.clone()),
-                            (doc.title.clone(), thread_name.stripped.clone()),
+                            (doc.shown.clone(), thread_name.written.clone()),
+                            (doc.shown.clone(), thread_name.stripped.clone()),
                         ]
                     })
                 })?;
-                if doc.thread_id == t.id {
-                    return Err(ActionOutcome::NoChange { reason: format!("'{}' is already in '{}'", doc.title, t.name) });
-                }
-                let from = match self.db.get_thread(&doc.thread_id).await {
-                    Ok(row) if row.deleted_at.is_none() => format!(" from '{}'", row.name),
-                    _ => String::new(),
-                };
-                Ok(Prepared {
-                    description: Some(format!("Move document '{}'{from} to '{}'", doc.title, t.name)),
-                    thread: Some(t),
-                    doc: Some((doc_id, doc.title)),
-                    parsed,
-                    ..Prepared::default()
-                })
+                self.refuse_ended(&t).await?;
+                Ok(Prepared { thread: Some(t), doc: Some((doc_id, doc.shown)), parsed, ..Prepared::default() })
             }
             "merge_threads" => {
                 // T6: "merge X into Y" in the person's words merges X (the
                 // source) into Y; the router's "Y to X" keeps its old reading.
-                // T7: a name read from unquoted words always shows the proposal
-                // (a merge is Destruct, never auto-approved anyway: T4).
+                // T7: a name read from unquoted words always shows the proposal.
                 let (target_name, source_name, parsed) = match Self::names_from_request(action, target, query)? {
                     Some((source, into)) => {
                         let parsed = !(source.quoted && into.quoted);
@@ -1599,27 +2140,15 @@ impl Orchestrator {
                         ]
                     })
                 })?;
-                if into.id == from.id {
-                    return Err(ActionOutcome::NoChange {
-                        reason: format!("'{}' and '{}' are the same thread", into.name, from.name),
-                    });
+                // C-MERGE MG3: an ended thread is the target of nothing, and a
+                // request that names it is answered with its live end.
+                if let Ok(row) = self.db.get_thread(&into.id).await {
+                    if let Some(reason) = crate::thread_names::into_ended_answer(self.db.as_ref(), &row).await {
+                        return Err(ActionOutcome::Failed { reason });
+                    }
                 }
-                let n = self.db.list_documents(Some(&from.id)).await.map(|d| d.len()).unwrap_or(0);
-                let docs = match n {
-                    0 => "it holds no documents".to_string(),
-                    1 => format!("its 1 document moves to '{}'", into.name),
-                    n => format!("its {n} documents move to '{}'", into.name),
-                };
-                Ok(Prepared {
-                    description: Some(format!(
-                        "Merge thread '{}' into '{}': {docs}, then '{}' is deleted",
-                        from.name, into.name, from.name
-                    )),
-                    thread: Some(into),
-                    other: Some(from),
-                    parsed,
-                    ..Prepared::default()
-                })
+                self.refuse_ended(&from).await?;
+                Ok(Prepared { thread: Some(into), other: Some(from), parsed, ..Prepared::default() })
             }
             "split_thread" => {
                 let target = target.filter(|t| !t.trim().is_empty()).ok_or_else(no_target)?;
@@ -1632,10 +2161,6 @@ impl Orchestrator {
                     format!("{} (split)", t.name)
                 };
                 Ok(Prepared {
-                    description: Some(format!(
-                        "Create an empty thread '{new_name}' to split '{}' (documents can then be moved into it)",
-                        t.name
-                    )),
                     thread: Some(t),
                     new_name: Some(new_name),
                     // T7 (reading 7): any split of unquoted text by the action
@@ -1659,7 +2184,6 @@ impl Orchestrator {
                     self.thread_named(&thread_name).await?
                 };
                 Ok(Prepared {
-                    description: Some(format!("Create milestone '{title}' on '{}'", t.name)),
                     thread: Some(t),
                     title: Some(title),
                     parsed: split,
@@ -1679,39 +2203,32 @@ impl Orchestrator {
                 let target = target.filter(|t| !t.trim().is_empty()).ok_or_else(no_target)?;
                 let doc = self.document_named(target).await?;
                 // B2: adopting what is already owned changes nothing.
-                if doc.is_owned {
-                    return Err(ActionOutcome::NoChange { reason: format!("'{}' is already yours", doc.title) });
+                if doc.doc.is_owned {
+                    return Err(ActionOutcome::NoChange { reason: format!("'{}' is already yours", doc.shown) });
                 }
-                let doc_id = doc.id_string().unwrap_or_default();
-                Ok(Prepared {
-                    description: Some(format!("Adopt '{}' as your own document", doc.title)),
-                    doc: Some((doc_id, doc.title)),
-                    ..Prepared::default()
-                })
+                let doc_id = doc.doc.id_string().unwrap_or_default();
+                Ok(Prepared { doc: Some((doc_id, doc.shown)), ..Prepared::default() })
             }
-            "restore" => {
-                let target = target.filter(|t| !t.trim().is_empty()).ok_or_else(no_target)?;
-                // A live document, back to an earlier version (reading 1).
-                // T7: the target split at " to " is a name read from unquoted
-                // words, so the proposal is always shown; a target taken whole
-                // keeps the trust path.
-                let split = find_ascii_ci(target, " to ").is_some();
-                let (doc_name, commit_ref) = parse_move_target(target);
-                let doc = self.document_named(&doc_name).await?;
-                let doc_id = doc.id_string().unwrap_or_default();
-                let (what, commit) = if commit_ref.starts_with("commit:") {
-                    (format!("version {commit_ref}"), Some(commit_ref))
-                } else {
-                    ("its previous version".to_string(), None)
+            // A live document, back to the version the person named (RV1),
+            // its title read from her words, « to » included (RV2).
+            "restore" => self.resolve_restore(target, query).await,
+            // C-HOST AT1: the model file, found before the proposal, which
+            // names it; none found, nothing is proposed.
+            "swap_model" => {
+                let Some(target) = target.filter(|t| !t.trim().is_empty()) else {
+                    return Err(self.failed("swap_model", "no model name specified"));
                 };
-                Ok(Prepared {
-                    description: Some(format!("Restore '{}' to {what}", doc.title)),
-                    doc: Some((doc_id, doc.title)),
-                    commit,
-                    parsed: split,
-                    ..Prepared::default()
-                })
+                let path = resolve_model_path(&self.model_dir, target);
+                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                if !path.exists() {
+                    return Err(self.failed("", format!("model not found: {name}")));
+                }
+                Ok(Prepared { model: Some(path), ..Prepared::default() })
             }
+            // C-HOST AT10: the thread named, or the question which one.
+            "create_document" => self.resolve_create_document(target, query).await,
+            // C-HOST AT9: a skill asked for in the chat, on its document.
+            "word_count" | "find_replace" | "duplicate" => self.resolve_skill(action, target, query).await,
             _ => Ok(Prepared::default()),
         }
     }
@@ -1729,8 +2246,14 @@ impl Orchestrator {
             // Delegate to the agent loop which handles context, tools, and history.
             // A chat turn ends with its explicit outcome, never with ActionExecuted
             // (spec ch. 08: a turn that ran no write is not an executed action).
+            let opened = self.session_now();
+            self.log_diagnosed_this_turn.store(false, std::sync::atomic::Ordering::SeqCst);
             let outcome = self.run_chat_agent_loop(query).await;
-            let _ = self.event_tx.send(OrchestratorEvent::ChatTurnEnded { outcome });
+            self.log_diagnosed_this_turn.store(false, std::sync::atomic::Ordering::SeqCst);
+            // C-AREA AR4: a turn whose session ended says nothing to the next.
+            if self.session_now() == opened {
+                let _ = self.event_tx.send(OrchestratorEvent::ChatTurnEnded { outcome });
+            }
             return Ok(());
         }
         let outcome = match self.prepare_action(action, target, query).await {
@@ -1745,13 +2268,41 @@ impl Orchestrator {
     /// approved) — on the resolved ids, never on a second lookup by name (A2).
     /// A store error becomes a failure outcome: the action still reports.
     async fn run_prepared(&self, action: &str, target: Option<&str>, query: &str, p: Prepared) -> ActionOutcome {
-        match self.run_prepared_inner(action, target, query, p).await {
-            Ok(outcome) => outcome,
-            Err(e) => self.failed(&format!("{action} failed"), e),
-        }
+        self.run_prepared_for(action, target, query, p, None).await
     }
 
-    async fn run_prepared_inner(&self, action: &str, target: Option<&str>, query: &str, p: Prepared) -> Result<ActionOutcome> {
+    /// [`run_prepared`](Self::run_prepared) for the proposal `request` (AT7):
+    /// a change that has an undo (rename, move, merge) is recorded under the
+    /// proposal's request id, for [`undo`](Self::undo).
+    async fn run_prepared_for(
+        &self,
+        action: &str,
+        target: Option<&str>,
+        query: &str,
+        p: Prepared,
+        request: Option<RequestId>,
+    ) -> ActionOutcome {
+        let mut undo = None;
+        let outcome = match self.run_prepared_inner(action, target, query, p, &mut undo).await {
+            Ok(outcome) => outcome,
+            Err(e) => self.failed(&format!("{action} failed"), e),
+        };
+        if let (Some(id), Some(u), ActionOutcome::Changed { .. }) = (request, undo, &outcome) {
+            if let Ok(mut log) = self.undo_log.lock() {
+                log.insert(id, u);
+            }
+        }
+        outcome
+    }
+
+    async fn run_prepared_inner(
+        &self,
+        action: &str,
+        target: Option<&str>,
+        query: &str,
+        p: Prepared,
+        undo: &mut Option<c_host::Undo>,
+    ) -> Result<ActionOutcome> {
         use crate::thread_names::documents;
         let outcome = match action {
             "search" => {
@@ -1765,7 +2316,12 @@ impl Orchestrator {
                 if n == 0 {
                     ActionOutcome::Reported { summary: format!("No documents found for '{search_term}'") }
                 } else {
-                    let titles: Vec<String> = docs.iter().take(5).map(|d| format!("'{}'", d.title)).collect();
+                    // SW5: each title as shown, never a token (the Fable maille, by
+                    // delegation of Céline, 2026-11-17).
+                    let mut titles: Vec<String> = vec![];
+                    for d in docs.iter().take(5) {
+                        titles.push(format!("'{}'", crate::document_titles::shown_title(self.db.as_ref(), d).await));
+                    }
                     let more = if n > 5 { format!(" and {} more", n - 5) } else { String::new() };
                     ActionOutcome::Reported {
                         summary: format!("Found {} for '{search_term}': {}{more}", documents(n), titles.join(", ")),
@@ -1781,9 +2337,9 @@ impl Orchestrator {
                     Ok(d) => d,
                     Err(o) => return Ok(o),
                 };
-                let id = doc.id_string().unwrap_or_default();
+                let id = doc.doc.id_string().unwrap_or_default();
                 let _ = self.event_tx.send(OrchestratorEvent::DocumentOpened { doc_id: id });
-                ActionOutcome::Reported { summary: format!("Opened '{}'", doc.title) }
+                ActionOutcome::Reported { summary: format!("Opened '{}'", doc.shown) }
             }
             "create_thread" => {
                 let name = target.map(str::trim).filter(|t| !t.is_empty()).unwrap_or("New Thread").to_string();
@@ -1819,6 +2375,11 @@ impl Orchestrator {
                     Ok(()) => {
                         tracing::info!("Thread renamed: {} → {}", t.name, new_name);
                         self.log_action("rename_thread", &format!("{} → {}", t.name, new_name));
+                        *undo = Some(c_host::Undo::Rename {
+                            thread_id: t.id.clone(),
+                            old_name: t.name.clone(),
+                            new_name: new_name.clone(),
+                        });
                         let _ = self.event_tx.send(OrchestratorEvent::ThreadRenamed { thread_id: t.id, name: new_name.clone() });
                         ActionOutcome::Changed { summary: format!("Renamed '{}' to '{new_name}'", t.name) }
                     }
@@ -1856,14 +2417,16 @@ impl Orchestrator {
                     return Ok(self.failed("", "nothing to move"));
                 };
                 // T2: the resolved document, re-read by its id.
-                let title = match self.document_still_live(&doc_id, &title).await {
-                    Ok(d) => d.title,
+                let (title, from_thread) = match self.document_still_live(&doc_id, &title).await {
+                    Ok(d) => (d.shown, d.doc.thread_id),
                     Err(o) => return Ok(o),
                 };
                 let t = match self.still_live(&t).await {
                     Ok(t) => t,
                     Err(o) => return Ok(o),
                 };
+                // AT7: the name of the thread it leaves, for an undo's reply.
+                let from_name = self.db.get_thread(&from_thread).await.map(|r| r.name).unwrap_or_default();
                 // Through the document service's one move (v0.0.12 item 15,
                 // M2): stamped, so it travels. Locked: nothing moves.
                 let moved = match self.document_service() {
@@ -1874,6 +2437,13 @@ impl Orchestrator {
                     Ok(()) => {
                         tracing::info!("Moved {} to {}", title, t.name);
                         self.log_action("move_document", &format!("{} → {}", title, t.name));
+                        *undo = Some(c_host::Undo::Move {
+                            doc_id: doc_id.clone(),
+                            title: title.clone(),
+                            from_thread,
+                            from_name,
+                            to_thread: t.id.clone(),
+                        });
                         let _ = self.event_tx.send(OrchestratorEvent::DocumentMoved { doc_id, new_thread_id: t.id });
                         ActionOutcome::Changed { summary: format!("Moved '{title}' to '{}'", t.name) }
                     }
@@ -1884,7 +2454,7 @@ impl Orchestrator {
                 let Some(target) = target else { return Ok(self.failed("history", "no target given")) };
                 // v0.0.12 item 23, T1: the document by its exact title.
                 let found = match self.document_named(target).await {
-                    Ok(d) => d.id_string().map(|id| (id, d.title)),
+                    Ok(d) => d.doc.id_string().map(|id| (id, d.shown)),
                     Err(o) => return Ok(o),
                 };
                 match found {
@@ -1917,7 +2487,7 @@ impl Orchestrator {
                 let Some(target) = target else { return Ok(self.failed("summarize", "no target given")) };
                 // v0.0.12 item 23, T1: the document by its exact title.
                 match self.document_named(target).await {
-                    Ok(doc) => self.summarize_document(&doc).await,
+                    Ok(n) => self.summarize_document(&n.doc, &n.shown).await,
                     Err(o) => o,
                 }
             }
@@ -1949,8 +2519,12 @@ impl Orchestrator {
                 }
             }
             "swap_model" => {
-                let Some(target) = target else { return Ok(self.failed("swap_model", "no model name specified")) };
-                let full_path = resolve_model_path(&self.model_dir, target);
+                // AT1: the model the proposal named, never a second lookup.
+                let full_path = match (p.model, target) {
+                    (Some(path), _) => path,
+                    (None, Some(target)) => resolve_model_path(&self.model_dir, target),
+                    (None, None) => return Ok(self.failed("swap_model", "no model name specified")),
+                };
                 let model_name = full_path.file_name().unwrap_or_default().to_string_lossy().to_string();
                 if !full_path.exists() {
                     tracing::error!("Model not found: {}", full_path.display());
@@ -2011,27 +2585,46 @@ impl Orchestrator {
                     Ok(t) => t,
                     Err(o) => return Ok(o),
                 };
-                // Every document moves through the document service and the
-                // source is deleted through the one thread-write path
-                // (THREAD-sync S1).
+                // C-MERGE MG1: nothing is deleted and no document moves; the
+                // source gets its end date and the thread it was merged into,
+                // through the one thread-write path.
                 let merged = match self.document_service() {
                     Some(svc) => svc.thread_merge(&into.id, &from.id).await.map_err(|e| sovereign_docs_message(&e)),
                     None => Err("the workspace is locked; nothing was merged".to_string()),
                 };
                 match merged {
-                    Ok(moved) => {
+                    Ok(staying) => {
                         tracing::info!("Threads merged: {} ← {}", into.name, from.name);
                         self.log_action("merge_threads", &format!("{} ← {}", into.name, from.name));
+                        // AT7: the undo clears the merge this request made,
+                        // known by its merge stamp.
+                        let merge_stamp = self.db.get_thread(&from.id).await.ok().and_then(|t| t.merge_stamp);
+                        *undo = Some(c_host::Undo::Merge {
+                            source_id: from.id.clone(),
+                            source_name: from.name.clone(),
+                            merge_stamp,
+                        });
                         let _ = self.event_tx.send(OrchestratorEvent::ThreadMerged {
                             target_id: into.id,
                             source_id: from.id,
                         });
-                        ActionOutcome::Changed {
-                            summary: format!("Merged '{}' into '{}' ({} moved)", from.name, into.name, documents(moved)),
-                        }
+                        // The words (the Fable maille, by delegation of
+                        // Céline, 2026-11-17), the verb agreeing with one.
+                        let summary = match staying {
+                            0 => format!("Merged '{}' into '{}'", from.name, into.name),
+                            1 => format!("Merged '{}' into '{}' (1 document stays in '{}')", from.name, into.name, from.name),
+                            n => format!("Merged '{}' into '{}' ({n} documents stay in '{}')", from.name, into.name, from.name),
+                        };
+                        ActionOutcome::Changed { summary }
                     }
                     Err(e) => self.failed("Failed to merge threads", e),
                 }
+            }
+            sovereign_core::security::UNDO_MERGE_ACTION => {
+                let Some(t) = p.thread else {
+                    return Ok(self.failed("", "no thread named"));
+                };
+                self.undo_merge_of(&t.id, &t.name, None).await
             }
             "split_thread" => {
                 let (Some(t), Some(new_name)) = (p.thread, p.new_name) else {
@@ -2070,11 +2663,10 @@ impl Orchestrator {
             "adopt" => {
                 let Some((doc_id, title)) = p.doc else { return Ok(self.failed("", "nothing to adopt")) };
                 // T2: the resolved document, re-read by its id.
-                let doc = match self.document_still_live(&doc_id, &title).await {
-                    Ok(d) => d,
+                let (doc, title) = match self.document_still_live(&doc_id, &title).await {
+                    Ok(n) => (n.doc, n.shown),
                     Err(o) => return Ok(o),
                 };
-                let title = doc.title;
                 if doc.is_owned {
                     // B2: adopting what is already owned changes nothing.
                     ActionOutcome::NoChange { reason: format!("'{title}' is already yours") }
@@ -2209,11 +2801,16 @@ impl Orchestrator {
                 }
             }
             "create_document" => {
-                let title = target.map(str::trim).filter(|t| !t.is_empty()).unwrap_or("Untitled Document").to_string();
-                // The first thread (this action names none).
-                let thread = self.db.list_threads().await?.into_iter().find(|t| t.deleted_at.is_none());
-                let (thread_id, thread_name) =
-                    thread.map(|t| (t.id_string().unwrap_or_default(), t.name)).unwrap_or_default();
+                // AT10: in the thread the request named, resolved before the
+                // proposal and re-read by its id; there is no fallback.
+                let (Some(t), Some(title)) = (p.thread, p.title) else {
+                    return Ok(self.failed("", "no thread was named; nothing was created"));
+                };
+                let t = match self.still_live(&t).await {
+                    Ok(t) => t,
+                    Err(o) => return Ok(o),
+                };
+                let (thread_id, thread_name) = (t.id, t.name);
                 // C-DOC adoption step 3: through the document service, as the
                 // assistant's create tool does (owned, provenance assistant).
                 let new = crate::docs_host::new_document(
@@ -2251,40 +2848,31 @@ impl Orchestrator {
             }
             "restore" => {
                 let Some((doc_id, title)) = p.doc else { return Ok(self.failed("restore", "nothing to restore")) };
-                let commit_ref = p.commit.unwrap_or_default();
                 // T2: the resolved document, re-read by its id: purged or moved
                 // to the trash meanwhile, none of its versions is restored.
                 let title = match self.document_still_live(&doc_id, &title).await {
-                    Ok(d) => d.title,
+                    Ok(d) => d.shown,
                     Err(o) => return Ok(o),
                 };
                 // C-DOC adoption step 2: through the document service — the
                 // current state becomes a version first, the restored state a
                 // new version.
                 let svc = self.document_service();
-                let picked: std::result::Result<String, String> = match &svc {
-                    None => Err("the workspace is locked".into()),
-                    Some(_) if commit_ref.starts_with("commit:") => Ok(commit_ref.clone()),
-                    Some(svc) => match svc.versions(&doc_id).await {
-                        // Newest first: [1] is the version before the latest.
-                        Ok(v) if v.len() >= 2 => Ok(v[1].commit_id.clone()),
-                        // M7: restoring with no previous version does nothing — say so.
-                        Ok(_) => Err(format!("'{title}' has no previous version to restore")),
-                        Err(e) => Err(sovereign_docs_message(&e)),
-                    },
+                // AT1, RV1: the version the proposal named, pinned when the
+                // request was read — never whichever is previous now.
+                let picked: std::result::Result<(String, chrono::DateTime<chrono::Utc>), String> = match (&svc, p.version) {
+                    (None, _) => Err("the workspace is locked".into()),
+                    (Some(_), Some(v)) => Ok(v),
+                    (Some(_), None) => Err(format!("no version of '{title}' was named")),
                 };
                 match (svc, picked) {
-                    (Some(svc), Ok(commit)) => match svc.restore_version(&doc_id, &commit).await {
+                    (Some(svc), Ok((commit, when))) => match svc.restore_version(&doc_id, &commit).await {
                         Ok(_) => {
-                            let what = if commit_ref.starts_with("commit:") {
-                                format!("version {commit}")
-                            } else {
-                                "its previous version".to_string()
-                            };
-                            tracing::info!("Restored {} to {}", title, what);
-                            self.log_action("restore", &format!("{} to {}", title, what));
+                            let summary = c_host::restore_sentence("Restored", &title, p.version_previous, when);
+                            tracing::info!("{summary}");
+                            self.log_action("restore", &summary);
                             let _ = self.event_tx.send(OrchestratorEvent::DocumentOpened { doc_id });
-                            ActionOutcome::Changed { summary: format!("Restored '{title}' to {what}") }
+                            ActionOutcome::Changed { summary }
                         }
                         Err(e) => self.failed("Restore failed", sovereign_docs_message(&e)),
                     },
@@ -2308,6 +2896,9 @@ impl Orchestrator {
                 let _ = self.event_tx.send(OrchestratorEvent::OpenPanel { name: panel.to_string() });
                 ActionOutcome::Reported { summary: format!("Opened the {label} panel") }
             }
+            // C-HOST AT9: a skill asked for in the chat, run on the document
+            // resolved before (and, above level 1, approved).
+            "word_count" | "find_replace" | "duplicate" => self.run_skill(action, p).await,
             _ => {
                 // Lot 0.7: no handler. handle_query refuses these before the
                 // gate; this arm is the backstop. It never emits a proposal
@@ -2331,34 +2922,23 @@ impl Orchestrator {
     /// summaries are summarized together (in groups, repeated while they do
     /// not fit), and one summary comes out. Beyond 16 parts it declines and
     /// sends nothing. The protections apply to every part and every
-    /// intermediate summary: PII-002 (never-scanned documents are refused),
-    /// the preview-redacted resolution, and the fencing of external content
+    /// intermediate summary: masking at read (C-SWEEP SW3, which replaced
+    /// PII-002's refusal of a never-scanned document), and the fencing of external content
     /// (owned content surfaced, not fenced).
-    async fn summarize_document(&self, doc: &sovereign_db::schema::Document) -> ActionOutcome {
-        // PII-002: refuse to summarize a document that was never PII-scanned
-        // (seeded / imported / P2P-synced, or created before the account key
-        // existed). Such a doc holds no `[pii:<id>]` tokens, so token
-        // resolution can't mask the raw SSN/IBAN/card numbers it may contain —
-        // sending it to the model would leak pre-tokenization plaintext.
-        if doc.pii_scanned_at.is_none() {
-            return ActionOutcome::Failed {
-                reason: format!(
-                    "I can't summarize \"{}\" yet — it hasn't been scanned for personal information, so I won't send \
-                     its raw contents to the model. It becomes summarizable after the next background privacy scan.",
-                    doc.title
-                ),
-            };
-        }
-        // Resolve `[pii:<id>]` tokens to type-only labels (`[Email]`, …) before
-        // the content reaches the model — no decryption — exactly like the read
-        // tools; PII-001: backstopped by a regex pass so raw structured PII
-        // (e.g. AVS) the scan missed can't reach the summarizer. C-DOC adoption
-        // step 1: the text through the v2 model, not its stored JSON. Resolved
-        // whole before it is cut, so no value is split across two parts.
-        let records = self.db.list_pii_records(None, None, None).await.unwrap_or_default();
-        let resolve = |text: &str| {
-            crate::pii::resolve::resolve_to_preview_redacted(text, &records, crate::pii::Locale::Swiss)
-        };
+    /// `shown`: the document's title as shown (C-TPII, TP3), for the replies.
+    async fn summarize_document(&self, doc: &sovereign_db::schema::Document, shown: &str) -> ActionOutcome {
+        // C-SWEEP SW3 (Céline, 2026-11-17): the summary no longer refuses a
+        // document never analysed; masking at read covers it. Tokens and
+        // detected values become type-only labels (`[Email]`, …) before the
+        // content reaches the model, exactly like the read tools, whether or
+        // not the sweep has passed; a value she dismissed in this document is
+        // left as written. C-DOC adoption step 1: the text through the v2
+        // model, not its stored JSON. Masked whole before it is cut, so no
+        // value is split across two parts. The model's answers are masked the
+        // same way before they are read again.
+        let mask = self.read_mask().await;
+        let doc_id = doc.id_string().unwrap_or_default();
+        let resolve = |text: &str| mask.mask(&doc_id, text);
         let resolved = resolve(&sovereign_docformat::plain_text_of(&doc.content));
 
         let (fmt, n_ctx) = {
@@ -2376,8 +2956,8 @@ impl Orchestrator {
             return match self.generate_summary(&whole.0).await {
                 Ok(summary) => {
                     let summary = resolve(&summary);
-                    self.produce_summary(&doc.title, &summary, 1);
-                    ActionOutcome::Reported { summary: format!("Summarized '{}'", doc.title) }
+                    self.produce_summary(shown, &summary, 1);
+                    ActionOutcome::Reported { summary: format!("Summarized '{}'", shown) }
                 }
                 Err(e) => self.failed("Summarize failed", e),
             };
@@ -2399,7 +2979,7 @@ impl Orchestrator {
                 reason: format!(
                     "\"{}\" is too long to summarize here: about {chars} characters (~{tokens} tokens), more than \
                      {} parts of the model's window. Try summarizing a section of it instead.",
-                    doc.title,
+                    shown,
                     Self::MAX_SUMMARY_PARTS
                 ),
             };
@@ -2408,7 +2988,7 @@ impl Orchestrator {
         let _ = self.event_tx.send(OrchestratorEvent::ChatResponse {
             text: format!(
                 "\"{}\" is long: I'll summarize it in {n} parts, then combine the part summaries. This takes longer than usual.",
-                doc.title
+                shown
             ),
         });
 
@@ -2435,8 +3015,8 @@ impl Orchestrator {
                 return match self.generate_summary(&prompt).await {
                     Ok(summary) => {
                         let summary = resolve(&summary);
-                        self.produce_summary(&doc.title, &summary, n);
-                        ActionOutcome::Reported { summary: format!("Summarized '{}' in {n} parts", doc.title) }
+                        self.produce_summary(shown, &summary, n);
+                        ActionOutcome::Reported { summary: format!("Summarized '{}' in {n} parts", shown) }
                     }
                     Err(e) => self.failed("Summarize failed while combining the parts", e),
                 };
@@ -2504,6 +3084,21 @@ impl Orchestrator {
     /// the background, spec v2.0.22): the deterministic checks, enriched by
     /// the model's verdict. The model can only raise the risk
     /// (`audit_peer_change`). Waits on the classifier like any model use.
+    /// C-SWEEP SW3 (spec ch. 09): [`Self::audit_change`] over the texts masked
+    /// where they are read, with the document's id when there is one (her
+    /// dismissals of that document as written, every other detected value as
+    /// its label; without an id, every detected value as its label).
+    pub async fn audit_document_change(
+        &self,
+        document_id: Option<&str>,
+        prior: &str,
+        incoming: &str,
+    ) -> crate::peer_audit::PeerChangeVerdict {
+        let mask = self.read_mask().await;
+        let id = document_id.unwrap_or("");
+        self.audit_change(&mask.mask(id, prior), &mask.mask(id, incoming)).await
+    }
+
     pub async fn audit_change(&self, prior: &str, incoming: &str) -> crate::peer_audit::PeerChangeVerdict {
         let classifier = self.classifier.lock().await;
         crate::peer_audit::audit_peer_change(Some(&classifier.router), Some(&*classifier.formatter), prior, incoming).await
@@ -2546,8 +3141,16 @@ impl Orchestrator {
             let to_id = sugg.in_.as_ref().map(|t| sovereign_db::schema::thing_to_raw(t)).unwrap_or_default();
 
             // Look up titles
-            let from_title = self.db.get_document(&from_id).await.map(|d| d.title).unwrap_or_default();
-            let to_title = self.db.get_document(&to_id).await.map(|d| d.title).unwrap_or_default();
+            // SW5: the titles as shown, set here so no host has to (the Fable
+            // maille, by delegation of Céline, 2026-11-17).
+            let from_title = match self.db.get_document(&from_id).await {
+                Ok(d) => crate::document_titles::shown_title(self.db.as_ref(), &d).await,
+                Err(_) => String::new(),
+            };
+            let to_title = match self.db.get_document(&to_id).await {
+                Ok(d) => crate::document_titles::shown_title(self.db.as_ref(), &d).await,
+                Err(_) => String::new(),
+            };
 
             let _ = self.event_tx.send(OrchestratorEvent::LinkSuggested {
                 suggestion_id: sugg_id,
@@ -2566,7 +3169,7 @@ impl Orchestrator {
             let mut profile = self.profile.lock().unwrap();
             let fb = profile.suggestion_feedback.entry("consolidation".to_string()).or_default();
             fb.shown += suggestions.len() as u32;
-            let _ = profile.save(&self.profile_dir);
+            let _ = profile.save(&self.state_dir());
         }
 
         Ok(())
@@ -2615,7 +3218,7 @@ impl Orchestrator {
                         .entry(action.clone())
                         .or_insert_with(SuggestionFeedback::new)
                         .record_shown();
-                    if let Err(e) = profile.save(&self.profile_dir) {
+                    if let Err(e) = profile.save(&self.state_dir()) {
                         tracing::warn!("Failed to save profile: {e}");
                     }
                 }
@@ -2668,7 +3271,7 @@ impl Orchestrator {
             // Save profile once after draining all events.
             if profile_dirty {
                 if let Ok(mut profile) = self.profile.lock() {
-                    if let Err(e) = profile.save(&self.profile_dir) {
+                    if let Err(e) = profile.save(&self.state_dir()) {
                         tracing::warn!("Failed to save profile: {e}");
                     }
                 }
@@ -2707,8 +3310,6 @@ struct Prepared {
     /// The document acted on (moved, adopted, restored): (id, title),
     /// resolved by its exact title (v0.0.12 item 23, T1-T2).
     doc: Option<(String, String)>,
-    /// The version a restore names (`commit:…`); none: its previous version.
-    commit: Option<String>,
     /// The new name (rename) or the new thread's name (split).
     new_name: Option<String>,
     /// The milestone's title.
@@ -2721,6 +3322,24 @@ struct Prepared {
     /// always shown, whatever the trust state (v0.0.12 item 23, T7, reading
     /// 7). False for names the person quoted and for a `target` used whole.
     parsed: bool,
+    /// C-HOST AT1: the object acted on — kind, id, displayed title, and the
+    /// revision seen — as the proposal carries it.
+    target: ActionTarget,
+    /// C-HOST AT4: a digest of what the proposal showed (for Destruct, the
+    /// target and everything it contains), compared again after the approval.
+    /// Empty: nothing to compare.
+    seen: String,
+    /// The version a restore names (AT1, RV1: commit id and date), chosen when
+    /// the request is read and restored as named.
+    version: Option<(String, chrono::DateTime<chrono::Utc>)>,
+    /// That version was named « previous » (or no version was named), so the
+    /// sentences call it « its previous version ».
+    version_previous: bool,
+    /// The model file a swap_model resolved (AT1).
+    model: Option<PathBuf>,
+    /// A skill's parameters (AT9): find_replace's `{find, replace}`, the
+    /// export's skill.
+    skill: Option<c_host::SkillCall>,
 }
 
 /// One name an action read, how it was read (v0.0.12 item 23, T6-T7).
@@ -3059,6 +3678,15 @@ fn hard_split(s: &str, budget: usize) -> Vec<String> {
 }
 
 /// Discard every value already queued on `rx`; returns how many (lot 0.7).
+/// The reason of a proposal withdrawn by a persona switch (C-AREA AR4). A
+/// decision with it records nothing: no trust count, no log line, no event.
+const SESSION_ENDED: &str = "the session that proposed this action has ended";
+
+/// Whether `d` is a withdrawal by a persona switch (see [`SESSION_ENDED`]).
+fn session_ended(d: &ActionDecision) -> bool {
+    matches!(d, ActionDecision::Reject(r) if r == SESSION_ENDED)
+}
+
 fn drain_queued<T>(rx: &mut tokio::sync::mpsc::Receiver<T>) -> usize {
     let mut n = 0;
     while rx.try_recv().is_ok() {
@@ -3077,14 +3705,16 @@ const HANDLED_ACTIONS: &[&str] = &[
     "split_thread", "adopt", "create_milestone", "list_milestones", "list_contacts",
     "view_messages", "create_document", "restore", "open_pii_dashboard", "open_models",
     "open_inbox", "browse", "open_settings", "chat", "unknown",
+    // C-HOST AT9 (ch. 11, Céline 2026-11-13): skills the orchestrator runs
+    // itself, at their level. The export is withdrawn from the assistant in
+    // v0.0.13 (Céline, 2026-11-14): see `unavailable_reason`.
+    "word_count", "find_replace", "duplicate",
+    // C-MERGE MG5: the undo of a merge, by naming the thread.
+    sovereign_core::security::UNDO_MERGE_ACTION,
 ];
 
 /// P2P intents that have a handler when the P2P command channel is wired.
 const P2P_HANDLED_ACTIONS: &[&str] = &["sync_device", "pair_device"];
-
-/// Intents that only point the user to a skill; the orchestrator does not
-/// perform them.
-const SKILL_HINT_ACTIONS: &[&str] = &["word_count", "find_replace", "duplicate", "import_file"];
 
 /// Why `action` cannot be executed here, or `None` if it has a handler.
 /// `p2p_wired` says whether the P2P command channel is installed.
@@ -3099,8 +3729,16 @@ fn unavailable_reason(action: &str, p2p_wired: bool) -> Option<String> {
             Some("device sync is not available in this session".into())
         };
     }
-    if SKILL_HINT_ACTIONS.contains(&action) {
-        return Some(format!("use the {action} skill from the Skills menu instead"));
+    if action == "import_file" {
+        // C-HOST AT9 runs word_count, find_replace and duplicate itself;
+        // import_file needs a file the request cannot name yet, a thread (AT10)
+        // and a provenance, and the import window is not built (DEL-0005).
+        return Some("importing a file is not available in this version".into());
+    }
+    if action == "export" {
+        // C-HOST AT9, v0.0.13 (Céline, 2026-11-14: « Retirer l'export à
+        // l'assistant »): no host saves an exported file yet.
+        return Some("the assistant does not export documents; a document's Skills menu runs an export, but no file is saved yet in this version".into());
     }
     Some("this action is not available yet".into())
 }
@@ -3146,11 +3784,7 @@ fn session_log_off_notice(reason: &str) -> OrchestratorEvent {
 fn session_log_quarantine_notice() -> OrchestratorEvent {
     OrchestratorEvent::ActionRejected {
         action: "session log".into(),
-        reason: "Your assistant's conversation log could not be verified: it may have been \
-                 changed while Sovereign was closed, or a write was cut short (a crash, a full \
-                 disk). The assistant starts without its earlier conversations. Nothing was \
-                 deleted."
-            .into(),
+        reason: crate::session_log::QUARANTINE_NOTICE.into(),
     }
 }
 
@@ -3681,6 +4315,9 @@ mod tests {
             doc_id: None,
             thread_id: None,
             description: format!("test {action}"),
+            target: sovereign_core::security::ActionTarget::default(),
+            request_id: sovereign_core::security::RequestId::default(),
+            deadline: sovereign_core::security::ProposedAction::NO_DEADLINE,
         }
     }
 
@@ -3863,7 +4500,15 @@ mod tests {
         assert!(unavailable_reason("sync_device", false).is_some());
         assert!(unavailable_reason("sync_device", true).is_none());
         assert!(unavailable_reason("list_devices", true).is_some());
-        assert!(unavailable_reason("word_count", true).unwrap().contains("Skills menu"));
+        // C-HOST AT9 (ch. 11, Céline 2026-11-13; LH test author, 2026-11-14):
+        // the skills asked for in the chat are run by the orchestrator at
+        // their level, never answered with a hint to use the Skills menu.
+        // Replaces the word_count hint asserted here before. The export is
+        // withdrawn from the assistant in v0.0.13 (Céline, 2026-11-14), so it
+        // is not in this list (orchestrator_lh_tests::at9_export_is_withdrawn_from_the_assistant).
+        for skill in ["word_count", "find_replace", "duplicate"] {
+            assert!(unavailable_reason(skill, true).is_none(), "{skill} has a handler (AT9)");
+        }
         assert!(unavailable_reason("delete_document", true).is_some());
     }
 
@@ -4162,6 +4807,12 @@ mod summarize_parts_tests;
 #[path = "orchestrator_summarize_margin_tests.rs"]
 mod summarize_margin_tests;
 
+// Spec ch. 08, AT13 (v0.0.13): one question with a deadline at a time, from
+// any turn. Written before the code by its test author.
+#[cfg(test)]
+#[path = "orchestrator_one_question_tests.rs"]
+mod one_question_tests;
+
 // Item 11 (B1-B4): needs sovereign_core::interfaces::ActionOutcome, which
 // does not exist yet; this module does not compile until it does.
 #[cfg(test)]
@@ -4192,3 +4843,113 @@ mod document_titles_tests;
 #[cfg(all(test, feature = "encrypted-log"))]
 #[path = "orchestrator_item10_tests.rs"]
 mod item10_tests;
+
+// v0.0.13 lot LH (contract C-HOST, spec ch. 08 *Action targets*, AT1-AT12),
+// written before the code by another author: what compiles against today's
+// API and fails until the behaviour exists.
+#[cfg(test)]
+#[path = "orchestrator_lh_tests.rs"]
+mod lh_tests;
+
+// v0.0.13 item C1 (spec ch. 08, *Action targets*, RV1 and RV2): the version
+// named is the one restored; a title containing « to » can be restored.
+// Written before the code by its test author.
+#[cfg(test)]
+#[path = "orchestrator_c1_restore_tests.rs"]
+mod c1_restore_tests;
+
+// v0.0.13 item C4 (spec ch. 08, *Action targets*, RT1-RT5): a write retried
+// after a no-match always asks. Written before the code by its test author.
+#[cfg(test)]
+#[path = "orchestrator_c4_retry_tests.rs"]
+mod c4_retry_tests;
+
+// v0.0.13 lot LH, the guarantees that use the API of the « types and
+// signatures » commit (AT1's action target, AT6's request id and deadline,
+// AT7's undo), written before the code by another author.
+#[cfg(test)]
+#[path = "orchestrator_lh_api_tests.rs"]
+mod lh_api_tests;
+
+// v0.0.13, contract C-TPII (spec ch. 08, *A title that holds personal data*,
+// TP1-TP4; Céline, 2026-11-17), written before the code by another author,
+// over the « types and signatures » commit (`resolve_document_title_forms`).
+#[cfg(test)]
+#[path = "orchestrator_tpii_tests.rs"]
+mod tpii_tests;
+
+// v0.0.13 lot LS(a) (contract C-SWEEP, spec ch. 09, SW3), written before the
+// code by its test author: masked where it is read, on the chat's context and
+// tools and on the summary.
+#[cfg(test)]
+#[path = "orchestrator_c_sweep_tests.rs"]
+mod c_sweep_tests;
+
+// v0.0.13 lot L5, B1 (contract C-MERGE, spec ch. 03, MG1-MG6; ch. 08 AT4 and
+// AT7), written before the code by the B1 test author.
+#[cfg(test)]
+#[path = "orchestrator_b1_merge_tests.rs"]
+mod b1_merge_tests;
+
+// v0.0.13, spec ch. 08: an external document is never adopted through earned
+// trust (Céline, 2026-11-17), written before the code by another author.
+#[cfg(test)]
+#[path = "orchestrator_adopt_trust_tests.rs"]
+mod adopt_trust_tests;
+
+// v0.0.13, spec ch. 09 SW3: every string that becomes a tool's turn for the
+// model has passed the read mask (the Fable maille, by delegation, 2026-11-17),
+// written before the code by another author.
+#[cfg(test)]
+#[path = "orchestrator_tool_mask_tests.rs"]
+mod tool_mask_tests;
+
+// v0.0.13 lot L5, contract C-LOG (spec ch. 08, the log's format and the
+// diagnosis of a quarantined log, LG1-LG6 and DG1-DG6), written before the
+// code by its test author: what compiles against today's API and fails until
+// the behaviour exists.
+#[cfg(all(test, feature = "encrypted-log"))]
+#[path = "orchestrator_clog_tests.rs"]
+mod clog_tests;
+
+// C-LOG, LG4's caps, read from `session_log::MAX_LINE_BYTES` and
+// `session_log::MAX_FILE_BYTES`.
+#[cfg(all(test, feature = "encrypted-log"))]
+#[path = "orchestrator_clog_seam_tests.rs"]
+mod clog_seam_tests;
+
+// C-LOG, second set: LG3 as decided over LG6 (2026-11-18), the record's
+// control, and the diagnosis (DG1-DG4, DG6) against `log_diagnosis`'s types
+// and signatures, written before the code by its test author.
+#[cfg(all(test, feature = "encrypted-log"))]
+#[path = "orchestrator_clog_v2_tests.rs"]
+mod clog_v2_tests;
+
+// C-LOG, third set (spec v2.0.126): DG1's two new findings and several
+// quarantines, against `log_diagnosis`, written before the code by its test
+// author.
+#[cfg(all(test, feature = "encrypted-log"))]
+#[path = "orchestrator_clog_v3_tests.rs"]
+mod clog_v3_tests;
+
+// v0.0.13 rc2, lot R5 (private contract in `doc/plans/`): a v0.0.12 log with
+// entries under a v0.0.12 anchor of count 0 does not verify (LG6, v0.0.12's
+// own rules). Written before the code by its test author, on `clog_tests`'
+// fixtures.
+#[cfg(all(test, feature = "encrypted-log"))]
+#[path = "orchestrator_clog_r5_tests.rs"]
+mod clog_r5_tests;
+
+// C-LOG's host lot, the library side: DG4's Export and Delete and DG6, against
+// `log_diagnosis::export_for_an_expert` and `log_diagnosis::delete_the_quarantine`,
+// written before the code by its test author.
+#[cfg(all(test, feature = "encrypted-log"))]
+#[path = "orchestrator_clog_hosts_tests.rs"]
+mod clog_hosts_tests;
+
+// C-LOG's host lot, second set: the event for a turn whose diagnosis tool found a
+// quarantine, and the host's own list of choices, against the seams named by the
+// implementer, written before the code by the lot's test author.
+#[cfg(all(test, feature = "encrypted-log"))]
+#[path = "orchestrator_clog_hosts_v2_tests.rs"]
+mod clog_hosts_v2_tests;

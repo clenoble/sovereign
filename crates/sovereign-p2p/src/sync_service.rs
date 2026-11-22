@@ -42,6 +42,122 @@ const MAX_FUTURE_SKEW: chrono::Duration = chrono::Duration::hours(24);
 /// surface) covers the residual bounded-overwrite case.
 const MAX_COUNTER_ADVANCE: u64 = 1_000_000;
 
+/// What a restore from Previous values did, for the host that offered it
+/// (spec ch. 05, *A restore that fails is said*).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreOutcome {
+    /// The previous value is back, and the entry left Previous values.
+    Restored,
+    /// Nothing changed: the entry stays, the current value stays.
+    NotRestored {
+        /// The row, named as the person sees it: the thread's name, the
+        /// contact's name, the PII record's label.
+        what: String,
+        why: NotRestoredReason,
+    },
+    /// The host's wait for the node's answer ran out: the node may still carry
+    /// the restore out, so this is never « Not restored » (spec ch. 05, a
+    /// restore that answers late).
+    NoAnswerYet {
+        /// The row, named as for `NotRestored`.
+        what: String,
+    },
+}
+
+/// Why a restore did not happen, in the plain words the notice gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotRestoredReason {
+    /// The host could not reach the sync layer.
+    SyncNotRunning,
+    /// The previous value could not be unsealed or decoded.
+    PreviousUnreadable,
+    /// The write was refused, for any reason that has no sentence of its own;
+    /// its detail goes to the log, never to the notice.
+    WriteRefused,
+}
+
+impl NotRestoredReason {
+    /// « sync is not running », « the previous value could not be read », « the
+    /// write was refused ».
+    pub fn sentence(self) -> &'static str {
+        match self {
+            NotRestoredReason::SyncNotRunning => "sync is not running",
+            NotRestoredReason::PreviousUnreadable => "the previous value could not be read",
+            NotRestoredReason::WriteRefused => "the write was refused",
+        }
+    }
+}
+
+impl RestoreOutcome {
+    /// The notice a failure shows, « Not restored: {what} — {why} », or a late
+    /// answer, « No answer from sync yet for {what}. It may still be
+    /// restored. »; none for a restore that worked.
+    pub fn notice(&self) -> Option<String> {
+        match self {
+            RestoreOutcome::Restored => None,
+            RestoreOutcome::NotRestored { what, why } => {
+                Some(format!("Not restored: {what} \u{2014} {}", why.sentence()))
+            }
+            RestoreOutcome::NoAnswerYet { what } => {
+                Some(format!("No answer from sync yet for {what}. It may still be restored."))
+            }
+        }
+    }
+}
+
+/// Why the restore of a previous value stopped, with the detail that goes to
+/// the log only.
+enum RestoreFailure {
+    /// Nothing changed.
+    Not(NotRestoredReason, String),
+    /// The previous value is back; only its entry could not leave Previous
+    /// values.
+    EntryKept(String),
+}
+
+impl RestoreFailure {
+    fn unreadable(detail: String) -> Self {
+        RestoreFailure::Not(NotRestoredReason::PreviousUnreadable, detail)
+    }
+
+    fn refused(detail: String) -> Self {
+        RestoreFailure::Not(NotRestoredReason::WriteRefused, detail)
+    }
+
+    fn detail(self) -> String {
+        match self {
+            RestoreFailure::Not(_, d) | RestoreFailure::EntryKept(d) => d,
+        }
+    }
+}
+
+/// The row a previous value belongs to, named as the person sees it now: the
+/// thread's name, the contact's name, the PII record's label; a plain noun when
+/// the row has no name or cannot be read. Used for the notice of a restore that
+/// fails, also by a host that names the row itself because sync is not running.
+pub async fn previous_value_name(db: &dyn GraphDB, recovery_id: &str) -> String {
+    match db.get_row_recovery(recovery_id).await {
+        Ok(rec) => row_name(db, &rec.table, &rec.row_id).await,
+        Err(_) => "an item".into(),
+    }
+}
+
+async fn row_name(db: &dyn GraphDB, table: &str, row_id: &str) -> String {
+    fn named(name: Option<String>, otherwise: &str) -> String {
+        name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| otherwise.to_string())
+    }
+    match table {
+        "thread" => named(db.get_thread(row_id).await.ok().map(|t| t.name), "a thread"),
+        "contact" => named(db.get_contact(row_id).await.ok().map(|c| c.name), "a contact"),
+        "pii_record" => named(db.get_pii_record(row_id).await.ok().and_then(|p| p.label), "a personal-data record"),
+        "entity" => "a person or organisation".into(),
+        "message" => "a message".into(),
+        "conversation" => "a conversation".into(),
+        "suggested_link" => "a suggested link".into(),
+        _ => "an item".into(),
+    }
+}
+
 /// Middleware between the P2P networking layer and the database.
 ///
 /// Owns an `Arc<dyn GraphDB>` and exposes async methods for building
@@ -230,6 +346,23 @@ impl SyncService {
                 });
             }
         }
+
+        // C-MERGE MG4: the merge stamps travel beside the thread stamps, as a
+        // list of their own; `hash_thread` does not change, so an older peer
+        // (which sends no such list) never re-requests a merged thread.
+        let mut merge_stamps = Vec::new();
+        for t in &threads {
+            let (Some(id), Some(st)) =
+                (t.id_string(), t.merge_stamp.as_deref().and_then(sovereign_docs::parse_thread_stamp))
+            else {
+                continue;
+            };
+            merge_stamps.push(crate::protocol::manifest::ThreadStampEntry {
+                thread_id: id,
+                stamp: crate::protocol::manifest::WireStamp { wall_ms: st.wall_ms, counter: st.counter, device: st.device },
+            });
+        }
+        manifest.thread_merge_stamps = Some(merge_stamps);
 
         // --- Entities ---
         let entities = self
@@ -571,7 +704,7 @@ impl SyncService {
         for id in ids {
             let (mut row, content_hash) = match table {
                 SyncTable::Thread => match self.db.get_thread(id).await {
-                    Ok(t) => (row_from_thread(&t, &key)?, hash_thread(&t)),
+                    Ok(t) => (row_from_thread(&t, &key)?, thread_version_hash(&t)),
                     Err(_) => continue,
                 },
                 SyncTable::Entity => match self.db.get_entity(id).await {
@@ -857,6 +990,31 @@ impl SyncService {
         }
     }
 
+    /// A restore from Previous values, with its outcome for the host that asked
+    /// (spec ch. 05, *A restore that fails is said*): the restore of
+    /// [`Self::restore_row_recovery`], whose failure is said, and changes
+    /// nothing. {what} names the row as it is now, before the restore.
+    ///
+    /// A store's error never reaches the notice: it goes to the log, and the
+    /// notice says « the write was refused ». A restore whose value is back but
+    /// whose entry could not leave Previous values is restored (the value did
+    /// change); the entry stays listed, and the log says why.
+    pub async fn restore_previous_value(&self, recovery_id: &str) -> RestoreOutcome {
+        // Named before the restore: a failure leaves the row as it is now.
+        let what = previous_value_name(self.db.as_ref(), recovery_id).await;
+        match self.restore_row(recovery_id).await {
+            Ok(()) => RestoreOutcome::Restored,
+            Err(RestoreFailure::EntryKept(detail)) => {
+                tracing::warn!("restored row recovery {recovery_id}, but its entry stays listed: {detail}");
+                RestoreOutcome::Restored
+            }
+            Err(RestoreFailure::Not(why, detail)) => {
+                tracing::warn!("restore of row recovery {recovery_id} failed ({}): {detail}", why.sentence());
+                RestoreOutcome::NotRestored { what, why }
+            }
+        }
+    }
+
     /// Re-apply the preserved prior value of a row recovery, undoing a peer
     /// overwrite (p2p-no-per-doc-authz). Unseals the stashed prior (under the
     /// account transport key — this is the only place that key lives), restores
@@ -864,21 +1022,28 @@ impl SyncService {
     /// recovery reviewed. Restore for the content-bearing sensitive tables
     /// (PII vault, threads, contacts) is wired; other tables return an error
     /// (their prior is still preserved and inspectable for manual recovery).
+    /// The hosts go through [`Self::restore_previous_value`], which says the
+    /// outcome.
     pub async fn restore_row_recovery(&self, recovery_id: &str) -> P2pResult<()> {
+        self.restore_row(recovery_id).await.map_err(|f| P2pError::SyncError(f.detail()))
+    }
+
+    /// The restore itself, its failure classed by what the notice says.
+    async fn restore_row(&self, recovery_id: &str) -> Result<(), RestoreFailure> {
         use base64::Engine;
         let rec = self
             .db
             .get_row_recovery(recovery_id)
             .await
-            .map_err(|e| P2pError::SyncError(format!("get_row_recovery {recovery_id}: {e}")))?;
+            .map_err(|e| RestoreFailure::refused(format!("get_row_recovery {recovery_id}: {e}")))?;
         let ct = base64::engine::general_purpose::STANDARD
             .decode(&rec.prior_ciphertext)
-            .map_err(|e| P2pError::SyncError(format!("recovery base64 ct: {e}")))?;
+            .map_err(|e| RestoreFailure::unreadable(format!("recovery base64 ct: {e}")))?;
         let nonce_v = base64::engine::general_purpose::STANDARD
             .decode(&rec.prior_nonce)
-            .map_err(|e| P2pError::SyncError(format!("recovery base64 nonce: {e}")))?;
+            .map_err(|e| RestoreFailure::unreadable(format!("recovery base64 nonce: {e}")))?;
         if nonce_v.len() != 24 {
-            return Err(P2pError::SyncError(format!(
+            return Err(RestoreFailure::unreadable(format!(
                 "recovery nonce wrong length: {}",
                 nonce_v.len()
             )));
@@ -886,18 +1051,18 @@ impl SyncService {
         let mut nonce = [0u8; 24];
         nonce.copy_from_slice(&nonce_v);
         let prior_json = sovereign_crypto::aead::decrypt(&ct, &nonce, &self.transport_key)
-            .map_err(|e| P2pError::SyncError(format!("recovery unseal: {e}")))?;
+            .map_err(|e| RestoreFailure::unreadable(format!("recovery unseal: {e}")))?;
 
         match rec.table.as_str() {
             "thread" => {
                 let t: Thread = serde_json::from_slice(&prior_json)
-                    .map_err(|e| P2pError::SyncError(format!("recovery decode thread: {e}")))?;
+                    .map_err(|e| RestoreFailure::unreadable(format!("recovery decode thread: {e}")))?;
                 // Through the one thread-write path (THREAD-sync S1): putting
                 // a previous name back is a new action here, stamped, so it
                 // wins over the overwrite it undoes. Without a document
                 // service nothing is written.
                 let docs = self.documents.clone().ok_or_else(|| {
-                    P2pError::SyncError("restore thread: no document service on this device".into())
+                    RestoreFailure::refused("restore thread: no document service on this device".into())
                 })?;
                 // A thread the peer deleted comes back live, with its name,
                 // through the stamped restore (v0.0.12 item 6, A4; review
@@ -908,33 +1073,33 @@ impl SyncService {
                     .get_thread(&rec.row_id)
                     .await
                     .map(|cur| cur.deleted_at.is_some())
-                    .map_err(|e| P2pError::SyncError(format!("restore thread: {e}")))?;
+                    .map_err(|e| RestoreFailure::refused(format!("restore thread: {e}")))?;
                 let restored = if deleted {
                     docs.thread_restore(&rec.row_id, &t.name, &t.description).await
                 } else {
                     docs.thread_update(&rec.row_id, Some(&t.name), Some(&t.description)).await
                 };
-                restored.map_err(|e| P2pError::SyncError(format!("restore thread: {e}")))?;
+                restored.map_err(|e| RestoreFailure::refused(format!("restore thread: {e}")))?;
             }
             "contact" => {
                 let c: Contact = serde_json::from_slice(&prior_json)
-                    .map_err(|e| P2pError::SyncError(format!("recovery decode contact: {e}")))?;
+                    .map_err(|e| RestoreFailure::unreadable(format!("recovery decode contact: {e}")))?;
                 self.db
                     .update_contact(&rec.row_id, Some(&c.name), Some(&c.notes), c.avatar.as_deref())
                     .await
-                    .map_err(|e| P2pError::SyncError(format!("restore contact: {e}")))?;
+                    .map_err(|e| RestoreFailure::refused(format!("restore contact: {e}")))?;
             }
             "pii_record" => {
                 let p: PiiRecord = serde_json::from_slice(&prior_json)
-                    .map_err(|e| P2pError::SyncError(format!("recovery decode pii: {e}")))?;
+                    .map_err(|e| RestoreFailure::unreadable(format!("recovery decode pii: {e}")))?;
                 self.db
                     .update_pii_record_value(&rec.row_id, &p.value_encrypted, &p.value_nonce)
                     .await
-                    .map_err(|e| P2pError::SyncError(format!("restore pii value: {e}")))?;
+                    .map_err(|e| RestoreFailure::refused(format!("restore pii value: {e}")))?;
             }
             "entity" => {
                 let en: Entity = serde_json::from_slice(&prior_json)
-                    .map_err(|e| P2pError::SyncError(format!("recovery decode entity: {e}")))?;
+                    .map_err(|e| RestoreFailure::unreadable(format!("recovery decode entity: {e}")))?;
                 self.db
                     .update_entity(
                         &rec.row_id,
@@ -947,37 +1112,37 @@ impl SyncService {
                         Some(en.deleted_at.clone()),
                     )
                     .await
-                    .map_err(|e| P2pError::SyncError(format!("restore entity: {e}")))?;
+                    .map_err(|e| RestoreFailure::refused(format!("restore entity: {e}")))?;
             }
             "message" => {
                 let m: Message = serde_json::from_slice(&prior_json)
-                    .map_err(|e| P2pError::SyncError(format!("recovery decode message: {e}")))?;
+                    .map_err(|e| RestoreFailure::unreadable(format!("recovery decode message: {e}")))?;
                 // The mutable message fields are the body (canonical PII
                 // rewrite) and the read status — restore both.
                 self.db
                     .update_message_body(&rec.row_id, &m.body, m.body_html.as_deref())
                     .await
-                    .map_err(|e| P2pError::SyncError(format!("restore message body: {e}")))?;
+                    .map_err(|e| RestoreFailure::refused(format!("restore message body: {e}")))?;
                 self.db
                     .update_message_read_status(&rec.row_id, m.read_status.clone())
                     .await
-                    .map_err(|e| P2pError::SyncError(format!("restore message status: {e}")))?;
+                    .map_err(|e| RestoreFailure::refused(format!("restore message status: {e}")))?;
             }
             "conversation" => {
                 let v: Conversation = serde_json::from_slice(&prior_json)
-                    .map_err(|e| P2pError::SyncError(format!("recovery decode conversation: {e}")))?;
+                    .map_err(|e| RestoreFailure::unreadable(format!("recovery decode conversation: {e}")))?;
                 // Restore the fields the apply path can overwrite: unread
                 // count, last_message_at, thread link.
                 self.db
                     .update_conversation_unread(&rec.row_id, v.unread_count)
                     .await
-                    .map_err(|e| P2pError::SyncError(format!("restore conversation unread: {e}")))?;
+                    .map_err(|e| RestoreFailure::refused(format!("restore conversation unread: {e}")))?;
                 if let Some(at) = v.last_message_at {
                     self.db
                         .update_conversation_last_message_at(&rec.row_id, at)
                         .await
                         .map_err(|e| {
-                            P2pError::SyncError(format!("restore conversation last_message_at: {e}"))
+                            RestoreFailure::refused(format!("restore conversation last_message_at: {e}"))
                         })?;
                 }
                 if let Some(tid) = v.linked_thread_id.as_deref() {
@@ -985,21 +1150,21 @@ impl SyncService {
                         .link_conversation_to_thread(&rec.row_id, tid)
                         .await
                         .map_err(|e| {
-                            P2pError::SyncError(format!("restore conversation thread link: {e}"))
+                            RestoreFailure::refused(format!("restore conversation thread link: {e}"))
                         })?;
                 }
             }
             "suggested_link" => {
                 let l: SuggestedLink = serde_json::from_slice(&prior_json)
-                    .map_err(|e| P2pError::SyncError(format!("recovery decode suggested_link: {e}")))?;
+                    .map_err(|e| RestoreFailure::unreadable(format!("recovery decode suggested_link: {e}")))?;
                 // Status + resolved_at are the only peer-overwritable fields.
                 self.db
                     .set_suggested_link_status(&rec.row_id, l.status.clone(), l.resolved_at)
                     .await
-                    .map_err(|e| P2pError::SyncError(format!("restore suggested_link: {e}")))?;
+                    .map_err(|e| RestoreFailure::refused(format!("restore suggested_link: {e}")))?;
             }
             other => {
-                return Err(P2pError::SyncError(format!(
+                return Err(RestoreFailure::refused(format!(
                     "restore not yet supported for table '{other}'; the prior value is preserved \
                      in recovery {recovery_id} and can be inspected manually"
                 )));
@@ -1009,7 +1174,7 @@ impl SyncService {
         self.db
             .resolve_row_recovery(recovery_id)
             .await
-            .map_err(|e| P2pError::SyncError(format!("resolve_row_recovery: {e}")))?;
+            .map_err(|e| RestoreFailure::EntryKept(format!("resolve_row_recovery: {e}")))?;
         Ok(())
     }
 
@@ -1029,7 +1194,7 @@ impl SyncService {
             );
             return Ok(false);
         };
-        let hash = hash_thread(&remote);
+        let hash = thread_version_hash(&remote);
         let applied = docs
             .thread_apply_remote(&row.id, remote, &row.version_device)
             .await
@@ -1131,8 +1296,18 @@ impl SyncService {
                     hash_pii_record(&remote),
                     &hash_pii_record(&local),
                 );
+                // C-SWEEP SW1, SW5: the review state merges by its own stamp,
+                // whichever copy wins the rest.
+                let mut reviewed = false;
+                if let Some((state, stamp)) = merged_review(&local, &remote) {
+                    self.db
+                        .update_pii_record_review(&row.id, state, stamp.as_deref())
+                        .await
+                        .map_err(|e| P2pError::SyncError(format!("update_pii_record_review: {e}")))?;
+                    reviewed = true;
+                }
                 let Some(version) = winner else {
-                    return Ok(false);
+                    return Ok(reviewed);
                 };
                 // Refresh the encrypted value (the only field we have an
                 // update method for). Other field changes ride along in
@@ -1175,6 +1350,13 @@ impl SyncService {
                 };
                 let mut remote = remote;
                 remote.id = Some(envelope_thing(&row.id)?);
+                // SW5: a review whose stamp is not taken is not kept on a
+                // new record either; the record arrives unreviewed, for her
+                // to review on this device.
+                if remote.review_stamp.as_deref().is_some_and(|s| !review_stamp_taken(s, chrono::Utc::now())) {
+                    remote.review_state = sovereign_db::schema::ReviewState::Unreviewed;
+                    remote.review_stamp = None;
+                }
                 let inserted = self
                     .db
                     .create_pii_record_with_id(remote)
@@ -1839,6 +2021,27 @@ pub fn content_hash(content: &str) -> String {
 /// A live stamped thread adds its stamp, so two devices converge on one
 /// stamp, not only on one name. A row without a stamp hashes as before (an
 /// older build computes the same hash for it).
+/// The hash a thread row's version is keyed by (the row counters, P2P-001):
+/// [`hash_thread`], and the merge stamp when the thread has one (C-MERGE
+/// MG4). The manifest compares rows by `hash_thread`, which leaves the merge
+/// out so that an older peer sees a merged thread as the same row; but a
+/// merge or its undo is new content of this device, and needs a version of
+/// its own: under the manifest hash alone, an undo of a merge received from
+/// another device would be sent under that device's version, and refused as
+/// not the sender's.
+fn thread_version_hash(t: &Thread) -> String {
+    match &t.merge_stamp {
+        None => hash_thread(t),
+        Some(ms) => {
+            let mut h = Sha256::new();
+            h.update(hash_thread(t).as_bytes());
+            h.update(b"|merge-stamp:");
+            h.update(ms.as_bytes());
+            format!("{:x}", h.finalize())
+        }
+    }
+}
+
 fn hash_thread(t: &Thread) -> String {
     let mut h = Sha256::new();
     match (&t.deleted_at, &t.stamp) {
@@ -1885,6 +2088,52 @@ fn hash_entity(e: &Entity) -> String {
     format!("{:x}", h.finalize())
 }
 
+/// C-SWEEP SW1, SW5 (spec ch. 09): the review state a record holds after a
+/// copy of it arrives from another of her devices; `None` when the local one
+/// stands. Her review (a `review_stamp`, which ingest never writes) wins over
+/// a state ingest wrote, and a later review over an earlier one: so a
+/// take-back travels. Between two states ingest wrote, the higher wins
+/// (dismissed, then confirmed, then suspected): another device's ingest never
+/// lowers a state (« A state is never lowered by another device's ingest »).
+pub(crate) fn merged_review(
+    local: &PiiRecord,
+    remote: &PiiRecord,
+) -> Option<(sovereign_db::schema::ReviewState, Option<String>)> {
+    use sovereign_db::schema::ReviewState;
+    // SW5: a received stamp is read as a time before it can win; one that is
+    // not, and the review it carries, are ignored.
+    if remote.review_stamp.as_deref().is_some_and(|s| !review_stamp_taken(s, chrono::Utc::now())) {
+        return None;
+    }
+    let rank = |s: &ReviewState| match s {
+        ReviewState::Unreviewed => 0,
+        ReviewState::Confirmed => 1,
+        ReviewState::Dismissed => 2,
+    };
+    let remote_wins = match (&local.review_stamp, &remote.review_stamp) {
+        (_, None) if local.review_stamp.is_some() => false,
+        (None, Some(_)) => true,
+        (Some(l), Some(r)) => r > l,
+        _ => rank(&remote.review_state) > rank(&local.review_state),
+    };
+    let changes = remote.review_state != local.review_state || remote.review_stamp != local.review_stamp;
+    (remote_wins && changes).then(|| (remote.review_state.clone(), remote.review_stamp.clone()))
+}
+
+/// C-SWEEP SW5 (spec ch. 09): whether a review stamp received from another
+/// device is taken. It must be in the one form a review writes
+/// (`review_stamp_now`: RFC 3339, UTC, six digits of fraction, `Z`), checked
+/// by reading it as a time and writing it back, since stamps compare as
+/// strings. And it must be no later than the bound every synced time has
+/// (`MAX_FUTURE_SKEW`, ch. 05).
+pub(crate) fn review_stamp_taken(stamp: &str, now: chrono::DateTime<chrono::Utc>) -> bool {
+    const FORM: &str = "%Y-%m-%dT%H:%M:%S%.6fZ";
+    let Ok(at) = chrono::NaiveDateTime::parse_from_str(stamp, "%Y-%m-%dT%H:%M:%S%.fZ") else {
+        return false;
+    };
+    at.format(FORM).to_string() == stamp && at.and_utc() <= now + MAX_FUTURE_SKEW
+}
+
 fn hash_pii_record(r: &PiiRecord) -> String {
     let mut h = Sha256::new();
     h.update(format!("{:?}", r.kind).as_bytes());
@@ -1896,6 +2145,10 @@ fn hash_pii_record(r: &PiiRecord) -> String {
     h.update(r.entity_id.as_deref().unwrap_or("").as_bytes());
     h.update(b"|review:");
     h.update(format!("{:?}", r.review_state).as_bytes());
+    if let Some(ref s) = r.review_stamp {
+        h.update(b"|reviewed:");
+        h.update(s.as_bytes());
+    }
     if let Some(ref d) = r.deleted_at {
         h.update(b"|deleted:");
         h.update(d.as_bytes());
@@ -2130,6 +2383,10 @@ mod tests {
     use sovereign_db::mock::MockGraphDB;
     use sovereign_db::schema::{Document, Thread};
 
+    // At src/sync_service/tests/, where an inline `mod tests` of this file
+    // looks for its children on every platform (no `..` in a path).
+    mod restore_said_tests;
+
     /// The pair key shared between test peers (P1.4). Same value the mock
     /// services use as their transport key, so rows/commits hand-sealed
     /// with `[7u8; 32]` in older tests decode under it unchanged.
@@ -2242,6 +2499,18 @@ mod tests {
         struct NoMedia;
         impl sovereign_docs::MediaFiles for NoMedia {
             fn sha256(&self, _p: &str) -> Option<String> {
+                None
+            }
+            fn copy_into_store(&self, _p: &str, _mark: Option<sovereign_docs::MediaMark>) -> Result<sovereign_docs::StoredMedium, sovereign_docs::MediaError> {
+                Err(sovereign_docs::MediaError::Unreadable("no media in this test".into()))
+            }
+            fn copy_into_store_checked(&self, _: &str, _: &str, _: Option<sovereign_docs::MediaMark>) -> Result<sovereign_docs::StoredMedium, sovereign_docs::MediaError> {
+                Err(sovereign_docs::MediaError::Unreadable("no media in this test".into()))
+            }
+            fn first_bytes(&self, _: &str, _: usize) -> Result<Vec<u8>, sovereign_docs::MediaError> {
+                Err(sovereign_docs::MediaError::Unreadable("no media in this test".into()))
+            }
+            fn store_name_for(&self, _: &str) -> Option<String> {
                 None
             }
         }
@@ -2646,6 +2915,7 @@ mod tests {
                 last_revealed_at: None,
                 use_count: 0,
                 review_state: ReviewState::Confirmed,
+                review_stamp: None,
                 deleted_at: None,
             })
             .await
@@ -3384,6 +3654,7 @@ mod tests {
                 last_revealed_at: None,
                 use_count: 0,
                 review_state: ReviewState::Confirmed,
+                review_stamp: None,
                 deleted_at: None,
             })
             .await

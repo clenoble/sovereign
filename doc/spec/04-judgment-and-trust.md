@@ -7,8 +7,10 @@ export owes the user.
 *Consolidates:* specification v1.3 §4 (2026-08-04), unchanged in substance; status lines added
 2026-10-09.
 
-**Status:** ○ Specified, not built — nothing in this chapter exists in code yet. The legacy
-`reliability_*` fields on `Document` (ch. 03) encode the contract these records replace.
+**Status:** ◐ Partial — the trust states, provenance and the adoption operations of *Ownership
+is not decided at landing* are built in the document service (ch. 03, C-DOC); everything else
+in this chapter is specified, not built. The legacy `reliability_*` fields on `Document`
+(ch. 03) encode the contract these records replace.
 
 **Provenance.** These decisions were settled across three nodes — Sovereign GE, Spotter and
 Crabe — on 2026-08-04, arbitrated by Céline, in the project's private coordination channel.
@@ -81,7 +83,13 @@ The distinction this protects: **`absent` is not a degradation.** *Looked, found
 
 ### Ownership is not decided at landing
 
-**Status:** ○ Specified, not built — **unblocked 2026-10-10** (D3 decided, ch. 15). Today ownership is decided for a whole import tree at landing (ch. 03).
+**Status:** ◐ Partial — built in the document service: the three trust states, provenance, the
+defaults at creation, `set_trust` in both directions on an explicit gesture, and the adoption
+operations with their preview; a trust decision travels with sync, and bulk import lands every
+document undetermined (code: `crates/sovereign-docs/src/types.rs`, `src/service.rs`, `src/wire.rs`;
+`crates/sovereign-import/src/lib.rs`). Not built: no UI gesture calls the adoption operations
+yet, and both canvases draw two states, undetermined drawn as external (D3 decided 2026-10-10,
+ch. 15).
 
 **Decided (Céline, 2026-10-10).** A document's *trust* has three states — **owned**,
 **external**, **undetermined** — and can move between them in both directions by the user's
@@ -120,7 +128,16 @@ undetermined.
   wherever it came from, and an archive can carry any date its sender chose; adopting by date is
   a convenience for a corpus the user knows, and the preview says so.
 
-`is_owned` today is set at construction, and **no update path can mark a document external afterwards**: `update_document` takes title and content only, and the one ownership setter, `adopt_document`, only sets it to owned (ch. 03). `update_entity`, by contrast, does take `is_owned` — the general mutability exists for entities and not for documents, which is a gap, not a doctrine. Bulk import sets it `true` for everything, inferring the content's provenance from its container: true of the *file*, false of the *content*. A folder of saved articles, a mail export, someone else's document all land *owned, trusted, control-plane, never injection-fenced* — and it is the fence that protects against external content. `just docs, no code` excludes executables; it does not exclude hostile prose.
+**As built.** A document's trust is set at creation and changed only by the document service's
+`set_trust`, in either direction, on an explicit gesture; the service keeps `is_owned` in
+agreement (owned only when owned). Bulk import lands every document **undetermined**, with
+provenance *import* and the file's path. The assistant's *adopt* action (ch. 08) still uses the
+older store setter `adopt_document`, which sets `is_owned` only: it records no trust decision, so
+the adoption does not travel with sync and, on a document the service created, does not change
+the trust state the service reads;
+the decision of 2026-10-15 (every adoption recorded on the document) is not yet built there.
+
+*The analysis of 2026-08-04 that led to the decision, kept as its reasoning:* `is_owned` was then set at construction, and **no update path could mark a document external afterwards**: `update_document` takes title and content only, and the one ownership setter, `adopt_document`, only sets it to owned (ch. 03). `update_entity`, by contrast, does take `is_owned` — the general mutability exists for entities and not for documents, which is a gap, not a doctrine. Bulk import set it `true` for everything, inferring the content's provenance from its container: true of the *file*, false of the *content*. A folder of saved articles, a mail export, someone else's document all landed *owned, trusted, control-plane, never injection-fenced* — and it is the fence that protects against external content. `just docs, no code` excludes executables; it does not exclude hostile prose.
 
 **Neither `true` nor `false` is an acceptable default**: `false` would make the halo lie in the other direction and treat the user's own corpus as foreign. Both values are wrong for part of any real batch, which is the argument for posting neither.
 

@@ -5,6 +5,7 @@
 //! gate system which enforces trust and confirmation per the UX principles.
 
 use serde::Deserialize;
+use sovereign_crypto::account_key::AccountKey;
 use sovereign_db::GraphDB;
 
 use crate::llm::format::PromptFormatter;
@@ -29,6 +30,9 @@ pub struct ToolResult {
     pub tool_name: String,
     pub success: bool,
     pub output: String,
+    /// A name the tool was given did not resolve: no exact match, or two or
+    /// more (spec ch. 08, RT2: every later write of the turn is then shown).
+    pub name_not_found: bool,
 }
 
 /// Read-only tools (Observe level — no confirmation needed).
@@ -70,7 +74,7 @@ pub const WRITE_TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "create_document",
         description: "Create a new owned document. Requires user confirmation.",
-        parameters: r#"{"title": "document title", "thread_name": "thread name (optional, defaults to first thread)"}"#,
+        parameters: r#"{"title": "document title", "thread_name": "thread name (required: ask the user if they did not say)"}"#,
     },
     ToolDef {
         name: "create_thread",
@@ -92,6 +96,17 @@ pub const WRITE_TOOLS: &[ToolDef] = &[
 /// All available tools (read + write), derived from READ_TOOLS and WRITE_TOOLS.
 pub fn all_tools() -> impl Iterator<Item = &'static ToolDef> {
     READ_TOOLS.iter().chain(WRITE_TOOLS.iter())
+}
+
+/// Whether `name` is a tool the agent loop runs: one of [`all_tools`], or a tool offered only
+/// in some states — the diagnosis of a quarantined log (C-LOG), offered while the persona has one
+/// and answered by the orchestrator itself.
+fn is_known_tool(name: &str) -> bool {
+    #[cfg(feature = "encrypted-log")]
+    if name == crate::log_diagnosis::DIAGNOSIS_TOOL {
+        return true;
+    }
+    all_tools().any(|t| t.name == name)
 }
 
 /// Format tool definitions as a text block for the system prompt.
@@ -162,7 +177,7 @@ pub fn parse_tool_calls(output: &str, formatter: Option<&dyn PromptFormatter>) -
                 // primary (tagged) path too — the bare-JSON fallback below
                 // already does. An unknown/hallucinated name would otherwise be
                 // accepted here and re-enter the prompt as junk on dispatch.
-                if all_tools().any(|t| t.name == call.name) {
+                if is_known_tool(&call.name) {
                     calls.push(call);
                 }
             }
@@ -176,7 +191,7 @@ pub fn parse_tool_calls(output: &str, formatter: Option<&dyn PromptFormatter>) -
     if calls.is_empty() {
         let stripped = strip_code_fences(output);
         if let Ok(call) = serde_json::from_str::<ToolCall>(&stripped) {
-            if all_tools().any(|t| t.name == call.name) {
+            if is_known_tool(&call.name) {
                 calls.push(call);
             }
         }
@@ -210,20 +225,36 @@ pub fn is_write_tool(name: &str) -> bool {
     )
 }
 
-/// Execute a write tool call against the database. Returns the result.
-/// The caller is responsible for gating (confirmation) before calling this.
-/// `docs` is the document service (C-DOC): documents are created through it,
-/// so `create_document` is refused while there is none (no unlocked session).
+/// [`execute_write_tool_with_key`] without the account key, for the tests
+/// that name no title holding personal data. Production code passes the key.
+#[cfg(test)]
 pub async fn execute_write_tool(
     call: &ToolCall,
     db: &dyn GraphDB,
     docs: Option<&sovereign_docs::DocumentService>,
 ) -> WriteToolResult {
+    execute_write_tool_with_key(call, db, docs, None).await
+}
+
+/// Execute a write tool call against the database. Returns the result.
+/// The caller is responsible for gating (confirmation) before calling this.
+/// `docs` is the document service (C-DOC): documents are created through it,
+/// so `create_document` is refused while there is none (no unlocked session).
+///
+/// `account_key` opens the personal-data records, so a document named by a
+/// title that holds personal data resolves by all three forms of its title
+/// (C-TPII, TP4); the orchestrator passes the key it holds since login.
+pub async fn execute_write_tool_with_key(
+    call: &ToolCall,
+    db: &dyn GraphDB,
+    docs: Option<&sovereign_docs::DocumentService>,
+    account_key: Option<&AccountKey>,
+) -> WriteToolResult {
     match call.name.as_str() {
         "create_document" => execute_create_document(call, db, docs).await,
         "create_thread" => execute_create_thread(call, docs).await,
         "rename_thread" => execute_rename_thread(call, db, docs).await,
-        "move_document" => execute_move_document(call, db, docs).await,
+        "move_document" => execute_move_document(call, db, docs, account_key).await,
         _ => WriteToolResult {
             tool_name: call.name.clone(),
             no_change: None,
@@ -277,27 +308,33 @@ async fn execute_create_document(
 
     // Resolve the thread. A thread *named* in the call resolves by its exact
     // name (v0.0.12 item 6, A1): no exact match → not done, nothing created,
-    // close names offered. Only a call that names no thread falls back to the
-    // first thread.
-    let thread = match thread_name.map(str::trim).filter(|n| !n.is_empty()) {
-        Some(tname) => match crate::thread_names::resolve_thread_or_explain(db, tname).await {
-            Ok(t) => Some(t),
-            Err(why) => {
-                return WriteToolResult {
-                    tool_name: call.name.clone(),
-                    no_change: None,
-                    success: false,
-                    output: format!("Document not created: {why}"),
-                    event: None,
-                }
-            }
-        },
-        None => db.list_threads().await.unwrap_or_default().into_iter().next(),
+    // close names offered. C-HOST AT10 (Céline, 2026-11-13: « Demander le
+    // fil »): a call that names no thread creates nothing and asks which
+    // thread — no fallback to the first thread, never an empty thread id.
+    let refused = |output: String| WriteToolResult {
+        tool_name: call.name.clone(),
+        no_change: None,
+        success: false,
+        output,
+        event: None,
     };
-
-    let thread_id = thread
-        .and_then(|t| t.id_string())
-        .unwrap_or_default();
+    let Some(tname) = thread_name.map(str::trim).filter(|n| !n.is_empty()) else {
+        return refused(format!(
+            "Document not created: no thread was named. Which thread should '{title}' go in? Nothing was created.
+Ask the user this question; do not guess."
+        ));
+    };
+    let thread = match crate::thread_names::resolve_thread_or_explain(db, tname).await {
+        Ok(t) => t,
+        Err(why) => return refused(format!("Document not created: {why}")),
+    };
+    // C-MERGE MG3: an ended thread takes no new document.
+    if let Some(answer) = crate::thread_names::ended_answer(db, &thread).await {
+        return refused(format!("Document not created: {answer}"));
+    }
+    let Some(thread_id) = thread.id_string() else {
+        return refused(format!("Document not created: thread '{}' has no id", thread.name));
+    };
 
     let Some(docs) = docs else {
         return WriteToolResult {
@@ -465,6 +502,7 @@ async fn execute_move_document(
     call: &ToolCall,
     db: &dyn GraphDB,
     docs: Option<&sovereign_docs::DocumentService>,
+    account_key: Option<&AccountKey>,
 ) -> WriteToolResult {
     let doc_title = call
         .arguments
@@ -488,8 +526,11 @@ async fn execute_move_document(
     }
 
     // v0.0.12 item 23, T1: the document by its exact title only.
-    let doc_resolved = crate::document_titles::resolve_document_or_explain(db, doc_title).await;
-    let doc = doc_resolved.as_ref().ok();
+    // C-TPII (TP4): by the three forms of the title, the key given.
+    let doc_resolved = crate::document_titles::resolve_document_or_explain(db, account_key, doc_title).await;
+    // C-TPII: the document as stored, and its title as shown for the replies.
+    let doc = doc_resolved.as_ref().ok().map(|n| &n.doc);
+    let shown = doc_resolved.as_ref().map(|n| n.shown.as_str()).unwrap_or_default();
     // v0.0.12 item 6, A1: the target thread by its exact name only.
     let resolved = crate::thread_names::resolve_thread_or_explain(db, thread_name).await;
     let thread = resolved.as_ref().ok();
@@ -500,7 +541,17 @@ async fn execute_move_document(
         // v0.0.12 item 11b, C2: into the thread it is already in is no change,
         // as on the direct path (item 11).
         if doc.thread_id == tid {
-            return no_change(call, format!("'{}' is already in '{}'", doc.title, thread.name));
+            return no_change(call, format!("'{shown}' is already in '{}'", thread.name));
+        }
+        // C-MERGE MG3: an ended thread takes no moved document.
+        if let Some(answer) = crate::thread_names::ended_answer(db, thread).await {
+            return WriteToolResult {
+                tool_name: call.name.clone(),
+                no_change: None,
+                success: false,
+                output: format!("Document not moved: {answer}"),
+                event: None,
+            };
         }
         let Some(docs) = docs else { return locked(call, "move document") };
         match docs.move_to_thread(&doc_id, &tid).await {
@@ -508,7 +559,7 @@ async fn execute_move_document(
                 tool_name: call.name.clone(),
                 no_change: None,
                 success: true,
-                output: format!("Moved '{}' to thread '{}'", doc.title, thread.name),
+                output: format!("Moved '{shown}' to thread '{}'", thread.name),
                 event: Some(sovereign_core::interfaces::OrchestratorEvent::DocumentMoved {
                     doc_id,
                     new_thread_id: tid,
@@ -563,13 +614,34 @@ pub fn strip_think_blocks(output: &str) -> String {
     result.trim().to_string()
 }
 
-/// Execute a read-only tool call against the database. Returns a result with truncated output.
+/// [`execute_tool_masked`] without the account key, for the tests that name
+/// no title holding personal data: every detected value is masked, a value she
+/// dismissed too. Production code passes the mask and the key.
+#[cfg(test)]
 pub async fn execute_tool(call: &ToolCall, db: &dyn GraphDB) -> ToolResult {
+    let mask = crate::pii::read_mask::ReadMask::load(db, None).await;
+    execute_tool_masked(call, db, &mask, None).await
+}
+
+/// C-SWEEP SW3 (spec ch. 09): a read-only tool call, every document it reads
+/// masked where it is read, with the document's id: its title and its body,
+/// a value she dismissed in it left as written ([`crate::pii::read_mask`]).
+/// Thread and contact names are not covered (said in the contract).
+///
+/// `account_key`: as [`execute_write_tool_with_key`]; it finds a title given
+/// with its values or with its labels (C-TPII, TP4).
+pub async fn execute_tool_masked(
+    call: &ToolCall,
+    db: &dyn GraphDB,
+    mask: &crate::pii::read_mask::ReadMask,
+    account_key: Option<&AccountKey>,
+) -> ToolResult {
+    let mut name_not_found = false;
     let output = match call.name.as_str() {
-        "search_documents" => execute_search_documents(call, db).await,
+        "search_documents" => execute_search_documents(call, db, mask).await,
         "list_threads" => execute_list_threads(db).await,
-        "get_document" => execute_get_document(call, db).await,
-        "list_documents" => execute_list_documents(call, db).await,
+        "get_document" => execute_get_document(call, db, mask, account_key, &mut name_not_found).await,
+        "list_documents" => execute_list_documents(call, db, mask, &mut name_not_found).await,
         "search_messages" => execute_search_messages(call, db).await,
         "list_contacts" => execute_list_contacts(db).await,
         _ => format!("Unknown tool: {}", call.name),
@@ -579,10 +651,11 @@ pub async fn execute_tool(call: &ToolCall, db: &dyn GraphDB) -> ToolResult {
         tool_name: call.name.clone(),
         success: !output.starts_with("Unknown tool"),
         output,
+        name_not_found,
     }
 }
 
-async fn execute_search_documents(call: &ToolCall, db: &dyn GraphDB) -> String {
+async fn execute_search_documents(call: &ToolCall, db: &dyn GraphDB, mask: &crate::pii::read_mask::ReadMask) -> String {
     let query = call
         .arguments
         .get("query")
@@ -595,7 +668,8 @@ async fn execute_search_documents(call: &ToolCall, db: &dyn GraphDB) -> String {
         .take(8)
         .map(|d| {
             let ownership = if d.is_owned { "owned" } else { "external" };
-            format!("- {} ({})", d.title, ownership)
+            let title = mask.mask(&d.id_string().unwrap_or_default(), &d.title);
+            format!("- {} ({})", title, ownership)
         })
         .collect();
 
@@ -610,15 +684,26 @@ async fn execute_list_threads(db: &dyn GraphDB) -> String {
     let threads = db.list_threads().await.unwrap_or_default();
     let docs = db.list_documents(None).await.unwrap_or_default();
 
-    let lines: Vec<String> = threads
-        .iter()
-        .map(|t| {
-            let tid = t.id_string().unwrap_or_default();
-            let count = docs.iter().filter(|d| d.thread_id == tid).count();
-            format!("- {} ({} documents)", t.name, count)
-        })
-        .collect();
-
+    let mut lines: Vec<String> = Vec::with_capacity(threads.len());
+    for t in &threads {
+        let tid = t.id_string().unwrap_or_default();
+        let count = docs.iter().filter(|d| d.thread_id == tid).count();
+        // C-MERGE (MG2, MG3; the Fable maille, by delegation of Céline,
+        // 2026-11-17): an ended thread is listed, with its mark, so the model
+        // can say what it holds and undo its merge by name.
+        if t.is_ended() {
+            let target = sovereign_db::merged_into_name(db, t).await;
+            lines.push(format!(
+                "- {} ({} documents; merged into '{}' on {})",
+                t.name,
+                count,
+                target,
+                crate::thread_names::ended_day(t)
+            ));
+        } else {
+            lines.push(format!("- {} ({} documents)", t.name, count));
+        }
+    }
     if lines.is_empty() {
         "No threads found.".into()
     } else {
@@ -626,7 +711,13 @@ async fn execute_list_threads(db: &dyn GraphDB) -> String {
     }
 }
 
-async fn execute_get_document(call: &ToolCall, db: &dyn GraphDB) -> String {
+async fn execute_get_document(
+    call: &ToolCall,
+    db: &dyn GraphDB,
+    mask: &crate::pii::read_mask::ReadMask,
+    account_key: Option<&AccountKey>,
+    name_not_found: &mut bool,
+) -> String {
     let title = call
         .arguments
         .get("title")
@@ -636,12 +727,20 @@ async fn execute_get_document(call: &ToolCall, db: &dyn GraphDB) -> String {
     // v0.0.12 item 23, T1: the document by its exact title only — the body of
     // a document whose title merely contains the given one never reaches the
     // model.
-    let doc = match crate::document_titles::resolve_document_or_explain(db, title).await {
-        Ok(doc) => doc,
+    // C-TPII (TP4): by the three forms of the title, the key given.
+    // C-TPII: the document as stored. Its title reaches the model masked
+    // (SW3, below), which shows a linked token as its label as the title as
+    // shown does, and masks a value detected in it too.
+    let doc = match crate::document_titles::resolve_document_or_explain(db, account_key, title).await {
+        Ok(n) => n.doc,
         Err(crate::document_titles::Unresolved::NoMatch(why)) => {
+            *name_not_found = true;
             return format!("Document '{}' not found: {}", title.trim(), sentence(&why));
         }
-        Err(why) => return format!("Document '{}' not read: {}", title.trim(), sentence(why.message())),
+        Err(why) => {
+            *name_not_found = matches!(why, crate::document_titles::Unresolved::Ambiguous(_));
+            return format!("Document '{}' not read: {}", title.trim(), sentence(why.message()));
+        }
     };
     {
         let ownership = if doc.is_owned { "owned" } else { "external" };
@@ -650,33 +749,18 @@ async fn execute_get_document(call: &ToolCall, db: &dyn GraphDB) -> String {
         // JSON, and the 500-character cut fell on the JSON). Tokens stay in
         // canonical form here; the masking below turns them into labels.
         let text = sovereign_docformat::plain_text_of(&doc.content);
-        // PII-002: replace any `[pii:<id>]` tokens with type-only labels
-        // (`[Email]`, …) before the content reaches the model — no decryption.
-        // PII-001: a doc that was never PII-scanned (pii_scanned_at==None:
-        // seeded / imported / P2P-synced / browser-saved) carries NO tokens, so
-        // resolve_to_preview would pass its raw SSN/IBAN/card/etc. straight to
-        // the model. Fail safe: regex-redact the structured PII first.
-        let preview = if doc.pii_scanned_at.is_none() {
-            crate::pii::resolve::redact_raw_regex(&text, crate::pii::Locale::Swiss)
-        } else {
-            let records = db
-                .list_pii_records(None, None, None)
-                .await
-                .unwrap_or_default();
-            // PII-001: backstop the token resolution with a regex pass so a body
-            // scanned under a narrower locale (no AVS rule) can't leak raw
-            // structured PII it never tokenized.
-            crate::pii::resolve::resolve_to_preview_redacted(
-                &text,
-                &records,
-                crate::pii::Locale::Swiss,
-            )
-        };
+        // C-SWEEP SW3: the document whole (title and body), masked where it
+        // is read, with its id: tokens and detected values as their type's
+        // labels, whether or not the sweep has passed (PII-001, PII-002); a
+        // value she dismissed in it, as written.
+        let id = doc.id_string().unwrap_or_default();
+        let preview = mask.mask(&id, &text);
+        let title = mask.mask(&id, &doc.title);
         // Char-safe truncation: never slice mid-codepoint.
         let truncated: String = preview.chars().take(500).collect();
         format!(
             "Title: {} ({})\nContent:\n{}",
-            doc.title, ownership, truncated
+            title, ownership, truncated
         )
     }
 }
@@ -692,17 +776,28 @@ fn sentence(s: &str) -> String {
     }
 }
 
-async fn execute_list_documents(call: &ToolCall, db: &dyn GraphDB) -> String {
+async fn execute_list_documents(
+    call: &ToolCall,
+    db: &dyn GraphDB,
+    mask: &crate::pii::read_mask::ReadMask,
+    name_not_found: &mut bool,
+) -> String {
     let thread_name = call.arguments.get("thread").and_then(|v| v.as_str());
 
     let docs = if let Some(tname) = thread_name {
         // v0.0.12 item 6, A1: the thread by its exact name only.
-        match crate::thread_names::resolve_thread_or_explain(db, tname).await {
+        match crate::thread_names::resolve_thread(db, tname).await {
             Ok(thread) => {
                 let tid = thread.id_string().unwrap_or_default();
                 db.list_documents(Some(&tid)).await.unwrap_or_default()
             }
-            Err(why) => return format!("No documents listed: {why}"),
+            Err(why) => {
+                *name_not_found = matches!(
+                    why,
+                    crate::document_titles::Unresolved::NoMatch(_) | crate::document_titles::Unresolved::Ambiguous(_)
+                );
+                return format!("No documents listed: {why}");
+            }
         }
     } else {
         db.list_documents(None).await.unwrap_or_default()
@@ -713,7 +808,8 @@ async fn execute_list_documents(call: &ToolCall, db: &dyn GraphDB) -> String {
         .take(15)
         .map(|d| {
             let ownership = if d.is_owned { "owned" } else { "external" };
-            format!("- {} ({})", d.title, ownership)
+            let title = mask.mask(&d.id_string().unwrap_or_default(), &d.title);
+            format!("- {} ({})", title, ownership)
         })
         .collect();
 
@@ -1096,14 +1192,17 @@ mod tests {
 
     /// C-DOC adoption step 3: the assistant creates through the document
     /// service — a version from creation, owned, provenance *assistant*.
+    /// Updated for C-HOST AT10 (spec ch. 08, LH test author, 2026-11-14): the
+    /// call names its thread; a call that names none creates nothing
+    /// (`orchestrator_lh_tests::at10_write_tool_create_document_without_thread_creates_nothing`).
     #[tokio::test]
     async fn execute_write_tool_create_document() {
         use crate::docs_host::{build_document_service, testing};
         let store = testing::encrypted_memory_store("tool-create").await;
         let docs = build_document_service(store.clone(), Some(testing::account_key()), "t".into());
-        store.create_thread(Thread::new("Default".into(), "".into())).await.unwrap();
+        let default = store.create_thread(Thread::new("Default".into(), "".into())).await.unwrap().id_string().unwrap();
 
-        let call = tool_call("create_document", serde_json::json!({"title": "New Doc"}));
+        let call = tool_call("create_document", serde_json::json!({"title": "New Doc", "thread_name": "Default"}));
         let result = execute_write_tool(&call, store.as_ref(), Some(&docs)).await;
         assert!(result.success, "{}", result.output);
         assert!(result.output.contains("New Doc"));
@@ -1113,17 +1212,19 @@ mod tests {
         assert_eq!(listed.len(), 1);
         let view = docs.read(&listed[0].id).await.unwrap();
         assert_eq!(view.title, "New Doc");
+        assert_eq!(view.thread_id, default, "in the thread named");
         assert_eq!(view.trust, sovereign_docs::Trust::Owned);
         assert_eq!(view.provenance, sovereign_docs::Provenance::Assistant);
         assert_eq!(docs.versions(&listed[0].id).await.unwrap().len(), 1, "a version from creation");
     }
 
     /// Without a document service (no unlocked session) nothing is created.
+    /// The call names its thread (C-HOST AT10), so only the service is missing.
     #[tokio::test]
     async fn execute_write_tool_create_document_without_a_service_creates_nothing() {
         let db = mock_db();
         db.create_thread(Thread::new("Default".into(), "".into())).await.unwrap();
-        let call = tool_call("create_document", serde_json::json!({"title": "New Doc"}));
+        let call = tool_call("create_document", serde_json::json!({"title": "New Doc", "thread_name": "Default"}));
         let result = execute_write_tool(&call, &db, None).await;
         assert!(!result.success);
         assert!(result.event.is_none());

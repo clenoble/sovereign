@@ -146,6 +146,33 @@ pub(super) async fn world(tag: &str, n_ctx: u32, script: Script) -> World {
     world_with(tag, n_ctx, script, true).await
 }
 
+/// A new orchestrator and a new document service over the store of an
+/// earlier world — the shell restarted on the same workspace (v0.0.13 lot
+/// L5, B1: C-MERGE MG5, the undo outlives a restart). Added by the B1 test
+/// author.
+pub(super) async fn world_reopened(tag: &str, n_ctx: u32, script: Script, store: Arc<EncryptedGraphDB>) -> World {
+    let docs = Arc::new(crate::docs_host::build_document_service(store.clone(), Some(account_key()), "t".into()));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let dir = std::env::temp_dir().join(format!("sovereign_test_assistant_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut orch = Orchestrator::for_test(store.clone() as Arc<dyn GraphDB>, tx, dir);
+    let rec = Arc::new(Recorder::new(rx));
+    let config = AiConfig { n_ctx, ..AiConfig::default() };
+    let mut classifier = IntentClassifier::new(config);
+    let r = rec.clone();
+    classifier.router = AsyncLlmBackend::fake(
+        n_ctx,
+        Arc::new(move |prompt: &str, max_tokens: u32| {
+            let i = r.record_call(prompt, max_tokens);
+            Ok(script(prompt, max_tokens, i))
+        }),
+    );
+    orch.classifier = tokio::sync::Mutex::new(classifier);
+    orch.set_document_service(docs.clone());
+    World { store, docs, orch, rec, n_ctx }
+}
+
 impl World {
     /// Creates a live thread through the stamped path; returns its id.
     pub async fn thread(&self, name: &str) -> String {
@@ -258,13 +285,20 @@ pub(super) struct Snapshot {
     pub threads: Vec<(String, String, bool)>,
     pub documents: Vec<(String, String, String, bool, bool, String, usize)>,
     pub milestones: Vec<(String, String, String)>,
+    /// C-MERGE (v0.0.13 lot L5, B1; added by its test author): each listed
+    /// thread's merge — the thread it was merged into and the merge stamp —
+    /// since a merge changes nothing else a user can see (MG1).
+    pub merges: Vec<(String, Option<String>, Option<String>)>,
 }
 
 pub(super) async fn snapshot(store: &EncryptedGraphDB) -> Snapshot {
-    let mut threads: Vec<(String, String, bool)> = store
-        .list_threads()
-        .await
-        .unwrap()
+    let listed = store.list_threads().await.unwrap();
+    let mut merges: Vec<(String, Option<String>, Option<String>)> = listed
+        .iter()
+        .map(|t| (t.id_string().unwrap_or_default(), t.merged_into.clone(), t.merge_stamp.clone()))
+        .collect();
+    merges.sort();
+    let mut threads: Vec<(String, String, bool)> = listed
         .into_iter()
         .map(|t| (t.id_string().unwrap_or_default(), t.name.clone(), t.deleted_at.is_none()))
         .collect();
@@ -283,7 +317,7 @@ pub(super) async fn snapshot(store: &EncryptedGraphDB) -> Snapshot {
         }
     }
     milestones.sort();
-    Snapshot { threads, documents, milestones }
+    Snapshot { threads, documents, milestones, merges }
 }
 
 /// Says "Done" (the word, or the check mark the UIs use for it).

@@ -72,12 +72,13 @@ pub async fn toggle_theme(state: State<'_, AppState>) -> Result<String, String> 
         let mut theme = state.theme.lock().str_err()?;
         *theme = next.to_string();
     }
-    // Persist to profile so the choice survives a restart.
-    if let Ok(mut profile) = sovereign_core::profile::UserProfile::load(&state.profile_dir) {
-        profile.theme = next.to_string();
-        if let Err(e) = profile.save(&state.profile_dir) {
-            tracing::warn!("Failed to persist theme to profile: {e}");
-        }
+    // Persist to the device preferences so the choice survives a restart:
+    // shared by the personas, read before login (C-AREA AR2).
+    let defaults = crate::tauri_commands::auth::device_preferences(&state);
+    if let Err(e) = sovereign_core::profile::DevicePreferences::update(&state.profile_dir, defaults, |p| {
+        p.theme = next.to_string()
+    }) {
+        tracing::warn!("Failed to persist the theme: {e}");
     }
     Ok(next.to_string())
 }
@@ -196,37 +197,239 @@ pub async fn close_document(
 // Version history
 // ---------------------------------------------------------------------------
 
-/// List commits for a document.
+/// A document's versions, through the document service (item C5 of v0.0.13:
+/// [`commits_listing`]), each row named as History shows it (spec ch. 12,
+/// HN1-HN5: [`commits_listing_named`]).
 #[tauri::command]
 pub async fn list_commits(
     webview: tauri::Webview,
     state: State<'_, AppState>,
     doc_id: String,
-) -> Result<Vec<CommitSummaryDto>, String> {
+) -> Result<NamedCommitListDto, String> {
     state.require_unlocked(&webview).await?;
-    let commits = state
-        .db
-        .list_document_commits(&doc_id)
-        .await
-        .str_err()?;
+    let (devices, own_id) = history_names_in(&state).await;
+    commits_listing_named(state.docs().await, &doc_id, &devices, &own_id).await
+}
 
-    Ok(commits
+/// The documents whose history this session could not read, for the phone's
+/// sync alerts (item C5: [`histories_not_read_listing`]).
+#[tauri::command]
+pub async fn histories_not_read(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+) -> Result<HistoriesNotReadDto, String> {
+    state.require_unlocked(&webview).await?;
+    histories_not_read_listing(state.docs().await).await
+}
+
+/// At most `max_chars` characters of `text`, then « ... » when cut (as
+/// [`text_preview`] does).
+fn cut_preview(text: String, max_chars: usize) -> String {
+    if text.chars().count() > max_chars {
+        format!("{}...", text.chars().take(max_chars).collect::<String>())
+    } else {
+        text
+    }
+}
+
+// Item C5 of v0.0.13 (spec ch. 03, *What cannot be read is never shown as
+// empty*; decided 2026-11-18 by the Fable maille, by delegation of Céline).
+// Signatures by its test author; the bodies, and the commands that call them,
+// are the implementer's.
+
+/// A document's versions as the phone's History receives them.
+/// `list_commits` answers [`NamedCommitListDto`] from HN on; this shape stays as C5 built
+/// it, held by its tests.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Serialize)]
+pub struct CommitListDto {
+    /// Newest first; empty when they could not be read. A version that could
+    /// not be read stays in its place, with its time, said by its own
+    /// `could_not_read`.
+    pub commits: Vec<CommitSummaryDto>,
+    /// `sovereign_docs::COULD_NOT_READ_HISTORY` when the versions could not be
+    /// read; `None` when they were.
+    pub could_not_read: Option<String>,
+}
+
+/// What `list_commits` answers once the caller is checked: `docs` is what
+/// `AppState::docs` gives, the session's document service or why there is
+/// none. No service is a refusal (`Err`), never « could not be read ». A
+/// failed read, whole or of one version, counts the document for this session
+/// until its next good read (`histories_not_read_listing`).
+#[cfg_attr(not(test), allow(dead_code))]
+pub async fn commits_listing(
+    docs: Result<std::sync::Arc<sovereign_docs::DocumentService>, String>,
+    doc_id: &str,
+) -> Result<CommitListDto, String> {
+    let (rows, could_not_read) = timed_listing(docs, doc_id).await?;
+    Ok(CommitListDto { commits: rows.into_iter().map(|(c, _)| c).collect(), could_not_read })
+}
+
+/// [`commits_listing`]'s rows, each with its time as the service gives it (for
+/// History's names, which read times, never the RFC 3339 text back), and the
+/// listing's own `could_not_read`.
+async fn timed_listing(
+    docs: Result<std::sync::Arc<sovereign_docs::DocumentService>, String>,
+    doc_id: &str,
+) -> Result<(Vec<(CommitSummaryDto, chrono::DateTime<chrono::Utc>)>, Option<String>), String> {
+    let docs = docs?;
+    let listed = docs.history(doc_id).await.map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?;
+    let Some(versions) = listed else {
+        return Ok((Vec::new(), Some(sovereign_docs::COULD_NOT_READ_HISTORY.to_string())));
+    };
+    let commits = versions
         .into_iter()
-        .map(|c| {
-            let preview = text_preview(&c.snapshot.content, 200);
-            CommitSummaryDto {
-                id: c
-                    .id
-                    .as_ref()
-                    .map(sovereign_db::schema::thing_to_raw)
-                    .unwrap_or_default(),
-                message: c.message,
-                timestamp: c.timestamp.to_rfc3339(),
-                snapshot_title: c.snapshot.title,
+        .map(|(v, view)| {
+            // A version that reads gives its title and preview; one that does
+            // not gives none, and its sentence (HR4), never its ciphertext.
+            let (title, preview) = match (v.could_not_read, view) {
+                (None, Some(view)) => {
+                    let text = view.doc.map(|d| d.plain_text()).unwrap_or_default();
+                    (view.title, cut_preview(text, 200))
+                }
+                _ => (String::new(), String::new()),
+            };
+            let row = CommitSummaryDto {
+                id: v.commit_id,
+                message: v.message,
+                timestamp: v.timestamp.to_rfc3339(),
+                snapshot_title: title,
                 snapshot_preview: preview,
-            }
+                could_not_read: v.could_not_read.map(str::to_string),
+            };
+            (row, v.timestamp)
         })
-        .collect())
+        .collect();
+    Ok((commits, None))
+}
+
+// History's names on the phone (spec ch. 12, HN1-HN5; v0.0.13, the C5 line of
+// the scope). Signatures by the test author of HN on the phone; the bodies, and
+// the commands that call them, are the implementer's.
+
+/// A History row as the phone receives it from v0.0.13 on (HN1-HN3): the version as C5 gives
+/// it, unchanged (`message` the stored one, `timestamp` RFC 3339), and beside it the row's
+/// words and its local time. One object on the wire: the frontend's `CommitSummary` with two
+/// more fields. A wrapper, so that `CommitSummaryDto`, whose shape C5's tests hold, stays as it is.
+#[derive(Debug, Serialize)]
+pub struct NamedCommitDto {
+    #[serde(flatten)]
+    pub commit: CommitSummaryDto,
+    /// The row's words, as `sovereign_docs::history_names::shown_message` makes them.
+    pub shown_message: String,
+    /// The row's own time, `history_names::local_time`: `YYYY-MM-DD HH:MM`, local time.
+    pub local_time: String,
+}
+
+/// What `list_commits` answers from v0.0.13 on: [`CommitListDto`]'s two fields, its rows named.
+#[derive(Debug, Serialize)]
+pub struct NamedCommitListDto {
+    pub commits: Vec<NamedCommitDto>,
+    pub could_not_read: Option<String>,
+}
+
+/// HN1-HN3, HN5: [`commits_listing`] with each row's `shown_message` and
+/// `local_time` made by `sovereign_docs::history_names`, from `devices` (peer id
+/// → the name this device's paired list holds), `own_id` (this device's peer id,
+/// « this device ») and the document's own versions. `list_commits` answers this,
+/// with [`history_names_in`].
+pub async fn commits_listing_named(
+    docs: Result<std::sync::Arc<sovereign_docs::DocumentService>, String>,
+    doc_id: &str,
+    devices: &std::collections::HashMap<String, String>,
+    own_id: &str,
+) -> Result<NamedCommitListDto, String> {
+    let (rows, could_not_read) = timed_listing(docs, doc_id).await?;
+    // HN2: a version a row names is named by its time, read in this document's
+    // own history, as the desktop does.
+    let ids: Vec<(String, chrono::DateTime<chrono::Utc>)> = rows.iter().map(|(c, at)| (c.id.clone(), *at)).collect();
+    let versions: Vec<(&str, chrono::DateTime<chrono::Utc>)> = ids.iter().map(|(id, at)| (id.as_str(), *at)).collect();
+    let named = rows
+        .into_iter()
+        .map(|(c, at)| NamedCommitDto {
+            shown_message: sovereign_docs::history_names::shown_message(&c.message, devices, own_id, &versions),
+            local_time: sovereign_docs::history_names::local_time(at),
+            commit: c,
+        })
+        .collect();
+    Ok(NamedCommitListDto { commits: named, could_not_read })
+}
+
+/// HN1: what names a device in this session's History: the paired list (peer id
+/// → name) and this device's peer id; empty, and `""`, when the session has no
+/// node or no paired list.
+pub async fn history_names_in(state: &AppState) -> (std::collections::HashMap<String, String>, String) {
+    // The paired list, as the node installed it at login (none in a build
+    // without p2p, before login, or in a duress session).
+    #[allow(unused_mut)]
+    let mut devices = std::collections::HashMap::new();
+    #[cfg(feature = "p2p")]
+    if let Some(manager) = state.pairing_manager.read().await.as_ref() {
+        devices.extend(manager.list_devices().into_iter().map(|d| (d.peer_id.clone(), d.device_name.clone())));
+    }
+    // This device's own peer id, derived from the per-device key the login
+    // installs: the id its node runs under and the document service stamps
+    // with (the desktop's `own_peer_id` does the same).
+    #[cfg(feature = "encryption")]
+    let own_id = state
+        .p2p_identity_key()
+        .await
+        .and_then(|key| sovereign_crypto::peer_identity::peer_id(&key).ok())
+        .unwrap_or_default();
+    #[cfg(not(feature = "encryption"))]
+    let own_id = {
+        let _ = state;
+        String::new()
+    };
+    (devices, own_id)
+}
+
+/// What `restore_commit` answers (HN4): the document after the restore, and
+/// `sovereign_docs::history_names::ALREADY_CURRENT` when the version chosen was
+/// already the current one, nothing written; `None` when it was restored.
+#[derive(Debug, Serialize)]
+pub struct RestoredDto {
+    pub document: FullDocument,
+    pub already_current: Option<String>,
+}
+
+/// HN4: the restore behind `restore_commit`, once the caller is checked.
+pub async fn restore_in(
+    docs: Result<std::sync::Arc<sovereign_docs::DocumentService>, String>,
+    doc_id: &str,
+    commit_id: &str,
+) -> Result<RestoredDto, String> {
+    let docs = docs?;
+    // C-DOC adoption step 2: the current state becomes a version first.
+    let (document, changed) = crate::doc_saves::restore_said(&docs, doc_id, commit_id).await?;
+    let already_current = (!changed).then(|| sovereign_docs::history_names::ALREADY_CURRENT.to_string());
+    Ok(RestoredDto { document, already_current })
+}
+
+/// The documents whose history this session could not read, for the phone's
+/// sync alerts: how many, and the sentence to say
+/// (`sovereign_docs::histories_not_read_sentence`), `None` when there are none.
+/// Kept in memory for the session, never stored (decided 2026-11-18).
+///
+/// Its own command, beside `list_sync_alerts`, not a field of `SyncAlertsDto`:
+/// that object's shape is held by a protected test (`could_not_check_tests`,
+/// « the lists travel with the frontend's field names »).
+#[derive(Debug, Serialize)]
+pub struct HistoriesNotReadDto {
+    pub count: usize,
+    pub sentence: Option<String>,
+}
+
+/// What the command behind `HistoriesNotReadDto` answers once the caller is
+/// checked; no service is a refusal (`Err`).
+pub async fn histories_not_read_listing(
+    docs: Result<std::sync::Arc<sovereign_docs::DocumentService>, String>,
+) -> Result<HistoriesNotReadDto, String> {
+    let docs = docs?;
+    let count = docs.histories_not_read();
+    let sentence = (count > 0).then(|| sovereign_docs::histories_not_read_sentence(count));
+    Ok(HistoriesNotReadDto { count, sentence })
 }
 
 /// Restore a document to a specific commit.
@@ -236,11 +439,9 @@ pub async fn restore_commit(
     state: State<'_, AppState>,
     doc_id: String,
     commit_id: String,
-) -> Result<FullDocument, String> {
+) -> Result<RestoredDto, String> {
     state.require_unlocked(&webview).await?;
-    // C-DOC adoption step 2: the current state becomes a version first.
-    let docs = state.docs().await?;
-    crate::doc_saves::restore(&docs, &doc_id, &commit_id).await
+    restore_in(state.docs().await, &doc_id, &commit_id).await
 }
 
 // ---------------------------------------------------------------------------
@@ -287,95 +488,20 @@ pub async fn execute_skill(
     params: String,
 ) -> Result<SkillResultDto, String> {
     state.require_unlocked(&webview).await?;
-    // C-DOC adoption step 2: the skill reads the document through the
-    // service, and a content update is written back here, through the service
-    // (`apply_skill_output`: the prior state versioned first, the result after)
-    // — the frontend reloads the document instead of saving the output itself.
+    // The body, and FC1's question when a skill's find-or-create needs her
+    // answer (item 9): `crate::thread_choice::execute_skill_on`.
     let docs = state.docs().await?;
-    let view = docs.read(&doc_id).await.map_err(|e| sovereign_ai::docs_host::doc_error_message(&e))?;
-    let fields = sovereign_ai::docs_host::view_fields(&view);
-    let skill_doc = SkillDocument {
-        id: doc_id.clone(),
-        title: view.title.clone(),
-        content: fields.clone(),
-    };
-    // Auto-grant exactly the capabilities the skill declares.
-    let granted: HashSet<_> = state
-        .skill_registry
-        .find_skill(&skill_name)
-        .map(|s| s.required_capabilities().into_iter().collect())
-        .unwrap_or_default();
-    // C-DOC adoption step 3: what the skill creates (daily journal, file
-    // import, duplicate, a WASM plugin's documents) goes through the document
-    // service; its reads go to the store access skills always had.
-    let skill_db: std::sync::Arc<dyn sovereign_skills::SkillDbAccess> = std::sync::Arc::new(
-        sovereign_ai::docs_host::ServiceSkillDb::new(state.skill_db.clone(), docs.clone(), &skill_name),
-    );
-    let ctx = SkillContext {
-        granted,
-        db: Some(skill_db),
-        llm: state.skill_llm.clone(),
-    };
-    let output = state
-        .skill_registry
-        .execute_skill(&skill_name, &action, &skill_doc, &params, &ctx)
-        .str_err()?;
-
-    match output {
-        sovereign_skills::traits::SkillOutput::ContentUpdate(cf) => {
-            crate::doc_saves::apply_skill(&docs, &doc_id, view.revision.clone(), &skill_name, &fields, &cf).await?;
-            // What is stored now (personal data tokenized by the ingest).
-            let stored = crate::doc_saves::read_document(&docs, &doc_id).await?;
-            Ok(SkillResultDto {
-                kind: "content_update".into(),
-                body: Some(stored.body),
-                images: Some(stored.images),
-                videos: Some(stored.videos),
-                file_name: None,
-                file_mime: None,
-                file_data_base64: None,
-                structured_kind: None,
-                structured_json: None,
-            })
-        }
-        sovereign_skills::traits::SkillOutput::File { name, mime_type, data } => {
-            use base64::Engine;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-            Ok(SkillResultDto {
-                kind: "file".into(),
-                body: None,
-                images: None,
-                videos: None,
-                file_name: Some(name),
-                file_mime: Some(mime_type),
-                file_data_base64: Some(b64),
-                structured_kind: None,
-                structured_json: None,
-            })
-        }
-        sovereign_skills::traits::SkillOutput::StructuredData { kind, json } => Ok(SkillResultDto {
-            kind: "structured_data".into(),
-            body: None,
-            images: None,
-            videos: None,
-            file_name: None,
-            file_mime: None,
-            file_data_base64: None,
-            structured_kind: Some(kind),
-            structured_json: Some(json),
-        }),
-        sovereign_skills::traits::SkillOutput::None => Ok(SkillResultDto {
-            kind: "none".into(),
-            body: None,
-            images: None,
-            videos: None,
-            file_name: None,
-            file_mime: None,
-            file_data_base64: None,
-            structured_kind: None,
-            structured_json: None,
-        }),
-    }
+    crate::thread_choice::execute_skill_on(
+        docs,
+        &state.skill_registry,
+        state.skill_db.clone(),
+        state.skill_llm.clone(),
+        &skill_name,
+        &action,
+        &doc_id,
+        &params,
+    )
+    .await
 }
 
 /// List all registered skills and their actions.

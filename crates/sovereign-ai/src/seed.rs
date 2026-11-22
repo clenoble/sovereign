@@ -524,6 +524,7 @@ pub async fn seed_pii_if_empty<T: sovereign_db::GraphDB + ?Sized>(
             last_revealed_at: None,
             use_count: 0,
             review_state: state.clone(),
+            review_stamp: None,
             deleted_at: None,
         };
         let created = db.create_pii_record(record).await?;
@@ -560,6 +561,7 @@ pub async fn seed_pii_if_empty<T: sovereign_db::GraphDB + ?Sized>(
             last_revealed_at: None,
             use_count: 0,
             review_state: ReviewState::Confirmed,
+            review_stamp: None,
             deleted_at: None,
         };
         db.create_pii_record(record).await?;
